@@ -183,7 +183,7 @@ typedef struct
 
   /* dpdk rte_mbuf rx and tx vectors, VLIB_FRAME_SIZE */
   struct rte_mbuf ***tx_vectors;	/* one per worker thread */
-  struct rte_mbuf ***rx_vectors;
+  struct rte_mbuf ***rx_vectors;//自下层收到到的包（两维，第一维是队列）
 
   /* vector of traced contexts, per device */
   u32 **d_trace_buffers;

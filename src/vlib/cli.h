@@ -84,6 +84,7 @@ typedef struct
 } vlib_cli_parse_rule_t;
 
 /* CLI command callback function. */
+//命令行回调函数
 typedef clib_error_t *(vlib_cli_command_function_t)
   (struct vlib_main_t * vm,
    unformat_input_t * input, struct vlib_cli_command_t * cmd);
@@ -92,14 +93,14 @@ typedef struct vlib_cli_command_t
 {
   /* Command path (e.g. "show something").
      Spaces delimit elements of path. */
-  char *path;
+  char *path;//命令行
 
   /* Short/long help strings. */
-  char *short_help;
-  char *long_help;
+  char *short_help;//短的帮助信息
+  char *long_help;//长的帮助信息
 
   /* Callback function. */
-  vlib_cli_command_function_t *function;
+  vlib_cli_command_function_t *function;//命令行实现
 
   /* Opaque. */
   uword function_arg;
@@ -124,7 +125,7 @@ typedef struct vlib_cli_command_t
   vlib_cli_sub_rule_t *sub_rules;
 
   /* List of CLI commands, built by constructors */
-  struct vlib_cli_command_t *next_cli_command;
+  struct vlib_cli_command_t *next_cli_command;//指向下一条cli command
 
 } vlib_cli_command_t;
 
@@ -148,9 +149,15 @@ typedef struct
   void **parse_rule_data;
 
   /* registration list added by constructors */
-  vlib_cli_command_t *cli_command_registrations;
+  vlib_cli_command_t *cli_command_registrations;//指向注册的命令
 } vlib_cli_main_t;
 
+/**
+ * 定义一个vlib_cli_command_t类型的x，并定义一个x的注册
+ * 函数，在注册函数中，将x变量挂接在cli_command_registrations上（此值来自于vm->cli_main)
+ * 挂接时总是在第一个位置挂接。
+ * 最后一行，我们初始化定义的x
+ */
 #define VLIB_CLI_COMMAND(x,...)                                         \
     __VA_ARGS__ vlib_cli_command_t x;                                   \
 static void __vlib_cli_command_registration_##x (void)                  \

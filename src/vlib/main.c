@@ -1406,6 +1406,7 @@ dispatch_suspended_process (vlib_main_t * vm,
   return t;
 }
 
+//主或者从的loop处理
 static_always_inline void
 vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 {
@@ -1486,6 +1487,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	}
 
       /* Process pre-input nodes. */
+      //input前的nodes处理
       if (is_main)
 	vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
 	  cpu_time_now = dispatch_node (vm, n,
@@ -1495,6 +1497,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 					cpu_time_now);
 
       /* Next process input nodes. */
+      //input的nodes处理
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_INPUT])
 	cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_INPUT,
@@ -1711,8 +1714,10 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
     }
 
   /* See unix/main.c; most likely already set up */
+  //初始化init函数查找的hash表
   if (vm->init_functions_called == 0)
     vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+  //调用所有初始化函数
   if ((error = vlib_call_all_init_functions (vm)))
     goto done;
 
@@ -1746,6 +1751,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       clib_error_report (sub_error);
   }
 
+  //做主的loop
   vlib_main_loop (vm);
 
 done:

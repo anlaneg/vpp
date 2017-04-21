@@ -79,6 +79,7 @@ typedef struct vlib_config_function_runtime_t
   char name[32];
 } vlib_config_function_runtime_t;
 
+//生成一个符号
 #define _VLIB_INIT_FUNCTION_SYMBOL(x, type)	\
   _vlib_##type##_function_##x
 
@@ -93,7 +94,11 @@ typedef struct vlib_config_function_runtime_t
 
 /* Declaration is global (e.g. not static) so that init functions can
    be called from other modules to resolve init function depend. */
-
+/*
+ * 定义函数指针指向x,声明启动时函数，在启动时，注册此函数到
+ * vm->tag##__function_registrations (放在此链的头部）
+ * 总结：将x按tag注册到vm->tag##_function_registrations链表头部
+ */
 #define VLIB_DECLARE_INIT_FUNCTION(x, tag)                      \
 vlib_init_function_t * _VLIB_INIT_FUNCTION_SYMBOL (x, tag) = x; \
 static void __vlib_add_##tag##_function_##x (void)              \
@@ -108,11 +113,17 @@ static void __vlib_add_##tag##_function_##x (void)              \
  _vlib_init_function.f = &x;                                    \
 }
 
+//将x放在vm->init*链头部
 #define VLIB_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,init)
+
+//将x放在vm->worker_init*链头部
 #define VLIB_WORKER_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,worker_init)
 
+//将x放在vm->main_loop_enter*链头部
 #define VLIB_MAIN_LOOP_ENTER_FUNCTION(x) \
   VLIB_DECLARE_INIT_FUNCTION(x,main_loop_enter)
+
+//将x放在vm->main_loop_exit*链头部
 #define VLIB_MAIN_LOOP_EXIT_FUNCTION(x) \
 VLIB_DECLARE_INIT_FUNCTION(x,main_loop_exit)
 

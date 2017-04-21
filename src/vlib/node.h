@@ -79,7 +79,7 @@ typedef enum
 typedef struct _vlib_node_registration
 {
   /* Vector processing function for this node. */
-  vlib_node_function_t *function;
+  vlib_node_function_t *function;//node对应的报文处理函数
 
   /* Node name. */
   char *name;
@@ -137,10 +137,14 @@ typedef struct _vlib_node_registration
   struct _vlib_node_registration *next_registration;
 
   /* Names of next nodes which this node feeds into. */
-  char *next_nodes[];
+  char *next_nodes[];//下一级node
 
 } vlib_node_registration_t;
 
+/**
+ * 将x指定的node注册到vm->node_main.node_registrations链表头上，
+ * 此宏接着会要求对x进行初始化
+ */
 #define VLIB_REGISTER_NODE(x,...)                                       \
     __VA_ARGS__ vlib_node_registration_t x;                             \
 static void __vlib_add_node_registration_##x (void)                     \
@@ -634,7 +638,7 @@ typedef struct
   vlib_node_t **nodes;
 
   /* Node index hashed by node name. */
-  uword *node_by_name;
+  uword *node_by_name;//hash表，按名称查找node
 
   u32 flags;
 #define VLIB_NODE_MAIN_RUNTIME_STARTED (1 << 0)

@@ -112,10 +112,10 @@ typedef struct vlib_main_t
   void (*os_physmem_free) (void *x);
 
   /* Node graph main structure. */
-  vlib_node_main_t node_main;
+  vlib_node_main_t node_main;//node相关的结构
 
   /* Command line interface. */
-  vlib_cli_main_t cli_main;
+  vlib_cli_main_t cli_main;//命令行相关
 
   /* Packet trace buffer. */
   vlib_trace_main_t trace_main;

@@ -39,6 +39,9 @@
 
 #include <vlib/vlib.h>
 
+//注，当call_once为false时，没有函数会被调用
+//遍历head并调用其对应的函数（如果call_once为true,则每个调用均会被记录是否已调用过，
+//对于调用过的不再进行调用
 clib_error_t *
 vlib_call_init_exit_functions (vlib_main_t * vm,
 			       _vlib_init_function_list_elt_t * head,
@@ -50,13 +53,15 @@ vlib_call_init_exit_functions (vlib_main_t * vm,
   i = head;
   while (i)
     {
+	  //call_once 表示只容许调用一次，我们遍历head链表，在vm->init_functions_called表里
+	  //检查，看i对应的函数是否已调用，如果已调用，则跳过
       if (call_once && !hash_get (vm->init_functions_called, i->f))
 	{
 	  if (call_once)
-	    hash_set1 (vm->init_functions_called, i->f);
-	  error = i->f (vm);
+	    hash_set1 (vm->init_functions_called, i->f);//在hash表中插入，防下次再调用
+	  error = i->f (vm);//调用此函数
 	  if (error)
-	    return error;
+	    return error;//如果调用链上有一个函数发生错误，则退出
 	}
       i = i->next_init_function;
     }
@@ -72,6 +77,7 @@ vlib_call_all_init_functions (vlib_main_t * vm)
   foreach_vlib_module_reference;
 #undef _
 
+  //遍历调用init_function_registrations
   return vlib_call_init_exit_functions
     (vm, vm->init_function_registrations, 1 /* call_once */ );
 }

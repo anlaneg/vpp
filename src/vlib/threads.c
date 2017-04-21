@@ -1378,11 +1378,13 @@ vlib_worker_thread_fn (void *arg)
   while (tm->extern_thread_mgmt && tm->worker_thread_release == 0)
     vlib_worker_thread_barrier_check ();
 
+  //调用worker_init_function_registrations的函数
   e = vlib_call_init_exit_functions
     (vm, vm->worker_init_function_registrations, 1 /* call_once */ );
   if (e)
     clib_error_report (e);
 
+  //做worker的loop
   vlib_worker_loop (vm);
 }
 

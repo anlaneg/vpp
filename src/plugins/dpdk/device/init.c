@@ -2016,6 +2016,7 @@ dpdk_init (vlib_main_t * vm)
   return error;
 }
 
+//注册dpdk初始化
 VLIB_INIT_FUNCTION (dpdk_init);
 
 

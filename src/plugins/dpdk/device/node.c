@@ -164,6 +164,7 @@ dpdk_rx_trace (dpdk_main_t * dm,
     }
 }
 
+//dpdk收包
 static inline u32
 dpdk_rx_burst (dpdk_main_t * dm, dpdk_device_t * xd, u16 queue_id)
 {
@@ -171,13 +172,14 @@ dpdk_rx_burst (dpdk_main_t * dm, dpdk_device_t * xd, u16 queue_id)
   u32 n_left;
   u32 n_this_chunk;
 
-  n_left = VLIB_FRAME_SIZE;
+  n_left = VLIB_FRAME_SIZE;//期待收取的包数
   n_buffers = 0;
 
   if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
     {
       while (n_left)
 	{
+      //dpdk收包处理
 	  n_this_chunk = rte_eth_rx_burst (xd->device_index, queue_id,
 					   xd->rx_vectors[queue_id] +
 					   n_buffers, n_left);
@@ -186,7 +188,7 @@ dpdk_rx_burst (dpdk_main_t * dm, dpdk_device_t * xd, u16 queue_id)
 
 	  /* Empirically, DPDK r1.8 produces vectors w/ 32 or fewer elts */
 	  if (n_this_chunk < 32)
-	    break;
+	    break;//这一次收到的包有点少，说明包不急，这里直接退出，先处理，暂不收取了（另外，特殊情况收到0个）
 	}
     }
   else
@@ -194,7 +196,7 @@ dpdk_rx_burst (dpdk_main_t * dm, dpdk_device_t * xd, u16 queue_id)
       ASSERT (0);
     }
 
-  return n_buffers;
+  return n_buffers;//收取了多少个
 }
 
 
@@ -299,11 +301,12 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
   if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) == 0)
     return 0;
 
+  //自dpdk收取报文（n_buffers指收到了多少个）
   n_buffers = dpdk_rx_burst (dm, xd, queue_id);
 
   if (n_buffers == 0)
     {
-      return 0;
+      return 0;//一个报也没收到，直接退出
     }
 
   vec_reset_length (xd->d_trace_buffers[thread_index]);

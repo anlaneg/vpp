@@ -254,7 +254,7 @@ typedef struct
 typedef struct
 {
   /* Link list of registrations, built by constructors */
-  vlib_thread_registration_t *next;
+  vlib_thread_registration_t *next;//注册thread对应的初始化
 
   /* Vector of registrations, w/ non-data-structure clones at the top */
   vlib_thread_registration_t **registrations;
@@ -317,6 +317,7 @@ extern vlib_thread_main_t vlib_thread_main;
 
 #include <vlib/global_funcs.h>
 
+//初始化x,并将x注册到vlib_thread_main对应的链表上
 #define VLIB_REGISTER_THREAD(x,...)                     \
   __VA_ARGS__ vlib_thread_registration_t x;             \
 static void __vlib_add_thread_registration_##x (void)   \
