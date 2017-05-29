@@ -707,6 +707,24 @@ elog_save_buffer (vlib_main_t * vm,
   return error;
 }
 
+void
+elog_post_mortem_dump (void)
+{
+  vlib_main_t *vm = &vlib_global_main;
+  elog_main_t *em = &vm->elog_main;
+  u8 *filename;
+  clib_error_t *error;
+
+  if (!vm->elog_post_mortem_dump)
+    return;
+
+  filename = format (0, "/tmp/elog_post_mortem.%d%c", getpid (), 0);
+  error = elog_write_file (em, (char *) filename, 1 /* flush ring */ );
+  if (error)
+    clib_error_report (error);
+  vec_free (filename);
+}
+
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (elog_save_cli, static) = {
   .path = "event-logger save",
@@ -1456,20 +1474,11 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   if (!nm->interrupt_threshold_vector_length)
     nm->interrupt_threshold_vector_length = 5;
 
-  if (is_main)
-    {
-      if (!nm->polling_threshold_vector_length)
-	nm->polling_threshold_vector_length = 10;
-      if (!nm->interrupt_threshold_vector_length)
-	nm->interrupt_threshold_vector_length = 5;
-
-      nm->current_process_index = ~0;
-    }
-
   /* Start all processes. */
   if (is_main)
     {
       uword i;
+      nm->current_process_index = ~0;
       for (i = 0; i < vec_len (nm->processes); i++)
 	cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
 					 cpu_time_now);
@@ -1645,6 +1654,8 @@ vlib_main_configure (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "elog-events %d",
 			 &vm->elog_main.event_ring_size))
 	;
+      else if (unformat (input, "elog-post-mortem-dump"))
+	vm->elog_post_mortem_dump = 1;
       else
 	return unformat_parse_error (input);
     }

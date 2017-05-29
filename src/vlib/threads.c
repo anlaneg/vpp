@@ -35,16 +35,8 @@ vl (void *p)
 vlib_worker_thread_t *vlib_worker_threads;
 vlib_thread_main_t vlib_thread_main;
 
-__thread uword vlib_thread_index = 0;
-
 uword
-os_get_cpu_number (void)
-{
-  return vlib_thread_index;
-}
-
-uword
-os_get_ncpus (void)
+os_get_nthreads (void)
 {
   u32 len;
 
@@ -467,7 +459,7 @@ vlib_worker_thread_bootstrap_fn (void *arg)
   w->lwp = syscall (SYS_gettid);
   w->thread_id = pthread_self ();
 
-  vlib_thread_index = w - vlib_worker_threads;
+  __os_thread_index = w - vlib_worker_threads;
 
   rv = (void *) clib_calljmp
     ((uword (*)(uword)) w->thread_function,
@@ -1125,7 +1117,7 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 
 VLIB_EARLY_CONFIG_FUNCTION (cpu_config, "cpu");
 
-#if !defined (__x86_64__) && !defined (__aarch64__) && !defined (__powerpc64__) && !defined(__arm__)
+#if !defined (__x86_64__) && !defined (__i386__) && !defined (__aarch64__) && !defined (__powerpc64__) && !defined(__arm__)
 void
 __sync_fetch_and_add_8 (void)
 {

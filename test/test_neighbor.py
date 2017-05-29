@@ -87,6 +87,24 @@ class ARPTestCase(VppTestCase):
         self.assertEqual(arp.psrc, sip)
         self.assertEqual(arp.pdst, dip)
 
+    def verify_arp_vrrp_resp(self, rx, smac, dmac, sip, dip):
+        ether = rx[Ether]
+        self.assertEqual(ether.dst, dmac)
+        self.assertEqual(ether.src, smac)
+
+        arp = rx[ARP]
+        self.assertEqual(arp.hwtype, 1)
+        self.assertEqual(arp.ptype, 0x800)
+        self.assertEqual(arp.hwlen, 6)
+        self.assertEqual(arp.plen, 4)
+        self.assertEqual(arp.op, arp_opts["is-at"])
+        self.assertNotEqual(arp.hwsrc, smac)
+        self.assertTrue("00:00:5e:00:01" in arp.hwsrc or
+                        "00:00:5E:00:01" in arp.hwsrc)
+        self.assertEqual(arp.hwdst, dmac)
+        self.assertEqual(arp.psrc, sip)
+        self.assertEqual(arp.pdst, dip)
+
     def verify_ip(self, rx, smac, dmac, sip, dip):
         ether = rx[Ether]
         self.assertEqual(ether.dst, dmac)
@@ -112,8 +130,11 @@ class ARPTestCase(VppTestCase):
         intf.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
+        timeout = 1
         for i in self.pg_interfaces:
+            i.get_capture(0, timeout=timeout)
             i.assert_nothing_captured(remark=remark)
+            timeout = 0.1
 
     def test_arp(self):
         """ ARP """
@@ -438,7 +459,9 @@ class ARPTestCase(VppTestCase):
         # ERROR Cases
         #  1 - don't respond to ARP request for address not within the
         #      interface's sub-net
-        #  1a - nor within the unnumbered subnet
+        #  1b - nor within the unnumbered subnet
+        #  1c - nor within the subnet of a different interface
+        #
         p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
              ARP(op="who-has",
                  hwsrc=self.pg0.remote_mac,
@@ -446,6 +469,10 @@ class ARPTestCase(VppTestCase):
                  psrc=self.pg0.remote_ip4))
         self.send_and_assert_no_replies(self.pg0, p,
                                         "ARP req for non-local destination")
+        self.assertFalse(find_nbr(self,
+                                  self.pg0.sw_if_index,
+                                  "10.10.10.3"))
+
         p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg2.remote_mac) /
              ARP(op="who-has",
                  hwsrc=self.pg2.remote_mac,
@@ -454,6 +481,17 @@ class ARPTestCase(VppTestCase):
         self.send_and_assert_no_replies(
             self.pg0, p,
             "ARP req for non-local destination - unnum")
+
+        p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
+             ARP(op="who-has",
+                 hwsrc=self.pg0.remote_mac,
+                 pdst=self.pg1.local_ip4,
+                 psrc=self.pg1.remote_ip4))
+        self.send_and_assert_no_replies(self.pg0, p,
+                                        "ARP req diff sub-net")
+        self.assertFalse(find_nbr(self,
+                                  self.pg0.sw_if_index,
+                                  self.pg1.remote_ip4))
 
         #
         #  2 - don't respond to ARP request from an address not within the
@@ -514,15 +552,11 @@ class ARPTestCase(VppTestCase):
     def test_proxy_arp(self):
         """ Proxy ARP """
 
+        self.pg1.generate_remote_hosts(2)
+
         #
         # Proxy ARP rewquest packets for each interface
         #
-        arp_req_pg2 = (Ether(src=self.pg2.remote_mac,
-                             dst="ff:ff:ff:ff:ff:ff") /
-                       ARP(op="who-has",
-                           hwsrc=self.pg2.remote_mac,
-                           pdst="10.10.10.3",
-                           psrc=self.pg1.remote_ip4))
         arp_req_pg0 = (Ether(src=self.pg0.remote_mac,
                              dst="ff:ff:ff:ff:ff:ff") /
                        ARP(op="who-has",
@@ -535,6 +569,12 @@ class ARPTestCase(VppTestCase):
                            hwsrc=self.pg1.remote_mac,
                            pdst="10.10.10.3",
                            psrc=self.pg1.remote_ip4))
+        arp_req_pg2 = (Ether(src=self.pg2.remote_mac,
+                             dst="ff:ff:ff:ff:ff:ff") /
+                       ARP(op="who-has",
+                           hwsrc=self.pg2.remote_mac,
+                           pdst="10.10.10.3",
+                           psrc=self.pg1.remote_hosts[1].ip4))
         arp_req_pg3 = (Ether(src=self.pg3.remote_mac,
                              dst="ff:ff:ff:ff:ff:ff") /
                        ARP(op="who-has",
@@ -607,7 +647,7 @@ class ARPTestCase(VppTestCase):
                              self.pg2.local_mac,
                              self.pg2.remote_mac,
                              "10.10.10.3",
-                             self.pg1.remote_ip4)
+                             self.pg1.remote_hosts[1].ip4)
 
         #
         # A request for an address out of the configured range
@@ -714,6 +754,142 @@ class ARPTestCase(VppTestCase):
                               self.pg0.remote_ip4,
                               "10.0.0.1")
         self.pg2.unconfig_ip4()
+
+    def test_arp_vrrp(self):
+        """ ARP reply with VRRP virtual src hw addr """
+
+        #
+        # IP packet destined for pg1 remote host arrives on pg0 resulting
+        # in an ARP request for the address of the remote host on pg1
+        #
+        p0 = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+              IP(src=self.pg0.remote_ip4, dst=self.pg1.remote_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw())
+
+        self.pg0.add_stream(p0)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_arp_req(rx1[0],
+                            self.pg1.local_mac,
+                            self.pg1.local_ip4,
+                            self.pg1.remote_ip4)
+
+        #
+        # ARP reply for address of pg1 remote host arrives on pg1 with
+        # the hw src addr set to a value in the VRRP IPv4 range of
+        # MAC addresses
+        #
+        p1 = (Ether(dst=self.pg1.local_mac, src=self.pg1.remote_mac) /
+              ARP(op="is-at", hwdst=self.pg1.local_mac,
+                  hwsrc="00:00:5e:00:01:09", pdst=self.pg1.local_ip4,
+                  psrc=self.pg1.remote_ip4))
+
+        self.pg1.add_stream(p1)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        #
+        # IP packet destined for pg1 remote host arrives on pg0 again.
+        # VPP should have an ARP entry for that address now and the packet
+        # should be sent out pg1.
+        #
+        self.pg0.add_stream(p0)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_ip(rx1[0],
+                       self.pg1.local_mac,
+                       "00:00:5e:00:01:09",
+                       self.pg0.remote_ip4,
+                       self.pg1.remote_ip4)
+
+        self.pg1.admin_down()
+        self.pg1.admin_up()
+
+    def test_arp_duplicates(self):
+        """ ARP Duplicates"""
+
+        #
+        # Generate some hosts on the LAN
+        #
+        self.pg1.generate_remote_hosts(3)
+
+        #
+        # Add host 1 on pg1 and pg2
+        #
+        arp_pg1 = VppNeighbor(self,
+                              self.pg1.sw_if_index,
+                              self.pg1.remote_hosts[1].mac,
+                              self.pg1.remote_hosts[1].ip4)
+        arp_pg1.add_vpp_config()
+        arp_pg2 = VppNeighbor(self,
+                              self.pg2.sw_if_index,
+                              self.pg2.remote_mac,
+                              self.pg1.remote_hosts[1].ip4)
+        arp_pg2.add_vpp_config()
+
+        #
+        # IP packet destined for pg1 remote host arrives on pg1 again.
+        #
+        p = (Ether(dst=self.pg0.local_mac,
+                   src=self.pg0.remote_mac) /
+             IP(src=self.pg0.remote_ip4,
+                dst=self.pg1.remote_hosts[1].ip4) /
+             UDP(sport=1234, dport=1234) /
+             Raw())
+
+        self.pg0.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_ip(rx1[0],
+                       self.pg1.local_mac,
+                       self.pg1.remote_hosts[1].mac,
+                       self.pg0.remote_ip4,
+                       self.pg1.remote_hosts[1].ip4)
+
+        #
+        # remove the duplicate on pg1
+        # packet stream shoud generate ARPs out of pg1
+        #
+        arp_pg1.remove_vpp_config()
+
+        self.pg0.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_arp_req(rx1[0],
+                            self.pg1.local_mac,
+                            self.pg1.local_ip4,
+                            self.pg1.remote_hosts[1].ip4)
+
+        #
+        # Add it back
+        #
+        arp_pg1.add_vpp_config()
+
+        self.pg0.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_ip(rx1[0],
+                       self.pg1.local_mac,
+                       self.pg1.remote_hosts[1].mac,
+                       self.pg0.remote_ip4,
+                       self.pg1.remote_hosts[1].ip4)
+
 
 if __name__ == '__main__':
     unittest.main(testRunner=VppTestRunner)

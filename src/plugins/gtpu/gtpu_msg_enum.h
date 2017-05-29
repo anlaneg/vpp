@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2016 Cisco and/or its affiliates.
+ * gtpu_msg_enum.h - vpp engine plug-in message enumeration
+ *
+ * Copyright (c) <current-year> <your-organization>
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -12,7 +14,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#ifndef included_gtpu_msg_enum_h
+#define included_gtpu_msg_enum_h
 
-int main(int argc, char **argv) {
-    return 0;
-}
+#include <vppinfra/byte_order.h>
+
+#define vl_msg_id(n,h) n,
+typedef enum
+{
+#include <gtpu/gtpu_all_api_h.h>
+  /* We'll want to know how many messages IDs we need... */
+  VL_MSG_FIRST_AVAILABLE,
+} vl_msg_id_t;
+#undef vl_msg_id
+
+#endif /* included_gtpu_msg_enum_h */

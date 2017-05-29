@@ -102,7 +102,10 @@ class TestMPLS(VppTestCase):
             pkts.append(p)
         return pkts
 
-    def create_stream_labelled_ip6(self, src_if, mpls_label, mpls_ttl):
+    def create_stream_labelled_ip6(self, src_if, mpls_label, mpls_ttl,
+                                   dst_ip=None):
+        if dst_ip is None:
+            dst_ip = src_if.remote_ip6
         self.reset_packet_infos()
         pkts = []
         for i in range(0, 257):
@@ -110,7 +113,7 @@ class TestMPLS(VppTestCase):
             payload = self.info_to_payload(info)
             p = (Ether(dst=src_if.local_mac, src=src_if.remote_mac) /
                  MPLS(label=mpls_label, ttl=mpls_ttl) /
-                 IPv6(src=src_if.remote_ip6, dst=src_if.remote_ip6) /
+                 IPv6(src=src_if.remote_ip6, dst=dst_ip) /
                  UDP(sport=1234, dport=1234) /
                  Raw(payload))
             info.data = p.copy()
@@ -203,7 +206,10 @@ class TestMPLS(VppTestCase):
         except:
             raise
 
-    def verify_capture_tunneled_ip4(self, src_if, capture, sent, mpls_labels):
+    def verify_capture_tunneled_ip4(self, src_if, capture, sent, mpls_labels,
+                                    ttl=255, top=None):
+        if top is None:
+            top = len(mpls_labels) - 1
         try:
             capture = self.verify_filter(capture, sent)
 
@@ -217,7 +223,7 @@ class TestMPLS(VppTestCase):
 
                 # the MPLS TTL is 255 since it enters a new tunnel
                 self.verify_mpls_stack(
-                    rx, mpls_labels, 255, len(mpls_labels) - 1)
+                    rx, mpls_labels, ttl, top)
 
                 self.assertEqual(rx_ip.src, tx_ip.src)
                 self.assertEqual(rx_ip.dst, tx_ip.dst)
@@ -617,6 +623,26 @@ class TestMPLS(VppTestCase):
         rx = self.pg0.get_capture()
         self.verify_capture_tunneled_ip4(self.pg0, rx, tx, [44, 46])
 
+        #
+        # add a labelled route through the new tunnel
+        #
+        route_10_0_0_4 = VppIpRoute(self, "10.0.0.4", 32,
+                                    [VppRoutePath("0.0.0.0",
+                                                  mpls_tun._sw_if_index,
+                                                  labels=[33])])
+        route_10_0_0_4.add_vpp_config()
+
+        self.vapi.cli("clear trace")
+        tx = self.create_stream_ip4(self.pg0, "10.0.0.4")
+        self.pg0.add_stream(tx)
+
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg0.get_capture()
+        self.verify_capture_tunneled_ip4(self.pg0, rx, tx, [44, 46, 33],
+                                         ttl=63, top=2)
+
     def test_v4_exp_null(self):
         """ MPLS V4 Explicit NULL test """
 
@@ -745,6 +771,26 @@ class TestMPLS(VppTestCase):
         rx = self.pg1.get_capture(packet_count)
         self.verify_capture_ip4(self.pg1, rx, tx, ping_resp=1)
 
+        #
+        # Double pop
+        #
+        route_36_neos = VppMplsRoute(self, 36, 0,
+                                     [VppRoutePath("0.0.0.0",
+                                                   0xffffffff)])
+        route_36_neos.add_vpp_config()
+
+        self.vapi.cli("clear trace")
+        tx = self.create_stream_labelled_ip4(self.pg0, [36, 35],
+                                             ping=1, ip_itf=self.pg1)
+        self.pg0.add_stream(tx)
+
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg1.get_capture(len(tx))
+        self.verify_capture_ip4(self.pg1, rx, tx, ping_resp=1)
+
+        route_36_neos.remove_vpp_config()
         route_35_eos.remove_vpp_config()
         route_34_eos.remove_vpp_config()
 
@@ -905,8 +951,8 @@ class TestMPLS(VppTestCase):
         rx = self.pg3.get_capture(257)
         self.verify_capture_tunneled_ip4(self.pg0, rx, tx, [43])
 
-    def test_mcast_tail(self):
-        """ MPLS Multicast Tail """
+    def test_mcast_ip4_tail(self):
+        """ MPLS IPv4 Multicast Tail """
 
         #
         # Add a multicast route that will forward the traffic
@@ -969,6 +1015,72 @@ class TestMPLS(VppTestCase):
         route_232_1_1_1.update_rpf_id(56)
         tx = self.create_stream_labelled_ip4(self.pg0, [34],
                                              dst_ip="232.1.1.1")
+        self.send_and_assert_no_replies(self.pg0, tx, "RPF-ID drop 56")
+
+    def test_mcast_ip6_tail(self):
+        """ MPLS IPv6 Multicast Tail """
+
+        #
+        # Add a multicast route that will forward the traffic
+        # post-disposition
+        #
+        route_ff = VppIpMRoute(
+            self,
+            "::",
+            "ff01::1", 32,
+            MRouteEntryFlags.MFIB_ENTRY_FLAG_NONE,
+            table_id=1,
+            paths=[VppMRoutePath(self.pg1.sw_if_index,
+                                 MRouteItfFlags.MFIB_ITF_FLAG_FORWARD)],
+            is_ip6=1)
+        route_ff.add_vpp_config()
+
+        #
+        # An interface receive label that maps traffic to RX on interface
+        # pg1
+        # by injecting the packet in on pg0, which is in table 0
+        # doing an rpf-id  and matching a route in table 1
+        # if the packet egresses, then we must have matched the route in
+        # table 1
+        #
+        route_34_eos = VppMplsRoute(
+            self, 34, 1,
+            [VppRoutePath("::",
+                          self.pg1.sw_if_index,
+                          nh_table_id=1,
+                          rpf_id=55,
+                          is_ip6=1)],
+            is_multicast=1)
+
+        route_34_eos.add_vpp_config()
+
+        #
+        # Drop due to interface lookup miss
+        #
+        tx = self.create_stream_labelled_ip6(self.pg0, [34], 255,
+                                             dst_ip="ff01::1")
+
+        #
+        # set the RPF-ID of the enrtry to match the input packet's
+        #
+        route_ff.update_rpf_id(55)
+
+        tx = self.create_stream_labelled_ip6(self.pg0, [34], 255,
+                                             dst_ip="ff01::1")
+        self.pg0.add_stream(tx)
+
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg1.get_capture(257)
+        self.verify_capture_ip6(self.pg1, rx, tx)
+
+        #
+        # set the RPF-ID of the enrtry to not match the input packet's
+        #
+        route_ff.update_rpf_id(56)
+        tx = self.create_stream_labelled_ip6(self.pg0, [34], 225,
+                                             dst_ip="ff01::1")
         self.send_and_assert_no_replies(self.pg0, tx, "RPF-ID drop 56")
 
 
@@ -1052,6 +1164,365 @@ class TestMPLSDisabled(VppTestCase):
         #
         self.send_and_assert_no_replies(self.pg1, tx, "IPv6 disabled")
         self.send_and_assert_no_replies(self.pg1, tx, "IPv6 disabled")
+
+
+class TestMPLSPIC(VppTestCase):
+    """ MPLS PIC edge convergence """
+
+    def setUp(self):
+        super(TestMPLSPIC, self).setUp()
+
+        # create 2 pg interfaces
+        self.create_pg_interfaces(range(4))
+
+        # core links
+        self.pg0.admin_up()
+        self.pg0.config_ip4()
+        self.pg0.resolve_arp()
+        self.pg0.enable_mpls()
+        self.pg1.admin_up()
+        self.pg1.config_ip4()
+        self.pg1.resolve_arp()
+        self.pg1.enable_mpls()
+
+        # VRF (customer facing) link
+        self.pg2.admin_up()
+        self.pg2.set_table_ip4(1)
+        self.pg2.config_ip4()
+        self.pg2.resolve_arp()
+        self.pg2.set_table_ip6(1)
+        self.pg2.config_ip6()
+        self.pg2.resolve_ndp()
+        self.pg3.admin_up()
+        self.pg3.set_table_ip4(1)
+        self.pg3.config_ip4()
+        self.pg3.resolve_arp()
+        self.pg3.set_table_ip6(1)
+        self.pg3.config_ip6()
+        self.pg3.resolve_ndp()
+
+    def tearDown(self):
+        super(TestMPLSPIC, self).tearDown()
+        self.pg0.disable_mpls()
+        for i in self.pg_interfaces:
+            i.unconfig_ip4()
+            i.unconfig_ip6()
+            i.set_table_ip4(0)
+            i.set_table_ip6(0)
+            i.admin_down()
+
+    def test_mpls_ibgp_pic(self):
+        """ MPLS iBGP PIC edge convergence
+
+        1) setup many iBGP VPN routes via a pair of iBGP peers.
+        2) Check EMCP forwarding to these peers
+        3) withdraw the IGP route to one of these peers.
+        4) check forwarding continues to the remaining peer
+        """
+
+        #
+        # IGP+LDP core routes
+        #
+        core_10_0_0_45 = VppIpRoute(self, "10.0.0.45", 32,
+                                    [VppRoutePath(self.pg0.remote_ip4,
+                                                  self.pg0.sw_if_index,
+                                                  labels=[45])])
+        core_10_0_0_45.add_vpp_config()
+
+        core_10_0_0_46 = VppIpRoute(self, "10.0.0.46", 32,
+                                    [VppRoutePath(self.pg1.remote_ip4,
+                                                  self.pg1.sw_if_index,
+                                                  labels=[46])])
+        core_10_0_0_46.add_vpp_config()
+
+        #
+        # Lot's of VPN routes. We need more the 64 so VPP will build
+        # the fast convergence indirection
+        #
+        vpn_routes = []
+        pkts = []
+        for ii in range(64):
+            dst = "192.168.1.%d" % ii
+            vpn_routes.append(VppIpRoute(self, dst, 32,
+                                         [VppRoutePath("10.0.0.45",
+                                                       0xffffffff,
+                                                       labels=[145],
+                                                       is_resolve_host=1),
+                                          VppRoutePath("10.0.0.46",
+                                                       0xffffffff,
+                                                       labels=[146],
+                                                       is_resolve_host=1)],
+                                         table_id=1))
+            vpn_routes[ii].add_vpp_config()
+
+            pkts.append(Ether(dst=self.pg2.local_mac,
+                              src=self.pg2.remote_mac) /
+                        IP(src=self.pg2.remote_ip4, dst=dst) /
+                        UDP(sport=1234, dport=1234) /
+                        Raw('\xa5' * 100))
+
+        #
+        # Send the packet stream (one pkt to each VPN route)
+        #  - expect a 50-50 split of the traffic
+        #
+        self.pg2.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg0._get_capture(1)
+        rx1 = self.pg1._get_capture(1)
+
+        # not testig the LB hashing algorithm so we're not concerned
+        # with the split ratio, just as long as neither is 0
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
+
+        #
+        # use a test CLI command to stop the FIB walk process, this
+        # will prevent the FIB converging the VPN routes and thus allow
+        # us to probe the interim (psot-fail, pre-converge) state
+        #
+        self.vapi.ppcli("test fib-walk-process disable")
+
+        #
+        # Withdraw one of the IGP routes
+        #
+        core_10_0_0_46.remove_vpp_config()
+
+        #
+        # now all packets should be forwarded through the remaining peer
+        #
+        self.vapi.ppcli("clear trace")
+        self.pg2.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg0.get_capture(len(pkts))
+
+        #
+        # enable the FIB walk process to converge the FIB
+        #
+        self.vapi.ppcli("test fib-walk-process enable")
+
+        #
+        # packets should still be forwarded through the remaining peer
+        #
+        self.pg2.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg0.get_capture(64)
+
+        #
+        # Add the IGP route back and we return to load-balancing
+        #
+        core_10_0_0_46.add_vpp_config()
+
+        self.pg2.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg0._get_capture(1)
+        rx1 = self.pg1._get_capture(1)
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
+
+    def test_mpls_ebgp_pic(self):
+        """ MPLS eBGP PIC edge convergence
+
+        1) setup many eBGP VPN routes via a pair of eBGP peers
+        2) Check EMCP forwarding to these peers
+        3) withdraw one eBGP path - expect LB across remaining eBGP
+        """
+
+        #
+        # Lot's of VPN routes. We need more the 64 so VPP will build
+        # the fast convergence indirection
+        #
+        vpn_routes = []
+        vpn_bindings = []
+        pkts = []
+        for ii in range(64):
+            dst = "192.168.1.%d" % ii
+            local_label = 1600 + ii
+            vpn_routes.append(VppIpRoute(self, dst, 32,
+                                         [VppRoutePath(self.pg2.remote_ip4,
+                                                       0xffffffff,
+                                                       nh_table_id=1,
+                                                       is_resolve_attached=1),
+                                          VppRoutePath(self.pg3.remote_ip4,
+                                                       0xffffffff,
+                                                       nh_table_id=1,
+                                                       is_resolve_attached=1)],
+                                         table_id=1))
+            vpn_routes[ii].add_vpp_config()
+
+            vpn_bindings.append(VppMplsIpBind(self, local_label, dst, 32,
+                                              ip_table_id=1))
+            vpn_bindings[ii].add_vpp_config()
+
+            pkts.append(Ether(dst=self.pg0.local_mac,
+                              src=self.pg0.remote_mac) /
+                        MPLS(label=local_label, ttl=64) /
+                        IP(src=self.pg0.remote_ip4, dst=dst) /
+                        UDP(sport=1234, dport=1234) /
+                        Raw('\xa5' * 100))
+
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg2._get_capture(1)
+        rx1 = self.pg3._get_capture(1)
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
+
+        #
+        # use a test CLI command to stop the FIB walk process, this
+        # will prevent the FIB converging the VPN routes and thus allow
+        # us to probe the interim (psot-fail, pre-converge) state
+        #
+        self.vapi.ppcli("test fib-walk-process disable")
+
+        #
+        # withdraw the connected prefix on the interface.
+        #
+        self.pg2.unconfig_ip4()
+
+        #
+        # now all packets should be forwarded through the remaining peer
+        #
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg3.get_capture(len(pkts))
+
+        #
+        # enable the FIB walk process to converge the FIB
+        #
+        self.vapi.ppcli("test fib-walk-process enable")
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg3.get_capture(len(pkts))
+
+        #
+        # put the connecteds back
+        #
+        self.pg2.config_ip4()
+
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg2._get_capture(1)
+        rx1 = self.pg3._get_capture(1)
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
+
+    def test_mpls_v6_ebgp_pic(self):
+        """ MPLSv6 eBGP PIC edge convergence
+
+        1) setup many eBGP VPNv6 routes via a pair of eBGP peers
+        2) Check EMCP forwarding to these peers
+        3) withdraw one eBGP path - expect LB across remaining eBGP
+        """
+
+        #
+        # Lot's of VPN routes. We need more the 64 so VPP will build
+        # the fast convergence indirection
+        #
+        vpn_routes = []
+        vpn_bindings = []
+        pkts = []
+        for ii in range(64):
+            dst = "3000::%d" % ii
+            local_label = 1600 + ii
+            vpn_routes.append(VppIpRoute(self, dst, 128,
+                                         [VppRoutePath(self.pg2.remote_ip6,
+                                                       0xffffffff,
+                                                       nh_table_id=1,
+                                                       is_resolve_attached=1,
+                                                       is_ip6=1),
+                                          VppRoutePath(self.pg3.remote_ip6,
+                                                       0xffffffff,
+                                                       nh_table_id=1,
+                                                       is_ip6=1,
+                                                       is_resolve_attached=1)],
+                                         table_id=1,
+                                         is_ip6=1))
+            vpn_routes[ii].add_vpp_config()
+
+            vpn_bindings.append(VppMplsIpBind(self, local_label, dst, 128,
+                                              ip_table_id=1,
+                                              is_ip6=1))
+            vpn_bindings[ii].add_vpp_config()
+
+            pkts.append(Ether(dst=self.pg0.local_mac,
+                              src=self.pg0.remote_mac) /
+                        MPLS(label=local_label, ttl=64) /
+                        IPv6(src=self.pg0.remote_ip6, dst=dst) /
+                        UDP(sport=1234, dport=1234) /
+                        Raw('\xa5' * 100))
+
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg2._get_capture(1)
+        rx1 = self.pg3._get_capture(1)
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
+
+        #
+        # use a test CLI command to stop the FIB walk process, this
+        # will prevent the FIB converging the VPN routes and thus allow
+        # us to probe the interim (psot-fail, pre-converge) state
+        #
+        self.vapi.ppcli("test fib-walk-process disable")
+
+        #
+        # withdraw the connected prefix on the interface.
+        # and shutdown the interface so the ND cache is flushed.
+        #
+        self.pg2.unconfig_ip6()
+        self.pg2.admin_down()
+
+        #
+        # now all packets should be forwarded through the remaining peer
+        #
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg3.get_capture(len(pkts))
+
+        #
+        # enable the FIB walk process to converge the FIB
+        #
+        self.vapi.ppcli("test fib-walk-process enable")
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg3.get_capture(len(pkts))
+
+        #
+        # put the connecteds back
+        #
+        self.pg2.admin_up()
+        self.pg2.config_ip6()
+
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx0 = self.pg2._get_capture(1)
+        rx1 = self.pg3._get_capture(1)
+        self.assertNotEqual(0, len(rx0))
+        self.assertNotEqual(0, len(rx1))
 
 
 if __name__ == '__main__':

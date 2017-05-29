@@ -48,6 +48,15 @@ struct vnet_hw_interface_t;
 struct vnet_sw_interface_t;
 struct ip46_address_t;
 
+typedef enum
+{
+  VNET_HW_INTERFACE_RX_MODE_UNKNOWN,
+  VNET_HW_INTERFACE_RX_MODE_POLLING,
+  VNET_HW_INTERFACE_RX_MODE_INTERRUPT,
+  VNET_HW_INTERFACE_RX_MODE_ADAPTIVE,
+  VNET_HW_INTERFACE_NUM_RX_MODES,
+} vnet_hw_interface_rx_mode;
+
 /* Interface up/down callback. */
 typedef clib_error_t *(vnet_interface_function_t)
   (struct vnet_main_t * vnm, u32 if_index, u32 flags);
@@ -60,6 +69,11 @@ typedef clib_error_t *(vnet_subif_add_del_function_t)
 /* Interface set mac address callback. */
 typedef clib_error_t *(vnet_interface_set_mac_address_function_t)
   (struct vnet_hw_interface_t * hi, char *address);
+
+/* Interface set rx mode callback. */
+typedef clib_error_t *(vnet_interface_set_rx_mode_function_t)
+  (struct vnet_main_t * vnm, u32 if_index, u32 queue_id,
+   vnet_hw_interface_rx_mode mode);
 
 typedef enum vnet_interface_function_priority_t_
 {
@@ -133,6 +147,9 @@ typedef struct _vnet_device_class
 
   /* Function to call when sub-interface is added/deleted */
   vnet_subif_add_del_function_t *subif_add_del_function;
+
+  /* Function to call interface rx mode is changed */
+  vnet_interface_set_rx_mode_function_t *rx_mode_change_function;
 
   /* Redistribute flag changes/existence of this interface class. */
   u32 redistribute;
@@ -405,6 +422,9 @@ typedef struct vnet_hw_interface_t
 #define VNET_HW_INTERFACE_FLAG_L2OUTPUT_SHIFT	9
 #define VNET_HW_INTERFACE_FLAG_L2OUTPUT_MAPPED	(1 << 9)
 
+  /* rx mode flags */
+#define VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE (1 << 10)
+
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
   u8 *hw_address;
@@ -469,6 +489,9 @@ typedef struct vnet_hw_interface_t
 
   /* input node cpu index by queue */
   u32 *input_node_thread_index_by_queue;
+
+  /* vnet_hw_interface_rx_mode by queue */
+  u8 *rx_mode_by_queue;
 
   /* device input device_and_queue runtime index */
   uword *dq_runtime_index_by_queue;
@@ -549,6 +572,9 @@ typedef struct
 
 /* Interface does not appear in CLI/API */
 #define VNET_SW_INTERFACE_FLAG_HIDDEN (1 << 5)
+
+/* Interface in ERROR state */
+#define VNET_SW_INTERFACE_FLAG_ERROR (1 << 6)
 
   /* Index for this interface. */
   u32 sw_if_index;

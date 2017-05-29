@@ -216,7 +216,8 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
      am->shmem_hdr->application_restarts);
   rp->context = mp->context;
   rp->response = ntohl (rv);
-  rp->message_table = (u64) am->serialized_message_table_in_shmem;
+  rp->message_table =
+    pointer_to_uword (am->serialized_message_table_in_shmem);
 
   vl_msg_api_send_shmem (q, (u8 *) & rp);
 }
@@ -361,7 +362,7 @@ _(GET_FIRST_MSG_ID, get_first_msg_id)
  * vl_api_init
  */
 static int
-memory_api_init (char *region_name)
+memory_api_init (const char *region_name)
 {
   int rv;
   vl_msg_api_msg_config_t cfg;
@@ -1202,7 +1203,7 @@ vlibmemory_init (vlib_main_t * vm)
 VLIB_INIT_FUNCTION (vlibmemory_init);
 
 void
-vl_set_memory_region_name (char *name)
+vl_set_memory_region_name (const char *name)
 {
   api_main_t *am = &api_main;
 
@@ -1275,7 +1276,7 @@ VLIB_CLI_COMMAND (cli_show_api_plugin_command, static) = {
 static void
 vl_api_rpc_call_t_handler (vl_api_rpc_call_t * mp)
 {
-  vl_api_rpc_reply_t *rmp;
+  vl_api_rpc_call_reply_t *rmp;
   int (*fp) (void *);
   i32 rv = 0;
   vlib_main_t *vm = vlib_get_main ();
@@ -1305,7 +1306,7 @@ vl_api_rpc_call_t_handler (vl_api_rpc_call_t * mp)
       if (q)
 	{
 	  rmp = vl_msg_api_alloc_as_if_client (sizeof (*rmp));
-	  rmp->_vl_msg_id = ntohs (VL_API_RPC_REPLY);
+	  rmp->_vl_msg_id = ntohs (VL_API_RPC_CALL_REPLY);
 	  rmp->context = mp->context;
 	  rmp->retval = rv;
 	  vl_msg_api_send_shmem (q, (u8 *) & rmp);
@@ -1318,7 +1319,7 @@ vl_api_rpc_call_t_handler (vl_api_rpc_call_t * mp)
 }
 
 static void
-vl_api_rpc_reply_t_handler (vl_api_rpc_reply_t * mp)
+vl_api_rpc_call_reply_t_handler (vl_api_rpc_call_reply_t * mp)
 {
   clib_warning ("unimplemented");
 }
@@ -1332,7 +1333,7 @@ vl_api_rpc_call_main_thread (void *fp, u8 * data, u32 data_length)
   unix_shared_memory_queue_t *q;
 
   /* Main thread: call the function directly */
-  if (os_get_cpu_number () == 0)
+  if (vlib_get_thread_index () == 0)
     {
       vlib_main_t *vm = vlib_get_main ();
       void (*call_fp) (void *);
@@ -1415,7 +1416,7 @@ vl_api_trace_plugin_msg_ids_t_handler (vl_api_trace_plugin_msg_ids_t * mp)
 
 #define foreach_rpc_api_msg                     \
 _(RPC_CALL,rpc_call)                            \
-_(RPC_REPLY,rpc_reply)
+_(RPC_CALL_REPLY,rpc_call_reply)
 
 #define foreach_plugin_trace_msg		\
 _(TRACE_PLUGIN_MSG_IDS,trace_plugin_msg_ids)

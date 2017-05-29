@@ -46,8 +46,6 @@
 
 #include <dpdk/device/dpdk_priv.h>
 
-dpdk_main_t dpdk_main;
-
 /***
  *
  * HQoS default configuration values
@@ -432,7 +430,11 @@ dpdk_hqos_thread_internal_hqos_dbg_bypass (vlib_main_t * vm)
 	  pkts_enq_len += rte_ring_sc_dequeue_burst (swq,
 						     (void **)
 						     &pkts_enq[pkts_enq_len],
+#if RTE_VERSION >= RTE_VERSION_NUM(17, 5, 0, 0)
+						     hqos->hqos_burst_enq, 0);
+#else
 						     hqos->hqos_burst_enq);
+#endif
 
 	  /* Get next SWQ for this device */
 	  swq_pos++;
@@ -523,7 +525,11 @@ dpdk_hqos_thread_internal (vlib_main_t * vm)
 	  pkts_enq_len += rte_ring_sc_dequeue_burst (swq,
 						     (void **)
 						     &pkts_enq[pkts_enq_len],
+#if RTE_VERSION >= RTE_VERSION_NUM(17, 5, 0, 0)
+						     hqos->hqos_burst_enq, 0);
+#else
 						     hqos->hqos_burst_enq);
+#endif
 
 	  /* Get next SWQ for this device */
 	  swq_pos++;

@@ -7,7 +7,8 @@ from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint
 from vpp_pg_interface import is_ipv6_misc
 from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
-    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags
+    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
+    VppMplsRoute
 from vpp_neighbor import find_nbr, VppNeighbor
 
 from scapy.packet import Raw
@@ -21,6 +22,7 @@ from util import ppp
 from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
     in6_mactoifaceid, in6_ismaddr
 from scapy.utils import inet_pton, inet_ntop
+from scapy.contrib.mpls import MPLS
 
 
 def mk_ll_addr(mac):
@@ -74,6 +76,31 @@ class TestIPv6ND(VppTestCase):
         dll = rx[ICMPv6NDOptDstLLAddr]
         self.assertEqual(dll.lladdr, intf.local_mac)
 
+    def validate_ns(self, intf, rx, tgt_ip):
+        nsma = in6_getnsma(inet_pton(AF_INET6, tgt_ip))
+        dst_ip = inet_ntop(AF_INET6, nsma)
+
+        # NS is broadcast
+        self.assertEqual(rx[Ether].dst, "ff:ff:ff:ff:ff:ff")
+
+        # and from the router's MAC
+        self.assertEqual(rx[Ether].src, intf.local_mac)
+
+        # the rx'd NS should be addressed to an mcast address
+        # derived from the target address
+        self.assertEqual(in6_ptop(rx[IPv6].dst), in6_ptop(dst_ip))
+
+        # expect the tgt IP in the NS header
+        ns = rx[ICMPv6ND_NS]
+        self.assertEqual(in6_ptop(ns.tgt), in6_ptop(tgt_ip))
+
+        # packet is from the router's local address
+        self.assertEqual(in6_ptop(rx[IPv6].src), intf.local_ip6)
+
+        # Src link-layer options should have the router's MAC
+        sll = rx[ICMPv6NDOptSrcLLAddr]
+        self.assertEqual(sll.lladdr, intf.local_mac)
+
     def send_and_expect_ra(self, intf, pkts, remark, dst_ip=None,
                            filter_out_fn=is_ipv6_misc):
         intf.add_stream(pkts)
@@ -97,6 +124,17 @@ class TestIPv6ND(VppTestCase):
         rx = rx[0]
         self.validate_na(intf, rx, dst_ip, tgt_ip)
 
+    def send_and_expect_ns(self, tx_intf, rx_intf, pkts, tgt_ip,
+                           filter_out_fn=is_ipv6_misc):
+        tx_intf.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = rx_intf.get_capture(1, filter_out_fn=filter_out_fn)
+
+        self.assertEqual(len(rx), 1)
+        rx = rx[0]
+        self.validate_ns(rx_intf, rx, tgt_ip)
+
     def send_and_assert_no_replies(self, intf, pkts, remark):
         intf.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
@@ -104,6 +142,15 @@ class TestIPv6ND(VppTestCase):
         for i in self.pg_interfaces:
             i.get_capture(0)
             i.assert_nothing_captured(remark=remark)
+
+    def verify_ip(self, rx, smac, dmac, sip, dip):
+        ether = rx[Ether]
+        self.assertEqual(ether.dst, dmac)
+        self.assertEqual(ether.src, smac)
+
+        ip = rx[IPv6]
+        self.assertEqual(ip.src, sip)
+        self.assertEqual(ip.dst, dip)
 
 
 class TestIPv6(TestIPv6ND):
@@ -441,6 +488,78 @@ class TestIPv6(TestIPv6ND):
                                     self.pg0._remote_hosts[3].ip6_ll,
                                     128,
                                     inet=AF_INET6))
+
+    def test_ns_duplicates(self):
+        """ ARP Duplicates"""
+
+        #
+        # Generate some hosts on the LAN
+        #
+        self.pg1.generate_remote_hosts(3)
+
+        #
+        # Add host 1 on pg1 and pg2
+        #
+        ns_pg1 = VppNeighbor(self,
+                             self.pg1.sw_if_index,
+                             self.pg1.remote_hosts[1].mac,
+                             self.pg1.remote_hosts[1].ip6,
+                             af=AF_INET6)
+        ns_pg1.add_vpp_config()
+        ns_pg2 = VppNeighbor(self,
+                             self.pg2.sw_if_index,
+                             self.pg2.remote_mac,
+                             self.pg1.remote_hosts[1].ip6,
+                             af=AF_INET6)
+        ns_pg2.add_vpp_config()
+
+        #
+        # IP packet destined for pg1 remote host arrives on pg1 again.
+        #
+        p = (Ether(dst=self.pg0.local_mac,
+                   src=self.pg0.remote_mac) /
+             IPv6(src=self.pg0.remote_ip6,
+                  dst=self.pg1.remote_hosts[1].ip6) /
+             UDP(sport=1234, dport=1234) /
+             Raw())
+
+        self.pg0.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_ip(rx1[0],
+                       self.pg1.local_mac,
+                       self.pg1.remote_hosts[1].mac,
+                       self.pg0.remote_ip6,
+                       self.pg1.remote_hosts[1].ip6)
+
+        #
+        # remove the duplicate on pg1
+        # packet stream shoud generate ARPs out of pg1
+        #
+        ns_pg1.remove_vpp_config()
+
+        self.send_and_expect_ns(self.pg0, self.pg1,
+                                p, self.pg1.remote_hosts[1].ip6)
+
+        #
+        # Add it back
+        #
+        ns_pg1.add_vpp_config()
+
+        self.pg0.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx1 = self.pg1.get_capture(1)
+
+        self.verify_ip(rx1[0],
+                       self.pg1.local_mac,
+                       self.pg1.remote_hosts[1].mac,
+                       self.pg0.remote_ip6,
+                       self.pg1.remote_hosts[1].ip6)
 
     def validate_ra(self, intf, rx, dst_ip=None, mtu=9000, pi_opt=None):
         if not dst_ip:
@@ -1131,6 +1250,224 @@ class TestIPDisabled(VppTestCase):
         #
         self.send_and_assert_no_replies(self.pg1, pu, "IPv6 disabled")
         self.send_and_assert_no_replies(self.pg1, pm, "IPv6 disabled")
+
+
+class TestIP6LoadBalance(VppTestCase):
+    """ IPv6 Load-Balancing """
+
+    def setUp(self):
+        super(TestIP6LoadBalance, self).setUp()
+
+        self.create_pg_interfaces(range(5))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_ndp()
+            i.enable_mpls()
+
+    def tearDown(self):
+        super(TestIP6LoadBalance, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip6()
+            i.admin_down()
+            i.disable_mpls()
+
+    def send_and_expect_load_balancing(self, input, pkts, outputs):
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        for oo in outputs:
+            rx = oo._get_capture(1)
+            self.assertNotEqual(0, len(rx))
+
+    def send_and_expect_one_itf(self, input, pkts, itf):
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = itf.get_capture(len(pkts))
+
+    def test_ip6_load_balance(self):
+        """ IPv6 Load-Balancing """
+
+        #
+        # An array of packets that differ only in the destination port
+        #  - IP only
+        #  - MPLS EOS
+        #  - MPLS non-EOS
+        #  - MPLS non-EOS with an entropy label
+        #
+        port_ip_pkts = []
+        port_mpls_pkts = []
+        port_mpls_neos_pkts = []
+        port_ent_pkts = []
+
+        #
+        # An array of packets that differ only in the source address
+        #
+        src_ip_pkts = []
+        src_mpls_pkts = []
+
+        for ii in range(65):
+            port_ip_hdr = (IPv6(dst="3000::1", src="3000:1::1") /
+                           UDP(sport=1234, dport=1234 + ii) /
+                           Raw('\xa5' * 100))
+            port_ip_pkts.append((Ether(src=self.pg0.remote_mac,
+                                       dst=self.pg0.local_mac) /
+                                 port_ip_hdr))
+            port_mpls_pkts.append((Ether(src=self.pg0.remote_mac,
+                                         dst=self.pg0.local_mac) /
+                                   MPLS(label=66, ttl=2) /
+                                   port_ip_hdr))
+            port_mpls_neos_pkts.append((Ether(src=self.pg0.remote_mac,
+                                              dst=self.pg0.local_mac) /
+                                        MPLS(label=67, ttl=2) /
+                                        MPLS(label=77, ttl=2) /
+                                        port_ip_hdr))
+            port_ent_pkts.append((Ether(src=self.pg0.remote_mac,
+                                        dst=self.pg0.local_mac) /
+                                  MPLS(label=67, ttl=2) /
+                                  MPLS(label=14, ttl=2) /
+                                  MPLS(label=999, ttl=2) /
+                                  port_ip_hdr))
+            src_ip_hdr = (IPv6(dst="3000::1", src="3000:1::%d" % ii) /
+                          UDP(sport=1234, dport=1234) /
+                          Raw('\xa5' * 100))
+            src_ip_pkts.append((Ether(src=self.pg0.remote_mac,
+                                      dst=self.pg0.local_mac) /
+                                src_ip_hdr))
+            src_mpls_pkts.append((Ether(src=self.pg0.remote_mac,
+                                        dst=self.pg0.local_mac) /
+                                  MPLS(label=66, ttl=2) /
+                                  src_ip_hdr))
+
+        #
+        # A route for the IP pacekts
+        #
+        route_3000_1 = VppIpRoute(self, "3000::1", 128,
+                                  [VppRoutePath(self.pg1.remote_ip6,
+                                                self.pg1.sw_if_index,
+                                                is_ip6=1),
+                                   VppRoutePath(self.pg2.remote_ip6,
+                                                self.pg2.sw_if_index,
+                                                is_ip6=1)],
+                                  is_ip6=1)
+        route_3000_1.add_vpp_config()
+
+        #
+        # a local-label for the EOS packets
+        #
+        binding = VppMplsIpBind(self, 66, "3000::1", 128, is_ip6=1)
+        binding.add_vpp_config()
+
+        #
+        # An MPLS route for the non-EOS packets
+        #
+        route_67 = VppMplsRoute(self, 67, 0,
+                                [VppRoutePath(self.pg1.remote_ip6,
+                                              self.pg1.sw_if_index,
+                                              labels=[67],
+                                              is_ip6=1),
+                                 VppRoutePath(self.pg2.remote_ip6,
+                                              self.pg2.sw_if_index,
+                                              labels=[67],
+                                              is_ip6=1)])
+        route_67.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across the 2 paths
+        #  - since the default hash config is to use IP src,dst and port
+        #    src,dst
+        # We are not going to ensure equal amounts of packets across each link,
+        # since the hash algorithm is statistical and therefore this can never
+        # be guaranteed. But wuth 64 different packets we do expect some
+        # balancing. So instead just ensure there is traffic on each link.
+        #
+        self.send_and_expect_load_balancing(self.pg0, port_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, port_mpls_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, port_mpls_neos_pkts,
+                                            [self.pg1, self.pg2])
+
+        #
+        # The packets with Entropy label in should not load-balance,
+        # since the Entorpy value is fixed.
+        #
+        self.send_and_expect_one_itf(self.pg0, port_ent_pkts, self.pg1)
+
+        #
+        # change the flow hash config so it's only IP src,dst
+        #  - now only the stream with differing source address will
+        #    load-balance
+        #
+        self.vapi.set_ip_flow_hash(0, is_ip6=1, src=1, dst=1, sport=0, dport=0)
+
+        self.send_and_expect_load_balancing(self.pg0, src_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_one_itf(self.pg0, port_ip_pkts, self.pg2)
+
+        #
+        # change the flow hash config back to defaults
+        #
+        self.vapi.set_ip_flow_hash(0, is_ip6=1, src=1, dst=1, sport=1, dport=1)
+
+        #
+        # Recursive prefixes
+        #  - testing that 2 stages of load-balancing occurs and there is no
+        #    polarisation (i.e. only 2 of 4 paths are used)
+        #
+        port_pkts = []
+        src_pkts = []
+
+        for ii in range(257):
+            port_pkts.append((Ether(src=self.pg0.remote_mac,
+                                    dst=self.pg0.local_mac) /
+                              IPv6(dst="4000::1", src="4000:1::1") /
+                              UDP(sport=1234, dport=1234 + ii) /
+                              Raw('\xa5' * 100)))
+            src_pkts.append((Ether(src=self.pg0.remote_mac,
+                                   dst=self.pg0.local_mac) /
+                             IPv6(dst="4000::1", src="4000:1::%d" % ii) /
+                             UDP(sport=1234, dport=1234) /
+                             Raw('\xa5' * 100)))
+
+        route_3000_2 = VppIpRoute(self, "3000::2", 128,
+                                  [VppRoutePath(self.pg3.remote_ip6,
+                                                self.pg3.sw_if_index,
+                                                is_ip6=1),
+                                   VppRoutePath(self.pg4.remote_ip6,
+                                                self.pg4.sw_if_index,
+                                                is_ip6=1)],
+                                  is_ip6=1)
+        route_3000_2.add_vpp_config()
+
+        route_4000_1 = VppIpRoute(self, "4000::1", 128,
+                                  [VppRoutePath("3000::1",
+                                                0xffffffff,
+                                                is_ip6=1),
+                                   VppRoutePath("3000::2",
+                                                0xffffffff,
+                                                is_ip6=1)],
+                                  is_ip6=1)
+        route_4000_1.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across all 4 paths
+        #
+        self.vapi.cli("clear trace")
+        self.send_and_expect_load_balancing(self.pg0, port_pkts,
+                                            [self.pg1, self.pg2,
+                                             self.pg3, self.pg4])
+        self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                            [self.pg1, self.pg2,
+                                             self.pg3, self.pg4])
 
 
 if __name__ == '__main__':

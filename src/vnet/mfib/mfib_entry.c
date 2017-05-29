@@ -199,14 +199,12 @@ format_mfib_entry (u8 * s, va_list * args)
             {
                 s = fib_path_list_format(msrc->mfes_pl, s);
             }
-            s = format (s, "    Extensions:\n",
-                        mfib_source_names[msrc->mfes_src]);
+            s = format (s, "    Extensions:\n");
             hash_foreach(path_index, mpi, msrc->mfes_exts,
             ({
                 s = format(s, "     %U\n", format_mfib_entry_path_ext, mpi);
             }));
-            s = format (s, "    Interface-Forwarding:\n",
-                        mfib_source_names[msrc->mfes_src]);
+            s = format (s, "    Interface-Forwarding:\n");
             hash_foreach(sw_if_index, mfi, msrc->mfes_itfs,
             ({
                 s = format(s, "    %U\n", format_mfib_itf, mfi);
@@ -529,7 +527,7 @@ typedef struct mfib_entry_collect_forwarding_ctx_t_
     mfib_entry_src_t *msrc;
 } mfib_entry_collect_forwarding_ctx_t;
 
-static int
+static fib_path_list_walk_rc_t
 mfib_entry_src_collect_forwarding (fib_node_index_t pl_index,
                                    fib_node_index_t path_index,
                                    void *arg)
@@ -544,7 +542,7 @@ mfib_entry_src_collect_forwarding (fib_node_index_t pl_index,
      */
     if (!fib_path_is_resolved(path_index))
     {
-        return (!0);
+        return (FIB_PATH_LIST_WALK_CONTINUE);
     }
 
     /*
@@ -558,7 +556,7 @@ mfib_entry_src_collect_forwarding (fib_node_index_t pl_index,
     if (NULL != path_ext &&
         !(path_ext->mfpe_flags & MFIB_ITF_FLAG_FORWARD))
     {
-        return (!0);
+        return (FIB_PATH_LIST_WALK_CONTINUE);
     }
     
     switch (ctx->fct)
@@ -585,7 +583,7 @@ mfib_entry_src_collect_forwarding (fib_node_index_t pl_index,
         break;
     }
 
-    return (!0);
+    return (FIB_PATH_LIST_WALK_CONTINUE);
 }
 
 static void

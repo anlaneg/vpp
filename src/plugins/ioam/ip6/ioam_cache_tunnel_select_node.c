@@ -43,7 +43,7 @@
 #include <vnet/pg/pg.h>
 #include <vppinfra/error.h>
 #include <vnet/ip/ip.h>
-#include <vnet/sr/sr.h>
+#include <vnet/srv6/sr.h>
 #include <ioam/ip6/ioam_cache.h>
 #include <vnet/ip/ip6_hop_by_hop.h>
 #include <vnet/ip/ip6_hop_by_hop_packet.h>
@@ -424,7 +424,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
 					    sizeof (ioam_e2e_cache_option_t)),
-					   b0);
+					   &cm->sr_localsid_ts);
 	      /* Patch the protocol chain, insert the h-b-h (type 0) header */
 	      hbh0->protocol = ip0->protocol;
 	      ip0->protocol = 0;
@@ -484,7 +484,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
 					    sizeof (ioam_e2e_cache_option_t)),
-					   b1);
+					   &cm->sr_localsid_ts);
 	      /* Patch the protocol chain, insert the h-b-h (type 0) header */
 	      hbh1->protocol = ip1->protocol;
 	      ip1->protocol = 0;
@@ -590,7 +590,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
 					    sizeof (ioam_e2e_cache_option_t)),
-					   b0);
+					   &cm->sr_localsid_ts);
 	      /* Patch the protocol chain, insert the h-b-h (type 0) header */
 	      hbh0->protocol = ip0->protocol;
 	      ip0->protocol = 0;

@@ -22,29 +22,19 @@
 
 #include <rte_common.h>
 #include <rte_dev.h>
-#include <rte_log.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
-#include <rte_tailq.h>
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
-#include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
-#include <rte_prefetch.h>
 #include <rte_lcore.h>
 #include <rte_per_lcore.h>
-#include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
 #include <rte_pci.h>
-#include <rte_random.h>
-#include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
-#include <rte_virtio_net.h>
 #include <rte_version.h>
 #include <rte_eth_bond.h>
 #include <rte_sched.h>
@@ -64,9 +54,7 @@
 
 extern vnet_device_class_t dpdk_device_class;
 extern vlib_node_registration_t dpdk_input_node;
-extern vlib_node_registration_t handoff_dispatch_node;
 
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 2, 0, 0)
 #define foreach_dpdk_pmd          \
   _ ("net_thunderx", THUNDERX)    \
   _ ("net_e1000_em", E1000EM)     \
@@ -83,28 +71,11 @@ extern vlib_node_registration_t handoff_dispatch_node;
   _ ("net_bonding", BOND)         \
   _ ("net_fm10k", FM10K)          \
   _ ("net_cxgbe", CXGBE)          \
+  _ ("net_mlx4", MLX4)            \
   _ ("net_mlx5", MLX5)            \
-  _ ("net_dpaa2", DPAA2)
-#else
-#define foreach_dpdk_pmd          \
-  _ ("net_thunderx", THUNDERX)    \
-  _ ("net_e1000_em", E1000EM)     \
-  _ ("net_e1000_igb", IGB)        \
-  _ ("net_e1000_igb_vf", IGBVF)   \
-  _ ("net_ixgbe", IXGBE)          \
-  _ ("net_ixgbe_vf", IXGBEVF)     \
-  _ ("net_i40e", I40E)            \
-  _ ("net_i40e_vf", I40EVF)       \
-  _ ("net_virtio", VIRTIO)        \
-  _ ("net_enic", ENIC)            \
-  _ ("net_vmxnet3", VMXNET3)      \
-  _ ("AF_PACKET PMD", AF_PACKET)  \
-  _ ("rte_bond_pmd", BOND)        \
-  _ ("net_fm10k", FM10K)          \
-  _ ("net_cxgbe", CXGBE)          \
-  _ ("net_mlx5", MLX5)            \
-  _ ("net_dpaa2", DPAA2)
-#endif
+  _ ("net_dpaa2", DPAA2)          \
+  _ ("net_virtio_user", VIRTIO_USER)
+
 
 typedef enum
 {
@@ -119,11 +90,14 @@ typedef enum
 {
   VNET_DPDK_PORT_TYPE_ETH_1G,
   VNET_DPDK_PORT_TYPE_ETH_10G,
+  VNET_DPDK_PORT_TYPE_ETH_25G,
   VNET_DPDK_PORT_TYPE_ETH_40G,
   VNET_DPDK_PORT_TYPE_ETH_100G,
   VNET_DPDK_PORT_TYPE_ETH_BOND,
   VNET_DPDK_PORT_TYPE_ETH_SWITCH,
   VNET_DPDK_PORT_TYPE_AF_PACKET,
+  VNET_DPDK_PORT_TYPE_ETH_VF,
+  VNET_DPDK_PORT_TYPE_VIRTIO_USER,
   VNET_DPDK_PORT_TYPE_UNKNOWN,
 } dpdk_port_type_t;
 
@@ -195,7 +169,7 @@ typedef struct
 #define DPDK_DEVICE_FLAG_ADMIN_UP           (1 << 0)
 #define DPDK_DEVICE_FLAG_PROMISC            (1 << 1)
 #define DPDK_DEVICE_FLAG_PMD                (1 << 2)
-#define DPDK_DEVICE_FLAG_PMD_SUPPORTS_PTYPE (1 << 3)
+#define DPDK_DEVICE_FLAG_PMD_INIT_FAIL      (1 << 3)
 #define DPDK_DEVICE_FLAG_MAYBE_MULTISEG     (1 << 4)
 #define DPDK_DEVICE_FLAG_HAVE_SUBIF         (1 << 5)
 #define DPDK_DEVICE_FLAG_HQOS               (1 << 6)
@@ -236,6 +210,9 @@ typedef struct
 
   /* mac address */
   u8 *default_mac_address;
+
+  /* error string */
+  clib_error_t *errors;
 } dpdk_device_t;
 
 #define DPDK_STATS_POLL_INTERVAL      (10.0)
@@ -323,7 +300,6 @@ typedef struct
   u8 *uio_driver_name;
   u8 no_multi_seg;
   u8 enable_tcp_udp_checksum;
-  u8 cryptodev;
 
   /* Required config parameters */
   u8 coremask_set_manually;
@@ -331,7 +307,6 @@ typedef struct
   u32 coremask;
   u32 nchannels;
   u32 num_mbufs;
-  u8 num_kni;			/* while kni_init allows u32, port_id in callback fn is only u8 */
 
   /*
    * format interface names ala xxxEthernet%d/%d/%d instead of
@@ -377,12 +352,6 @@ typedef struct
   u32 pcap_sw_if_index;
   u32 pcap_pkts_to_capture;
 
-  /* hashes */
-  uword *dpdk_device_by_kni_port_id;
-  uword *vu_sw_if_index_by_listener_fd;
-  uword *vu_sw_if_index_by_sock_fd;
-  u32 *vu_inactive_interfaces_device_index;
-
   /*
    * flag indicating that a posted admin up/down
    * (via post_sw_interface_set_flags) is in progress
@@ -414,7 +383,7 @@ typedef struct
   u16 msg_id_base;
 } dpdk_main_t;
 
-dpdk_main_t dpdk_main;
+extern dpdk_main_t dpdk_main;
 
 typedef struct
 {
@@ -436,21 +405,9 @@ typedef struct
   u8 data[256];			/* First 256 data bytes, used for hexdump */
 } dpdk_rx_dma_trace_t;
 
-void vnet_buffer_needs_dpdk_mb (vlib_buffer_t * b);
-
-clib_error_t *dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address);
-
-clib_error_t *dpdk_set_mc_filter (vnet_hw_interface_t * hi,
-				  struct ether_addr mc_addr_vec[], int naddr);
-
-void dpdk_thread_input (dpdk_main_t * dm, dpdk_device_t * xd);
-
-clib_error_t *dpdk_port_setup (dpdk_main_t * dm, dpdk_device_t * xd);
-
-u32 dpdk_interface_tx_vector (vlib_main_t * vm, u32 dev_instance);
-
-struct rte_mbuf *dpdk_replicate_packet_mb (vlib_buffer_t * b);
-struct rte_mbuf *dpdk_zerocopy_replicate_packet_mb (vlib_buffer_t * b);
+void dpdk_device_setup (dpdk_device_t * xd);
+void dpdk_device_start (dpdk_device_t * xd);
+void dpdk_device_stop (dpdk_device_t * xd);
 
 #define foreach_dpdk_error						\
   _(NONE, "no error")							\
@@ -469,27 +426,16 @@ typedef enum
     DPDK_N_ERROR,
 } dpdk_error_t;
 
-int dpdk_set_stat_poll_interval (f64 interval);
-int dpdk_set_link_state_poll_interval (f64 interval);
 void dpdk_update_link_state (dpdk_device_t * xd, f64 now);
-void dpdk_device_lock_init (dpdk_device_t * xd);
-void dpdk_device_lock_free (dpdk_device_t * xd);
-
-void dpdk_rx_trace (dpdk_main_t * dm,
-		    vlib_node_runtime_t * node,
-		    dpdk_device_t * xd,
-		    u16 queue_id, u32 * buffers, uword n_buffers);
-
-#define EFD_OPERATION_LESS_THAN          0
-#define EFD_OPERATION_GREATER_OR_EQUAL   1
 
 format_function_t format_dpdk_device_name;
 format_function_t format_dpdk_device;
+format_function_t format_dpdk_device_errors;
 format_function_t format_dpdk_tx_dma_trace;
 format_function_t format_dpdk_rx_dma_trace;
 format_function_t format_dpdk_rte_mbuf;
 format_function_t format_dpdk_rx_rte_mbuf;
-unformat_function_t unformat_socket_mem;
+unformat_function_t unformat_dpdk_log_level;
 clib_error_t *unformat_rss_fn (unformat_input_t * input, uword * rss_fn);
 clib_error_t *unformat_hqos (unformat_input_t * input,
 			     dpdk_device_config_hqos_t * hqos);

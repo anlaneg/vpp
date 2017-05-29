@@ -177,6 +177,10 @@ typedef struct vlib_main_t
 
   /* debugging */
   volatile int parked_at_barrier;
+
+  /* Attempt to do a post-mortem elog dump */
+  int elog_post_mortem_dump;
+
 } vlib_main_t;
 
 /* Global main structure. */
@@ -320,7 +324,7 @@ always_inline void vlib_set_queue_signal_callback
 /* Main routine. */
 int vlib_main (vlib_main_t * vm, unformat_input_t * input);
 
-/* Thread stacks, for os_get_cpu_number */
+/* Thread stacks, for os_get_thread_index */
 extern u8 **vlib_thread_stacks;
 
 /* Number of thread stacks that the application needs */

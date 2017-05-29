@@ -24,8 +24,8 @@
 #include <vnet/session/session.h>
 #include <vnet/tcp/tcp_debug.h>
 
-#define TCP_TICK 10e-3			/**< TCP tick period (s) */
-#define THZ 1/TCP_TICK			/**< TCP tick frequency */
+#define TCP_TICK 0.001			/**< TCP tick period (s) */
+#define THZ (u32) (1/TCP_TICK)		/**< TCP tick frequency */
 #define TCP_TSTAMP_RESOLUTION TCP_TICK	/**< Time stamp resolution */
 #define TCP_PAWS_IDLE 24 * 24 * 60 * 60 * THZ /**< 24 days */
 #define TCP_MAX_OPTION_SPACE 40
@@ -59,6 +59,7 @@ typedef enum _tcp_state
 
 format_function_t format_tcp_state;
 format_function_t format_tcp_flags;
+format_function_t format_tcp_sacks;
 
 /** TCP timers */
 #define foreach_tcp_timer               \
@@ -210,7 +211,9 @@ typedef struct _tcp_connection
   u32 irs;		/**< initial remote sequence */
 
   /* Options */
-  tcp_options_t opt;	/**< TCP connection options parsed */
+  tcp_options_t opt;		/**< TCP connection options parsed */
+  tcp_options_t snd_opts;	/**< Tx options for connection */
+  u8 snd_opts_len;		/**< Tx options len */
   u8 rcv_wscale;	/**< Window scale to advertise to peer */
   u8 snd_wscale;	/**< Window scale to use when sending */
   u32 tsval_recent;	/**< Last timestamp received */
@@ -240,7 +243,8 @@ typedef struct _tcp_connection
   u32 rtt_ts;		/**< Timestamp for tracked ACK */
   u32 rtt_seq;		/**< Sequence number for tracked ACK */
 
-  u16 snd_mss;		/**< Send MSS */
+  u16 snd_mss;		/**< Effective send max seg (data) size */
+  u16 mss;		/**< Our max seg size that includes options */
 } tcp_connection_t;
 
 struct _tcp_cc_algorithm
@@ -350,6 +354,14 @@ vnet_get_tcp_main ()
   return &tcp_main;
 }
 
+always_inline tcp_header_t *
+tcp_buffer_hdr (vlib_buffer_t * b)
+{
+  ASSERT ((signed) b->current_data >= (signed) -VLIB_BUFFER_PRE_DATA_SIZE);
+  return (tcp_header_t *) (b->data + b->current_data
+			   + vnet_buffer (b)->tcp.hdr_offset);
+}
+
 clib_error_t *vnet_tcp_enable_disable (vlib_main_t * vm, u8 is_en);
 
 always_inline tcp_connection_t *
@@ -375,8 +387,9 @@ void tcp_connection_cleanup (tcp_connection_t * tc);
 void tcp_connection_del (tcp_connection_t * tc);
 void tcp_connection_reset (tcp_connection_t * tc);
 
+u8 *format_tcp_connection_id (u8 * s, va_list * args);
 u8 *format_tcp_connection (u8 * s, va_list * args);
-u8 *format_tcp_connection_verbose (u8 * s, va_list * args);
+u8 *format_tcp_scoreboard (u8 * s, va_list * args);
 
 always_inline tcp_connection_t *
 tcp_listener_get (u32 tli)
@@ -396,7 +409,8 @@ void tcp_make_synack (tcp_connection_t * ts, vlib_buffer_t * b);
 void tcp_send_reset (vlib_buffer_t * pkt, u8 is_ip4);
 void tcp_send_syn (tcp_connection_t * tc);
 void tcp_send_fin (tcp_connection_t * tc);
-void tcp_set_snd_mss (tcp_connection_t * tc);
+void tcp_init_mss (tcp_connection_t * tc);
+void tcp_update_snd_mss (tcp_connection_t * tc);
 
 always_inline u32
 tcp_end_seq (tcp_header_t * th, u32 len)
@@ -467,13 +481,17 @@ tcp_available_snd_space (const tcp_connection_t * tc)
   return available_wnd - flight_size;
 }
 
+u32 tcp_rcv_wnd_available (tcp_connection_t * tc);
+u32 tcp_snd_space (tcp_connection_t * tc);
 void tcp_update_rcv_wnd (tcp_connection_t * tc);
 
 void tcp_retransmit_first_unacked (tcp_connection_t * tc);
-
 void tcp_fast_retransmit (tcp_connection_t * tc);
 void tcp_cc_congestion (tcp_connection_t * tc);
 void tcp_cc_recover (tcp_connection_t * tc);
+
+/* Made public for unit testing only */
+void tcp_update_sack_list (tcp_connection_t * tc, u32 start, u32 end);
 
 always_inline u32
 tcp_time_now (void)
@@ -496,7 +514,6 @@ tcp_prepare_retransmit_segment (tcp_connection_t * tc, vlib_buffer_t * b,
 
 void tcp_connection_timers_init (tcp_connection_t * tc);
 void tcp_connection_timers_reset (tcp_connection_t * tc);
-
 void tcp_connection_init_vars (tcp_connection_t * tc);
 
 always_inline void

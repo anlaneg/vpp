@@ -141,16 +141,14 @@ builtin_server_rx_callback (stream_session_t * s)
   session_fifo_event_t evt;
   static int serial_number = 0;
 
+  tx_fifo = s->server_tx_fifo;
+  rx_fifo = s->server_rx_fifo;
+
   max_dequeue = svm_fifo_max_dequeue (s->server_rx_fifo);
   max_enqueue = svm_fifo_max_enqueue (s->server_tx_fifo);
 
   if (PREDICT_FALSE (max_dequeue == 0))
-    {
-      return 0;
-    }
-
-  tx_fifo = s->server_tx_fifo;
-  rx_fifo = s->server_rx_fifo;
+    return 0;
 
   /* Number of bytes we're going to copy */
   max_transfer = (max_dequeue < max_enqueue) ? max_dequeue : max_enqueue;
@@ -175,12 +173,10 @@ builtin_server_rx_callback (stream_session_t * s)
       return 0;
     }
 
-  svm_fifo_unset_event (rx_fifo);
-
   vec_validate (bsm->rx_buf, max_transfer - 1);
   _vec_len (bsm->rx_buf) = max_transfer;
 
-  actual_transfer = svm_fifo_dequeue_nowait (rx_fifo, 0, max_transfer,
+  actual_transfer = svm_fifo_dequeue_nowait (rx_fifo, max_transfer,
 					     bsm->rx_buf);
   ASSERT (actual_transfer == max_transfer);
 
@@ -190,8 +186,7 @@ builtin_server_rx_callback (stream_session_t * s)
    * Echo back
    */
 
-  n_written =
-    svm_fifo_enqueue_nowait (tx_fifo, 0, actual_transfer, bsm->rx_buf);
+  n_written = svm_fifo_enqueue_nowait (tx_fifo, actual_transfer, bsm->rx_buf);
 
   if (n_written != max_transfer)
     clib_warning ("short trout!");
@@ -200,7 +195,7 @@ builtin_server_rx_callback (stream_session_t * s)
     {
       /* Fabricate TX event, send to vpp */
       evt.fifo = tx_fifo;
-      evt.event_type = FIFO_EVENT_SERVER_TX;
+      evt.event_type = FIFO_EVENT_APP_TX;
       evt.event_id = serial_number++;
 
       unix_shared_memory_queue_add (bsm->vpp_queue[s->thread_index],
@@ -245,7 +240,7 @@ create_api_loopback (vlib_main_t * vm)
   memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = VL_API_MEMCLNT_CREATE;
   mp->context = 0xFEEDFACE;
-  mp->input_queue = (u64) bsm->vl_input_queue;
+  mp->input_queue = pointer_to_uword (bsm->vl_input_queue);
   strncpy ((char *) mp->name, "tcp_test_server", sizeof (mp->name) - 1);
 
   vl_api_memclnt_create_t_handler (mp);
@@ -288,6 +283,7 @@ server_attach ()
   a->options[SESSION_OPTIONS_SEGMENT_SIZE] = 128 << 20;
   a->options[SESSION_OPTIONS_RX_FIFO_SIZE] = 1 << 16;
   a->options[SESSION_OPTIONS_TX_FIFO_SIZE] = 1 << 16;
+  a->options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_BUILTIN_APP;
   a->segment_name = segment_name;
   a->segment_name_length = ARRAY_LEN (segment_name);
 

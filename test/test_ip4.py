@@ -6,12 +6,13 @@ import unittest
 from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppIpMRoute, \
-    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags
+    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, Dot1Q, ARP
 from scapy.layers.inet import IP, UDP, ICMP, icmptypes, icmpcodes
 from util import ppp
+from scapy.contrib.mpls import MPLS
 
 
 class TestIPv4(VppTestCase):
@@ -765,6 +766,167 @@ class TestIPSubNets(VppTestCase):
         self.pg_start()
         rx = self.pg1.get_capture(1)
 
+
+class TestIPLoadBalance(VppTestCase):
+    """ IPv4 Load-Balancing """
+
+    def setUp(self):
+        super(TestIPLoadBalance, self).setUp()
+
+        self.create_pg_interfaces(range(5))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip4()
+            i.resolve_arp()
+            i.enable_mpls()
+
+    def tearDown(self):
+        super(TestIPLoadBalance, self).tearDown()
+        for i in self.pg_interfaces:
+            i.disable_mpls()
+            i.unconfig_ip4()
+            i.admin_down()
+
+    def send_and_expect_load_balancing(self, input, pkts, outputs):
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        for oo in outputs:
+            rx = oo._get_capture(1)
+            self.assertNotEqual(0, len(rx))
+
+    def test_ip_load_balance(self):
+        """ IP Load-Balancing """
+
+        #
+        # An array of packets that differ only in the destination port
+        #
+        port_ip_pkts = []
+        port_mpls_pkts = []
+
+        #
+        # An array of packets that differ only in the source address
+        #
+        src_ip_pkts = []
+        src_mpls_pkts = []
+
+        for ii in range(65):
+            port_ip_hdr = (IP(dst="10.0.0.1", src="20.0.0.1") /
+                           UDP(sport=1234, dport=1234 + ii) /
+                           Raw('\xa5' * 100))
+            port_ip_pkts.append((Ether(src=self.pg0.remote_mac,
+                                       dst=self.pg0.local_mac) /
+                                 port_ip_hdr))
+            port_mpls_pkts.append((Ether(src=self.pg0.remote_mac,
+                                         dst=self.pg0.local_mac) /
+                                   MPLS(label=66, ttl=2) /
+                                   port_ip_hdr))
+
+            src_ip_hdr = (IP(dst="10.0.0.1", src="20.0.0.%d" % ii) /
+                          UDP(sport=1234, dport=1234) /
+                          Raw('\xa5' * 100))
+            src_ip_pkts.append((Ether(src=self.pg0.remote_mac,
+                                      dst=self.pg0.local_mac) /
+                                src_ip_hdr))
+            src_mpls_pkts.append((Ether(src=self.pg0.remote_mac,
+                                        dst=self.pg0.local_mac) /
+                                  MPLS(label=66, ttl=2) /
+                                  src_ip_hdr))
+
+        route_10_0_0_1 = VppIpRoute(self, "10.0.0.1", 32,
+                                    [VppRoutePath(self.pg1.remote_ip4,
+                                                  self.pg1.sw_if_index),
+                                     VppRoutePath(self.pg2.remote_ip4,
+                                                  self.pg2.sw_if_index)])
+        route_10_0_0_1.add_vpp_config()
+
+        binding = VppMplsIpBind(self, 66, "10.0.0.1", 32)
+        binding.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across the 2 paths
+        #  - since the default hash config is to use IP src,dst and port
+        #    src,dst
+        # We are not going to ensure equal amounts of packets across each link,
+        # since the hash algorithm is statistical and therefore this can never
+        # be guaranteed. But wuth 64 different packets we do expect some
+        # balancing. So instead just ensure there is traffic on each link.
+        #
+        self.send_and_expect_load_balancing(self.pg0, port_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, port_mpls_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
+                                            [self.pg1, self.pg2])
+
+        #
+        # change the flow hash config so it's only IP src,dst
+        #  - now only the stream with differing source address will
+        #    load-balance
+        #
+        self.vapi.set_ip_flow_hash(0, src=1, dst=1, sport=0, dport=0)
+
+        self.send_and_expect_load_balancing(self.pg0, src_ip_pkts,
+                                            [self.pg1, self.pg2])
+        self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
+                                            [self.pg1, self.pg2])
+
+        self.pg0.add_stream(port_ip_pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg2.get_capture(len(port_ip_pkts))
+
+        #
+        # change the flow hash config back to defaults
+        #
+        self.vapi.set_ip_flow_hash(0, src=1, dst=1, sport=1, dport=1)
+
+        #
+        # Recursive prefixes
+        #  - testing that 2 stages of load-balancing occurs and there is no
+        #    polarisation (i.e. only 2 of 4 paths are used)
+        #
+        port_pkts = []
+        src_pkts = []
+
+        for ii in range(257):
+            port_pkts.append((Ether(src=self.pg0.remote_mac,
+                                    dst=self.pg0.local_mac) /
+                              IP(dst="1.1.1.1", src="20.0.0.1") /
+                              UDP(sport=1234, dport=1234 + ii) /
+                              Raw('\xa5' * 100)))
+            src_pkts.append((Ether(src=self.pg0.remote_mac,
+                                   dst=self.pg0.local_mac) /
+                             IP(dst="1.1.1.1", src="20.0.0.%d" % ii) /
+                             UDP(sport=1234, dport=1234) /
+                             Raw('\xa5' * 100)))
+
+        route_10_0_0_2 = VppIpRoute(self, "10.0.0.2", 32,
+                                    [VppRoutePath(self.pg3.remote_ip4,
+                                                  self.pg3.sw_if_index),
+                                     VppRoutePath(self.pg4.remote_ip4,
+                                                  self.pg4.sw_if_index)])
+        route_10_0_0_2.add_vpp_config()
+
+        route_1_1_1_1 = VppIpRoute(self, "1.1.1.1", 32,
+                                   [VppRoutePath("10.0.0.2", 0xffffffff),
+                                    VppRoutePath("10.0.0.1", 0xffffffff)])
+        route_1_1_1_1.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across all 4 paths
+        #
+        self.vapi.cli("clear trace")
+        self.send_and_expect_load_balancing(self.pg0, port_pkts,
+                                            [self.pg1, self.pg2,
+                                             self.pg3, self.pg4])
+        self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                            [self.pg1, self.pg2,
+                                             self.pg3, self.pg4])
 
 if __name__ == '__main__':
     unittest.main(testRunner=VppTestRunner)

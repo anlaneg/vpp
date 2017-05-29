@@ -17,9 +17,6 @@
 
 #include <vnet/session/transport.h>
 #include <vlibmemory/unix_shared_memory_queue.h>
-#include <vlibmemory/api.h>
-#include <vppinfra/sparse_vec.h>
-#include <svm/svm_fifo_segment.h>
 #include <vnet/session/session_debug.h>
 #include <vnet/session/segment_manager.h>
 
@@ -31,11 +28,12 @@
 
 typedef enum
 {
-  FIFO_EVENT_SERVER_RX,
-  FIFO_EVENT_SERVER_TX,
+  FIFO_EVENT_APP_RX,
+  FIFO_EVENT_APP_TX,
   FIFO_EVENT_TIMEOUT,
-  FIFO_EVENT_SERVER_EXIT,
-  FIFO_EVENT_BUILTIN_RX
+  FIFO_EVENT_DISCONNECT,
+  FIFO_EVENT_BUILTIN_RX,
+  FIFO_EVENT_RPC,
 } fifo_event_type_t;
 
 #define foreach_session_input_error                                    	\
@@ -94,9 +92,20 @@ typedef enum
   SESSION_STATE_N_STATES,
 } stream_session_state_t;
 
+typedef struct
+{
+  void *fp;
+  void *arg;
+} rpc_args_t;
+
 /* *INDENT-OFF* */
 typedef CLIB_PACKED (struct {
-  svm_fifo_t * fifo;
+  union
+    {
+      svm_fifo_t * fifo;
+      u64 session_handle;
+      rpc_args_t rpc_args;
+    };
   u8 event_type;
   u16 event_id;
 }) session_fifo_event_t;
@@ -107,9 +116,6 @@ typedef struct _stream_session_t
   /** fifo pointers. Once allocated, these do not move */
   svm_fifo_t *server_rx_fifo;
   svm_fifo_t *server_tx_fifo;
-
-  /** svm segment index where fifos were allocated */
-  u32 svm_segment_index;
 
   /** Type */
   u8 session_type;
@@ -125,6 +131,12 @@ typedef struct _stream_session_t
   /** To avoid n**2 "one event per frame" check */
   u8 enqueue_epoch;
 
+  /** Pad to a multiple of 8 octets */
+  u8 align_pad[2];
+
+  /** svm segment index where fifos were allocated */
+  u32 svm_segment_index;
+
   /** Session index in per_thread pool */
   u32 session_index;
 
@@ -139,6 +151,9 @@ typedef struct _stream_session_t
 
   /** Parent listener session if the result of an accept */
   u32 listener_index;
+
+  /** Opaque, pad to a 64-octet boundary */
+  u64 opaque[2];
 } stream_session_t;
 
 /* Forward definition */
@@ -182,10 +197,10 @@ struct _session_manager_main
   u32 **tx_buffers;
 
   /** Per worker-thread vector of partially read events */
-  session_fifo_event_t **evts_partially_read;
+  session_fifo_event_t **free_event_vector;
 
   /** per-worker active event vectors */
-  session_fifo_event_t **fifo_events;
+  session_fifo_event_t **pending_event_vector;
 
   /** vpp fifo event queue */
   unix_shared_memory_queue_t **vpp_event_queues;
@@ -344,16 +359,17 @@ stream_session_fifo_size (transport_connection_t * tc)
 }
 
 int
-stream_session_enqueue_data (transport_connection_t * tc, u8 * data, u16 len,
-			     u8 queue_event);
+stream_session_enqueue_data (transport_connection_t * tc, vlib_buffer_t * b,
+			     u32 offset, u8 queue_event, u8 is_in_order);
 u32
 stream_session_peek_bytes (transport_connection_t * tc, u8 * buffer,
 			   u32 offset, u32 max_bytes);
 u32 stream_session_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
 
-void
-stream_session_connect_notify (transport_connection_t * tc, u8 sst,
-			       u8 is_fail);
+void stream_session_connect_notify (transport_connection_t * tc, u8 sst,
+				    u8 is_fail);
+void stream_session_init_fifos_pointers (transport_connection_t * tc,
+					 u32 rx_pointer, u32 tx_pointer);
 
 void stream_session_accept_notify (transport_connection_t * tc);
 void stream_session_disconnect_notify (transport_connection_t * tc);
@@ -370,8 +386,14 @@ int stream_session_listen (stream_session_t * s, transport_endpoint_t * tep);
 int stream_session_stop_listen (stream_session_t * s);
 void stream_session_disconnect (stream_session_t * s);
 void stream_session_cleanup (stream_session_t * s);
-
+void session_send_session_evt_to_thread (u64 session_handle,
+					 fifo_event_type_t evt_type,
+					 u32 thread_index);
 u8 *format_stream_session (u8 * s, va_list * args);
+int
+send_session_connected_callback (u32 app_index, u32 api_context,
+				 stream_session_t * s, u8 is_fail);
+
 
 void session_register_transport (u8 type, const transport_proto_vft_t * vft);
 transport_proto_vft_t *session_get_transport_vft (u8 type);
@@ -414,7 +436,8 @@ always_inline stream_session_t *
 listen_session_new (session_type_t type)
 {
   stream_session_t *s;
-  pool_get (session_manager_main.listen_sessions[type], s);
+  pool_get_aligned (session_manager_main.listen_sessions[type], s,
+		    CLIB_CACHE_LINE_BYTES);
   memset (s, 0, sizeof (*s));
 
   s->session_type = type;

@@ -277,6 +277,25 @@ class VppPapiProvider(object):
                         {'sw_if_index': sw_if_index,
                          'suppress': suppress})
 
+    def set_ip_flow_hash(self,
+                         table_id,
+                         src=1,
+                         dst=1,
+                         sport=1,
+                         dport=1,
+                         proto=1,
+                         reverse=0,
+                         is_ip6=0):
+        return self.api(self.papi.set_ip_flow_hash,
+                        {'vrf_id': table_id,
+                         'src': src,
+                         'dst': dst,
+                         'dport': dport,
+                         'sport': sport,
+                         'proto': proto,
+                         'reverse': reverse,
+                         'is_ipv6': is_ip6})
+
     def ip6_nd_proxy(self, address, sw_if_index, is_del=0):
         return self.api(self.papi.ip6nd_proxy_add_del,
                         {'address': address,
@@ -408,6 +427,27 @@ class VppPapiProvider(object):
                          'static_mac': static_mac,
                          'filter_mac': filter_mac,
                          'bvi_mac': bvi_mac})
+
+    def l2fib_flush_int(self, sw_if_index):
+        """Flush L2 FIB entries for sw_if_index.
+
+        :param int sw_if_index: Software interface index of the interface.
+        """
+        return self.api(self.papi.l2fib_flush_int,
+                        {'sw_if_index': sw_if_index})
+
+    def l2fib_flush_bd(self, bd_id):
+        """Flush L2 FIB entries for bd_id.
+
+        :param int sw_if_index: Bridge Domain id.
+        """
+        return self.api(self.papi.l2fib_flush_bd,
+                        {'bd_id': bd_id})
+
+    def l2fib_flush_all(self):
+        """Flush all L2 FIB.
+        """
+        return self.api(self.papi.l2fib_flush_all, {})
 
     def sw_interface_set_l2_bridge(self, sw_if_index, bd_id,
                                    shg=0, bvi=0, enable=1):
@@ -1226,6 +1266,67 @@ class VppPapiProvider(object):
         """
         return self.api(self.papi.snat_det_get_timeouts, {})
 
+    def snat_det_close_session_out(
+            self,
+            out_addr,
+            out_port,
+            ext_addr,
+            ext_port,
+            is_ip4=1):
+        """Close CGN session using outside address and port
+
+        :param out_addr - outside IP address
+        :param out_port - outside port
+        :param ext_addr - external host IP address
+        :param ext_port - external host port
+        :param is_ip4: 1 if address type is IPv4 (Default value = 1)
+        """
+        return self.api(
+            self.papi.snat_det_close_session_out,
+            {'out_addr': out_addr,
+             'out_port': out_port,
+             'ext_addr': ext_addr,
+             'ext_port': ext_port,
+             'is_ip4': is_ip4})
+
+    def snat_det_close_session_in(
+            self,
+            in_addr,
+            in_port,
+            ext_addr,
+            ext_port,
+            is_ip4=1):
+        """Close CGN session using inside address and port
+
+        :param in_addr - inside IP address
+        :param in_port - inside port
+        :param ext_addr - external host IP address
+        :param ext_port - external host port
+        :param is_ip4: 1 if address type is IPv4 (Default value = 1)
+        """
+        return self.api(
+            self.papi.snat_det_close_session_in,
+            {'in_addr': in_addr,
+             'in_port': in_port,
+             'ext_addr': ext_addr,
+             'ext_port': ext_port,
+             'is_ip4': is_ip4})
+
+    def snat_det_session_dump(
+            self,
+            user_addr,
+            is_ip4=1):
+        """Dump S-NAT deterministic sessions belonging to a user
+
+        :param user_addr - inside IP address of the user
+        :param is_ip4: - 1 if address type is IPv4 (Default value = 1)
+        :return: Dictionary of S-NAT deterministic sessions
+        """
+        return self.api(
+            self.papi.snat_det_session_dump,
+            {'is_ip4': is_ip4,
+             'user_addr': user_addr})
+
     def control_ping(self):
         self.api(self.papi.control_ping)
 
@@ -1695,3 +1796,35 @@ class VppPapiProvider(object):
                 'is_translation': is_translation,
                 'mtu': mtu
             })
+
+    def gtpu_add_del_tunnel(
+            self,
+            src_addr,
+            dst_addr,
+            is_add=1,
+            is_ipv6=0,
+            mcast_sw_if_index=0xFFFFFFFF,
+            encap_vrf_id=0,
+            decap_next_index=0xFFFFFFFF,
+            teid=0):
+        """
+
+        :param is_add:  (Default value = 1)
+        :param is_ipv6:  (Default value = 0)
+        :param src_addr:
+        :param dst_addr:
+        :param mcast_sw_if_index:  (Default value = 0xFFFFFFFF)
+        :param encap_vrf_id:  (Default value = 0)
+        :param decap_next_index:  (Default value = 0xFFFFFFFF)
+        :param teid:  (Default value = 0)
+
+        """
+        return self.api(self.papi.gtpu_add_del_tunnel,
+                        {'is_add': is_add,
+                         'is_ipv6': is_ipv6,
+                         'src_address': src_addr,
+                         'dst_address': dst_addr,
+                         'mcast_sw_if_index': mcast_sw_if_index,
+                         'encap_vrf_id': encap_vrf_id,
+                         'decap_next_index': decap_next_index,
+                         'teid': teid})

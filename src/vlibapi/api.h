@@ -25,6 +25,7 @@
 #include <vlib/vlib.h>
 #include <vlibmemory/unix_shared_memory_queue.h>
 #include <vlib/unix/unix.h>
+#include <stddef.h>
 
 typedef enum
 {
@@ -127,7 +128,7 @@ typedef struct
   void (**msg_cleanup_handlers) (void *);
   void (**msg_endian_handlers) (void *);
   void (**msg_print_handlers) (void *, void *);
-  char **msg_names;
+  const char **msg_names;
   u8 *message_bounce;
   u8 *is_mp_safe;
   struct ring_alloc_ *arings;
@@ -195,8 +196,8 @@ typedef struct
   /* client side message index hash table */
   uword *msg_index_by_name_and_crc;
 
-  char *region_name;
-  char *root_path;
+  const char *region_name;
+  const char *root_path;
 
   /* Replay in progress? */
   int replay_in_progress;
@@ -276,9 +277,11 @@ void vl_msg_api_register_pd_handler (void *handler,
 int vl_msg_api_pd_handler (void *mp, int rv);
 
 void vl_msg_api_set_first_available_msg_id (u16 first_avail);
-u16 vl_msg_api_get_msg_ids (char *name, int n);
-void vl_msg_api_add_msg_name_crc (api_main_t * am, char *string, u32 id);
+u16 vl_msg_api_get_msg_ids (const char *name, int n);
+void vl_msg_api_add_msg_name_crc (api_main_t * am, const char *string,
+				  u32 id);
 u32 vl_api_get_msg_index (u8 * name_and_crc);
+u32 vl_msg_api_get_msg_length (void *msg_arg);
 
 /* node_serialize.c prototypes */
 u8 *vlib_node_serialize (vlib_node_main_t * nm, u8 * vector,
@@ -335,6 +338,15 @@ static void __vl_msg_api_add_##tag##_function_##x (void)                \
     _error = _f (ci);                                                   \
   })
 
+static inline u32
+vl_msg_api_get_msg_length_inline (void *msg_arg)
+{
+  u8 *msg = (u8 *) msg_arg;
+
+  msgbuf_t *header = (msgbuf_t *) (msg - offsetof (msgbuf_t, data));
+
+  return clib_net_to_host_u32 (header->data_len);
+}
 #endif /* included_api_h */
 
 /*

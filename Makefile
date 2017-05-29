@@ -39,7 +39,7 @@ endif
 DEB_DEPENDS  = curl build-essential autoconf automake bison libssl-dev ccache
 DEB_DEPENDS += debhelper dkms git libtool libganglia1-dev libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
-DEB_DEPENDS += lcov chrpath autoconf nasm
+DEB_DEPENDS += lcov chrpath autoconf nasm indent
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
@@ -47,20 +47,24 @@ else
 	DEB_DEPENDS += default-jdk-headless
 endif
 
-RPM_DEPENDS_GROUPS = 'Development Tools'
 RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel yum-utils
 RPM_DEPENDS += openssl-devel https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm apr-devel
 RPM_DEPENDS += python-devel
-ifeq ($(OS_ID)),fedora)
-ifeq ($(OS_VERSION_ID),25)
+ifeq ($(OS_ID)-$(OS_VERSION_ID),fedora-25)
 	RPM_DEPENDS += python2-virtualenv
+	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else
 	RPM_DEPENDS += python-virtualenv
+	RPM_DEPENDS_GROUPS = 'Development Tools'
 endif
-endif
-RPM_DEPENDS += lcov chrpath libffi-devel
+RPM_DEPENDS += chrpath libffi-devel rpm-build
 RPM_DEPENDS += https://kojipkgs.fedoraproject.org//packages/nasm/2.12.02/2.fc26/x86_64/nasm-2.12.02-2.fc26.x86_64.rpm
 EPEL_DEPENDS = libconfuse-devel ganglia-devel epel-rpm-macros
+ifeq ($(filter rhel centos,$(OS_ID)),$(OS_ID))
+	EPEL_DEPENDS += lcov
+else
+	RPM_DEPENDS += lcov
+endif
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -198,7 +202,7 @@ else ifneq ("$(wildcard /etc/redhat-release)","")
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E yum install $(CONFIRM) --enablerepo=epel $(EPEL_DEPENDS)
-	@sudo -E debuginfo-install $(CONFIRM) glibc-2.17-106.el7_2.4.x86_64 openssl-libs-1.0.1e-51.el7_2.4.x86_64 zlib-1.2.7-15.el7.x86_64
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
 else
 	$(error "This option currently works only on Ubuntu or Centos systems")
 endif
@@ -254,15 +258,18 @@ rebuild-release: wipe-release build-release
 
 export VPP_PYTHON_PREFIX=$(BR)/python
 
+libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
+
 define test
 	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=$(1) TAG=$(2) vpp-install,)
+	$(eval libs:=lib lib64)
 	make -C test \
 	  TEST_DIR=$(WS_ROOT)/test \
 	  VPP_TEST_BUILD_DIR=$(BR)/build-$(2)-native \
 	  VPP_TEST_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
-	  VPP_TEST_PLUGIN_PATH=$(BR)/install-$(2)-native/vpp/lib64/vpp_plugins \
+	  VPP_TEST_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
 	  VPP_TEST_INSTALL_PATH=$(BR)/install-$(2)-native/ \
-	  LD_LIBRARY_PATH=$(BR)/install-$(2)-native/vpp/lib64/ \
+	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
 	  $(3)
@@ -322,12 +329,12 @@ define run
 	@echo "WARNING: STARTUP_CONF not defined or file doesn't exist."
 	@echo "         Running with minimal startup config: $(MINIMAL_STARTUP_CONF)\n"
 	@cd $(STARTUP_DIR) && \
-	  sudo $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF) plugin_path $(1)/vpp/lib64/vpp_plugins
+	  sudo $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF) plugin_path $(wildcard $(1)/vpp/lib*/vpp_plugins)
 endef
 else
 define run
 	@cd $(STARTUP_DIR) && \
-	  sudo $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//') plugin_path $(1)/vpp/lib64/vpp_plugins
+	  sudo $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//') plugin_path $(wildcard $(1)/vpp/lib*/vpp_plugins)
 endef
 endif
 
@@ -427,6 +434,8 @@ endif
 	@make -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
+ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-16.04)
 	@make test
+endif
 
 

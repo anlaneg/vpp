@@ -56,7 +56,7 @@ mheap_maybe_lock (void *v)
   mheap_t *h = mheap_header (v);
   if (v && (h->flags & MHEAP_FLAG_THREAD_SAFE))
     {
-      u32 my_cpu = os_get_cpu_number ();
+      u32 my_cpu = os_get_thread_index ();
       if (h->owner_cpu == my_cpu)
 	{
 	  h->recursion_count++;
@@ -77,7 +77,7 @@ mheap_maybe_unlock (void *v)
   mheap_t *h = mheap_header (v);
   if (v && h->flags & MHEAP_FLAG_THREAD_SAFE)
     {
-      ASSERT (os_get_cpu_number () == h->owner_cpu);
+      ASSERT (os_get_thread_index () == h->owner_cpu);
       if (--h->recursion_count == 0)
 	{
 	  h->owner_cpu = ~0;
@@ -304,7 +304,7 @@ mheap_small_object_cache_mask (mheap_small_object_cache_t * c, uword bin)
   uword mask;
 
 /* $$$$ ELIOT FIXME: add Altivec version of this routine */
-#if !defined (CLIB_HAVE_VEC128) || defined (__ALTIVEC__)
+#if !defined (CLIB_HAVE_VEC128) || defined (__ALTIVEC__) || defined (__i386__)
   mask = 0;
 #else
   u8x16 b = u8x16_splat (bin);
@@ -549,23 +549,17 @@ mheap_get_search_free_list (void *v,
 	non_empty_bin_mask &= ~pow2_mask (bin % BITS (uword));
 
       /* Search each occupied free bin which is large enough. */
-      foreach_set_bit (bi, non_empty_bin_mask, (
-						 {
-						 uword r =
-						 mheap_get_search_free_bin (v,
-									    bi
-									    +
-									    i
-									    *
-									    BITS
-									    (uword),
-									    n_user_bytes_arg,
-									    align,
-									    align_offset);
-						 if (r !=
-						     MHEAP_GROUNDED) return
-						 r;}
-		       ));
+      /* *INDENT-OFF* */
+      foreach_set_bit (bi, non_empty_bin_mask,
+      ({
+        uword r =
+          mheap_get_search_free_bin (v, bi + i * BITS (uword),
+                                     n_user_bytes_arg,
+                                     align,
+                                     align_offset);
+        if (r != MHEAP_GROUNDED) return r;
+      }));
+      /* *INDENT-ON* */
     }
 
   return MHEAP_GROUNDED;

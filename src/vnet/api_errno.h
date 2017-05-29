@@ -107,7 +107,12 @@ _(ADDRESS_FOUND_FOR_INTERFACE, -114, "Address found for interface")	\
 _(SESSION_CONNECT_FAIL, -115, "Session failed to connect")              \
 _(ENTRY_ALREADY_EXISTS, -116, "Entry already exists")			\
 _(SVM_SEGMENT_CREATE_FAIL, -117, "svm segment create fail")		\
-_(APPLICATION_NOT_ATTACHED, -118, "application not attached")
+_(APPLICATION_NOT_ATTACHED, -118, "application not attached")           \
+_(BD_ALREADY_EXISTS, -119, "Bridge domain already exists")              \
+_(BD_IN_USE, -120, "Bridge domain has member interfaces")		\
+_(BD_NOT_MODIFIABLE, -121, "Bridge domain 0 can't be deleted/modified") \
+_(BD_ID_EXCEED_MAX, -122, "Bridge domain ID exceed 16M limit")		\
+_(UNSUPPORTED, -123, "Unsupported")
 
 typedef enum
 {

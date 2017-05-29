@@ -667,6 +667,36 @@ extern flow_hash_config_t fib_table_get_flow_hash_config(u32 fib_index,
 
 /**
  * @brief
+ *  Get the flow hash configured used by the protocol
+ *
+ * @paran proto
+ *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @return The flow hash config
+ */
+extern flow_hash_config_t fib_table_get_default_flow_hash_config(fib_protocol_t proto);
+
+/**
+ * @brief
+ *  Set the flow hash configured used by the table
+ *
+ * @param fib_index
+ *  The index of the FIB
+ *
+ * @paran proto
+ *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @param hash_config
+ *  The flow-hash config to set
+ *
+ * @return none
+ */
+extern void fib_table_set_flow_hash_config(u32 fib_index,
+                                           fib_protocol_t proto,
+                                           flow_hash_config_t hash_config);
+
+/**
+ * @brief
  * Take a reference counting lock on the table
  *
  * @param fib_index

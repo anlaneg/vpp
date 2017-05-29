@@ -40,6 +40,7 @@
 #include <vlib/vlib.h>
 #include <vppinfra/cpu.h>
 #include <unistd.h>
+#include <ctype.h>
 
 /* Root of all show commands. */
 /* *INDENT-OFF* */
@@ -233,6 +234,108 @@ unformat_vlib_cli_sub_command (unformat_input_t * i, va_list * args)
   clib_bitmap_free (match_bitmap);
 
   return is_unique;
+}
+
+static int
+vlib_cli_cmp_strings (void *a1, void *a2)
+{
+  u8 *c1 = *(u8 **) a1;
+  u8 *c2 = *(u8 **) a2;
+
+  return vec_cmp (c1, c2);
+}
+
+u8 **
+vlib_cli_get_possible_completions (u8 * str)
+{
+  vlib_cli_command_t *c;
+  vlib_cli_sub_command_t *sc;
+  vlib_main_t *vm = vlib_get_main ();
+  vlib_cli_main_t *vcm = &vm->cli_main;
+  uword *match_bitmap = 0;
+  uword index, is_unique, help_next_level;
+  u8 **result = 0;
+  unformat_input_t input;
+  unformat_init_vector (&input, vec_dup (str));
+  c = vec_elt_at_index (vcm->commands, 0);
+
+  /* remove trailing whitespace, except for one of them */
+  while (vec_len (input.buffer) >= 2 &&
+	 isspace (input.buffer[vec_len (input.buffer) - 1]) &&
+	 isspace (input.buffer[vec_len (input.buffer) - 2]))
+    {
+      vec_del1 (input.buffer, vec_len (input.buffer) - 1);
+    }
+
+  /* if input is empty, directly return list of root commands */
+  if (vec_len (input.buffer) == 0 ||
+      (vec_len (input.buffer) == 1 && isspace (input.buffer[0])))
+    {
+      vec_foreach (sc, c->sub_commands)
+      {
+	vec_add1 (result, (u8 *) sc->name);
+      }
+      goto done;
+    }
+
+  /* add a trailing '?' so that vlib_cli_sub_command_match can find
+   * all commands starting with the input string */
+  vec_add1 (input.buffer, '?');
+
+  while (1)
+    {
+      match_bitmap = vlib_cli_sub_command_match (c, &input);
+      /* no match: return no result */
+      if (match_bitmap == 0)
+	{
+	  goto done;
+	}
+      is_unique = clib_bitmap_count_set_bits (match_bitmap) == 1;
+      /* unique match: try to step one subcommand level further */
+      if (is_unique)
+	{
+	  /* stop if no more input */
+	  if (input.index >= vec_len (input.buffer) - 1)
+	    {
+	      break;
+	    }
+
+	  index = clib_bitmap_first_set (match_bitmap);
+	  c = get_sub_command (vcm, c, index);
+	  clib_bitmap_free (match_bitmap);
+	  continue;
+	}
+      /* multiple matches: stop here, return all matches */
+      break;
+    }
+
+  /* remove trailing '?' */
+  vec_del1 (input.buffer, vec_len (input.buffer) - 1);
+
+  /* if we have a space at the end of input, and a unique match,
+   * autocomplete the next level of subcommands */
+  help_next_level = (vec_len (str) == 0) || isspace (str[vec_len (str) - 1]);
+  /* *INDENT-OFF* */
+  clib_bitmap_foreach(index, match_bitmap, {
+    if (help_next_level && is_unique) {
+	c = get_sub_command (vcm, c, index);
+	vec_foreach (sc, c->sub_commands) {
+	  vec_add1 (result, (u8*) sc->name);
+	}
+	goto done; /* break doesn't work in this macro-loop */
+    }
+    sc = &c->sub_commands[index];
+    vec_add1(result, (u8*) sc->name);
+  });
+  /* *INDENT-ON* */
+
+done:
+  clib_bitmap_free (match_bitmap);
+  unformat_free (&input);
+
+  if (result)
+    vec_sort_with_function (result, vlib_cli_cmp_strings);
+  return result;
 }
 
 static u8 *
@@ -1162,6 +1265,55 @@ done:
   return error;
 }
 #endif
+
+static int
+cli_path_compare (void *a1, void *a2)
+{
+  u8 **s1 = a1;
+  u8 **s2 = a2;
+
+  if ((vec_len (*s1) < vec_len (*s2)) &&
+      memcmp ((char *) *s1, (char *) *s2, vec_len (*s1)) == 0)
+    return -1;
+
+
+  if ((vec_len (*s1) > vec_len (*s2)) &&
+      memcmp ((char *) *s1, (char *) *s2, vec_len (*s2)) == 0)
+    return 1;
+
+  return vec_cmp (*s1, *s2);
+}
+
+static clib_error_t *
+show_cli_cmd_fn (vlib_main_t * vm, unformat_input_t * input,
+		 vlib_cli_command_t * cmd)
+{
+  vlib_cli_main_t *cm = &vm->cli_main;
+  vlib_cli_command_t *cli;
+  u8 **paths = 0, **s;
+
+  /* *INDENT-OFF* */
+  vec_foreach (cli, cm->commands)
+    if (vec_len (cli->path) > 0)
+      vec_add1 (paths, (u8 *) cli->path);
+
+  vec_sort_with_function (paths, cli_path_compare);
+
+  vec_foreach (s, paths)
+    vlib_cli_output (vm, "%v", *s);
+  /* *INDENT-ON* */
+
+  vec_free (paths);
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (show_cli_command, static) = {
+  .path = "show cli",
+  .short_help = "Show cli commands",
+  .function = show_cli_cmd_fn,
+};
+/* *INDENT-ON* */
 
 static clib_error_t *
 vlib_cli_init (vlib_main_t * vm)

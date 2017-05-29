@@ -143,6 +143,16 @@
   foreach_dpdk_pkt_rx_offload_flag              \
   foreach_dpdk_pkt_tx_offload_flag
 
+#define foreach_dpdk_log_level	\
+  _ (EMERG, "emergency")	\
+  _ (ALERT, "alert")		\
+  _ (CRIT, "critical")		\
+  _ (ERR, "error")		\
+  _ (WARNING, "warning")	\
+  _ (NOTICE, "notice")		\
+  _ (INFO, "info")		\
+  _ (DEBUG, "debug")
+
 u8 *
 format_dpdk_device_name (u8 * s, va_list * args)
 {
@@ -168,6 +178,10 @@ format_dpdk_device_name (u8 * s, va_list * args)
       device_name = "TenGigabitEthernet";
       break;
 
+    case VNET_DPDK_PORT_TYPE_ETH_25G:
+      device_name = "TwentyFiveGigabitEthernet";
+      break;
+
     case VNET_DPDK_PORT_TYPE_ETH_40G:
       device_name = "FortyGigabitEthernet";
       break;
@@ -183,9 +197,17 @@ format_dpdk_device_name (u8 * s, va_list * args)
       device_name = "EthernetSwitch";
       break;
 
+    case VNET_DPDK_PORT_TYPE_ETH_VF:
+      device_name = "VirtualFunctionEthernet";
+      break;
+
     case VNET_DPDK_PORT_TYPE_AF_PACKET:
       rte_eth_dev_info_get (i, &dev_info);
       return format (s, "af_packet%d", dm->devices[i].port_id);
+
+    case VNET_DPDK_PORT_TYPE_VIRTIO_USER:
+      device_name = "VirtioUser";
+      break;
 
     default:
     case VNET_DPDK_PORT_TYPE_UNKNOWN:
@@ -260,6 +282,10 @@ format_dpdk_device_type (u8 * s, va_list * args)
       dev_type = "Chelsio T4/T5";
       break;
 
+    case VNET_DPDK_PMD_MLX4:
+      dev_type = "Mellanox ConnectX-3 Family";
+      break;
+
     case VNET_DPDK_PMD_MLX5:
       dev_type = "Mellanox ConnectX-4 Family";
       break;
@@ -278,6 +304,10 @@ format_dpdk_device_type (u8 * s, va_list * args)
 
     case VNET_DPDK_PMD_DPAA2:
       dev_type = "NXP DPAA2 Mac";
+      break;
+
+    case VNET_DPDK_PMD_VIRTIO_USER:
+      dev_type = "Virtio User";
       break;
 
     default:
@@ -365,6 +395,20 @@ format_dpdk_tx_offload_caps (u8 * s, va_list * args)
 #undef _
 
 u8 *
+format_dpdk_device_errors (u8 * s, va_list * args)
+{
+  dpdk_device_t *xd = va_arg (*args, dpdk_device_t *);
+  clib_error_t *e;
+  uword indent = format_get_indent (s);
+
+  vec_foreach (e, xd->errors)
+  {
+    s = format (s, "%U%v\n", format_white_space, indent, e->what);
+  }
+  return s;
+}
+
+u8 *
 format_dpdk_device (u8 * s, va_list * args)
 {
   u32 dev_instance = va_arg (*args, u32);
@@ -417,7 +461,7 @@ format_dpdk_device (u8 * s, va_list * args)
 	format (s, "%Upromiscuous:       unicast %s all-multicast %s\n",
 		format_white_space, indent + 2,
 		rte_eth_promiscuous_get (xd->device_index) ? "on" : "off",
-		rte_eth_promiscuous_get (xd->device_index) ? "on" : "off");
+		rte_eth_allmulticast_get (xd->device_index) ? "on" : "off");
       vlan_off = rte_eth_dev_get_vlan_offload (xd->device_index);
       s = format (s, "%Uvlan offload:      strip %s filter %s qinq %s\n",
 		  format_white_space, indent + 2,
@@ -497,6 +541,12 @@ format_dpdk_device (u8 * s, va_list * args)
       s = format (s, "\n%Uextended stats:%v",
 		  format_white_space, indent + 2, xs);
       vec_free (xs);
+    }
+
+  if (vec_len (xd->errors))
+    {
+      s = format (s, "%UErrors:\n  %U", format_white_space, indent,
+		  format_dpdk_device_errors, xd);
     }
 
   return s;
@@ -672,36 +722,6 @@ format_dpdk_rte_mbuf (u8 * s, va_list * va)
   return s;
 }
 
-/* FIXME is this function used? */
-#if 0
-uword
-unformat_socket_mem (unformat_input_t * input, va_list * va)
-{
-  uword **r = va_arg (*va, uword **);
-  int i = 0;
-  u32 mem;
-
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (input, ","))
-	hash_set (*r, i, 1024);
-      else if (unformat (input, "%u,", &mem))
-	hash_set (*r, i, mem);
-      else if (unformat (input, "%u", &mem))
-	hash_set (*r, i, mem);
-      else
-	{
-	  unformat_put_input (input);
-	  goto done;
-	}
-      i++;
-    }
-
-done:
-  return 1;
-}
-#endif
-
 clib_error_t *
 unformat_rss_fn (unformat_input_t * input, uword * rss_fn)
 {
@@ -723,6 +743,20 @@ unformat_rss_fn (unformat_input_t * input, uword * rss_fn)
 	}
     }
   return 0;
+}
+
+uword
+unformat_dpdk_log_level (unformat_input_t * input, va_list * args)
+{
+  u32 *r = va_arg (*args, u32 *);
+
+  if (0);
+#define _(v,s) else if (unformat (input, s)) *r = RTE_LOG_##v;
+  foreach_dpdk_log_level
+#undef _
+    else
+    return 0;
+  return 1;
 }
 
 clib_error_t *

@@ -17,6 +17,7 @@ from bfd import VppBFDAuthKey, BFD, BFDAuthType, VppBFDUDPSession, \
     BFDDiagCode, BFDState, BFD_vpp_echo
 from framework import VppTestCase, VppTestRunner, running_extended_tests
 from vpp_pg_interface import CaptureTimeoutError, is_ipv6_misc
+from vpp_lo_interface import VppLoInterface
 from util import ppp
 from vpp_papi_provider import UnexpectedApiReturnValueError
 from vpp_ip_route import VppIpRoute, VppRoutePath
@@ -251,6 +252,7 @@ class BFDAPITestCase(VppTestCase):
         session.activate_auth(key2)
 
 
+@unittest.skipUnless(running_extended_tests(), "part of extended tests")
 class BFDTestSession(object):
     """ BFD session as seen from test framework side """
 
@@ -612,6 +614,7 @@ def wait_for_bfd_packet(test, timeout=1, pcap_time_min=None):
     return p
 
 
+@unittest.skipUnless(running_extended_tests(), "part of extended tests")
 class BFD4TestCase(VppTestCase):
     """Bidirectional Forwarding Detection (BFD)"""
 
@@ -1401,7 +1404,22 @@ class BFD4TestCase(VppTestCase):
         self.assert_equal(count, 0, "number of packets received")
         self.assert_equal(len(events), 0, "number of events received")
 
+    def test_intf_deleted(self):
+        """ interface with bfd session deleted """
+        intf = VppLoInterface(self, 0)
+        intf.config_ip4()
+        intf.admin_up()
+        sw_if_index = intf.sw_if_index
+        vpp_session = VppBFDUDPSession(self, intf, intf.remote_ip4)
+        vpp_session.add_vpp_config()
+        vpp_session.admin_up()
+        intf.remove_vpp_config()
+        e = self.vapi.wait_for_event(1, "bfd_udp_session_details")
+        self.assert_equal(e.sw_if_index, sw_if_index, "sw_if_index")
+        self.assertFalse(vpp_session.query_vpp_config())
 
+
+@unittest.skipUnless(running_extended_tests(), "part of extended tests")
 class BFD6TestCase(VppTestCase):
     """Bidirectional Forwarding Detection (BFD) (IPv6) """
 
@@ -1594,7 +1612,23 @@ class BFD6TestCase(VppTestCase):
             self.test_session.send_packet()
         self.assertTrue(echo_seen, "No echo packets received")
 
+    def test_intf_deleted(self):
+        """ interface with bfd session deleted """
+        intf = VppLoInterface(self, 0)
+        intf.config_ip6()
+        intf.admin_up()
+        sw_if_index = intf.sw_if_index
+        vpp_session = VppBFDUDPSession(
+            self, intf, intf.remote_ip6, af=AF_INET6)
+        vpp_session.add_vpp_config()
+        vpp_session.admin_up()
+        intf.remove_vpp_config()
+        e = self.vapi.wait_for_event(1, "bfd_udp_session_details")
+        self.assert_equal(e.sw_if_index, sw_if_index, "sw_if_index")
+        self.assertFalse(vpp_session.query_vpp_config())
 
+
+@unittest.skipUnless(running_extended_tests(), "part of extended tests")
 class BFDFIBTestCase(VppTestCase):
     """ BFD-FIB interactions (IPv6) """
 
@@ -1696,6 +1730,7 @@ class BFDFIBTestCase(VppTestCase):
                              packet[IPv6].dst)
 
 
+@unittest.skipUnless(running_extended_tests(), "part of extended tests")
 class BFDSHA1TestCase(VppTestCase):
     """Bidirectional Forwarding Detection (BFD) (SHA1 auth) """
 

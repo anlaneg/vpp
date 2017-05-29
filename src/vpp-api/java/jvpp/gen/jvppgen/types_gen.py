@@ -83,6 +83,7 @@ object_dto_field_setter_template = Template("""
         jobject ${field_reference_name} = (*env)->NewObject(env, ${field_reference_name}Class,  ${field_reference_name}Constructor);
         ${type_initialization}
         (*env)->SetObjectField(env, dto, ${field_reference_name}FieldId, ${field_reference_name});
+        (*env)->DeleteLocalRef(env, ${field_reference_name});
     }
 """)
 
@@ -90,14 +91,16 @@ object_array_dto_field_setter_template = Template("""
     {
         jclass ${field_reference_name}Class = (*env)->FindClass(env, "${class_FQN}");
         jobjectArray ${field_reference_name} = (*env)->NewObjectArray(env, ${field_length}, ${field_reference_name}Class, 0);
+        jmethodID ${field_reference_name}Constructor = (*env)->GetMethodID(env, ${field_reference_name}Class, "<init>", "()V");
         unsigned int _i;
         for (_i = 0; _i < ${field_length}; _i++) {
-            jmethodID ${field_reference_name}Constructor = (*env)->GetMethodID(env, ${field_reference_name}Class, "<init>", "()V");
             jobject ${field_reference_name}ArrayElement = (*env)->NewObject(env, ${field_reference_name}Class,  ${field_reference_name}Constructor);
             ${type_initialization}
             (*env)->SetObjectArrayElement(env, ${field_reference_name}, _i, ${field_reference_name}ArrayElement);
+            (*env)->DeleteLocalRef(env, ${field_reference_name}ArrayElement);
         }
         (*env)->SetObjectField(env, dto, ${field_reference_name}FieldId, ${field_reference_name});
+        (*env)->DeleteLocalRef(env, ${field_reference_name});
     }
 """)
 
@@ -108,12 +111,14 @@ def generate_struct_initialization(type_def, c_name_prefix, object_name, indent)
     for t in zip(type_def['types'], type_def['args'], type_def['lengths']):
         field_reference_name = "${c_name}" + util.underscore_to_camelcase_upper(t[1])
         field_name = util.underscore_to_camelcase(t[1])
+        struct_initialization += jni_gen.jni_request_identifiers_for_type(field_type=t[0],
+                                                                          field_reference_name=field_reference_name,
+                                                                          field_name=field_name,
+                                                                          object_name=object_name)
         struct_initialization += jni_gen.jni_request_binding_for_type(field_type=t[0], c_name=c_name_prefix + t[1],
-                                                                     field_reference_name=field_reference_name,
-                                                                     field_name=field_name,
-                                                                     field_length=t[2][0],
-                                                                     is_variable_len_array=t[2][1],
-                                                                     object_name=object_name)
+                                                                      field_reference_name=field_reference_name,
+                                                                      field_length=t[2][0],
+                                                                      is_variable_len_array=t[2][1])
     return indent + struct_initialization.replace('\n', '\n' + indent)
 
 

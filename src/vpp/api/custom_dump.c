@@ -24,7 +24,7 @@
 #include <vnet/dhcp/dhcp_proxy.h>
 #include <vnet/l2tp/l2tp.h>
 #include <vnet/l2/l2_input.h>
-#include <vnet/sr/sr.h>
+#include <vnet/srv6/sr.h>
 #include <vnet/vxlan-gpe/vxlan_gpe.h>
 #include <vnet/classify/policer_classify.h>
 #include <vnet/policer/xlate.h>
@@ -297,6 +297,17 @@ static void *vl_api_bridge_domain_dump_t_print
 
   FINISH;
 }
+
+static void *vl_api_l2fib_flush_all_t_print
+  (vl_api_l2fib_flush_all_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: l2fib_flush_all ");
+
+  FINISH;
+}
+
 
 static void *vl_api_l2fib_flush_bd_t_print
   (vl_api_l2fib_flush_bd_t * mp, void *handle)
@@ -1645,12 +1656,12 @@ static void *vl_api_want_interface_events_t_print
   FINISH;
 }
 
-static void *vl_api_cli_request_t_print
-  (vl_api_cli_request_t * mp, void *handle)
+static void *
+vl_api_cli_t_print (vl_api_cli_t * mp, void *handle)
 {
   u8 *s;
 
-  s = format (0, "SCRIPT: cli_request ");
+  s = format (0, "SCRIPT: cli ");
 
   FINISH;
 }
@@ -2979,6 +2990,7 @@ _(SR_POLICY_MOD, sr_policy_mod)                                         \
 _(SR_POLICY_DEL, sr_policy_del)                                         \
 _(SW_INTERFACE_SET_L2_XCONNECT, sw_interface_set_l2_xconnect)           \
 _(L2FIB_ADD_DEL, l2fib_add_del)                                         \
+_(L2FIB_FLUSH_ALL, l2fib_flush_all)                                     \
 _(L2FIB_FLUSH_BD, l2fib_flush_bd)                                       \
 _(L2FIB_FLUSH_INT, l2fib_flush_int)                                     \
 _(L2_FLAGS, l2_flags)                                                   \
@@ -3011,7 +3023,7 @@ _(DELETE_VHOST_USER_IF, delete_vhost_user_if)				\
 _(SW_INTERFACE_DUMP, sw_interface_dump)					\
 _(CONTROL_PING, control_ping)						\
 _(WANT_INTERFACE_EVENTS, want_interface_events)				\
-_(CLI_REQUEST, cli_request)						\
+_(CLI, cli)								\
 _(CLI_INBAND, cli_inband)						\
 _(MEMCLNT_CREATE, memclnt_create)					\
 _(SW_INTERFACE_VHOST_USER_DUMP, sw_interface_vhost_user_dump)           \

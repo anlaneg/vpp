@@ -19,6 +19,10 @@
 
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
 
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
@@ -60,7 +64,26 @@ static u32
 af_packet_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi,
 			   u32 flags)
 {
-  /* nothing for now */
+  clib_error_t *error;
+  u8 *s;
+  af_packet_main_t *apm = &af_packet_main;
+  af_packet_if_t *apif =
+    pool_elt_at_index (apm->interfaces, hi->dev_instance);
+
+  if (ETHERNET_INTERFACE_FLAG_MTU == (flags & ETHERNET_INTERFACE_FLAG_MTU))
+    {
+      s = format (0, "/sys/class/net/%s/mtu%c", apif->host_if_name, 0);
+
+      error = vlib_sysfs_write ((char *) s, "%d", hi->max_packet_bytes);
+      vec_free (s);
+
+      if (error)
+	{
+	  clib_error_report (error);
+	  return VNET_API_ERROR_SYSCALL_ERROR_1;
+	}
+    }
+
   return 0;
 }
 
@@ -82,25 +105,34 @@ af_packet_fd_read_ready (unix_file_t * uf)
 }
 
 static int
-create_packet_v2_sock (u8 * name, tpacket_req_t * rx_req,
+is_bridge (const u8 * host_if_name)
+{
+  u8 *s;
+  DIR *dir = NULL;
+
+  s = format (0, "/sys/class/net/%s/bridge%c", host_if_name, 0);
+  dir = opendir ((char *) s);
+  vec_free (s);
+
+  if (dir)
+    {
+      closedir (dir);
+      return 0;
+    }
+
+  return -1;
+}
+
+static int
+create_packet_v2_sock (int host_if_index, tpacket_req_t * rx_req,
 		       tpacket_req_t * tx_req, int *fd, u8 ** ring)
 {
   int ret, err;
   struct sockaddr_ll sll;
-  uint host_if_index;
   int ver = TPACKET_V2;
   socklen_t req_sz = sizeof (struct tpacket_req);
   u32 ring_sz = rx_req->tp_block_size * rx_req->tp_block_nr +
     tx_req->tp_block_size * tx_req->tp_block_nr;
-
-  host_if_index = if_nametoindex ((const char *) name);
-
-  if (!host_if_index)
-    {
-      DBG_SOCK ("Wrong host interface name");
-      ret = VNET_API_ERROR_INVALID_INTERFACE;
-      goto error;
-    }
 
   if ((*fd = socket (AF_PACKET, SOCK_RAW, htons (ETH_P_ALL))) < 0)
     {
@@ -185,11 +217,13 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   u8 hw_addr[6];
   clib_error_t *error;
   vnet_sw_interface_t *sw;
+  vnet_hw_interface_t *hw;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vnet_main_t *vnm = vnet_get_main ();
   uword *p;
   uword if_index;
   u8 *host_if_name_dup = vec_dup (host_if_name);
+  int host_if_index = -1;
 
   p = mhash_get (&apm->if_index_by_host_if_name, host_if_name);
   if (p)
@@ -209,15 +243,29 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   tx_req->tp_block_nr = AF_PACKET_TX_BLOCK_NR;
   tx_req->tp_frame_nr = AF_PACKET_TX_FRAME_NR;
 
-  ret = create_packet_v2_sock (host_if_name, rx_req, tx_req, &fd, &ring);
+  host_if_index = if_nametoindex ((const char *) host_if_name);
+
+  if (!host_if_index)
+    {
+      DBG_SOCK ("Wrong host interface name");
+      return VNET_API_ERROR_INVALID_INTERFACE;
+    }
+
+  ret = create_packet_v2_sock (host_if_index, rx_req, tx_req, &fd, &ring);
 
   if (ret != 0)
     goto error;
+
+  ret = is_bridge (host_if_name);
+
+  if (ret == 0)			/* is a bridge, ignore state */
+    host_if_index = -1;
 
   /* So far everything looks good, let's create interface */
   pool_get (apm->interfaces, apif);
   if_index = apif - apm->interfaces;
 
+  apif->host_if_index = host_if_index;
   apif->fd = fd;
   apif->rx_ring = ring;
   apif->tx_ring = ring + rx_req->tp_block_size * rx_req->tp_block_nr;
@@ -269,16 +317,20 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
     }
 
   sw = vnet_get_hw_sw_interface (vnm, apif->hw_if_index);
+  hw = vnet_get_hw_interface (vnm, apif->hw_if_index);
   apif->sw_if_index = sw->sw_if_index;
-  vnet_set_device_input_node (vnm, apif->hw_if_index,
-			      af_packet_input_node.index);
-  vnet_device_input_assign_thread (vnm, apif->hw_if_index, 0,	/* queue */
-				   ~0 /* any cpu */ );
-  vnet_device_input_set_mode (vnm, apif->hw_if_index, 0,
-			      VNET_DEVICE_INPUT_MODE_INTERRUPT);
+  vnet_hw_interface_set_input_node (vnm, apif->hw_if_index,
+				    af_packet_input_node.index);
 
+  vnet_hw_interface_assign_rx_thread (vnm, apif->hw_if_index, 0,	/* queue */
+				      ~0 /* any cpu */ );
+
+  hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
   vnet_hw_interface_set_flags (vnm, apif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
+
+  vnet_hw_interface_set_rx_mode (vnm, apif->hw_if_index, 0,
+				 VNET_HW_INTERFACE_RX_MODE_INTERRUPT);
 
   mhash_set_mem (&apm->if_index_by_host_if_name, host_if_name_dup, &if_index,
 		 0);
@@ -315,6 +367,7 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
 
   /* bring down the interface */
   vnet_hw_interface_set_flags (vnm, apif->hw_if_index, 0);
+  vnet_hw_interface_unassign_rx_thread (vnm, apif->hw_if_index, 0);
 
   /* clean up */
   if (apif->unix_file_index != ~0)
@@ -341,6 +394,7 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
 
   vec_free (apif->host_if_name);
   apif->host_if_name = NULL;
+  apif->host_if_index = -1;
 
   mhash_unset (&apm->if_index_by_host_if_name, host_if_name, &if_index);
 

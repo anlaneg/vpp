@@ -49,6 +49,10 @@ typedef enum fib_source_t_ {
      */
     FIB_SOURCE_INTERFACE,
     /**
+     * SRv6 and SR-MPLS
+     */
+    FIB_SOURCE_SR,
+    /**
      * A high priority source a plugin can use
      */
     FIB_SOURCE_PLUGIN_HI,
@@ -64,10 +68,6 @@ typedef enum fib_source_t_ {
      * LISP
      */
     FIB_SOURCE_LISP,
-    /**
-     * SRv6
-     */
-    FIB_SOURCE_SR,
     /**
      * IPv[46] Mapping
      */
@@ -290,7 +290,7 @@ typedef struct fib_entry_src_t_ {
     /**
      * A vector of path extensions
      */
-    struct fib_path_ext_t_ *fes_path_exts;
+    fib_path_ext_list_t fes_path_exts;
 
     /**
      * The path-list created by the source
@@ -533,6 +533,8 @@ extern int fib_entry_is_sourced(fib_node_index_t fib_entry_index,
 
 extern fib_node_index_t fib_entry_get_path_list(fib_node_index_t fib_entry_index);
 extern int fib_entry_is_resolved(fib_node_index_t fib_entry_index);
+extern void fib_entry_set_flow_hash_config(fib_node_index_t fib_entry_index,
+                                           flow_hash_config_t hash_config);
 
 extern void fib_entry_module_init(void);
 

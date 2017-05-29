@@ -213,6 +213,7 @@ fill_free_list (vlib_main_t * vm,
       mb2 = vm->mbuf_alloc_list[i + 2];
       mb3 = vm->mbuf_alloc_list[i + 3];
 
+#if RTE_VERSION < RTE_VERSION_NUM(17, 5, 0, 0)
       ASSERT (rte_mbuf_refcnt_read (mb0) == 0);
       ASSERT (rte_mbuf_refcnt_read (mb1) == 0);
       ASSERT (rte_mbuf_refcnt_read (mb2) == 0);
@@ -222,6 +223,7 @@ fill_free_list (vlib_main_t * vm,
       rte_mbuf_refcnt_set (mb1, 1);
       rte_mbuf_refcnt_set (mb2, 1);
       rte_mbuf_refcnt_set (mb3, 1);
+#endif
 
       b0 = vlib_buffer_from_rte_mbuf (mb0);
       b1 = vlib_buffer_from_rte_mbuf (mb1);
@@ -257,8 +259,10 @@ fill_free_list (vlib_main_t * vm,
     {
       mb0 = vm->mbuf_alloc_list[i];
 
+#if RTE_VERSION < RTE_VERSION_NUM(17, 5, 0, 0)
       ASSERT (rte_mbuf_refcnt_read (mb0) == 0);
       rte_mbuf_refcnt_set (mb0, 1);
+#endif
 
       b0 = vlib_buffer_from_rte_mbuf (mb0);
       bi0 = vlib_get_buffer_index (vm, b0);
@@ -455,8 +459,8 @@ vlib_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
 	uword save_vpm_start, save_vpm_end, save_vpm_size;
 	struct rte_mempool_memhdr *memhdr;
 
-	this_pool_start = ~0ULL;
-	this_pool_end = 0LL;
+	this_pool_start = ~0;
+	this_pool_end = 0;
 
 	STAILQ_FOREACH (memhdr, &rmp->mem_list, next)
 	{
@@ -465,7 +469,7 @@ vlib_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
 	  if (((uword) memhdr->addr) < this_pool_start)
 	    this_pool_start = (uword) (memhdr->addr);
 	}
-	ASSERT (this_pool_start < ~0ULL && this_pool_end > 0);
+	ASSERT (this_pool_start < ~0 && this_pool_end > 0);
 	this_pool_size = this_pool_end - this_pool_start;
 
 	if (CLIB_DEBUG > 1)

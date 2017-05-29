@@ -12,11 +12,14 @@
 # limitations under the License.
 
 # vector packet processor
+
+MACHINE=$(shell uname -m)
+
 vpp_arch = native
-ifeq ($(shell uname -m),x86_64)
+ifeq ($(MACHINE),$(filter $(MACHINE),x86_64 i686))
 vpp_march = corei7			# Nehalem Instruction set
 vpp_mtune = corei7-avx			# Optimize for Sandy Bridge
-else ifeq ($(shell uname -m),aarch64)
+else ifeq ($(MACHINE),aarch64)
 ifeq ($(TARGET_PLATFORM),thunderx)
 vpp_march = armv8-a+crc
 vpp_mtune = thunderx
@@ -42,6 +45,11 @@ vpp_root_packages = vpp gmod
 # vpp_dpdk_inc_dir = /usr/include/dpdk
 # vpp_dpdk_lib_dir = /usr/lib
 # vpp_dpdk_shared_lib = yes
+
+# load balancer plugin is not portable on 32 bit platform
+ifeq ($(MACHINE),i686)
+vpp_configure_args_vpp = --disable-lb-plugin
+endif
 
 vpp_debug_TAG_CFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 -march=$(MARCH) \
 	-fstack-protector-all -fPIC -Werror

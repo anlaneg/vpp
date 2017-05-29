@@ -624,6 +624,12 @@ vl_msg_api_replay_handler (void *the_msg)
   /* do NOT free the message buffer... */
 }
 
+u32
+vl_msg_api_get_msg_length (void *msg_arg)
+{
+  return vl_msg_api_get_msg_length_inline (msg_arg);
+}
+
 /*
  * vl_msg_api_socket_handler
  */
@@ -828,7 +834,7 @@ vl_msg_api_set_first_available_msg_id (u16 first_avail)
 }
 
 u16
-vl_msg_api_get_msg_ids (char *name, int n)
+vl_msg_api_get_msg_ids (const char *name, int n)
 {
   api_main_t *am = &api_main;
   u8 *name_copy;
@@ -872,7 +878,7 @@ vl_msg_api_get_msg_ids (char *name, int n)
 }
 
 void
-vl_msg_api_add_msg_name_crc (api_main_t * am, char *string, u32 id)
+vl_msg_api_add_msg_name_crc (api_main_t * am, const char *string, u32 id)
 {
   uword *p;
 

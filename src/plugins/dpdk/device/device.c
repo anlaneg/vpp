@@ -44,7 +44,7 @@ static char *dpdk_tx_func_error_strings[] = {
 #undef _
 };
 
-clib_error_t *
+static clib_error_t *
 dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address)
 {
   int error;
@@ -62,26 +62,6 @@ dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address)
     {
       vec_reset_length (xd->default_mac_address);
       vec_add (xd->default_mac_address, address, sizeof (address));
-      return NULL;
-    }
-}
-
-clib_error_t *
-dpdk_set_mc_filter (vnet_hw_interface_t * hi,
-		    struct ether_addr mc_addr_vec[], int naddr)
-{
-  int error;
-  dpdk_main_t *dm = &dpdk_main;
-  dpdk_device_t *xd = vec_elt_at_index (dm->devices, hi->dev_instance);
-
-  error = rte_eth_dev_set_mc_addr_list (xd->device_index, mc_addr_vec, naddr);
-
-  if (error)
-    {
-      return clib_error_return (0, "mc addr list failed: %d", error);
-    }
-  else
-    {
       return NULL;
     }
 }
@@ -274,7 +254,11 @@ static_always_inline
 				  &tx_vector[tx_tail], tx_head - tx_tail);
 	  rv = rte_ring_sp_enqueue_burst (hqos->swq,
 					  (void **) &tx_vector[tx_tail],
+#if RTE_VERSION >= RTE_VERSION_NUM(17, 5, 0, 0)
+					  (uint16_t) (tx_head - tx_tail), 0);
+#else
 					  (uint16_t) (tx_head - tx_tail));
+#endif
 	}
       else if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
 	{
@@ -628,54 +612,28 @@ dpdk_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   uword is_up = (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) != 0;
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, hif->dev_instance);
-  int rv = 0;
+
+  if (xd->flags & DPDK_DEVICE_FLAG_PMD_INIT_FAIL)
+    return clib_error_return (0, "Interface not initialized");
 
   if (is_up)
     {
-      f64 now = vlib_time_now (dm->vlib_main);
-
+      vnet_hw_interface_set_flags (vnm, xd->hw_if_index,
+				   VNET_HW_INTERFACE_FLAG_LINK_UP);
       if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) == 0)
-	{
-	  rv = rte_eth_dev_start (xd->device_index);
-	  if (!rv && xd->default_mac_address)
-	    rv = rte_eth_dev_default_mac_addr_set (xd->device_index,
-						   (struct ether_addr *)
-						   xd->default_mac_address);
-	}
-
-      if (xd->flags & DPDK_DEVICE_FLAG_PROMISC)
-	rte_eth_promiscuous_enable (xd->device_index);
-      else
-	rte_eth_promiscuous_disable (xd->device_index);
-
-      rte_eth_allmulticast_enable (xd->device_index);
+	dpdk_device_start (xd);
       xd->flags |= DPDK_DEVICE_FLAG_ADMIN_UP;
+      f64 now = vlib_time_now (dm->vlib_main);
       dpdk_update_counters (xd, now);
       dpdk_update_link_state (xd, now);
     }
   else
     {
-      xd->flags &= ~DPDK_DEVICE_FLAG_ADMIN_UP;
-
-      rte_eth_allmulticast_disable (xd->device_index);
       vnet_hw_interface_set_flags (vnm, xd->hw_if_index, 0);
-      rte_eth_dev_stop (xd->device_index);
-
-      /* For bonded interface, stop slave links */
-      if (xd->pmd == VNET_DPDK_PMD_BOND)
-	{
-	  u8 slink[16];
-	  int nlink = rte_eth_bond_slaves_get (xd->device_index, slink, 16);
-	  while (nlink >= 1)
-	    {
-	      u8 dpdk_port = slink[--nlink];
-	      rte_eth_dev_stop (dpdk_port);
-	    }
-	}
+      if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) != 0)
+	dpdk_device_stop (xd);
+      xd->flags &= ~DPDK_DEVICE_FLAG_ADMIN_UP;
     }
-
-  if (rv < 0)
-    clib_warning ("rte_eth_dev_%s error: %d", is_up ? "start" : "stop", rv);
 
   return /* no error */ 0;
 }

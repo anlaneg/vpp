@@ -17,6 +17,8 @@
 
 #define offset_lt(_a, _b) ((i32)((_a)-(_b)) < 0)
 #define offset_leq(_a, _b) ((i32)((_a)-(_b)) <= 0)
+#define offset_gt(_a, _b) ((i32)((_a)-(_b)) > 0)
+#define offset_geq(_a, _b) ((i32)((_a)-(_b)) >= 0)
 
 u8 *
 format_ooo_segment (u8 * s, va_list * args)
@@ -52,19 +54,20 @@ format_svm_fifo (u8 * s, va_list * args)
 
   s = format (s, "cursize %u nitems %u has_event %d\n",
 	      f->cursize, f->nitems, f->has_event);
-  s = format (s, "head %d tail %d\n", f->head, f->tail);
+  s = format (s, " head %d tail %d\n", f->head, f->tail);
 
   if (verbose > 1)
     s = format
-      (s, "server session %d thread %d client session %d thread %d\n",
-       f->server_session_index, f->server_thread_index,
+      (s, " server session %d thread %d client session %d thread %d\n",
+       f->master_session_index, f->master_thread_index,
        f->client_session_index, f->client_thread_index);
 
   if (verbose)
     {
-      s = format (s, "ooo pool %d active elts\n",
+      s = format (s, " ooo pool %d active elts\n",
 		  pool_elts (f->ooo_segments));
-      s = format (s, "%U", format_ooo_list, f);
+      if (svm_fifo_has_ooo_data (f))
+	s = format (s, " %U", format_ooo_list, f);
     }
   return s;
 }
@@ -160,14 +163,23 @@ ooo_segment_add (svm_fifo_t * f, u32 offset, u32 length)
 	 && offset_leq (ooo_segment_offset (f, s), offset))
     s = pool_elt_at_index (f->ooo_segments, s->next);
 
+  /* If we have a previous and we overlap it, use it as starting point */
+  prev = ooo_segment_get_prev (f, s);
+  if (prev && offset_leq (offset, ooo_segment_end_offset (f, prev)))
+    {
+      s = prev;
+      prev = ooo_segment_get_prev (f, s);
+      s_sof = ooo_segment_offset (f, s);
+      s_eof = ooo_segment_end_offset (f, s);
+      goto merge;
+    }
+
   s_index = s - f->ooo_segments;
   s_sof = ooo_segment_offset (f, s);
   s_eof = ooo_segment_end_offset (f, s);
-  prev = ooo_segment_get_prev (f, s);
 
   /* No overlap, add before current segment */
-  if (offset_lt (end_offset, s_sof)
-      && (!prev || offset_lt (prev->start + prev->length, offset)))
+  if (offset_lt (end_offset, s_sof))
     {
       new_s = ooo_segment_new (f, offset, length);
       new_index = new_s - f->ooo_segments;
@@ -192,7 +204,7 @@ ooo_segment_add (svm_fifo_t * f, u32 offset, u32 length)
       return;
     }
   /* No overlap, add after current segment */
-  else if (offset_lt (s_eof, offset))
+  else if (offset_gt (offset, s_eof))
     {
       new_s = ooo_segment_new (f, offset, length);
       new_index = new_s - f->ooo_segments;
@@ -218,62 +230,16 @@ ooo_segment_add (svm_fifo_t * f, u32 offset, u32 length)
    * Merge needed
    */
 
+merge:
+
   /* Merge at head */
-  if (offset_leq (offset, s_sof))
+  if (offset_lt (offset, s_sof))
     {
-      /* If we have a previous, check if we overlap */
-      if (s->prev != OOO_SEGMENT_INVALID_INDEX)
-	{
-	  prev = pool_elt_at_index (f->ooo_segments, s->prev);
-
-	  /* New segment merges prev and current. Remove previous and
-	   * update position of current. */
-	  if (offset_leq (offset, ooo_segment_end_offset (f, prev)))
-	    {
-	      s->start = prev->start;
-	      s->length = s_eof - ooo_segment_offset (f, prev);
-	      ooo_segment_del (f, s->prev);
-	    }
-	  else
-	    {
-	      s->start = offset;
-	      s->length = s_eof - ooo_segment_offset (f, s);
-	    }
-	}
-      else
-	{
-	  s->start = offset;
-	  s->length = s_eof - ooo_segment_offset (f, s);
-	}
-
-      /* The new segment's tail may cover multiple smaller ones */
-      if (offset_lt (s_eof, end_offset))
-	{
-	  /* Remove segments completely covered */
-	  it = (s->next != OOO_SEGMENT_INVALID_INDEX) ?
-	    pool_elt_at_index (f->ooo_segments, s->next) : 0;
-	  while (it && offset_lt (ooo_segment_end_offset (f, it), end_offset))
-	    {
-	      next = (it->next != OOO_SEGMENT_INVALID_INDEX) ?
-		pool_elt_at_index (f->ooo_segments, it->next) : 0;
-	      ooo_segment_del (f, it - f->ooo_segments);
-	      it = next;
-	    }
-
-	  /* Update length. Segment's start might have changed. */
-	  s->length = end_offset - ooo_segment_offset (f, s);
-
-	  /* If partial overlap with last, merge */
-	  if (it && offset_lt (ooo_segment_offset (f, it), end_offset))
-	    {
-	      s->length +=
-		it->length - (ooo_segment_offset (f, it) - end_offset);
-	      ooo_segment_del (f, it - f->ooo_segments);
-	    }
-	}
+      s->start = offset;
+      s->length = s_eof - ooo_segment_offset (f, s);
     }
   /* Last but overlapping previous */
-  else if (offset_leq (s_eof, end_offset))
+  else if (offset_gt (end_offset, s_eof))
     {
       s->length = end_offset - ooo_segment_offset (f, s);
     }
@@ -281,8 +247,33 @@ ooo_segment_add (svm_fifo_t * f, u32 offset, u32 length)
   else
     {
       /* Do Nothing */
+      goto done;
     }
 
+  /* The new segment's tail may cover multiple smaller ones */
+  if (offset_geq (end_offset, s_eof))
+    {
+      /* Remove the completely overlapped segments */
+      it = (s->next != OOO_SEGMENT_INVALID_INDEX) ?
+	pool_elt_at_index (f->ooo_segments, s->next) : 0;
+      while (it && offset_leq (ooo_segment_end_offset (f, it), end_offset))
+	{
+	  next = (it->next != OOO_SEGMENT_INVALID_INDEX) ?
+	    pool_elt_at_index (f->ooo_segments, it->next) : 0;
+	  ooo_segment_del (f, it - f->ooo_segments);
+	  it = next;
+	}
+
+      /* If partial overlap with last, merge */
+      if (it && offset_leq (ooo_segment_offset (f, it), end_offset))
+	{
+	  s->length = ooo_segment_end_offset (f, it) -
+	    ooo_segment_offset (f, s);
+	  ooo_segment_del (f, it - f->ooo_segments);
+	}
+    }
+
+done:
   /* Most recently updated segment */
   f->ooos_newest = s - f->ooo_segments;
 }
@@ -296,14 +287,17 @@ ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued)
 {
   ooo_segment_t *s;
   u32 index, bytes = 0, diff;
-  u32 cursize;
+  u32 cursize, norm_start, nitems;
 
   /* current size has not yet been updated */
   cursize = svm_fifo_max_dequeue (f) + n_bytes_enqueued;
+  nitems = f->nitems;
 
   s = pool_elt_at_index (f->ooo_segments, f->ooos_list_head);
 
-  diff = (f->nitems + (i32) (f->tail - s->start)) % f->nitems;
+  norm_start = s->start % nitems;
+  diff = (f->nitems + (i32) (f->tail - norm_start)) % nitems;
+
   if (diff > cursize)
     return 0;
 
@@ -326,7 +320,8 @@ ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued)
       if (s->next != OOO_SEGMENT_INVALID_INDEX)
 	{
 	  s = pool_elt_at_index (f->ooo_segments, s->next);
-	  diff = (f->nitems + (i32) (f->tail - s->start)) % f->nitems;
+	  norm_start = s->start % nitems;
+	  diff = (f->nitems + (i32) (f->tail - norm_start)) % nitems;
 	  ooo_segment_del (f, index);
 	}
       /* End of search */
@@ -340,11 +335,11 @@ ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued)
   /* If tail is adjacent to an ooo segment, 'consume' it */
   if (diff == 0)
     {
-      bytes = ((f->nitems - cursize) >= s->length) ? s->length :
-	f->nitems - cursize;
+      bytes = ((nitems - cursize) >= s->length) ? s->length :
+	nitems - cursize;
 
       f->tail += bytes;
-      f->tail %= f->nitems;
+      f->tail %= nitems;
 
       ooo_segment_del (f, s - f->ooo_segments);
     }
@@ -353,8 +348,7 @@ ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued)
 }
 
 static int
-svm_fifo_enqueue_internal (svm_fifo_t * f,
-			   int pid, u32 max_bytes, u8 * copy_from_here)
+svm_fifo_enqueue_internal (svm_fifo_t * f, u32 max_bytes, u8 * copy_from_here)
 {
   u32 total_copy_bytes, first_copy_bytes, second_copy_bytes;
   u32 cursize, nitems;
@@ -411,10 +405,9 @@ svm_fifo_enqueue_internal (svm_fifo_t * f,
 }
 
 int
-svm_fifo_enqueue_nowait (svm_fifo_t * f,
-			 int pid, u32 max_bytes, u8 * copy_from_here)
+svm_fifo_enqueue_nowait (svm_fifo_t * f, u32 max_bytes, u8 * copy_from_here)
 {
-  return svm_fifo_enqueue_internal (f, pid, max_bytes, copy_from_here);
+  return svm_fifo_enqueue_internal (f, max_bytes, copy_from_here);
 }
 
 /**
@@ -426,38 +419,28 @@ svm_fifo_enqueue_nowait (svm_fifo_t * f,
  */
 static int
 svm_fifo_enqueue_with_offset_internal (svm_fifo_t * f,
-				       int pid,
 				       u32 offset,
 				       u32 required_bytes,
 				       u8 * copy_from_here)
 {
   u32 total_copy_bytes, first_copy_bytes, second_copy_bytes;
   u32 cursize, nitems;
-  u32 normalized_offset;
-  int rv;
-
-  /* Users would do well to avoid this */
-  if (PREDICT_FALSE (f->tail == (offset % f->nitems)))
-    {
-      rv = svm_fifo_enqueue_internal (f, pid, required_bytes, copy_from_here);
-      if (rv > 0)
-	return 0;
-      return -1;
-    }
+  u32 normalized_offset, offset_from_tail;
 
   /* read cursize, which can only increase while we're working */
   cursize = svm_fifo_max_dequeue (f);
   nitems = f->nitems;
+  normalized_offset = offset % nitems;
 
   /* Will this request fit? */
-  if ((required_bytes + (offset - f->tail) % nitems) > (nitems - cursize))
+  offset_from_tail = (nitems + normalized_offset - f->tail) % nitems;
+  if ((required_bytes + offset_from_tail) > (nitems - cursize))
     return -1;
 
   ooo_segment_add (f, offset, required_bytes);
 
   /* Number of bytes we're going to copy */
   total_copy_bytes = required_bytes;
-  normalized_offset = offset % nitems;
 
   /* Number of bytes in first copy segment */
   first_copy_bytes = ((nitems - normalized_offset) < total_copy_bytes)
@@ -484,18 +467,16 @@ svm_fifo_enqueue_with_offset_internal (svm_fifo_t * f,
 
 int
 svm_fifo_enqueue_with_offset (svm_fifo_t * f,
-			      int pid,
 			      u32 offset,
 			      u32 required_bytes, u8 * copy_from_here)
 {
-  return svm_fifo_enqueue_with_offset_internal
-    (f, pid, offset, required_bytes, copy_from_here);
+  return svm_fifo_enqueue_with_offset_internal (f, offset, required_bytes,
+						copy_from_here);
 }
 
 
 static int
-svm_fifo_dequeue_internal (svm_fifo_t * f,
-			   int pid, u32 max_bytes, u8 * copy_here)
+svm_fifo_dequeue_internal (svm_fifo_t * f, u32 max_bytes, u8 * copy_here)
 {
   u32 total_copy_bytes, first_copy_bytes, second_copy_bytes;
   u32 cursize, nitems;
@@ -545,14 +526,13 @@ svm_fifo_dequeue_internal (svm_fifo_t * f,
 }
 
 int
-svm_fifo_dequeue_nowait (svm_fifo_t * f,
-			 int pid, u32 max_bytes, u8 * copy_here)
+svm_fifo_dequeue_nowait (svm_fifo_t * f, u32 max_bytes, u8 * copy_here)
 {
-  return svm_fifo_dequeue_internal (f, pid, max_bytes, copy_here);
+  return svm_fifo_dequeue_internal (f, max_bytes, copy_here);
 }
 
 int
-svm_fifo_peek (svm_fifo_t * f, int pid, u32 relative_offset, u32 max_bytes,
+svm_fifo_peek (svm_fifo_t * f, u32 relative_offset, u32 max_bytes,
 	       u8 * copy_here)
 {
   u32 total_copy_bytes, first_copy_bytes, second_copy_bytes;
@@ -590,7 +570,7 @@ svm_fifo_peek (svm_fifo_t * f, int pid, u32 relative_offset, u32 max_bytes,
 }
 
 int
-svm_fifo_dequeue_drop (svm_fifo_t * f, int pid, u32 max_bytes)
+svm_fifo_dequeue_drop (svm_fifo_t * f, u32 max_bytes)
 {
   u32 total_drop_bytes, first_drop_bytes, second_drop_bytes;
   u32 cursize, nitems;
@@ -635,6 +615,15 @@ ooo_segment_t *
 svm_fifo_first_ooo_segment (svm_fifo_t * f)
 {
   return pool_elt_at_index (f->ooo_segments, f->ooos_list_head);
+}
+
+/**
+ * Set fifo pointers to requested offset
+ */
+void
+svm_fifo_init_pointers (svm_fifo_t * f, u32 pointer)
+{
+  f->head = f->tail = pointer % f->nitems;
 }
 
 /*

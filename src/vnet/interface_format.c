@@ -45,7 +45,9 @@ format_vnet_sw_interface_flags (u8 * s, va_list * args)
 {
   u32 flags = va_arg (*args, u32);
 
-  if (flags & VNET_SW_INTERFACE_FLAG_BOND_SLAVE)
+  if (flags & VNET_SW_INTERFACE_FLAG_ERROR)
+    s = format (s, "error");
+  else if (flags & VNET_SW_INTERFACE_FLAG_BOND_SLAVE)
     s = format (s, "bond-slave");
   else
     {
@@ -56,6 +58,23 @@ format_vnet_sw_interface_flags (u8 * s, va_list * args)
     }
 
   return s;
+}
+
+u8 *
+format_vnet_hw_interface_rx_mode (u8 * s, va_list * args)
+{
+  vnet_hw_interface_rx_mode mode = va_arg (*args, vnet_hw_interface_rx_mode);
+
+  if (mode == VNET_HW_INTERFACE_RX_MODE_POLLING)
+    return format (s, "polling");
+
+  if (mode == VNET_HW_INTERFACE_RX_MODE_INTERRUPT)
+    return format (s, "interrupt");
+
+  if (mode == VNET_HW_INTERFACE_RX_MODE_ADAPTIVE)
+    return format (s, "adaptive");
+
+  return format (s, "unknown");
 }
 
 u8 *

@@ -409,12 +409,12 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 				  format_unformat_error, input);
     }
 
+  error = setup_signal_handlers (um);
+  if (error)
+    return error;
+
   if (!(um->flags & UNIX_FLAG_INTERACTIVE))
     {
-      error = setup_signal_handlers (um);
-      if (error)
-	return error;
-
       openlog (vm->name, LOG_CONS | LOG_PERROR | LOG_PID, LOG_DAEMON);
       clib_error_register_handler (unix_error_handler, um);
 
@@ -565,7 +565,7 @@ vlib_unix_main (int argc, char *argv[])
 
   vlib_thread_stack_init (0);
 
-  vlib_thread_index = 0;
+  __os_thread_index = 0;
 
   i = clib_calljmp (thread0, (uword) vm,
 		    (void *) (vlib_thread_stacks[0] +

@@ -15,8 +15,8 @@
 
 #include <vnet/ip/ip.h>
 #include <vnet/dpo/lookup_dpo.h>
-#include <vnet/dpo/load_balance.h>
-#include <vnet/mpls/mpls.h>
+#include <vnet/dpo/load_balance_map.h>
+#include <vnet/mpls/mpls_lookup.h>
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/fib/ip6_fib.h>
@@ -999,7 +999,7 @@ lookup_dpo_mpls_inline (vlib_main_t * vm,
 
         while (n_left_from > 0 && n_left_to_next > 0)
         {
-            u32 bi0, lkdi0, lbi0, fib_index0,  next0;
+            u32 bi0, lkdi0, lbi0, fib_index0, next0, hash0;
             const mpls_unicast_header_t * hdr0;
             const load_balance_t *lb0;
             const lookup_dpo_t * lkd0;
@@ -1043,9 +1043,44 @@ lookup_dpo_mpls_inline (vlib_main_t * vm,
             next0 = dpo0->dpoi_next_node;
             vnet_buffer(b0)->ip.adj_index[VLIB_TX] = dpo0->dpoi_index;
 
-            vlib_increment_combined_counter
-                (cm, thread_index, lbi0, 1,
-                 vlib_buffer_length_in_chain (vm, b0));
+
+            if (MPLS_IS_REPLICATE & lbi0)
+            {
+                next0 = mpls_lookup_to_replicate_edge;
+                vnet_buffer (b0)->ip.adj_index[VLIB_TX] =
+                    (lbi0 & ~MPLS_IS_REPLICATE);
+            }
+            else
+            {
+                lb0 = load_balance_get(lbi0);
+                ASSERT (lb0->lb_n_buckets > 0);
+                ASSERT (is_pow2 (lb0->lb_n_buckets));
+
+                if (PREDICT_FALSE(lb0->lb_n_buckets > 1))
+                {
+                    hash0 = vnet_buffer (b0)->ip.flow_hash =
+                        mpls_compute_flow_hash(hdr0, lb0->lb_hash_config);
+                    dpo0 = load_balance_get_fwd_bucket
+                        (lb0,
+                         (hash0 & (lb0->lb_n_buckets_minus_1)));
+                }
+                else
+                {
+                    dpo0 = load_balance_get_bucket_i (lb0, 0);
+                }
+                next0 = dpo0->dpoi_next_node;
+
+                vnet_buffer (b0)->ip.adj_index[VLIB_TX] = dpo0->dpoi_index;
+
+                vlib_increment_combined_counter
+                    (cm, thread_index, lbi0, 1,
+                     vlib_buffer_length_in_chain (vm, b0));
+            }
+
+          vnet_buffer (b0)->mpls.ttl = ((char*)hdr0)[3];
+            vnet_buffer (b0)->mpls.exp = (((char*)hdr0)[2] & 0xe) >> 1;
+            vnet_buffer (b0)->mpls.first = 1;
+            vlib_buffer_advance(b0, sizeof(*hdr0));
 
 	    if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED)) 
             {
@@ -1206,7 +1241,7 @@ lookup_dpo_ip_dst_mcast_inline (vlib_main_t * vm,
 
             vnet_buffer (b0)->ip.adj_index[VLIB_TX] = mfei0;
 
-           vlib_validate_buffer_enqueue_x1(vm, node, next_index, to_next,
+            vlib_validate_buffer_enqueue_x1(vm, node, next_index, to_next,
                                             n_left_to_next, bi0, next0);
         }
         vlib_put_next_frame (vm, node, next_index, n_left_to_next);
@@ -1235,6 +1270,28 @@ VLIB_REGISTER_NODE (lookup_ip4_dst_mcast_node) = {
 };
 VLIB_NODE_FUNCTION_MULTIARCH (lookup_ip4_dst_mcast_node,
                               lookup_ip4_dst_mcast)
+
+always_inline uword
+lookup_ip6_dst_mcast (vlib_main_t * vm,
+                      vlib_node_runtime_t * node,
+                      vlib_frame_t * from_frame)
+{
+    return (lookup_dpo_ip_dst_mcast_inline(vm, node, from_frame, 0));
+}
+
+VLIB_REGISTER_NODE (lookup_ip6_dst_mcast_node) = {
+    .function = lookup_ip6_dst_mcast,
+    .name = "lookup-ip6-dst-mcast",
+    .vector_size = sizeof (u32),
+
+    .format_trace = format_lookup_trace,
+    .n_next_nodes = LOOKUP_IP_DST_MCAST_N_NEXT,
+    .next_nodes = {
+        [LOOKUP_IP_DST_MCAST_NEXT_RPF] = "ip6-mfib-forward-rpf",
+    },
+};
+VLIB_NODE_FUNCTION_MULTIARCH (lookup_ip6_dst_mcast_node,
+                              lookup_ip6_dst_mcast)
 
 static void
 lookup_dpo_mem_show (void)

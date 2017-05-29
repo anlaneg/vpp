@@ -18,4 +18,6 @@ install-exec-local:
 	--root /                                                        \
 	--prefix $(DESTDIR)$(prefix)                                    \
 	--single-version-externally-managed                             \
-	--verbose)
+	--verbose                                                       \
+	bdist_egg 							\
+	--dist-dir=$(DESTDIR)$(prefix))

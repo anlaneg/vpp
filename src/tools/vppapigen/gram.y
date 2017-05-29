@@ -38,7 +38,7 @@ void generate (YYSTYPE);
 %token NAME RPAR LPAR SEMI LBRACK RBRACK NUMBER PRIMTYPE BARF
 %token TPACKED DEFINE LCURLY RCURLY STRING UNION
 %token HELPER_STRING COMMA 
-%token NOVERSION MANUAL_PRINT MANUAL_ENDIAN TYPEONLY DONT_TRACE
+%token NOVERSION MANUAL_PRINT MANUAL_ENDIAN TYPEONLY DONT_TRACE AUTOREPLY
 
 %%
 
@@ -53,9 +53,9 @@ stmt:     flist defn            {$$ = set_flags($1, $2);}
         | defn                  {$$ = $1;}
           ;
 
-flist:    flist flag            {$$ = (YYSTYPE)(unsigned long long)
-                                     ((unsigned long long) $1 
-                                    | (unsigned long long) $2);}
+flist:    flist flag            {$$ = (YYSTYPE)(unsigned long)
+                                     ((unsigned long) $1 
+                                    | (unsigned long) $2);}
         | flag                  {$$ = $1;}
           ;
 
@@ -64,6 +64,7 @@ flag:
         | MANUAL_ENDIAN         {$$ = $1;}
         | DONT_TRACE            {$$ = $1;}
         | TYPEONLY              {$$ = $1;}
+        | AUTOREPLY             {$$ = $1;}
           ;
 
 defn:     DEFINE NAME LCURLY defbody RCURLY SEMI 

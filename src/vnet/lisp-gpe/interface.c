@@ -653,6 +653,12 @@ lisp_gpe_add_l2_iface (lisp_gpe_main_t * lgm, u32 vni, u32 bd_id)
   uword *hip, *si;
   u16 bd_index;
 
+  if (bd_id > L2_BD_ID_MAX)
+    {
+      clib_warning ("bridge domain ID %d exceed 16M limit", bd_id);
+      return ~0;
+    }
+
   bd_index = bd_find_or_add_bd_index (&bd_main, bd_id);
   hip = hash_get (l2_ifaces->hw_if_index_by_dp_table, bd_index);
 
@@ -705,11 +711,11 @@ void
 lisp_gpe_del_l2_iface (lisp_gpe_main_t * lgm, u32 vni, u32 bd_id)
 {
   tunnel_lookup_t *l2_ifaces = &lgm->l2_ifaces;
-  u16 bd_index;
-  uword *hip;
+  vnet_hw_interface_t *hi;
 
-  bd_index = bd_find_or_add_bd_index (&bd_main, bd_id);
-  hip = hash_get (l2_ifaces->hw_if_index_by_dp_table, bd_index);
+  u32 bd_index = bd_find_index (&bd_main, bd_id);
+  ASSERT (bd_index != ~0);
+  uword *hip = hash_get (l2_ifaces->hw_if_index_by_dp_table, bd_index);
 
   if (hip == 0)
     {
@@ -717,6 +723,11 @@ lisp_gpe_del_l2_iface (lisp_gpe_main_t * lgm, u32 vni, u32 bd_id)
 		    bd_id);
       return;
     }
+
+  /* Remove interface from bridge .. by enabling L3 mode */
+  hi = vnet_get_hw_interface (lgm->vnet_main, hip[0]);
+  set_int_l2_mode (lgm->vlib_main, lgm->vnet_main, MODE_L3, hi->sw_if_index,
+		   0, 0, 0, 0);
   lisp_gpe_remove_iface (lgm, hip[0], bd_index, &lgm->l2_ifaces);
 }
 

@@ -96,11 +96,6 @@ typedef struct fib_walk_t_
 static fib_walk_t *fib_walk_pool;
 
 /**
- * @brief There's only one event type sent to the walk process
- */
-#define FIB_WALK_EVENT 0
-
-/**
  * Statistics maintained per-walk queue
  */
 typedef enum fib_walk_queue_stats_t_
@@ -240,9 +235,12 @@ fib_walk_queue_get_front (fib_walk_priority_t prio)
 }
 
 static void
-fib_walk_destroy (fib_walk_t *fwalk)
+fib_walk_destroy (index_t fwi)
 {
+    fib_walk_t *fwalk;
     u32 bucket, ii;
+
+    fwalk = fib_walk_get(fwi);
 
     if (FIB_NODE_INDEX_INVALID != fwalk->fw_prio_sibling)
     {
@@ -251,6 +249,12 @@ fib_walk_destroy (fib_walk_t *fwalk)
     fib_node_child_remove(fwalk->fw_parent.fnp_type,
 			  fwalk->fw_parent.fnp_index,
 			  fwalk->fw_dep_sibling);
+
+    /*
+     * refetch the walk object. More walks could have been spawned as a result
+     * of releasing the lock on the parent.
+     */
+    fwalk = fib_walk_get(fwi);
 
     /*
      * add the stats to the continuous histogram collection.
@@ -318,10 +322,10 @@ typedef enum fib_walk_advance_rc_t_
 static fib_walk_advance_rc_t
 fib_walk_advance (fib_node_index_t fwi)
 {
-    fib_node_back_walk_ctx_t *ctx, *old;
     fib_node_back_walk_rc_t wrc;
     fib_node_ptr_t sibling;
     fib_walk_t *fwalk;
+    uint n_ctxs, ii;
     int more_elts;
 
     /*
@@ -335,12 +339,20 @@ fib_walk_advance (fib_node_index_t fwi)
 
     if (more_elts)
     {
-        old = fwalk->fw_ctx;
 
-	vec_foreach(ctx, fwalk->fw_ctx)
-	{
-	    wrc = fib_node_back_walk_one(&sibling, ctx);
+        /*
+         * loop through the backwalk contexts. This can grow in length
+         * as walks on the same object meet each other. Order is preserved so the
+         * most recently started walk as at the back of the vector.
+         */
+        ii = 0;
+        n_ctxs = vec_len(fwalk->fw_ctx);
 
+        while (ii < n_ctxs)
+        {
+	    wrc = fib_node_back_walk_one(&sibling, &fwalk->fw_ctx[ii]);
+
+            ii++;
 	    fwalk = fib_walk_get(fwi);
 	    fwalk->fw_n_visits++;
 
@@ -352,14 +364,11 @@ fib_walk_advance (fib_node_index_t fwi)
 		 */
 		return (FIB_WALK_ADVANCE_MERGE);
 	    }
-            if (old != fwalk->fw_ctx)
-            {
-                /*
-                 * nasty re-entrant addition of a walk has realloc'd the vector
-                 * break out
-                 */
-		return (FIB_WALK_ADVANCE_MERGE);
-	    }
+
+            /*
+             * re-evaluate the number of backwalk contexts we need to process.
+             */
+            n_ctxs = vec_len(fwalk->fw_ctx);
 	}
 	/*
 	 * move foward to the next node to visit
@@ -466,8 +475,7 @@ fib_walk_process_queues (vlib_main_t * vm,
 	     */
 	    if (FIB_WALK_ADVANCE_MORE != rc)
 	    {
-		fwalk = fib_walk_get(fwi);
-		fib_walk_destroy(fwalk);
+                fib_walk_destroy(fwi);
 		fib_walk_queues.fwqs_queues[prio].fwq_stats[FIB_WALK_COMPLETED]++;
 	    }
 	    else
@@ -511,6 +519,16 @@ that_will_do_for_now:
 }
 
 /**
+ * Events sent to the FIB walk process
+ */
+typedef enum fib_walk_process_event_t_
+{
+    FIB_WALK_PROCESS_EVENT_DATA,
+    FIB_WALK_PROCESS_EVENT_ENABLE,
+    FIB_WALK_PROCESS_EVENT_DISABLE,
+} fib_walk_process_event;
+
+/**
  * @brief The 'fib-walk' process's main loop.
  */
 static uword
@@ -518,22 +536,47 @@ fib_walk_process (vlib_main_t * vm,
 		  vlib_node_runtime_t * node,
 		  vlib_frame_t * f)
 {
+    uword event_type, *event_data = 0;
     f64 sleep_time;
+    int enabled;
 
+    enabled = 1;
     sleep_time = fib_walk_sleep_duration[FIB_WALK_SHORT_SLEEP];
 
     while (1)
     {
-	vlib_process_wait_for_event_or_clock(vm, sleep_time);
+        /*
+         * the feature to disable/enable this walk process is only
+         * for testing purposes
+         */
+        if (enabled)
+        {
+            vlib_process_wait_for_event_or_clock(vm, sleep_time);
+        }
+        else
+        {
+            vlib_process_wait_for_event(vm);
+        }
 
-	/*
-	 * there may be lots of event queued between the processes,
-	 * but the walks we want to schedule are in the priority queues,
-	 * so we ignore the process events.
-	 */
-	vlib_process_get_events(vm, NULL);
+        event_type = vlib_process_get_events(vm, &event_data);
+        vec_reset_length(event_data);
 
-	sleep_time = fib_walk_process_queues(vm, quota);
+        switch (event_type)
+	{
+	case FIB_WALK_PROCESS_EVENT_ENABLE:
+            enabled = 1;
+            break;
+	case FIB_WALK_PROCESS_EVENT_DISABLE:
+            enabled = 0;
+            break;
+	default:
+            break;
+	}
+
+        if (enabled)
+        {
+            sleep_time = fib_walk_process_queues(vm, quota);
+        }
     }
 
     /*
@@ -610,8 +653,8 @@ fib_walk_prio_queue_enquue (fib_walk_priority_t prio,
      */
     vlib_process_signal_event(vlib_get_main(),
 			      fib_walk_process_node.index,
-			      FIB_WALK_EVENT,
-			      FIB_WALK_EVENT);
+			      FIB_WALK_PROCESS_EVENT_DATA,
+			      0);
 
     return (sibling);
 }
@@ -742,7 +785,7 @@ fib_walk_sync (fib_node_type_t parent_type,
 	    ASSERT(FIB_NODE_INDEX_INVALID != merged_walk.fnp_index);
 	    ASSERT(FIB_NODE_TYPE_WALK == merged_walk.fnp_type);
 
-	    fib_walk_destroy(fwalk);
+	    fib_walk_destroy(fwi);
 
 	    fwi = merged_walk.fnp_index;
 	    fwalk = fib_walk_get(fwi);
@@ -774,7 +817,7 @@ fib_walk_sync (fib_node_type_t parent_type,
 
     if (NULL != fwalk)
     {
-	fib_walk_destroy(fwalk);
+	fib_walk_destroy(fwi);
     }
 }
 
@@ -1105,4 +1148,48 @@ VLIB_CLI_COMMAND (fib_walk_clear_command, static) = {
     .path = "clear fib walk",
     .short_help = "clear fib walk",
     .function = fib_walk_clear,
+};
+
+void
+fib_walk_process_enable (void)
+{
+    vlib_process_signal_event(vlib_get_main(),
+                              fib_walk_process_node.index,
+                              FIB_WALK_PROCESS_EVENT_ENABLE,
+                              0);
+}
+
+void
+fib_walk_process_disable (void)
+{
+    vlib_process_signal_event(vlib_get_main(),
+                              fib_walk_process_node.index,
+                              FIB_WALK_PROCESS_EVENT_DISABLE,
+                              0);
+}
+
+static clib_error_t *
+fib_walk_process_enable_disable (vlib_main_t * vm,
+                                 unformat_input_t * input,
+                                 vlib_cli_command_t * cmd)
+{
+    if (unformat (input, "enable"))
+    {
+        fib_walk_process_enable();
+    }
+    else if (unformat (input, "disable"))
+    {
+        fib_walk_process_disable();
+    }
+    else
+    {
+        return clib_error_return(0, "choose enable or disable");
+    }
+    return (NULL);
+}
+
+VLIB_CLI_COMMAND (fib_walk_process_command, static) = {
+    .path = "test fib-walk-process",
+    .short_help = "test fib-walk-process [enable|disable]",
+    .function = fib_walk_process_enable_disable,
 };

@@ -150,11 +150,30 @@ tcp_connection_del (tcp_connection_t * tc)
 void
 tcp_connection_reset (tcp_connection_t * tc)
 {
-  if (tc->state == TCP_STATE_CLOSED)
-    return;
+  switch (tc->state)
+    {
+    case TCP_STATE_SYN_RCVD:
+      /* Cleanup everything. App wasn't notified yet */
+      stream_session_delete_notify (&tc->connection);
+      tcp_connection_cleanup (tc);
+      break;
+    case TCP_STATE_SYN_SENT:
+    case TCP_STATE_ESTABLISHED:
+    case TCP_STATE_CLOSE_WAIT:
+    case TCP_STATE_FIN_WAIT_1:
+    case TCP_STATE_FIN_WAIT_2:
+    case TCP_STATE_CLOSING:
+      tc->state = TCP_STATE_CLOSED;
 
-  tc->state = TCP_STATE_CLOSED;
-  stream_session_reset_notify (&tc->connection);
+      /* Make sure all timers are cleared */
+      tcp_connection_timers_reset (tc);
+
+      stream_session_reset_notify (&tc->connection);
+      break;
+    case TCP_STATE_CLOSED:
+      return;
+    }
+
 }
 
 /**
@@ -331,7 +350,7 @@ void
 tcp_connection_init_vars (tcp_connection_t * tc)
 {
   tcp_connection_timers_init (tc);
-  tcp_set_snd_mss (tc);
+  tcp_init_mss (tc);
   scoreboard_init (&tc->sack_sb);
   tcp_cc_init (tc);
 }
@@ -442,13 +461,12 @@ const char *tcp_fsm_states[] = {
 u8 *
 format_tcp_state (u8 * s, va_list * args)
 {
-  tcp_state_t *state = va_arg (*args, tcp_state_t *);
+  u32 state = va_arg (*args, u32);
 
-  if (*state < TCP_N_STATES)
-    s = format (s, "%s", tcp_fsm_states[*state]);
+  if (state < TCP_N_STATES)
+    s = format (s, "%s", tcp_fsm_states[state]);
   else
-    s = format (s, "UNKNOWN (%d (0x%x))", *state, *state);
-
+    s = format (s, "UNKNOWN (%d (0x%x))", state, state);
   return s;
 }
 
@@ -484,10 +502,55 @@ format_tcp_timers (u8 * s, va_list * args)
 }
 
 u8 *
-format_tcp_connection (u8 * s, va_list * args)
+format_tcp_congestion_status (u8 * s, va_list * args)
 {
   tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  if (tcp_in_recovery (tc))
+    s = format (s, "recovery");
+  else if (tcp_in_fastrecovery (tc))
+    s = format (s, "fastrecovery");
+  else
+    s = format (s, "none");
+  return s;
+}
 
+u8 *
+format_tcp_vars (u8 * s, va_list * args)
+{
+  tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  s = format (s, " snd_una %u snd_nxt %u snd_una_max %u\n",
+	      tc->snd_una - tc->iss, tc->snd_nxt - tc->iss,
+	      tc->snd_una_max - tc->iss);
+  s = format (s, " rcv_nxt %u rcv_las %u\n",
+	      tc->rcv_nxt - tc->irs, tc->rcv_las - tc->irs);
+  s = format (s, " snd_wnd %u rcv_wnd %u snd_wl1 %u snd_wl2 %u\n",
+	      tc->snd_wnd, tc->rcv_wnd, tc->snd_wl1 - tc->irs,
+	      tc->snd_wl2 - tc->iss);
+  s = format (s, " flight size %u send space %u rcv_wnd available %d\n",
+	      tcp_flight_size (tc), tcp_snd_space (tc),
+	      tc->rcv_wnd - (tc->rcv_nxt - tc->rcv_las));
+  s = format (s, " cong %U ", format_tcp_congestion_status, tc);
+  s = format (s, "cwnd %u ssthresh %u rtx_bytes %u bytes_acked %u\n",
+	      tc->cwnd, tc->ssthresh, tc->rtx_bytes, tc->bytes_acked);
+  s = format (s, " prev_ssthresh %u snd_congestion %u\n", tc->prev_ssthresh,
+	      tc->snd_congestion - tc->iss);
+  s = format (s, " rto %u rto_boff %u srtt %u rttvar %u rtt_ts %u ", tc->rto,
+	      tc->rto_boff, tc->srtt, tc->rttvar, tc->rtt_ts);
+  s = format (s, "rtt_seq %u\n", tc->rtt_seq);
+  if (scoreboard_first_hole (&tc->sack_sb))
+    s = format (s, " scoreboard: %U\n", format_tcp_scoreboard, &tc->sack_sb);
+  if (vec_len (tc->snd_sacks))
+    s = format (s, " sacks tx: %U\n", format_tcp_sacks, tc);
+
+  return s;
+}
+
+u8 *
+format_tcp_connection_id (u8 * s, va_list * args)
+{
+  tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  if (!tc)
+    return s;
   if (tc->c_is_ip4)
     {
       s = format (s, "[#%d][%s] %U:%d->%U:%d", tc->c_thread_index, "T",
@@ -507,11 +570,18 @@ format_tcp_connection (u8 * s, va_list * args)
 }
 
 u8 *
-format_tcp_connection_verbose (u8 * s, va_list * args)
+format_tcp_connection (u8 * s, va_list * args)
 {
   tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
-  s = format (s, "%U %U %U", format_tcp_connection, tc, format_tcp_state,
-	      &tc->state, format_tcp_timers, tc);
+  u32 verbose = va_arg (*args, u32);
+
+  s = format (s, "%-50U", format_tcp_connection_id, tc);
+  if (verbose)
+    {
+      s = format (s, "%-15U", format_tcp_state, tc->state);
+      if (verbose > 1)
+	s = format (s, " %U\n%U", format_tcp_timers, tc, format_tcp_vars, tc);
+    }
   return s;
 }
 
@@ -520,11 +590,12 @@ format_tcp_session (u8 * s, va_list * args)
 {
   u32 tci = va_arg (*args, u32);
   u32 thread_index = va_arg (*args, u32);
+  u32 verbose = va_arg (*args, u32);
   tcp_connection_t *tc;
 
   tc = tcp_connection_get (tci, thread_index);
   if (tc)
-    return format (s, "%U", format_tcp_connection, tc);
+    return format (s, "%U", format_tcp_connection, tc, verbose);
   else
     return format (s, "empty");
 }
@@ -534,7 +605,7 @@ format_tcp_listener_session (u8 * s, va_list * args)
 {
   u32 tci = va_arg (*args, u32);
   tcp_connection_t *tc = tcp_listener_get (tci);
-  return format (s, "%U", format_tcp_connection, tc);
+  return format (s, "%U", format_tcp_connection_id, tc);
 }
 
 u8 *
@@ -542,7 +613,49 @@ format_tcp_half_open_session (u8 * s, va_list * args)
 {
   u32 tci = va_arg (*args, u32);
   tcp_connection_t *tc = tcp_half_open_connection_get (tci);
-  return format (s, "%U", format_tcp_connection, tc);
+  return format (s, "%U", format_tcp_connection_id, tc);
+}
+
+u8 *
+format_tcp_sacks (u8 * s, va_list * args)
+{
+  tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  sack_block_t *sacks = tc->snd_sacks;
+  sack_block_t *block;
+  vec_foreach (block, sacks)
+  {
+    s = format (s, " start %u end %u\n", block->start - tc->irs,
+		block->end - tc->irs);
+  }
+  return s;
+}
+
+u8 *
+format_tcp_sack_hole (u8 * s, va_list * args)
+{
+  sack_scoreboard_hole_t *hole = va_arg (*args, sack_scoreboard_hole_t *);
+  s = format (s, "[%u, %u]", hole->start, hole->end);
+  return s;
+}
+
+u8 *
+format_tcp_scoreboard (u8 * s, va_list * args)
+{
+  sack_scoreboard_t *sb = va_arg (*args, sack_scoreboard_t *);
+  sack_scoreboard_hole_t *hole;
+  s = format (s, "head %u tail %u snd_una_adv %u\n", sb->head, sb->tail,
+	      sb->snd_una_adv);
+  s = format (s, "sacked_bytes %u last_sacked_bytes %u", sb->sacked_bytes,
+	      sb->last_sacked_bytes);
+  s = format (s, " max_byte_sacked %u\n", sb->max_byte_sacked);
+  s = format (s, "holes:\n");
+  hole = scoreboard_first_hole (sb);
+  while (hole)
+    {
+      s = format (s, "%U", format_tcp_sack_hole, hole);
+      hole = scoreboard_next_hole (sb, hole);
+    }
+  return s;
 }
 
 transport_connection_t *
@@ -559,36 +672,75 @@ tcp_half_open_session_get_transport (u32 conn_index)
   return &tc->connection;
 }
 
+/**
+ * Compute maximum segment size for session layer.
+ *
+ * Since the result needs to be the actual data length, it first computes
+ * the tcp options to be used in the next burst and subtracts their
+ * length from the connection's snd_mss.
+ */
 u16
 tcp_session_send_mss (transport_connection_t * trans_conn)
 {
   tcp_connection_t *tc = (tcp_connection_t *) trans_conn;
+
+  /* Ensure snd_mss does accurately reflect the amount of data we can push
+   * in a segment. This also makes sure that options are updated according to
+   * the current state of the connection. */
+  tcp_update_snd_mss (tc);
+
   return tc->snd_mss;
+}
+
+always_inline u32
+tcp_round_snd_space (tcp_connection_t * tc, u32 snd_space)
+{
+  if (tc->snd_wnd < tc->snd_mss)
+    {
+      return tc->snd_wnd <= snd_space ? tc->snd_wnd : 0;
+    }
+
+  /* If we can't write at least a segment, don't try at all */
+  if (snd_space < tc->snd_mss)
+    return 0;
+
+  /* round down to mss multiple */
+  return snd_space - (snd_space % tc->snd_mss);
 }
 
 /**
  * Compute tx window session is allowed to fill.
+ *
+ * Takes into account available send space, snd_mss and the congestion
+ * state of the connection. If possible, the value returned is a multiple
+ * of snd_mss.
+ *
+ * @param tc tcp connection
+ * @return number of bytes session is allowed to write
  */
 u32
-tcp_session_send_space (transport_connection_t * trans_conn)
+tcp_snd_space (tcp_connection_t * tc)
 {
-  u32 snd_space;
-  tcp_connection_t *tc = (tcp_connection_t *) trans_conn;
+  int snd_space;
 
   /* If we haven't gotten dupacks or if we did and have gotten sacked bytes
    * then we can still send */
-  if (PREDICT_TRUE (tcp_in_fastrecovery (tc) == 0
+  if (PREDICT_TRUE (tcp_in_cong_recovery (tc) == 0
 		    && (tc->rcv_dupacks == 0
 			|| tc->sack_sb.last_sacked_bytes)))
     {
       snd_space = tcp_available_snd_space (tc);
+      return tcp_round_snd_space (tc, snd_space);
+    }
 
-      /* If we can't write at least a segment, don't try at all */
-      if (snd_space < tc->snd_mss)
+  if (tcp_in_recovery (tc))
+    {
+      tc->snd_nxt = tc->snd_una_max;
+      snd_space = tcp_available_wnd (tc) - tc->rtx_bytes
+	- (tc->snd_una_max - tc->snd_congestion);
+      if (snd_space <= 0 || (tc->snd_una_max - tc->snd_una) >= tc->snd_wnd)
 	return 0;
-
-      /* round down to mss multiple */
-      return snd_space - (snd_space % tc->snd_mss);
+      return tcp_round_snd_space (tc, snd_space);
     }
 
   /* If in fast recovery, send 1 SMSS if wnd allows */
@@ -600,6 +752,13 @@ tcp_session_send_space (transport_connection_t * trans_conn)
     }
 
   return 0;
+}
+
+u32
+tcp_session_send_space (transport_connection_t * trans_conn)
+{
+  tcp_connection_t *tc = (tcp_connection_t *) trans_conn;
+  return tcp_snd_space (tc);
 }
 
 u32
@@ -747,12 +906,14 @@ void
 tcp_initialize_timer_wheels (tcp_main_t * tm)
 {
   tw_timer_wheel_16t_2w_512sl_t *tw;
-  vec_foreach (tw, tm->timer_wheels)
-  {
+  /* *INDENT-OFF* */
+  foreach_vlib_main (({
+    tw = &tm->timer_wheels[ii];
     tw_timer_wheel_init_16t_2w_512sl (tw, tcp_expired_timers_dispatch,
 				      100e-3 /* timer period 100ms */ , ~0);
-    tw->last_run_time = vlib_time_now (tm->vlib_main);
-  }
+    tw->last_run_time = vlib_time_now (this_vlib_main);
+  }));
+  /* *INDENT-ON* */
 }
 
 clib_error_t *

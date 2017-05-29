@@ -24,6 +24,7 @@
 #include <vnet/adj/adj_midchain.h>
 #include <vnet/adj/adj_mcast.h>
 #include <vnet/dpo/replicate_dpo.h>
+#include <vnet/fib/mpls_fib.h>
 
 /**
  * @brief pool of tunnel instances
@@ -98,14 +99,13 @@ typedef struct mpls_tunnel_collect_forwarding_ctx_t_
     fib_forward_chain_type_t fct;
 } mpls_tunnel_collect_forwarding_ctx_t;
 
-static int
+static fib_path_list_walk_rc_t
 mpls_tunnel_collect_forwarding (fib_node_index_t pl_index,
                                 fib_node_index_t path_index,
                                 void *arg)
 {
     mpls_tunnel_collect_forwarding_ctx_t *ctx;
     fib_path_ext_t *path_ext;
-    int have_path_ext;
 
     ctx = arg;
 
@@ -114,23 +114,16 @@ mpls_tunnel_collect_forwarding (fib_node_index_t pl_index,
      */
     if (!fib_path_is_resolved(path_index))
     {
-        return (!0);
+        return (FIB_PATH_LIST_WALK_CONTINUE);
     }
 
     /*
      * get the matching path-extension for the path being visited.
      */
-    have_path_ext = 0;
-    vec_foreach(path_ext, ctx->mt->mt_path_exts)
-    {
-        if (path_ext->fpe_path_index == path_index)
-        {
-            have_path_ext = 1;
-            break;
-        }
-    }
+    path_ext = fib_path_ext_list_find_by_path_index(&ctx->mt->mt_path_exts,
+                                                    path_index);
 
-    if (have_path_ext)
+    if (NULL != path_ext)
     {
         /*
          * found a matching extension. stack it to obtain the forwarding
@@ -148,7 +141,7 @@ mpls_tunnel_collect_forwarding (fib_node_index_t pl_index,
      *   There should be a path-extenios associated with each path
      */
 
-    return (!0);
+    return (FIB_PATH_LIST_WALK_CONTINUE);
 }
 
 static void
@@ -200,9 +193,20 @@ mpls_tunnel_mk_lb (mpls_tunnel_t *mt,
         {
             flow_hash_config_t fhc;
 
-            fhc = 0; // FIXME
-            /* fhc = fib_table_get_flow_hash_config(fib_entry->fe_fib_index, */
-            /*                                      dpo_proto_to_fib(lb_proto)); */
+            switch (linkt)
+            {
+            case VNET_LINK_MPLS:
+                fhc = MPLS_FLOW_HASH_DEFAULT;
+                break;
+            case VNET_LINK_IP4:
+            case VNET_LINK_IP6:
+                fhc = IP_FLOW_HASH_DEFAULT;
+                break;
+            default:
+                fhc = 0;
+                break;
+            }
+
             dpo_set(dpo_lb,
                     DPO_LOAD_BALANCE,
                     lb_proto,
@@ -269,7 +273,9 @@ mpls_tunnel_stack (adj_index_t ai)
 
         mpls_tunnel_mk_lb(mt,
                           adj->ia_link,
-                          FIB_FORW_CHAIN_TYPE_MPLS_EOS,
+                          (VNET_LINK_MPLS == adj_get_link_type(ai) ?
+                           FIB_FORW_CHAIN_TYPE_MPLS_NON_EOS:
+                           FIB_FORW_CHAIN_TYPE_MPLS_EOS),
                           &dpo);
 
         adj_nbr_midchain_stack(ai, &dpo);
@@ -284,7 +290,7 @@ mpls_tunnel_stack (adj_index_t ai)
                                                    FIB_NODE_TYPE_MPLS_TUNNEL,
                                                    mt - mpls_tunnel_pool);
 
-    fib_path_list_lock(mt->mt_path_list);
+    fib_path_list_unlock(mt->mt_path_list);
 }
 
 /**
@@ -520,8 +526,6 @@ VNET_DEVICE_CLASS (mpls_tunnel_class) = {
 
 VNET_HW_INTERFACE_CLASS (mpls_tunnel_hw_interface_class) = {
   .name = "MPLS-Tunnel",
-//  .format_header = format_mpls_eth_header_with_length,
-//  .unformat_header = unformat_mpls_eth_header,
   .update_adjacency = mpls_tunnel_update_adj,
   .build_rewrite = mpls_tunnel_build_rewrite,
   .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
@@ -636,58 +640,6 @@ vnet_mpls_tunnel_create (u8 l2_only,
     return (mt->mt_sw_if_index);
 }
 
-/*
- * mpls_tunnel_path_ext_add
- *
- * append a path extension to the entry's list
- */
-static void
-mpls_tunnel_path_ext_append (mpls_tunnel_t *mt,
-                             const fib_route_path_t *rpath)
-{
-    if (NULL != rpath->frp_label_stack)
-    {
-        fib_path_ext_t *path_ext;
-
-        vec_add2(mt->mt_path_exts, path_ext, 1);
-
-        fib_path_ext_init(path_ext, mt->mt_path_list, rpath);
-    }
-}
-
-/*
- * mpls_tunnel_path_ext_insert
- *
- * insert, sorted, a path extension to the entry's list.
- * It's not strictly necessary in sort the path extensions, since each
- * extension has the path index to which it resolves. However, by being
- * sorted the load-balance produced has a deterministic order, not an order
- * based on the sequence of extension additions. this is a considerable benefit.
- */
-static void
-mpls_tunnel_path_ext_insert (mpls_tunnel_t *mt,
-                             const fib_route_path_t *rpath)
-{
-    if (0 == vec_len(mt->mt_path_exts))
-        return (mpls_tunnel_path_ext_append(mt, rpath));
-
-    if (NULL != rpath->frp_label_stack)
-    {
-        fib_path_ext_t path_ext;
-        int i = 0;
-
-        fib_path_ext_init(&path_ext, mt->mt_path_list, rpath);
-
-        while (i < vec_len(mt->mt_path_exts) &&
-               (fib_path_ext_cmp(&mt->mt_path_exts[i], rpath) < 0))
-        {
-            i++;
-        }
-
-        vec_insert_elts(mt->mt_path_exts, &path_ext, 1, i);
-    }
-}
-
 void
 vnet_mpls_tunnel_path_add (u32 sw_if_index,
                            fib_route_path_t *rpaths)
@@ -715,7 +667,6 @@ vnet_mpls_tunnel_path_add (u32 sw_if_index,
     else
     {
         fib_node_index_t old_pl_index;
-        fib_path_ext_t *path_ext;
 
         old_pl_index = mt->mt_path_list;
 
@@ -732,12 +683,12 @@ vnet_mpls_tunnel_path_add (u32 sw_if_index,
         /*
          * re-resolve all the path-extensions with the new path-list
          */
-        vec_foreach(path_ext, mt->mt_path_exts)
-        {
-            fib_path_ext_resolve(path_ext, mt->mt_path_list);
-        }
+        fib_path_ext_list_resolve(&mt->mt_path_exts, mt->mt_path_list);
     }
-    mpls_tunnel_path_ext_insert(mt, rpaths);
+    fib_path_ext_list_insert(&mt->mt_path_exts,
+                             mt->mt_path_list,
+                             FIB_PATH_EXT_MPLS,
+                             rpaths);
     mpls_tunnel_restack(mt);
 }
 
@@ -766,7 +717,6 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
     else
     {
         fib_node_index_t old_pl_index;
-        fib_path_ext_t *path_ext;
 
         old_pl_index = mt->mt_path_list;
 
@@ -793,27 +743,15 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
         /*
          * find the matching path extension and remove it
          */
-        vec_foreach(path_ext, mt->mt_path_exts)
-        {
-            if (!fib_path_ext_cmp(path_ext, rpaths))
-            {
-                /*
-                 * delete the element moving the remaining elements down 1 position.
-                 * this preserves the sorted order.
-                 */
-                vec_free(path_ext->fpe_label_stack);
-                vec_delete(mt->mt_path_exts, 1,
-                           (path_ext - mt->mt_path_exts));
-                break;
-            }
-        }
-       /*
+        fib_path_ext_list_remove(&mt->mt_path_exts,
+                                  FIB_PATH_EXT_MPLS,
+                                  rpaths);
+
+        /*
          * re-resolve all the path-extensions with the new path-list
          */
-        vec_foreach(path_ext, mt->mt_path_exts)
-        {
-            fib_path_ext_resolve(path_ext, mt->mt_path_list);
-        }
+        fib_path_ext_list_resolve(&mt->mt_path_exts,
+                                  mt->mt_path_list);
 
         mpls_tunnel_restack(mt);
    }
@@ -832,7 +770,7 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
     u8 is_del = 0, l2_only = 0, is_multicast =0;
     fib_route_path_t rpath, *rpaths = NULL;
     mpls_label_t out_label = MPLS_LABEL_INVALID;
-    u32 sw_if_index;
+    u32 sw_if_index = ~0;
     clib_error_t *error = NULL;
 
     memset(&rpath, 0, sizeof(rpath));
@@ -847,6 +785,10 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
                       unformat_vnet_sw_interface, vnm,
                       &sw_if_index))
             is_del = 1;
+        else if (unformat (line_input, "add %U",
+                           unformat_vnet_sw_interface, vnm,
+                           &sw_if_index))
+            is_del = 0;
         else if (unformat (line_input, "add"))
             is_del = 0;
         else if (unformat (line_input, "out-label %U",
@@ -903,9 +845,14 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
         }
     }
 
+    vec_add1(rpaths, rpath);
+
     if (is_del)
     {
-        vnet_mpls_tunnel_del(sw_if_index);
+        if (!vnet_mpls_tunnel_path_remove(sw_if_index, rpaths))
+        {
+            vnet_mpls_tunnel_del(sw_if_index);
+        }
     }
     else
     {
@@ -916,8 +863,10 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
             goto done;
         }
 
-        vec_add1(rpaths, rpath);
-        sw_if_index = vnet_mpls_tunnel_create(l2_only, is_multicast);
+        if (~0 == sw_if_index)
+        {
+            sw_if_index = vnet_mpls_tunnel_create(l2_only, is_multicast);
+        }
         vnet_mpls_tunnel_path_add(sw_if_index, rpaths);
     }
 
@@ -948,7 +897,6 @@ format_mpls_tunnel (u8 * s, va_list * args)
 {
     mpls_tunnel_t *mt = va_arg (*args, mpls_tunnel_t *);
     mpls_tunnel_attribute_t attr;
-    fib_path_ext_t *path_ext;
 
     s = format(s, "mpls_tunnel%d: sw_if_index:%d hw_if_index:%d",
                mt - mpls_tunnel_pool,
@@ -964,11 +912,7 @@ format_mpls_tunnel (u8 * s, va_list * args)
     }
     s = format(s, "\n via:\n");
     s = fib_path_list_format(mt->mt_path_list, s);
-    s = format(s, "    Extensions:");
-    vec_foreach(path_ext, mt->mt_path_exts)
-    {
-        s = format(s, "\n     %U", format_fib_path_ext, path_ext);
-    }
+    s = format(s, "%U", format_fib_path_ext_list, &mt->mt_path_exts);
     s = format(s, "\n");
 
     return (s);
