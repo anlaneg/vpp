@@ -163,6 +163,10 @@ typedef struct lisp_gpe_main
   uword *lisp_stats_index_by_key;
   vlib_combined_counter_main_t counters;
 
+  /** Native fwd data structures */
+  fib_route_path_t *native_fwd_rpath[2];
+  u32 *native_fwd_lfes[2];
+
   /** convenience */
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
@@ -221,6 +225,9 @@ typedef enum
 /** */
 typedef struct
 {
+  /** forwarding entry index of */
+  u32 fwd_entry_index;
+
   u8 is_src_dst;
 
   u8 is_add;
@@ -268,6 +275,12 @@ typedef struct
 
 typedef struct
 {
+  fib_route_path_t rpath;
+  u8 is_add;
+} vnet_gpe_native_fwd_rpath_args_t;
+
+typedef struct
+{
   u32 fwd_entry_index;
   u32 dp_table;
   u32 vni;
@@ -310,6 +323,9 @@ u8 vnet_lisp_stats_enable_disable_state (void);
 vnet_api_error_t vnet_lisp_stats_enable_disable (u8 enable);
 lisp_api_stats_t *vnet_lisp_get_stats (void);
 int vnet_lisp_flush_stats (void);
+int vnet_gpe_add_del_native_fwd_rpath (vnet_gpe_native_fwd_rpath_args_t * a);
+u32 vnet_lisp_gpe_add_nsh_iface (lisp_gpe_main_t * lgm);
+void vnet_lisp_gpe_del_nsh_iface (lisp_gpe_main_t * lgm);
 
 #endif /* included_vnet_lisp_gpe_h */
 

@@ -87,6 +87,12 @@ typedef struct
   miss_packet_type_t type;
 } miss_packet_t;
 
+typedef struct
+{
+  u8 mac[6];
+  u32 ip4;
+} lisp_api_l2_arp_entry_t;
+
 typedef enum
 {
   MR_MODE_DST_ONLY = 0,
@@ -111,6 +117,20 @@ typedef enum lisp_flags
   foreach_lisp_flag_bit
 #undef _
 } lisp_flags_e;
+
+typedef struct
+{
+  ip_address_t addr;
+  u32 bd;
+} lisp_l2_arp_key_t;
+
+typedef struct
+{
+  u64 nonce;
+  u8 is_rloc_probe;
+  mapping_t *mappings;
+  volatile u8 is_free;
+} map_records_arg_t;
 
 typedef struct
 {
@@ -199,6 +219,9 @@ typedef struct
   /* LISP PITR mode */
   u8 lisp_pitr;
 
+  /* mapping index for NSH */
+  u32 nsh_map_index;
+
   /* map request mode */
   u8 map_request_mode;
 
@@ -210,6 +233,9 @@ typedef struct
 
   /* timing wheel for mappping timeouts */
   timing_wheel_t wheel;
+
+  /** Per thread pool of records shared with thread0 */
+  map_records_arg_t **map_records_args_pool;
 
   /* commodity */
   ip4_main_t *im4;
@@ -273,13 +299,6 @@ typedef struct
   u8 key_id;
 } vnet_lisp_add_del_mapping_args_t;
 
-typedef struct
-{
-  u64 nonce;
-  u8 is_rloc_probe;
-  mapping_t *mappings;
-} map_records_arg_t;
-
 int
 vnet_lisp_map_cache_add_del (vnet_lisp_add_del_mapping_args_t * a,
 			     u32 * map_index);
@@ -338,6 +357,10 @@ int vnet_lisp_rloc_probe_enable_disable (u8 is_enable);
 int vnet_lisp_map_register_enable_disable (u8 is_enable);
 u8 vnet_lisp_map_register_state_get (void);
 u8 vnet_lisp_rloc_probe_state_get (void);
+int vnet_lisp_add_del_l2_arp_entry (gid_address_t * key, u8 * mac, u8 is_add);
+u32 *vnet_lisp_l2_arp_bds_get (void);
+lisp_api_l2_arp_entry_t *vnet_lisp_l2_arp_entries_get_by_bd (u32 bd);
+int vnet_lisp_nsh_set_locator_set (u8 * locator_set_name, u8 is_add);
 
 map_records_arg_t *parse_map_reply (vlib_buffer_t * b);
 

@@ -39,7 +39,8 @@
 
 typedef struct
 {
-  u8 *rx_buf;
+  /* Per-thread RX buffer */
+  u8 **rx_buf;
   unix_shared_memory_queue_t **vpp_queue;
   u64 byte_index;
 
@@ -62,7 +63,6 @@ int
 builtin_session_accept_callback (stream_session_t * s)
 {
   builtin_server_main_t *bsm = &builtin_server_main;
-  clib_warning ("called...");
 
   bsm->vpp_queue[s->thread_index] =
     session_manager_get_vpp_event_queue (s->thread_index);
@@ -76,7 +76,6 @@ builtin_session_disconnect_callback (stream_session_t * s)
 {
   builtin_server_main_t *bsm = &builtin_server_main;
   vnet_disconnect_args_t _a, *a = &_a;
-  clib_warning ("called...");
 
   a->handle = stream_session_handle (s);
   a->app_index = bsm->app_index;
@@ -119,13 +118,15 @@ void
 test_bytes (builtin_server_main_t * bsm, int actual_transfer)
 {
   int i;
+  u32 my_thread_id = vlib_get_thread_index ();
 
   for (i = 0; i < actual_transfer; i++)
     {
-      if (bsm->rx_buf[i] != ((bsm->byte_index + i) & 0xff))
+      if (bsm->rx_buf[my_thread_id][i] != ((bsm->byte_index + i) & 0xff))
 	{
 	  clib_warning ("at %lld expected %d got %d", bsm->byte_index + i,
-			(bsm->byte_index + i) & 0xff, bsm->rx_buf[i]);
+			(bsm->byte_index + i) & 0xff,
+			bsm->rx_buf[my_thread_id][i]);
 	}
     }
   bsm->byte_index += actual_transfer;
@@ -140,6 +141,7 @@ builtin_server_rx_callback (stream_session_t * s)
   builtin_server_main_t *bsm = &builtin_server_main;
   session_fifo_event_t evt;
   static int serial_number = 0;
+  u32 my_thread_id = vlib_get_thread_index ();
 
   tx_fifo = s->server_tx_fifo;
   rx_fifo = s->server_rx_fifo;
@@ -173,11 +175,12 @@ builtin_server_rx_callback (stream_session_t * s)
       return 0;
     }
 
-  vec_validate (bsm->rx_buf, max_transfer - 1);
-  _vec_len (bsm->rx_buf) = max_transfer;
+  vec_validate (bsm->rx_buf, my_thread_id);
+  vec_validate (bsm->rx_buf[my_thread_id], max_transfer - 1);
+  _vec_len (bsm->rx_buf[my_thread_id]) = max_transfer;
 
   actual_transfer = svm_fifo_dequeue_nowait (rx_fifo, max_transfer,
-					     bsm->rx_buf);
+					     bsm->rx_buf[my_thread_id]);
   ASSERT (actual_transfer == max_transfer);
 
 //  test_bytes (bsm, actual_transfer);
@@ -186,7 +189,8 @@ builtin_server_rx_callback (stream_session_t * s)
    * Echo back
    */
 
-  n_written = svm_fifo_enqueue_nowait (tx_fifo, actual_transfer, bsm->rx_buf);
+  n_written = svm_fifo_enqueue_nowait (tx_fifo, actual_transfer,
+				       bsm->rx_buf[my_thread_id]);
 
   if (n_written != max_transfer)
     clib_warning ("short trout!");
@@ -280,10 +284,11 @@ server_attach ()
   a->api_client_index = bsm->my_client_index;
   a->session_cb_vft = &builtin_session_cb_vft;
   a->options = options;
-  a->options[SESSION_OPTIONS_SEGMENT_SIZE] = 128 << 20;
-  a->options[SESSION_OPTIONS_RX_FIFO_SIZE] = 1 << 16;
-  a->options[SESSION_OPTIONS_TX_FIFO_SIZE] = 1 << 16;
+  a->options[SESSION_OPTIONS_SEGMENT_SIZE] = 512 << 20;
+  a->options[SESSION_OPTIONS_RX_FIFO_SIZE] = 64 << 10;
+  a->options[SESSION_OPTIONS_TX_FIFO_SIZE] = 64 << 10;
   a->options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_BUILTIN_APP;
+  a->options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] = 8192;
   a->segment_name = segment_name;
   a->segment_name_length = ARRAY_LEN (segment_name);
 

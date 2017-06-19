@@ -90,6 +90,7 @@ typedef enum
   GID_ADDR_MAC,
   GID_ADDR_SRC_DST,
   GID_ADDR_NSH,
+  GID_ADDR_ARP,
   GID_ADDR_NO_ADDRESS,
   GID_ADDR_TYPES
 } gid_address_type_t;
@@ -101,6 +102,7 @@ typedef enum
   LCAF_AFI_LIST_TYPE,
   LCAF_INSTANCE_ID,
   LCAF_SOURCE_DEST = 12,
+  LCAF_NSH = 17,
   LCAF_TYPES
 } lcaf_type_t;
 
@@ -165,12 +167,25 @@ typedef struct
   u8 si;
 } nsh_t;
 
+#define nsh_spi(_a) (_a)->spi
+#define nsh_si(_a) (_a)->si
+
+typedef struct
+{
+  ip4_address_t addr;
+  u32 bd;
+} lcaf_arp_t;
+
+#define lcaf_arp_ip4(_a) (_a)->addr
+#define lcaf_arp_bd(_a) (_a)->bd
+
 typedef struct
 {
   /* the union needs to be at the beginning! */
   union
   {
     source_dest_t sd;
+    lcaf_arp_t arp;
     vni_t uni;
   };
   u8 type;
@@ -189,6 +204,7 @@ typedef struct _gid_address_t
     lcaf_t lcaf;
     u8 mac[6];
     source_dest_t sd;
+    lcaf_arp_t arp;
     nsh_t nsh;
   };
   u8 type;
@@ -246,6 +262,8 @@ void gid_address_ip_set (gid_address_t * dst, void *src, u8 version);
 #define gid_address_lcaf(_a) (_a)->lcaf
 #define gid_address_mac(_a) (_a)->mac
 #define gid_address_nsh(_a) (_a)->nsh
+#define gid_address_nsh_spi(_a) nsh_spi(&gid_address_nsh(_a))
+#define gid_address_nsh_si(_a) nsh_si(&gid_address_nsh(_a))
 #define gid_address_vni(_a) (_a)->vni
 #define gid_address_vni_mask(_a) (_a)->vni_mask
 #define gid_address_sd_dst_ippref(_a) sd_dst_ippref(&(_a)->sd)
@@ -257,9 +275,13 @@ void gid_address_ip_set (gid_address_t * dst, void *src, u8 version);
 #define gid_address_sd_dst(_a) sd_dst(&gid_address_sd(_a))
 #define gid_address_sd_src_type(_a) sd_src_type(&gid_address_sd(_a))
 #define gid_address_sd_dst_type(_a) sd_dst_type(&gid_address_sd(_a))
+#define gid_address_arp(_a) (_a)->arp
+#define gid_address_arp_ip4(_a) lcaf_arp_ip4(&gid_address_arp (_a))
+#define gid_address_arp_bd(_a) lcaf_arp_bd(&gid_address_arp (_a))
 
 /* 'sub'address functions */
 #define foreach_gid_address_type_fcns  \
+  _(no_addr)                      \
   _(ip_prefix)                    \
   _(lcaf)                         \
   _(mac)                          \
@@ -335,7 +357,8 @@ typedef struct
   /* valid only for remote mappings */
   u8 is_static:1;
   u8 pitr_set:1;
-  u8 rsvd:4;
+  u8 nsh_set:1;
+  u8 rsvd:3;
 
 
   u8 *key;

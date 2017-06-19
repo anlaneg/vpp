@@ -27,7 +27,7 @@
 #include <vnet/lisp-gpe/lisp_gpe_tunnel.h>
 #include <vnet/lisp-gpe/lisp_gpe_fwd_entry.h>
 #include <vnet/lisp-gpe/lisp_gpe_tenant.h>
-
+#include <vnet/fib/fib_table.h>
 #include <vnet/vnet_msg_enum.h>
 
 #define vl_api_gpe_locator_pair_t_endian vl_noop_handler
@@ -51,15 +51,17 @@
 
 #include <vlibapi/api_helper_macros.h>
 
-#define foreach_vpe_api_msg                             \
-_(GPE_ADD_DEL_FWD_ENTRY, gpe_add_del_fwd_entry)               \
-_(GPE_FWD_ENTRIES_GET, gpe_fwd_entries_get)                   \
-_(GPE_FWD_ENTRY_PATH_DUMP, gpe_fwd_entry_path_dump)           \
-_(GPE_ENABLE_DISABLE, gpe_enable_disable)                     \
-_(GPE_ADD_DEL_IFACE, gpe_add_del_iface)                       \
-_(GPE_FWD_ENTRY_VNIS_GET, gpe_fwd_entry_vnis_get)             \
-_(GPE_SET_ENCAP_MODE, gpe_set_encap_mode)                     \
-_(GPE_GET_ENCAP_MODE, gpe_get_encap_mode)
+#define foreach_vpe_api_msg                             	\
+_(GPE_ADD_DEL_FWD_ENTRY, gpe_add_del_fwd_entry)               	\
+_(GPE_FWD_ENTRIES_GET, gpe_fwd_entries_get)                   	\
+_(GPE_FWD_ENTRY_PATH_DUMP, gpe_fwd_entry_path_dump)           	\
+_(GPE_ENABLE_DISABLE, gpe_enable_disable)                     	\
+_(GPE_ADD_DEL_IFACE, gpe_add_del_iface)                       	\
+_(GPE_FWD_ENTRY_VNIS_GET, gpe_fwd_entry_vnis_get)             	\
+_(GPE_SET_ENCAP_MODE, gpe_set_encap_mode)                     	\
+_(GPE_GET_ENCAP_MODE, gpe_get_encap_mode)			\
+_(GPE_ADD_DEL_NATIVE_FWD_RPATH, gpe_add_del_native_fwd_rpath)	\
+_(GPE_NATIVE_FWD_RPATHS_GET, gpe_native_fwd_rpaths_get)
 
 static locator_pair_t *
 unformat_gpe_loc_pairs (void *locs, u32 rloc_num)
@@ -198,11 +200,11 @@ gpe_fwd_entries_copy (vl_api_gpe_fwd_entry_t * dst,
 
   vec_foreach (e, src)
   {
-    memset (dst, 0, sizeof (*dst));
-    dst[i].dp_table = src->dp_table;
-    dst[i].fwd_entry_index = src->fwd_entry_index;
-    dst[i].vni = src->vni;
-    dst[i].action = src->action;
+    memset (&dst[i], 0, sizeof (*dst));
+    dst[i].dp_table = e->dp_table;
+    dst[i].fwd_entry_index = e->fwd_entry_index;
+    dst[i].vni = e->vni;
+    dst[i].action = e->action;
     switch (fid_addr_type (&e->leid))
       {
       case FID_ADDR_IP_PREF:
@@ -358,7 +360,12 @@ vl_api_gpe_add_del_fwd_entry_t_handler (vl_api_gpe_add_del_fwd_entry_t * mp)
   rv = vnet_lisp_gpe_add_del_fwd_entry (a, 0);
   vec_free (pairs);
 send_reply:
-  REPLY_MACRO (VL_API_GPE_ADD_DEL_FWD_ENTRY_REPLY);
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_GPE_ADD_DEL_FWD_ENTRY_REPLY,
+  {
+    rmp->fwd_entry_index = clib_host_to_net_u32 (a->fwd_entry_index);
+  });
+  /* *INDENT-ON* */
 }
 
 static void
@@ -379,28 +386,30 @@ vl_api_gpe_add_del_iface_t_handler (vl_api_gpe_add_del_iface_t * mp)
 {
   vl_api_gpe_add_del_iface_reply_t *rmp;
   int rv = 0;
+  u32 vni, dp_table;
+
+  vni = clib_net_to_host_u32 (mp->vni);
+  dp_table = clib_net_to_host_u32 (mp->dp_table);
 
   if (mp->is_l2)
     {
       if (mp->is_add)
 	{
-	  if (~0 ==
-	      lisp_gpe_tenant_l2_iface_add_or_lock (mp->vni, mp->dp_table))
+	  if (~0 == lisp_gpe_tenant_l2_iface_add_or_lock (vni, dp_table))
 	    rv = 1;
 	}
       else
-	lisp_gpe_tenant_l2_iface_unlock (mp->vni);
+	lisp_gpe_tenant_l2_iface_unlock (vni);
     }
   else
     {
       if (mp->is_add)
 	{
-	  if (~0 ==
-	      lisp_gpe_tenant_l3_iface_add_or_lock (mp->vni, mp->dp_table))
+	  if (~0 == lisp_gpe_tenant_l3_iface_add_or_lock (vni, dp_table))
 	    rv = 1;
 	}
       else
-	lisp_gpe_tenant_l3_iface_unlock (mp->vni);
+	lisp_gpe_tenant_l3_iface_unlock (vni);
     }
 
   REPLY_MACRO (VL_API_GPE_ADD_DEL_IFACE_REPLY);
@@ -427,6 +436,111 @@ vl_api_gpe_get_encap_mode_t_handler (vl_api_gpe_get_encap_mode_t * mp)
   ({
     rmp->encap_mode = vnet_gpe_get_encap_mode ();
   }));
+  /* *INDENT-ON* */
+}
+
+static void
+  vl_api_gpe_add_del_native_fwd_rpath_t_handler
+  (vl_api_gpe_add_del_native_fwd_rpath_t * mp)
+{
+  vl_api_gpe_add_del_native_fwd_rpath_reply_t *rmp;
+  vnet_gpe_native_fwd_rpath_args_t _a, *a = &_a;
+  int rv = 0;
+
+  memset (a, 0, sizeof (a[0]));
+
+  if (mp->is_ip4)
+    clib_memcpy (&a->rpath.frp_addr.ip4, mp->nh_addr, sizeof (ip4_address_t));
+  else
+    clib_memcpy (&a->rpath.frp_addr.ip6, mp->nh_addr, sizeof (ip6_address_t));
+
+  a->is_add = mp->is_add;
+  a->rpath.frp_proto = mp->is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
+  a->rpath.frp_fib_index = fib_table_find (a->rpath.frp_proto,
+					   clib_net_to_host_u32
+					   (mp->table_id));
+  if (~0 == a->rpath.frp_fib_index)
+    {
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto done;
+    }
+
+  a->rpath.frp_sw_if_index = clib_net_to_host_u32 (mp->nh_sw_if_index);
+  a->rpath.frp_weight = 1;
+
+  rv = vnet_gpe_add_del_native_fwd_rpath (a);
+done:
+  REPLY_MACRO (VL_API_GPE_ADD_DEL_NATIVE_FWD_RPATH_REPLY);
+}
+
+static void
+gpe_native_fwd_rpaths_copy (vl_api_gpe_native_fwd_rpath_t * dst,
+			    fib_route_path_t * src, u8 is_ip4)
+{
+  fib_route_path_t *e;
+  fib_table_t *table;
+  u32 i = 0;
+
+  vec_foreach (e, src)
+  {
+    memset (&dst[i], 0, sizeof (*dst));
+    table = fib_table_get (e->frp_fib_index, e->frp_proto);
+    dst[i].fib_index = table->ft_table_id;
+    dst[i].nh_sw_if_index = e->frp_sw_if_index;
+    dst[i].is_ip4 = is_ip4;
+    if (is_ip4)
+      clib_memcpy (&dst[i].nh_addr, &e->frp_addr.ip4, sizeof (ip4_address_t));
+    else
+      clib_memcpy (&dst[i].nh_addr, &e->frp_addr.ip6, sizeof (ip6_address_t));
+    i++;
+  }
+}
+
+static void
+gpe_native_fwd_rpath_t_host_to_net (vl_api_gpe_native_fwd_rpath_t * e)
+{
+  e->fib_index = clib_host_to_net_u32 (e->fib_index);
+  e->nh_sw_if_index = clib_host_to_net_u32 (e->nh_sw_if_index);
+}
+
+static void
+  gpe_native_fwd_rpaths_get_reply_t_host_to_net
+  (vl_api_gpe_native_fwd_rpaths_get_reply_t * mp)
+{
+  u32 i;
+  vl_api_gpe_native_fwd_rpath_t *e;
+
+  for (i = 0; i < mp->count; i++)
+    {
+      e = &mp->entries[i];
+      gpe_native_fwd_rpath_t_host_to_net (e);
+    }
+  mp->count = clib_host_to_net_u32 (mp->count);
+}
+
+static void
+vl_api_gpe_native_fwd_rpaths_get_t_handler (vl_api_gpe_native_fwd_rpaths_get_t
+					    * mp)
+{
+  lisp_gpe_main_t *lgm = vnet_lisp_gpe_get_main ();
+  vl_api_gpe_native_fwd_rpaths_get_reply_t *rmp;
+  u32 size = 0;
+  int rv = 0;
+
+  u8 rpath_index = mp->is_ip4 ? 0 : 1;
+
+  size = vec_len (lgm->native_fwd_rpath[rpath_index])
+    * sizeof (vl_api_gpe_native_fwd_rpath_t);
+
+  /* *INDENT-OFF* */
+  REPLY_MACRO4 (VL_API_GPE_NATIVE_FWD_RPATHS_GET_REPLY, size,
+  {
+    rmp->count = vec_len (lgm->native_fwd_rpath[rpath_index]);
+    gpe_native_fwd_rpaths_copy (rmp->entries,
+				lgm->native_fwd_rpath[rpath_index],
+				mp->is_ip4);
+    gpe_native_fwd_rpaths_get_reply_t_host_to_net (rmp);
+  });
   /* *INDENT-ON* */
 }
 

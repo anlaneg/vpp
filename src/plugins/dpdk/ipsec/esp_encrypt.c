@@ -101,16 +101,6 @@ dpdk_esp_encrypt_node_fn (vlib_main_t * vm,
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
 
-  if (PREDICT_FALSE (!dcm->workers_main))
-    {
-      /* Likely there are not enough cryptodevs, so drop frame */
-      vlib_node_increment_counter (vm, dpdk_esp_encrypt_node.index,
-				   ESP_ENCRYPT_ERROR_NO_CRYPTODEV,
-				   n_left_from);
-      vlib_buffer_free (vm, from, n_left_from);
-      return n_left_from;
-    }
-
   crypto_worker_main_t *cwm =
     vec_elt_at_index (dcm->workers_main, thread_index);
   u32 n_qps = vec_len (cwm->qp_data);
@@ -293,7 +283,8 @@ dpdk_esp_encrypt_node_fn (vlib_main_t * vm,
 	      oh0->esp.seq = clib_net_to_host_u32 (sa0->seq);
 	    }
 
-	  if (PREDICT_TRUE (sa0->is_tunnel && !sa0->is_tunnel_ip6))
+	  if (PREDICT_TRUE
+	      (!is_ipv6 && sa0->is_tunnel && !sa0->is_tunnel_ip6))
 	    {
 	      oh0->ip4.src_address.as_u32 = sa0->tunnel_src_addr.ip4.as_u32;
 	      oh0->ip4.dst_address.as_u32 = sa0->tunnel_dst_addr.ip4.as_u32;
@@ -302,7 +293,7 @@ dpdk_esp_encrypt_node_fn (vlib_main_t * vm,
 	      next0 = ESP_ENCRYPT_NEXT_IP4_LOOKUP;
 	      vnet_buffer (b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 	    }
-	  else if (sa0->is_tunnel && sa0->is_tunnel_ip6)
+	  else if (is_ipv6 && sa0->is_tunnel && sa0->is_tunnel_ip6)
 	    {
 	      oh6_0->ip6.src_address.as_u64[0] =
 		sa0->tunnel_src_addr.ip6.as_u64[0];
@@ -366,12 +357,15 @@ dpdk_esp_encrypt_node_fn (vlib_main_t * vm,
 	  icb->salt = sa0->salt;
 	  icb->iv[0] = sa0->seq;
 	  icb->iv[1] = sa0->seq_hi;
+	  icb->cnt = clib_host_to_net_u32 (1);
 
 	  if (sa0->crypto_alg == IPSEC_CRYPTO_ALG_AES_GCM_128)
 	    {
-	      icb->cnt = clib_host_to_net_u32 (1);
-	      clib_memcpy (vlib_buffer_get_current (b0) + ip_hdr_size +
-			   sizeof (esp_header_t), icb->iv, 8);
+	      u32 *esp_iv =
+		(u32 *) (b0->data + b0->current_data + ip_hdr_size +
+			 sizeof (esp_header_t));
+	      esp_iv[0] = sa0->seq;
+	      esp_iv[1] = sa0->seq_hi;
 	      sym_cop->cipher.data.offset =
 		ip_hdr_size + sizeof (esp_header_t) + iv_size;
 	      sym_cop->cipher.data.length = BLOCK_SIZE * blocks;
@@ -496,16 +490,22 @@ dpdk_esp_encrypt_node_fn (vlib_main_t * vm,
   return from_frame->n_vectors;
 }
 
-VLIB_REGISTER_NODE (dpdk_esp_encrypt_node) =
-{
-  .function = dpdk_esp_encrypt_node_fn,.name = "dpdk-esp-encrypt",.flags =
-    VLIB_NODE_FLAG_IS_OUTPUT,.vector_size = sizeof (u32),.format_trace =
-    format_esp_encrypt_trace,.n_errors =
-    ARRAY_LEN (esp_encrypt_error_strings),.error_strings =
-    esp_encrypt_error_strings,.n_next_nodes = 1,.next_nodes =
-  {
-  [ESP_ENCRYPT_NEXT_DROP] = "error-drop",}
+/* *INDENT-OFF* */
+VLIB_REGISTER_NODE (dpdk_esp_encrypt_node) = {
+  .function = dpdk_esp_encrypt_node_fn,
+  .name = "dpdk-esp-encrypt",
+  .flags = VLIB_NODE_FLAG_IS_OUTPUT,
+  .vector_size = sizeof (u32),
+  .format_trace = format_esp_encrypt_trace,
+  .n_errors = ARRAY_LEN (esp_encrypt_error_strings),
+  .error_strings = esp_encrypt_error_strings,
+  .n_next_nodes = 1,
+  .next_nodes =
+    {
+      [ESP_ENCRYPT_NEXT_DROP] = "error-drop",
+    }
 };
+/* *INDENT-ON* */
 
 VLIB_NODE_FUNCTION_MULTIARCH (dpdk_esp_encrypt_node, dpdk_esp_encrypt_node_fn)
 /*
@@ -584,20 +584,24 @@ dpdk_esp_encrypt_post_node_fn (vlib_main_t * vm,
   return from_frame->n_vectors;
 }
 
-VLIB_REGISTER_NODE (dpdk_esp_encrypt_post_node) =
-{
-  .function = dpdk_esp_encrypt_post_node_fn,.name =
-    "dpdk-esp-encrypt-post",.vector_size = sizeof (u32),.format_trace =
-    format_esp_encrypt_post_trace,.type = VLIB_NODE_TYPE_INTERNAL,.n_errors =
-    ARRAY_LEN (esp_encrypt_post_error_strings),.error_strings =
-    esp_encrypt_post_error_strings,.n_next_nodes =
-    ESP_ENCRYPT_N_NEXT,.next_nodes =
-  {
+/* *INDENT-OFF* */
+VLIB_REGISTER_NODE (dpdk_esp_encrypt_post_node) = {
+  .function = dpdk_esp_encrypt_post_node_fn,
+  .name = "dpdk-esp-encrypt-post",
+  .vector_size = sizeof (u32),
+  .format_trace = format_esp_encrypt_post_trace,
+  .type = VLIB_NODE_TYPE_INTERNAL,
+  .n_errors = ARRAY_LEN (esp_encrypt_post_error_strings),
+  .error_strings = esp_encrypt_post_error_strings,
+  .n_next_nodes = ESP_ENCRYPT_N_NEXT,
+  .next_nodes =
+    {
 #define _(s,n) [ESP_ENCRYPT_NEXT_##s] = n,
-    foreach_esp_encrypt_next
+      foreach_esp_encrypt_next
 #undef _
-  }
+    }
 };
+/* *INDENT-ON* */
 
 VLIB_NODE_FUNCTION_MULTIARCH (dpdk_esp_encrypt_post_node,
 			      dpdk_esp_encrypt_post_node_fn)

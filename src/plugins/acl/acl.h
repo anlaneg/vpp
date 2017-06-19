@@ -28,7 +28,7 @@
 #include "fa_node.h"
 
 #define  ACL_PLUGIN_VERSION_MAJOR 1
-#define  ACL_PLUGIN_VERSION_MINOR 2
+#define  ACL_PLUGIN_VERSION_MINOR 3
 
 #define UDP_SESSION_IDLE_TIMEOUT_SEC 600
 #define TCP_SESSION_IDLE_TIMEOUT_SEC (3600*24)
@@ -135,18 +135,19 @@ typedef struct {
   /* bitmaps when set the processing is enabled on the interface */
   uword *fa_in_acl_on_sw_if_index;
   uword *fa_out_acl_on_sw_if_index;
-  /* bitmap, when set the hash is initialized */
-  uword *fa_sessions_on_sw_if_index;
-  clib_bihash_40_8_t *fa_sessions_by_sw_if_index;
-  /* pool for FA session data. See fa_node.h */
-  fa_session_t *fa_sessions_pool;
-  /* The process node which is responsible to deleting the sessions */
+  /* bihash holding all of the sessions */
+  int fa_sessions_hash_is_initialized;
+  clib_bihash_40_8_t fa_sessions_hash;
+  /* The process node which orcherstrates the cleanup */
   u32 fa_cleaner_node_index;
   /* FA session timeouts, in seconds */
   u32 session_timeout_sec[ACL_N_TIMEOUTS];
   /* session add/delete counters */
   u64 *fa_session_adds_by_sw_if_index;
   u64 *fa_session_dels_by_sw_if_index;
+  /* total session adds/dels */
+  u64 fa_session_total_adds;
+  u64 fa_session_total_dels;
 
   /* L2 datapath glue */
 
@@ -192,8 +193,9 @@ typedef struct {
   f64 fa_cleaner_wait_time_increment;
 
   u64 fa_current_cleaner_timer_wait_interval;
-  u32 fa_conn_list_head[ACL_N_TIMEOUTS];
-  u32 fa_conn_list_tail[ACL_N_TIMEOUTS];
+
+  /* per-worker data related t conn management */
+  acl_fa_per_worker_data_t *per_worker_data;
 
   /* Configured session timeout */
   u64 session_timeout[ACL_N_TIMEOUTS];
@@ -205,12 +207,10 @@ typedef struct {
   _(fa_cleaner_cnt_delete_by_sw_index, "delete_by_sw_index events")        \
   _(fa_cleaner_cnt_delete_by_sw_index_ok, "delete_by_sw_index handled ok") \
   _(fa_cleaner_cnt_unknown_event, "unknown events received")               \
-  _(fa_cleaner_cnt_deleted_sessions, "sessions deleted")                   \
   _(fa_cleaner_cnt_timer_restarted, "session idle timers restarted")       \
   _(fa_cleaner_cnt_wait_with_timeout, "event wait with timeout called")    \
   _(fa_cleaner_cnt_wait_without_timeout, "event wait w/o timeout called")  \
   _(fa_cleaner_cnt_event_cycles, "total event cycles")                     \
-  _(fa_cleaner_cnt_already_deleted, "try to delete already deleted conn")  \
 /* end of counters */
 #define _(id, desc) u32 id;
   foreach_fa_cleaner_counter

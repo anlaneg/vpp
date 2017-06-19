@@ -1694,6 +1694,39 @@ static void vl_api_l2tpv3_create_tunnel_reply_t_handler_json
   vam->result_ready = 1;
 }
 
+static void vl_api_gpe_add_del_fwd_entry_reply_t_handler
+  (vl_api_gpe_add_del_fwd_entry_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+  if (vam->async_mode)
+    {
+      vam->async_errors += (retval < 0);
+    }
+  else
+    {
+      vam->retval = retval;
+      vam->result_ready = 1;
+    }
+}
+
+static void vl_api_gpe_add_del_fwd_entry_reply_t_handler_json
+  (vl_api_gpe_add_del_fwd_entry_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t node;
+
+  vat_json_init_object (&node);
+  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
+  vat_json_object_add_uint (&node, "fwd_entry_index",
+			    clib_net_to_host_u32 (mp->fwd_entry_index));
+
+  vat_json_print (vam->ofp, &node);
+  vat_json_free (&node);
+
+  vam->retval = ntohl (mp->retval);
+  vam->result_ready = 1;
+}
 
 static void vl_api_one_add_del_locator_set_reply_t_handler
   (vl_api_one_add_del_locator_set_reply_t * mp)
@@ -2550,6 +2583,26 @@ static void
   vec_free (ls_name);
 }
 
+typedef struct
+{
+  u32 spi;
+  u8 si;
+} __attribute__ ((__packed__)) lisp_nsh_api_t;
+
+uword
+unformat_nsh_address (unformat_input_t * input, va_list * args)
+{
+  lisp_nsh_api_t *nsh = va_arg (*args, lisp_nsh_api_t *);
+  return unformat (input, "SPI:%d SI:%d", &nsh->spi, &nsh->si);
+}
+
+u8 *
+format_nsh_address_vat (u8 * s, va_list * args)
+{
+  nsh_t *a = va_arg (*args, nsh_t *);
+  return format (s, "SPI:%d SI:%d", clib_net_to_host_u32 (a->spi), a->si);
+}
+
 static u8 *
 format_lisp_flat_eid (u8 * s, va_list * args)
 {
@@ -2565,6 +2618,8 @@ format_lisp_flat_eid (u8 * s, va_list * args)
       return format (s, "%U/%d", format_ip6_address, eid, eid_len);
     case 2:
       return format (s, "%U", format_ethernet_address, eid);
+    case 3:
+      return format (s, "%U", format_nsh_address_vat, eid);
     }
   return 0;
 }
@@ -2639,13 +2694,26 @@ vl_api_one_eid_table_details_t_handler_json (vl_api_one_eid_table_details_t
 			      clib_net_to_host_u32 (mp->locator_set_index));
 
   vat_json_object_add_uint (node, "is_local", mp->is_local ? 1 : 0);
-  eid = format (0, "%U", format_lisp_eid_vat,
-		mp->eid_type,
-		mp->eid,
-		mp->eid_prefix_len,
-		mp->seid, mp->seid_prefix_len, mp->is_src_dst);
-  vec_add1 (eid, 0);
-  vat_json_object_add_string_copy (node, "eid", eid);
+  if (mp->eid_type == 3)
+    {
+      vat_json_node_t *nsh_json = vat_json_object_add (node, "eid");
+      vat_json_init_object (nsh_json);
+      lisp_nsh_api_t *nsh = (lisp_nsh_api_t *) mp->eid;
+      vat_json_object_add_uint (nsh_json, "spi",
+				clib_net_to_host_u32 (nsh->spi));
+      vat_json_object_add_uint (nsh_json, "si", nsh->si);
+    }
+  else
+    {
+      eid = format (0, "%U", format_lisp_eid_vat,
+		    mp->eid_type,
+		    mp->eid,
+		    mp->eid_prefix_len,
+		    mp->seid, mp->seid_prefix_len, mp->is_src_dst);
+      vec_add1 (eid, 0);
+      vat_json_object_add_string_copy (node, "eid", eid);
+      vec_free (eid);
+    }
   vat_json_object_add_uint (node, "vni", clib_net_to_host_u32 (mp->vni));
   vat_json_object_add_uint (node, "ttl", clib_net_to_host_u32 (mp->ttl));
   vat_json_object_add_uint (node, "authoritative", (mp->authoritative));
@@ -2656,7 +2724,6 @@ vl_api_one_eid_table_details_t_handler_json (vl_api_one_eid_table_details_t
 				clib_net_to_host_u16 (mp->key_id));
       vat_json_object_add_string_copy (node, "key", mp->key);
     }
-  vec_free (eid);
 }
 
 static void
@@ -3117,6 +3184,77 @@ end:
 }
 
 static void
+  vl_api_gpe_native_fwd_rpaths_get_reply_t_handler
+  (vl_api_gpe_native_fwd_rpaths_get_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+  vl_api_gpe_native_fwd_rpath_t *r;
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+
+  for (i = 0; i < n; i++)
+    {
+      r = &mp->entries[i];
+      print (vam->ofp, "fib_index: %d sw_if_index %d nh %U",
+	     clib_net_to_host_u32 (r->fib_index),
+	     clib_net_to_host_u32 (r->nh_sw_if_index),
+	     r->is_ip4 ? format_ip4_address : format_ip6_address, r->nh_addr);
+    }
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_gpe_native_fwd_rpaths_get_reply_t_handler_json
+  (vl_api_gpe_native_fwd_rpaths_get_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t root, *e;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+  vl_api_gpe_native_fwd_rpath_t *r;
+  u8 *s;
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+  vat_json_init_array (&root);
+
+  for (i = 0; i < n; i++)
+    {
+      e = vat_json_array_add (&root);
+      vat_json_init_object (e);
+      r = &mp->entries[i];
+      s =
+	format (0, "%U", r->is_ip4 ? format_ip4_address : format_ip6_address,
+		r->nh_addr);
+      vec_add1 (s, 0);
+      vat_json_object_add_string_copy (e, "ip4", s);
+      vec_free (s);
+
+      vat_json_object_add_uint (e, "fib_index",
+				clib_net_to_host_u32 (r->fib_index));
+      vat_json_object_add_uint (e, "nh_sw_if_index",
+				clib_net_to_host_u32 (r->nh_sw_if_index));
+    }
+
+  vat_json_print (vam->ofp, &root);
+  vat_json_free (&root);
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
   vl_api_gpe_fwd_entry_vnis_get_reply_t_handler
   (vl_api_gpe_fwd_entry_vnis_get_reply_t * mp)
 {
@@ -3154,6 +3292,123 @@ static void
 
   for (i = 0; i < n; i++)
     vat_json_array_add_uint (&root, clib_net_to_host_u32 (mp->vnis[i]));
+
+  vat_json_print (vam->ofp, &root);
+  vat_json_free (&root);
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_one_l2_arp_entries_get_reply_t_handler
+  (vl_api_one_l2_arp_entries_get_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+
+  for (i = 0; i < n; i++)
+    print (vam->ofp, "%U -> %U", format_ip4_address, &mp->entries[i].ip4,
+	   format_ethernet_address, mp->entries[i].mac);
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_one_l2_arp_entries_get_reply_t_handler_json
+  (vl_api_one_l2_arp_entries_get_reply_t * mp)
+{
+  u8 *s = 0;
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t *e = 0, root;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+  vl_api_one_l2_arp_entry_t *arp_entry;
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+  vat_json_init_array (&root);
+
+  for (i = 0; i < n; i++)
+    {
+      e = vat_json_array_add (&root);
+      arp_entry = &mp->entries[i];
+
+      vat_json_init_object (e);
+      s = format (0, "%U", format_ethernet_address, arp_entry->mac);
+      vec_add1 (s, 0);
+
+      vat_json_object_add_string_copy (e, "mac", s);
+      vec_free (s);
+
+      s = format (0, "%U", format_ip4_address, &arp_entry->ip4);
+      vec_add1 (s, 0);
+      vat_json_object_add_string_copy (e, "ip4", s);
+      vec_free (s);
+    }
+
+  vat_json_print (vam->ofp, &root);
+  vat_json_free (&root);
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_one_l2_arp_bd_get_reply_t_handler
+  (vl_api_one_l2_arp_bd_get_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+
+  for (i = 0; i < n; i++)
+    {
+      print (vam->ofp, "%d", clib_net_to_host_u32 (mp->bridge_domains[i]));
+    }
+
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_one_l2_arp_bd_get_reply_t_handler_json
+  (vl_api_one_l2_arp_bd_get_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t root;
+  u32 i, n;
+  int retval = clib_net_to_host_u32 (mp->retval);
+
+  if (retval)
+    goto end;
+
+  n = clib_net_to_host_u32 (mp->count);
+  vat_json_init_array (&root);
+
+  for (i = 0; i < n; i++)
+    {
+      vat_json_array_add_uint (&root,
+			       clib_net_to_host_u32 (mp->bridge_domains[i]));
+    }
 
   vat_json_print (vam->ofp, &root);
   vat_json_free (&root);
@@ -3504,6 +3759,52 @@ static void
 	  clib_memcpy (&ip4, mp->address, sizeof (ip4));
 	  vat_json_object_add_ip4 (&node, "address", ip4);
 	}
+    }
+
+  vec_free (status);
+
+  vat_json_print (vam->ofp, &node);
+  vat_json_free (&node);
+
+  vam->retval = ntohl (mp->retval);
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_show_one_nsh_mapping_reply_t_handler
+  (vl_api_show_one_nsh_mapping_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+
+  if (0 <= retval)
+    {
+      print (vam->ofp, "%-20s%-16s",
+	     mp->is_set ? "set" : "not-set",
+	     mp->is_set ? (char *) mp->locator_set_name : "");
+    }
+
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_show_one_nsh_mapping_reply_t_handler_json
+  (vl_api_show_one_nsh_mapping_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t node;
+  u8 *status = 0;
+
+  status = format (0, "%s", mp->is_set ? "yes" : "no");
+  vec_add1 (status, 0);
+
+  vat_json_init_object (&node);
+  vat_json_object_add_string_copy (&node, "is_set", status);
+  if (mp->is_set)
+    {
+      vat_json_object_add_string_copy (&node, "locator_set",
+				       mp->locator_set_name);
     }
 
   vec_free (status);
@@ -4158,6 +4459,10 @@ static void vl_api_flow_classify_details_t_handler_json
 #define vl_api_vnet_ip6_nbr_counters_t_print vl_noop_handler
 #define vl_api_one_adjacencies_get_reply_t_endian vl_noop_handler
 #define vl_api_one_adjacencies_get_reply_t_print vl_noop_handler
+#define vl_api_one_l2_arp_bd_get_reply_t_print vl_noop_handler
+#define vl_api_one_l2_arp_entries_get_reply_t_endian vl_noop_handler
+#define vl_api_one_l2_arp_entries_get_reply_t_print vl_noop_handler
+#define vl_api_one_l2_arp_bd_get_reply_t_endian vl_noop_handler
 
 /*
  * Generate boilerplate reply handlers, which
@@ -4267,11 +4572,12 @@ _(one_add_del_map_request_itr_rlocs_reply)              \
 _(one_eid_table_add_del_map_reply)                      \
 _(one_use_petr_reply)                                   \
 _(one_stats_enable_disable_reply)                       \
+_(one_add_del_l2_arp_entry_reply)                       \
 _(one_stats_flush_reply)                                \
-_(gpe_add_del_fwd_entry_reply)                          \
 _(gpe_enable_disable_reply)                             \
 _(gpe_set_encap_mode_reply)                             \
 _(gpe_add_del_iface_reply)                              \
+_(gpe_add_del_native_fwd_rpath_reply)                   \
 _(vxlan_gpe_add_del_tunnel_reply)                       \
 _(af_packet_delete_reply)                               \
 _(policer_classify_set_interface_reply)                 \
@@ -4291,7 +4597,9 @@ _(l2_interface_pbb_tag_rewrite_reply)                   \
 _(punt_reply)                                           \
 _(feature_enable_disable_reply)				\
 _(sw_interface_tag_add_del_reply)			\
-_(sw_interface_set_mtu_reply)
+_(sw_interface_set_mtu_reply)                           \
+_(p2p_ethernet_add_reply)                               \
+_(p2p_ethernet_del_reply)
 
 #define _(n)                                    \
     static void vl_api_##n##_t_handler          \
@@ -4499,6 +4807,9 @@ _(ONE_STATS_FLUSH_REPLY, one_stats_flush_reply)                         \
 _(ONE_STATS_ENABLE_DISABLE_REPLY, one_stats_enable_disable_reply)       \
 _(SHOW_ONE_STATS_ENABLE_DISABLE_REPLY,                                  \
   show_one_stats_enable_disable_reply)                                  \
+_(ONE_ADD_DEL_L2_ARP_ENTRY_REPLY, one_add_del_l2_arp_entry_reply)       \
+_(ONE_L2_ARP_BD_GET_REPLY, one_l2_arp_bd_get_reply)                     \
+_(ONE_L2_ARP_ENTRIES_GET_REPLY, one_l2_arp_entries_get_reply)           \
 _(GPE_SET_ENCAP_MODE_REPLY, gpe_set_encap_mode_reply)                   \
 _(GPE_GET_ENCAP_MODE_REPLY, gpe_get_encap_mode_reply)                   \
 _(GPE_ADD_DEL_IFACE_REPLY, gpe_add_del_iface_reply)                     \
@@ -4506,6 +4817,9 @@ _(GPE_ENABLE_DISABLE_REPLY, gpe_enable_disable_reply)                   \
 _(GPE_ADD_DEL_FWD_ENTRY_REPLY, gpe_add_del_fwd_entry_reply)             \
 _(GPE_FWD_ENTRY_VNIS_GET_REPLY, gpe_fwd_entry_vnis_get_reply)           \
 _(GPE_FWD_ENTRIES_GET_REPLY, gpe_fwd_entries_get_reply)                 \
+_(GPE_NATIVE_FWD_RPATHS_GET_REPLY, gpe_native_fwd_rpaths_get_reply)     \
+_(GPE_ADD_DEL_NATIVE_FWD_RPATH_REPLY,                                   \
+  gpe_add_del_native_fwd_rpath_reply)                                   \
 _(GPE_FWD_ENTRY_PATH_DETAILS,                                           \
   gpe_fwd_entry_path_details)                                           \
 _(SHOW_ONE_STATUS_REPLY, show_one_status_reply)                         \
@@ -4513,6 +4827,7 @@ _(ONE_ADD_DEL_MAP_REQUEST_ITR_RLOCS_REPLY,                              \
   one_add_del_map_request_itr_rlocs_reply)                              \
 _(ONE_GET_MAP_REQUEST_ITR_RLOCS_REPLY,                                  \
   one_get_map_request_itr_rlocs_reply)                                  \
+_(SHOW_ONE_NSH_MAPPING_REPLY, show_one_nsh_mapping_reply)               \
 _(SHOW_ONE_PITR_REPLY, show_one_pitr_reply)                             \
 _(SHOW_ONE_USE_PETR_REPLY, show_one_use_petr_reply)                     \
 _(SHOW_ONE_MAP_REQUEST_MODE_REPLY, show_one_map_request_mode_reply)     \
@@ -4563,7 +4878,9 @@ _(SW_INTERFACE_TAG_ADD_DEL_REPLY, sw_interface_tag_add_del_reply)     	\
 _(L2_XCONNECT_DETAILS, l2_xconnect_details)                             \
 _(SW_INTERFACE_SET_MTU_REPLY, sw_interface_set_mtu_reply)               \
 _(IP_NEIGHBOR_DETAILS, ip_neighbor_details)                             \
-_(SW_INTERFACE_GET_TABLE_REPLY, sw_interface_get_table_reply)
+_(SW_INTERFACE_GET_TABLE_REPLY, sw_interface_get_table_reply)           \
+_(P2P_ETHERNET_ADD_REPLY, p2p_ethernet_add_reply)                       \
+_(P2P_ETHERNET_DEL_REPLY, p2p_ethernet_del_reply)
 
 #define foreach_standalone_reply_msg					\
 _(SW_INTERFACE_SET_FLAGS, sw_interface_set_flags)                       \
@@ -13883,6 +14200,12 @@ unformat_lisp_eid_vat (unformat_input_t * input, va_list * args)
     {
       a->type = 2;		/* mac type */
     }
+  else if (unformat (input, "%U", unformat_nsh_address, a->addr))
+    {
+      a->type = 3;		/* NSH type */
+      lisp_nsh_api_t *nsh = (lisp_nsh_api_t *) a->addr;
+      nsh->spi = clib_host_to_net_u32 (nsh->spi);
+    }
   else
     {
       return 0;
@@ -13907,6 +14230,8 @@ lisp_eid_size_vat (u8 type)
       return 16;
     case 2:
       return 6;
+    case 3:
+      return 5;
     }
   return 0;
 }
@@ -14737,6 +15062,111 @@ api_show_one_rloc_probe_state (vat_main_t * vam)
 #define api_show_lisp_rloc_probe_state api_show_one_rloc_probe_state
 
 static int
+api_one_add_del_l2_arp_entry (vat_main_t * vam)
+{
+  vl_api_one_add_del_l2_arp_entry_t *mp;
+  unformat_input_t *input = vam->input;
+  u8 is_add = 1;
+  u8 mac_set = 0;
+  u8 bd_set = 0;
+  u8 ip_set = 0;
+  u8 mac[6] = { 0, };
+  u32 ip4 = 0, bd = ~0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "del"))
+	is_add = 0;
+      else if (unformat (input, "mac %U", unformat_ethernet_address, mac))
+	mac_set = 1;
+      else if (unformat (input, "ip %U", unformat_ip4_address, &ip4))
+	ip_set = 1;
+      else if (unformat (input, "bd %d", &bd))
+	bd_set = 1;
+      else
+	{
+	  errmsg ("parse error '%U'", format_unformat_error, input);
+	  return -99;
+	}
+    }
+
+  if (!bd_set || !ip_set || (!mac_set && is_add))
+    {
+      errmsg ("Missing BD, IP or MAC!");
+      return -99;
+    }
+
+  M (ONE_ADD_DEL_L2_ARP_ENTRY, mp);
+  mp->is_add = is_add;
+  clib_memcpy (mp->mac, mac, 6);
+  mp->bd = clib_host_to_net_u32 (bd);
+  mp->ip4 = ip4;
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
+api_one_l2_arp_bd_get (vat_main_t * vam)
+{
+  vl_api_one_l2_arp_bd_get_t *mp;
+  int ret;
+
+  M (ONE_L2_ARP_BD_GET, mp);
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
+api_one_l2_arp_entries_get (vat_main_t * vam)
+{
+  vl_api_one_l2_arp_entries_get_t *mp;
+  unformat_input_t *input = vam->input;
+  u8 bd_set = 0;
+  u32 bd = ~0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "bd %d", &bd))
+	bd_set = 1;
+      else
+	{
+	  errmsg ("parse error '%U'", format_unformat_error, input);
+	  return -99;
+	}
+    }
+
+  if (!bd_set)
+    {
+      errmsg ("Expected bridge domain!");
+      return -99;
+    }
+
+  M (ONE_L2_ARP_ENTRIES_GET, mp);
+  mp->bd = clib_host_to_net_u32 (bd);
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
 api_one_stats_enable_disable (vat_main_t * vam)
 {
   vl_api_one_stats_enable_disable_t *mp;
@@ -14901,6 +15331,50 @@ api_one_pitr_set_locator_set (vat_main_t * vam)
 #define api_lisp_pitr_set_locator_set api_one_pitr_set_locator_set
 
 static int
+api_one_nsh_set_locator_set (vat_main_t * vam)
+{
+  u8 ls_name_set = 0;
+  unformat_input_t *input = vam->input;
+  vl_api_one_nsh_set_locator_set_t *mp;
+  u8 is_add = 1;
+  u8 *ls_name = 0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "del"))
+	is_add = 0;
+      else if (unformat (input, "ls %s", &ls_name))
+	ls_name_set = 1;
+      else
+	{
+	  errmsg ("parse error '%U'", format_unformat_error, input);
+	  return -99;
+	}
+    }
+
+  if (!ls_name_set && is_add)
+    {
+      errmsg ("locator-set name not set!");
+      return -99;
+    }
+
+  M (ONE_NSH_SET_LOCATOR_SET, mp);
+
+  mp->is_add = is_add;
+  clib_memcpy (mp->ls_name, ls_name, vec_len (ls_name));
+  vec_free (ls_name);
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
 api_show_one_pitr (vat_main_t * vam)
 {
   vl_api_show_one_pitr_t *mp;
@@ -14978,6 +15452,26 @@ api_one_use_petr (vat_main_t * vam)
 }
 
 #define api_lisp_use_petr api_one_use_petr
+
+static int
+api_show_one_nsh_mapping (vat_main_t * vam)
+{
+  vl_api_show_one_use_petr_t *mp;
+  int ret;
+
+  if (!vam->json_output)
+    {
+      print (vam->ofp, "%=20s", "local ONE NSH mapping:");
+    }
+
+  M (SHOW_ONE_NSH_MAPPING, mp);
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
 
 static int
 api_show_one_use_petr (vat_main_t * vam)
@@ -15456,9 +15950,9 @@ api_lisp_gpe_add_del_iface (vat_main_t * vam)
   M (GPE_ADD_DEL_IFACE, mp);
 
   mp->is_add = is_add;
-  mp->dp_table = dp_table;
+  mp->dp_table = clib_host_to_net_u32 (dp_table);
   mp->is_l2 = is_l2;
-  mp->vni = vni;
+  mp->vni = clib_host_to_net_u32 (vni);
 
   /* send it... */
   S (mp);
@@ -15765,6 +16259,7 @@ api_one_eid_table_dump (vat_main_t * vam)
   u32 prefix_length = ~0, t, vni = 0;
   u8 filter = 0;
   int ret;
+  lisp_nsh_api_t nsh;
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -15784,6 +16279,11 @@ api_one_eid_table_dump (vat_main_t * vam)
 	{
 	  eid_set = 1;
 	  eid_type = 2;
+	}
+      else if (unformat (i, "eid %U", unformat_nsh_address, &nsh))
+	{
+	  eid_set = 1;
+	  eid_type = 3;
 	}
       else if (unformat (i, "vni %d", &t))
 	{
@@ -15830,6 +16330,9 @@ api_one_eid_table_dump (vat_main_t * vam)
 	  break;
 	case 2:
 	  clib_memcpy (mp->eid, mac, sizeof (mac));
+	  break;
+	case 3:
+	  clib_memcpy (mp->eid, &nsh, sizeof (nsh));
 	  break;
 	default:
 	  errmsg ("unknown EID type %d!", eid_type);
@@ -15896,6 +16399,8 @@ api_lisp_gpe_fwd_entries_get (vat_main_t * vam)
   return ret;
 }
 
+#define vl_api_gpe_native_fwd_rpaths_get_reply_t_endian vl_noop_handler
+#define vl_api_gpe_native_fwd_rpaths_get_reply_t_print vl_noop_handler
 #define vl_api_gpe_fwd_entry_vnis_get_reply_t_endian vl_noop_handler
 #define vl_api_gpe_fwd_entry_vnis_get_reply_t_print vl_noop_handler
 #define vl_api_gpe_fwd_entries_get_reply_t_endian vl_noop_handler
@@ -15950,6 +16455,50 @@ api_one_adjacencies_get (vat_main_t * vam)
 #define api_lisp_adjacencies_get api_one_adjacencies_get
 
 static int
+api_gpe_native_fwd_rpaths_get (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_gpe_native_fwd_rpaths_get_t *mp;
+  int ret;
+  u8 ip_family_set = 0, is_ip4 = 1;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "ip4"))
+	{
+	  ip_family_set = 1;
+	  is_ip4 = 1;
+	}
+      else if (unformat (i, "ip6"))
+	{
+	  ip_family_set = 1;
+	  is_ip4 = 0;
+	}
+      else
+	{
+	  errmsg ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
+    }
+
+  if (!ip_family_set)
+    {
+      errmsg ("ip family not set!");
+      return -99;
+    }
+
+  M (GPE_NATIVE_FWD_RPATHS_GET, mp);
+  mp->is_ip4 = is_ip4;
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
 api_gpe_fwd_entry_vnis_get (vat_main_t * vam)
 {
   vl_api_gpe_fwd_entry_vnis_get_t *mp;
@@ -15961,6 +16510,81 @@ api_gpe_fwd_entry_vnis_get (vat_main_t * vam)
     }
 
   M (GPE_FWD_ENTRY_VNIS_GET, mp);
+
+  /* send it... */
+  S (mp);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
+api_gpe_add_del_native_fwd_rpath (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_gpe_add_del_native_fwd_rpath_t *mp;
+  int ret = 0;
+  u8 is_add = 1, ip_set = 0, is_ip4 = 1;
+  struct in_addr ip4;
+  struct in6_addr ip6;
+  u32 table_id = 0, nh_sw_if_index = ~0;
+
+  memset (&ip4, 0, sizeof (ip4));
+  memset (&ip6, 0, sizeof (ip6));
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "del"))
+	is_add = 0;
+      else if (unformat (i, "via %U %U", unformat_ip4_address, &ip4,
+			 api_unformat_sw_if_index, vam, &nh_sw_if_index))
+	{
+	  ip_set = 1;
+	  is_ip4 = 1;
+	}
+      else if (unformat (i, "via %U %U", unformat_ip6_address, &ip6,
+			 api_unformat_sw_if_index, vam, &nh_sw_if_index))
+	{
+	  ip_set = 1;
+	  is_ip4 = 0;
+	}
+      else if (unformat (i, "via %U", unformat_ip4_address, &ip4))
+	{
+	  ip_set = 1;
+	  is_ip4 = 1;
+	  nh_sw_if_index = ~0;
+	}
+      else if (unformat (i, "via %U", unformat_ip6_address, &ip6))
+	{
+	  ip_set = 1;
+	  is_ip4 = 0;
+	  nh_sw_if_index = ~0;
+	}
+      else if (unformat (i, "table %d", &table_id))
+	;
+      else
+	{
+	  errmsg ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
+    }
+
+  if (!ip_set)
+    {
+      errmsg ("nh addr not set!");
+      return -99;
+    }
+
+  M (GPE_ADD_DEL_NATIVE_FWD_RPATH, mp);
+  mp->is_add = is_add;
+  mp->table_id = clib_host_to_net_u32 (table_id);
+  mp->nh_sw_if_index = clib_host_to_net_u32 (nh_sw_if_index);
+  mp->is_ip4 = is_ip4;
+  if (is_ip4)
+    clib_memcpy (mp->nh_addr, &ip4, sizeof (ip4));
+  else
+    clib_memcpy (mp->nh_addr, &ip6, sizeof (ip6));
 
   /* send it... */
   S (mp);
@@ -18427,6 +19051,101 @@ api_sw_interface_set_mtu (vat_main_t * vam)
   return ret;
 }
 
+static int
+api_p2p_ethernet_add (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_p2p_ethernet_add_t *mp;
+  u32 parent_if_index = ~0;
+  u8 remote_mac[6];
+  u8 mac_set = 0;
+  int ret;
+
+  memset (remote_mac, 0, sizeof (remote_mac));
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &parent_if_index))
+	;
+      else if (unformat (i, "sw_if_index %d", &parent_if_index))
+	;
+      else
+	if (unformat
+	    (i, "remote_mac %U", unformat_ethernet_address, remote_mac))
+	mac_set++;
+      else
+	{
+	  clib_warning ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
+    }
+
+  if (parent_if_index == ~0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+  if (mac_set == 0)
+    {
+      errmsg ("missing remote mac address");
+      return -99;
+    }
+
+  M (P2P_ETHERNET_ADD, mp);
+  mp->parent_if_index = ntohl (parent_if_index);
+  clib_memcpy (mp->remote_mac, remote_mac, sizeof (remote_mac));
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
+api_p2p_ethernet_del (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_p2p_ethernet_del_t *mp;
+  u32 parent_if_index = ~0;
+  u8 remote_mac[6];
+  u8 mac_set = 0;
+  int ret;
+
+  memset (remote_mac, 0, sizeof (remote_mac));
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &parent_if_index))
+	;
+      else if (unformat (i, "sw_if_index %d", &parent_if_index))
+	;
+      else
+	if (unformat
+	    (i, "remote_mac %U", unformat_ethernet_address, remote_mac))
+	mac_set++;
+      else
+	{
+	  clib_warning ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
+    }
+
+  if (parent_if_index == ~0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+  if (mac_set == 0)
+    {
+      errmsg ("missing remote mac address");
+      return -99;
+    }
+
+  M (P2P_ETHERNET_DEL, mp);
+  mp->parent_if_index = ntohl (parent_if_index);
+  clib_memcpy (mp->remote_mac, remote_mac, sizeof (remote_mac));
+
+  S (mp);
+  W (ret);
+  return ret;
+}
 
 static int
 q_or_quit (vat_main_t * vam)
@@ -19052,6 +19771,9 @@ _(one_locator_set_dump, "[local | remote]")                             \
 _(one_locator_dump, "ls_index <index> | ls_name <name>")                \
 _(one_eid_table_dump, "[eid <ipv4|ipv6>/<prefix> | <mac>] [vni] "       \
                        "[local] | [remote]")                            \
+_(one_add_del_l2_arp_entry, "[del] mac <mac> bd <bd> ip4 <ip4>")        \
+_(one_l2_arp_bd_get, "")                                                \
+_(one_l2_arp_entries_get, "bd <bridge-domain>")                         \
 _(one_stats_enable_disable, "enable|disalbe")                           \
 _(show_one_stats_enable_disable, "")                                    \
 _(one_eid_table_vni_dump, "")                                           \
@@ -19059,12 +19781,14 @@ _(one_eid_table_map_dump, "l2|l3")                                      \
 _(one_map_resolver_dump, "")                                            \
 _(one_map_server_dump, "")                                              \
 _(one_adjacencies_get, "vni <vni>")                                     \
+_(one_nsh_set_locator_set, "[del] ls <locator-set-name>")               \
 _(show_one_rloc_probe_state, "")                                        \
 _(show_one_map_register_state, "")                                      \
 _(show_one_status, "")                                                  \
 _(one_stats_dump, "")                                                   \
 _(one_stats_flush, "")                                                  \
 _(one_get_map_request_itr_rlocs, "")                                    \
+_(show_one_nsh_mapping, "")                                             \
 _(show_one_pitr, "")                                                    \
 _(show_one_use_petr, "")                                                \
 _(show_one_map_request_mode, "")                                        \
@@ -19105,6 +19829,9 @@ _(lisp_map_resolver_dump, "")                                           \
 _(lisp_map_server_dump, "")                                             \
 _(lisp_adjacencies_get, "vni <vni>")                                    \
 _(gpe_fwd_entry_vnis_get, "")                                           \
+_(gpe_native_fwd_rpaths_get, "ip4 | ip6")                               \
+_(gpe_add_del_native_fwd_rpath, "[del] via <nh-ip-addr> [iface] "       \
+                                "[table <table-id>]")                   \
 _(lisp_gpe_fwd_entries_get, "vni <vni>")                                \
 _(lisp_gpe_fwd_entry_path_dump, "index <fwd_entry_index>")              \
 _(gpe_set_encap_mode, "lisp|vxlan")                                     \
@@ -19179,7 +19906,9 @@ _(sw_interface_tag_add_del, "<intfc> | sw_if_index <nn> tag <text>"	\
 _(l2_xconnect_dump, "")                                             	\
 _(sw_interface_set_mtu, "<intfc> | sw_if_index <nn> mtu <nn>")        \
 _(ip_neighbor_dump, "[ip6] <intfc> | sw_if_index <nn>")                 \
-_(sw_interface_get_table, "<intfc> | sw_if_index <id> [ipv6]")
+_(sw_interface_get_table, "<intfc> | sw_if_index <id> [ipv6]")          \
+_(p2p_ethernet_add, "<intfc> | sw_if_index <nn> remote_mac <mac-address>") \
+_(p2p_ethernet_del, "<intfc> | sw_if_index <nn> remote_mac <mac-address>")
 
 /* List of command functions, CLI names map directly to functions */
 #define foreach_cli_function                                    \

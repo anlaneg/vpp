@@ -279,14 +279,46 @@ ip_src_fib_add_route (u32 src_fib_index,
   vec_free (rpaths);
 }
 
+static void
+gpe_native_fwd_add_del_lfe (lisp_gpe_fwd_entry_t * lfe, u8 is_add)
+{
+  lisp_gpe_main_t *lgm = vnet_lisp_gpe_get_main ();
+  u8 found = 0, ip_version;
+  u32 *lfei, new_lfei;
+  ip_version = ip_prefix_version (&lfe->key->rmt.ippref);
+
+  new_lfei = lfe - lgm->lisp_fwd_entry_pool;
+  vec_foreach (lfei, lgm->native_fwd_lfes[ip_version])
+  {
+    lfe = pool_elt_at_index (lgm->lisp_fwd_entry_pool, lfei[0]);
+    if (lfei[0] == new_lfei)
+      {
+	found = 1;
+	break;
+      }
+  }
+
+  if (is_add)
+    {
+      if (!found)
+	vec_add1 (lgm->native_fwd_lfes[ip_version], new_lfei);
+    }
+  else
+    {
+      if (found)
+	vec_del1 (lgm->native_fwd_lfes[ip_version], lfei[0]);
+    }
+}
 
 static void
 create_fib_entries (lisp_gpe_fwd_entry_t * lfe)
 {
+  lisp_gpe_main_t *lgm = vnet_lisp_gpe_get_main ();
   dpo_proto_t dproto;
   ip_prefix_t ippref;
-  dproto = (ip_prefix_version (&lfe->key->rmt.ippref) == IP4 ?
-	    DPO_PROTO_IP4 : DPO_PROTO_IP6);
+  fib_prefix_t fib_prefix;
+  u8 ip_version = ip_prefix_version (&lfe->key->rmt.ippref);
+  dproto = (ip_version == IP4 ? DPO_PROTO_IP4 : DPO_PROTO_IP6);
 
   if (lfe->is_src_dst)
     {
@@ -306,11 +338,19 @@ create_fib_entries (lisp_gpe_fwd_entry_t * lfe)
 
       switch (lfe->action)
 	{
+	case LISP_FORWARD_NATIVE:
+	  /* TODO handle route overlaps with fib and default route */
+	  if (vec_len (lgm->native_fwd_rpath[ip_version]))
+	    {
+	      ip_prefix_to_fib_prefix (&lfe->key->rmt.ippref, &fib_prefix);
+	      fib_table_entry_update (lfe->eid_fib_index, &fib_prefix,
+				      FIB_SOURCE_LISP, FIB_ENTRY_FLAG_NONE,
+				      lgm->native_fwd_rpath[ip_version]);
+	      gpe_native_fwd_add_del_lfe (lfe, 1);
+	      break;
+	    }
 	case LISP_NO_ACTION:
 	  /* TODO update timers? */
-	case LISP_FORWARD_NATIVE:
-	  /* TODO check if route/next-hop for eid exists in fib and add
-	   * more specific for the eid with the next-hop found */
 	case LISP_SEND_MAP_REQUEST:
 	  /* insert tunnel that always sends map-request */
 	  dpo_copy (&dpo, lisp_cp_dpo_get (dproto));
@@ -343,6 +383,7 @@ delete_fib_entries (lisp_gpe_fwd_entry_t * lfe)
       ip_prefix_to_fib_prefix (&lfe->key->rmt.ippref, &dst_fib_prefix);
       fib_table_entry_delete (lfe->src_fib_index, &dst_fib_prefix,
 			      FIB_SOURCE_LISP);
+      gpe_native_fwd_add_del_lfe (lfe, 0);
     }
 }
 
@@ -424,6 +465,9 @@ vnet_lisp_gpe_add_fwd_counters (vnet_lisp_gpe_add_del_fwd_entry_args_t * a,
 
   lfe = find_fwd_entry (lgm, a, &fe_key);
 
+  if (!lfe)
+    return;
+
   if (LISP_GPE_FWD_ENTRY_TYPE_NORMAL != lfe->type)
     return;
 
@@ -478,6 +522,7 @@ add_ip_fwd_entry (lisp_gpe_main_t * lgm,
 
   hash_set_mem (lgm->lisp_gpe_fwd_entries, lfe->key,
 		lfe - lgm->lisp_fwd_entry_pool);
+  a->fwd_entry_index = lfe - lgm->lisp_fwd_entry_pool;
 
   fproto = (IP4 == ip_prefix_version (&fid_addr_ippref (&lfe->key->rmt)) ?
 	    FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6);
@@ -791,6 +836,7 @@ add_l2_fwd_entry (lisp_gpe_main_t * lgm,
 
   hash_set_mem (lgm->lisp_gpe_fwd_entries, lfe->key,
 		lfe - lgm->lisp_fwd_entry_pool);
+  a->fwd_entry_index = lfe - lgm->lisp_fwd_entry_pool;
 
   lfe->type = (a->is_negative ?
 	       LISP_GPE_FWD_ENTRY_TYPE_NEGATIVE :
@@ -1064,6 +1110,7 @@ add_nsh_fwd_entry (lisp_gpe_main_t * lgm,
 
   hash_set_mem (lgm->lisp_gpe_fwd_entries, lfe->key,
 		lfe - lgm->lisp_fwd_entry_pool);
+  a->fwd_entry_index = lfe - lgm->lisp_fwd_entry_pool;
 
   lfe->type = (a->is_negative ?
 	       LISP_GPE_FWD_ENTRY_TYPE_NEGATIVE :

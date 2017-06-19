@@ -16,6 +16,7 @@ export BR=$(WS_ROOT)/build-root
 CCACHE_DIR?=$(BR)/.ccache
 GDB?=gdb
 PLATFORM?=vpp
+SAMPLE_PLUGIN?=no
 
 MINIMAL_STARTUP_CONF="unix { interactive }"
 
@@ -34,7 +35,7 @@ endif
 #针对系统要生成的包格式
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
@@ -46,6 +47,9 @@ DEB_DEPENDS += lcov chrpath autoconf nasm indent
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
+	DEB_DEPENDS += openjdk-8-jdk-headless
+	APT_ARGS = -t jessie-backports
 else
 	DEB_DEPENDS += default-jdk-headless
 endif
@@ -71,6 +75,10 @@ else
 	RPM_DEPENDS += lcov
 endif
 
+RPM_SUSE_DEPENDS = autoconf automake bison ccache chrpath distribution-release gcc6 glibc-devel-static
+RPM_SUSE_DEPENDS += java-1_8_0-openjdk-devel libopenssl-devel libtool lsb-release make openssl-devel
+RPM_SUSE_DEPENDS += python-devel python-pip python-rpm-macros shadow
+
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
 endif
@@ -79,6 +87,12 @@ endif
 ifeq ($(findstring y,$(UNATTENDED)),y)
 CONFIRM=-y
 FORCE=--force-yes
+endif
+
+TARGETS = vpp
+
+ifneq ($(SAMPLE_PLUGIN),no)
+TARGETS += sample-plugin
 endif
 
 .PHONY: help bootstrap wipe wipe-release build build-release rebuild rebuild-release
@@ -141,14 +155,16 @@ help:
 	@echo " GDB=<path>          - gdb binary to use for debugging"
 	@echo " PLATFORM=<name>     - target platform. default is vpp"
 	@echo " TEST=<filter>       - apply filter to test set, see test-help"
+	@echo " SAMPLE_PLUGIN=yes   - in addition build/run/debug sample plugin"
 	@echo ""
 	@echo "Current Argument Values:"
-	@echo " V            = $(V)"
-	@echo " STARTUP_CONF = $(STARTUP_CONF)"
-	@echo " STARTUP_DIR  = $(STARTUP_DIR)"
-	@echo " GDB          = $(GDB)"
-	@echo " PLATFORM     = $(PLATFORM)"
-	@echo " DPDK_VERSION = $(DPDK_VERSION)"
+	@echo " V                 = $(V)"
+	@echo " STARTUP_CONF      = $(STARTUP_CONF)"
+	@echo " STARTUP_DIR       = $(STARTUP_DIR)"
+	@echo " GDB               = $(GDB)"
+	@echo " PLATFORM          = $(PLATFORM)"
+	@echo " DPDK_VERSION      = $(DPDK_VERSION)"
+	@echo " SAMPLE_PLUGIN     = $(SAMPLE_PLUGIN)"
 
 $(BR)/.bootstrap.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
@@ -156,7 +172,7 @@ ifeq ($(findstring y,$(UNATTENDED)),y)
 	make install-dep
 endif
 #检查ubuntu或者redhat依赖的包时否均被完全安装了
-ifeq ($(OS_ID),ubuntu)
+ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 	@MISSING=$$(apt-get install -y -qq -s $(DEB_DEPENDS) | grep "^Inst ") ; \
 	if [ -n "$$MISSING" ] ; then \
 	  echo "\nPlease install missing packages: \n$$MISSING\n" ; \
@@ -204,20 +220,26 @@ bootstrap: $(BR)/.bootstrap.ok
 
 #此目标安装依赖包
 install-dep:
-ifeq ($(OS_ID),ubuntu)
+ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 ifeq ($(OS_VERSION_ID),14.04)
 	@sudo -E apt-get $(CONFIRM) $(FORCE) install software-properties-common
 	@sudo -E add-apt-repository ppa:openjdk-r/ppa $(CONFIRM)
 endif
+ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
+	@grep -q jessie-backports /etc/apt/sources.list /etc/apt/sources.list.d/* 2> /dev/null \
+           || ( echo "Please install jessie-backports" ; exit 1 )
+endif
 	@sudo -E apt-get update
-	@sudo -E apt-get $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
+	@sudo -E apt-get $(APT_ARGS) $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
 else ifneq ("$(wildcard /etc/redhat-release)","")
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E yum install $(CONFIRM) --enablerepo=epel $(EPEL_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
+else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
+	@sudo -E zypper -n install -y $(RPM_SUSE_DEPENDS)
 else
-	$(error "This option currently works only on Ubuntu or Centos systems")
+	$(error "This option currently works only on Ubuntu, Debian or Centos systems")
 endif
 
 #定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TAG=argv1
@@ -252,21 +274,21 @@ dist:
 	@ln -rs $(DIST_FILE).xz $(BR)/vpp-latest.tar.xz
 
 build: $(BR)/.bootstrap.ok
-	$(call make,$(PLATFORM)_debug,vpp-install)
+	$(call make,$(PLATFORM)_debug,$(addsuffix -install,$(TARGETS)))
 
 wipedist:
 	@$(RM) $(BR)/*.tar.xz
 
 wipe: wipedist $(BR)/.bootstrap.ok
-	$(call make,$(PLATFORM)_debug,vpp-wipe)
+	$(call make,$(PLATFORM)_debug,$(addsuffix -wipe,$(TARGETS)))
 
 rebuild: wipe build
 
 build-release: $(BR)/.bootstrap.ok
-	$(call make,$(PLATFORM),vpp-install)
+	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
 
 wipe-release: $(BR)/.bootstrap.ok
-	$(call make,$(PLATFORM),vpp-wipe)
+	$(call make,$(PLATFORM),$(addsuffix -wipe,$(TARGETS)))
 
 rebuild-release: wipe-release build-release
 
@@ -343,12 +365,14 @@ define run
 	@echo "WARNING: STARTUP_CONF not defined or file doesn't exist."
 	@echo "         Running with minimal startup config: $(MINIMAL_STARTUP_CONF)\n"
 	@cd $(STARTUP_DIR) && \
-	  sudo $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF) plugin_path $(wildcard $(1)/vpp/lib*/vpp_plugins)
+	  sudo $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF) \
+	    plugin_path $(subst $(subst ,, ),:,$(wildcard $(1)/*/lib*/vpp_plugins))
 endef
 else
 define run
 	@cd $(STARTUP_DIR) && \
-	  sudo $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//') plugin_path $(wildcard $(1)/vpp/lib*/vpp_plugins)
+	  sudo $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//') \
+	    plugin_path $(subst $(subst ,, ),:,$(wildcard $(1)/*/lib*/vpp_plugins))
 endef
 endif
 

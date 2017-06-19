@@ -62,6 +62,7 @@ acl_main_t acl_main;
 
 #define foreach_acl_plugin_api_msg		\
 _(ACL_PLUGIN_GET_VERSION, acl_plugin_get_version) \
+_(ACL_PLUGIN_CONTROL_PING, acl_plugin_control_ping) \
 _(ACL_ADD_REPLACE, acl_add_replace)				\
 _(ACL_DEL, acl_del)				\
 _(ACL_INTERFACE_ADD_DEL, acl_interface_add_del)	\
@@ -106,6 +107,20 @@ vl_api_acl_plugin_get_version_t_handler (vl_api_acl_plugin_get_version_t * mp)
   vl_msg_api_send_shmem (q, (u8 *) & rmp);
 }
 
+static void
+vl_api_acl_plugin_control_ping_t_handler (vl_api_acl_plugin_control_ping_t * mp)
+{
+  vl_api_acl_plugin_control_ping_reply_t *rmp;
+  acl_main_t *am = &acl_main;
+  int rv = 0;
+
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_ACL_PLUGIN_CONTROL_PING_REPLY,
+  ({
+    rmp->vpe_pid = ntohl (getpid ());
+  }));
+  /* *INDENT-ON* */
+}
 
 static int
 acl_add_list (u32 count, vl_api_acl_rule_t rules[],
@@ -310,13 +325,13 @@ _(ether) __ __ __ __ __ __ v __ __ __ __ __ __ v __ __ v
 }
 
 static int
-acl_classify_add_del_table_big (vnet_classify_main_t * cm, u8 * mask,
+acl_classify_add_del_table_tiny (vnet_classify_main_t * cm, u8 * mask,
 			    u32 mask_len, u32 next_table_index,
 			    u32 miss_next_index, u32 * table_index,
 			    int is_add)
 {
-  u32 nbuckets = 65536;
-  u32 memory_size = 2 << 30;
+  u32 nbuckets = 1;
+  u32 memory_size = 2 << 13;
   u32 skip = count_skip (mask, mask_len);
   u32 match = (mask_len / 16) - skip;
   u8 *skip_mask_ptr = mask + 16 * skip;
@@ -379,7 +394,7 @@ acl_unhook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
       ip4_table_index =
 	am->acl_ip4_input_classify_table_by_sw_if_index[sw_if_index];
       am->acl_ip4_input_classify_table_by_sw_if_index[sw_if_index] = ~0;
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -389,7 +404,7 @@ acl_unhook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
       ip6_table_index =
 	am->acl_ip6_input_classify_table_by_sw_if_index[sw_if_index];
       am->acl_ip6_input_classify_table_by_sw_if_index[sw_if_index] = ~0;
-      acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
 				  am->l2_input_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
@@ -417,7 +432,7 @@ acl_unhook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
       ip4_table_index =
 	am->acl_ip4_output_classify_table_by_sw_if_index[sw_if_index];
       am->acl_ip4_output_classify_table_by_sw_if_index[sw_if_index] = ~0;
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -427,7 +442,7 @@ acl_unhook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
       ip6_table_index =
 	am->acl_ip6_output_classify_table_by_sw_if_index[sw_if_index];
       am->acl_ip6_output_classify_table_by_sw_if_index[sw_if_index] = ~0;
-      acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
 				  am->l2_output_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
@@ -447,20 +462,20 @@ acl_hook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
   /* in case there were previous tables attached */
   acl_unhook_l2_input_classify (am, sw_if_index);
   rv =
-    acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+    acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				sizeof (ip4_5tuple_mask) - 1, ~0,
 				am->l2_input_classify_next_acl_ip4,
 				&ip4_table_index, 1);
   if (rv)
     return rv;
   rv =
-    acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+    acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				sizeof (ip6_5tuple_mask) - 1, ~0,
 				am->l2_input_classify_next_acl_ip6,
 				&ip6_table_index, 1);
   if (rv)
     {
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -474,11 +489,11 @@ acl_hook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
      sw_if_index, ip4_table_index, ip6_table_index);
   if (rv)
     {
-      acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
 				  am->l2_input_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -505,20 +520,20 @@ acl_hook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
   /* in case there were previous tables attached */
   acl_unhook_l2_output_classify (am, sw_if_index);
   rv =
-    acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+    acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				sizeof (ip4_5tuple_mask) - 1, ~0,
 				am->l2_output_classify_next_acl_ip4,
 				&ip4_table_index, 1);
   if (rv)
     return rv;
   rv =
-    acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+    acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				sizeof (ip6_5tuple_mask) - 1, ~0,
 				am->l2_output_classify_next_acl_ip6,
 				&ip6_table_index, 1);
   if (rv)
     {
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -532,11 +547,11 @@ acl_hook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
      sw_if_index, ip4_table_index, ip6_table_index);
   if (rv)
     {
-      acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
 				  am->l2_output_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
-      acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
+      acl_classify_add_del_table_tiny (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
 				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
@@ -1785,6 +1800,7 @@ done:
   return error;
 }
 
+
 static clib_error_t *
 acl_show_aclplugin_fn (vlib_main_t * vm,
                               unformat_input_t * input,
@@ -1799,6 +1815,7 @@ acl_show_aclplugin_fn (vlib_main_t * vm,
   if (unformat (input, "sessions"))
     {
       u8 * out0 = 0;
+      u16 wk;
       pool_foreach (swif, im->sw_interfaces,
       ({
         u32 sw_if_index =  swif->sw_if_index;
@@ -1806,6 +1823,29 @@ acl_show_aclplugin_fn (vlib_main_t * vm,
         u64 n_dels = sw_if_index < vec_len(am->fa_session_dels_by_sw_if_index) ? am->fa_session_dels_by_sw_if_index[sw_if_index] : 0;
         out0 = format(out0, "sw_if_index %d: add %lu - del %lu = %lu\n", sw_if_index, n_adds, n_dels, n_adds - n_dels);
       }));
+      {
+        u64 n_adds = am->fa_session_total_adds;
+        u64 n_dels = am->fa_session_total_dels;
+        out0 = format(out0, "TOTAL: add %lu - del %lu = %lu\n", n_adds, n_dels, n_adds - n_dels);
+      }
+      out0 = format(out0, "\n\nPer-worker data:\n");
+      for (wk = 0; wk < vec_len (am->per_worker_data); wk++) {
+        acl_fa_per_worker_data_t *pw = &am->per_worker_data[wk];
+	out0 = format(out0, "Worker #%d:\n", wk);
+	out0 = format(out0, "  Next expiry time: %lu\n", pw->next_expiry_time);
+	out0 = format(out0, "  Requeue until time: %lu\n", pw->requeue_until_time);
+	out0 = format(out0, "  Current time wait interval: %lu\n", pw->current_time_wait_interval);
+	out0 = format(out0, "  Count of deleted sessions: %lu\n", pw->cnt_deleted_sessions);
+	out0 = format(out0, "  Delete already deleted: %lu\n", pw->cnt_already_deleted_sessions);
+	out0 = format(out0, "  Session timers restarted: %lu\n", pw->cnt_session_timer_restarted);
+	out0 = format(out0, "  Swipe until this time: %lu\n", pw->swipe_end_time);
+	out0 = format(out0, "  sw_if_index serviced bitmap: %U\n", format_bitmap_hex, pw->serviced_sw_if_index_bitmap);
+	out0 = format(out0, "  pending clear intfc bitmap : %U\n", format_bitmap_hex, pw->pending_clear_sw_if_index_bitmap);
+	out0 = format(out0, "  clear in progress: %u\n", pw->clear_in_process);
+	out0 = format(out0, "  interrupt is pending: %d\n", pw->interrupt_is_pending);
+	out0 = format(out0, "  interrupt is needed: %d\n", pw->interrupt_is_needed);
+	out0 = format(out0, "  interrupt is unwanted: %d\n", pw->interrupt_is_unwanted);
+      }
       out0 = format(out0, "\n\nConn cleaner thread counters:\n");
 #define _(cnt, desc) out0 = format(out0, "             %20lu: %s\n", am->cnt, desc);
       foreach_fa_cleaner_counter;
@@ -1867,12 +1907,19 @@ acl_init (vlib_main_t * vm)
   am->fa_conn_table_hash_num_buckets = ACL_FA_CONN_TABLE_DEFAULT_HASH_NUM_BUCKETS;
   am->fa_conn_table_hash_memory_size = ACL_FA_CONN_TABLE_DEFAULT_HASH_MEMORY_SIZE;
   am->fa_conn_table_max_entries = ACL_FA_CONN_TABLE_DEFAULT_MAX_ENTRIES;
-
+  vlib_thread_main_t *tm = vlib_get_thread_main ();
+  vec_validate(am->per_worker_data, tm->n_vlib_mains-1);
   {
+    u16 wk;
     u8 tt;
-    for(tt = 0; tt < ACL_N_TIMEOUTS; tt++) {
-       am->fa_conn_list_head[tt] = ~0;
-       am->fa_conn_list_tail[tt] = ~0;
+    for (wk = 0; wk < vec_len (am->per_worker_data); wk++) {
+      acl_fa_per_worker_data_t *pw = &am->per_worker_data[wk];
+      vec_validate(pw->fa_conn_list_head, ACL_N_TIMEOUTS-1);
+      vec_validate(pw->fa_conn_list_tail, ACL_N_TIMEOUTS-1);
+      for(tt = 0; tt < ACL_N_TIMEOUTS; tt++) {
+        pw->fa_conn_list_head[tt] = ~0;
+        pw->fa_conn_list_tail[tt] = ~0;
+      }
     }
   }
 
@@ -1883,7 +1930,6 @@ acl_init (vlib_main_t * vm)
   am->fa_cleaner_cnt_delete_by_sw_index = 0;
   am->fa_cleaner_cnt_delete_by_sw_index_ok = 0;
   am->fa_cleaner_cnt_unknown_event = 0;
-  am->fa_cleaner_cnt_deleted_sessions = 0;
   am->fa_cleaner_cnt_timer_restarted = 0;
   am->fa_cleaner_cnt_wait_with_timeout = 0;
 

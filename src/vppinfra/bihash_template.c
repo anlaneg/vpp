@@ -100,8 +100,7 @@ BV (make_working_copy) (BVT (clib_bihash) * h, clib_bihash_bucket_t * b)
     {
       oldheap = clib_mem_set_heap (h->mheap);
       vec_validate (h->working_copies, thread_index);
-      vec_validate (h->working_copy_lengths, thread_index);
-      h->working_copy_lengths[thread_index] = -1;
+      vec_validate_init_empty (h->working_copy_lengths, thread_index, ~0);
       clib_mem_set_heap (oldheap);
     }
 
@@ -252,6 +251,8 @@ int BV (clib_bihash_add_del)
   b = &h->buckets[bucket_index];
 
   hash >>= h->log2_nbuckets;
+
+  tmp_b.linear_search = 0;
 
   while (__sync_lock_test_and_set (h->writer_lock, 1))
     ;

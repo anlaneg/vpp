@@ -1,7 +1,5 @@
 /*
- * flowperpkt_all_api_h.h - plug-in api #include file
- *
- * Copyright (c) <current-year> <your-organization>
+ * Copyright (c) 2015 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -14,5 +12,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* Include the generated file, see BUILT_SOURCES in Makefile.am */
-#include <flowperpkt/flowperpkt.api.h>
+#ifndef included_vnet_p2p_ethernet_h
+#define included_vnet_p2p_ethernet_h
+
+#include <vnet/vnet.h>
+#include <vnet/ethernet/ethernet.h>
+
+int p2p_ethernet_add_del (vlib_main_t * vm, u32 parent_if_index, u8 * client_mac, int is_add);
+
+#endif /* included_vnet_p2p_ethernet_h */
