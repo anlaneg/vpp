@@ -49,11 +49,13 @@ MU_BUILD_NAME = $(shell basename $(MU_BUILD_ROOT_DIR))
 SOURCE_PATH =
 
 # Pick up user's definitions for variables e.g. SOURCE_PATH, etc.
+# 目前仅对外提供SOURCE_PATH变量
 -include build-config.mk
 
 MU_BUILD_ROOT_NAME = $(shell basename $(MU_BUILD_ROOT_DIR))
 MU_BUILD_DATA_DIR_NAME = build-data
 
+#取source_path中的绝对路径
 ABSOLUTE_SOURCE_PATH = $(foreach d,$(SOURCE_PATH),$(shell cd $(d) && pwd))
 
 SOURCE_PATH_BUILD_ROOT_DIRS = $(addsuffix /$(MU_BUILD_NAME),$(ABSOLUTE_SOURCE_PATH))

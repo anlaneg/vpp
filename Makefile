@@ -25,17 +25,20 @@ GDB_ARGS= -ex "handle SIGUSR1 noprint nostop"
 # OS Detection
 #
 # We allow Darwin (MacOS) for docs generation; VPP build will still fail.
+#提取操作系统名称，系统版本
 ifneq ($(shell uname),Darwin)
 OS_ID        = $(shell grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 endif
 
+#针对系统要生成的包格式
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
 else ifeq ($(filter rhel centos fedora,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
+#定义deb包依赖及rpm包依赖信息
 DEB_DEPENDS  = curl build-essential autoconf automake bison libssl-dev ccache
 DEB_DEPENDS += debhelper dkms git libtool libganglia1-dev libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
@@ -59,6 +62,8 @@ else
 endif
 RPM_DEPENDS += chrpath libffi-devel rpm-build
 RPM_DEPENDS += https://kojipkgs.fedoraproject.org//packages/nasm/2.12.02/2.fc26/x86_64/nasm-2.12.02-2.fc26.x86_64.rpm
+
+#EPEL依赖信息(OS_ID不是rhel centos)
 EPEL_DEPENDS = libconfuse-devel ganglia-devel epel-rpm-macros
 ifeq ($(filter rhel centos,$(OS_ID)),$(OS_ID))
 	EPEL_DEPENDS += lcov
@@ -70,6 +75,7 @@ ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
 endif
 
+#检查UNATTENDED中是否包含'y'字符
 ifeq ($(findstring y,$(UNATTENDED)),y)
 CONFIRM=-y
 FORCE=--force-yes
@@ -81,6 +87,7 @@ endif
 .PHONY: test test-debug retest retest-debug test-doc test-wipe-doc test-help test-wipe
 .PHONY: test-cov test-wipe-cov
 
+#显示makefile帮助
 help:
 	@echo "Make Targets:"
 	@echo " bootstrap           - prepare tree for build"
@@ -145,8 +152,10 @@ help:
 
 $(BR)/.bootstrap.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
+	#安装依赖包
 	make install-dep
 endif
+#检查ubuntu或者redhat依赖的包时否均被完全安装了
 ifeq ($(OS_ID),ubuntu)
 	@MISSING=$$(apt-get install -y -qq -s $(DEB_DEPENDS) | grep "^Inst ") ; \
 	if [ -n "$$MISSING" ] ; then \
@@ -171,6 +180,7 @@ else ifneq ("$(wildcard /etc/redhat-release)","")
 	fi ; \
 	exit 0
 endif
+	#生成build-config.mk ,path_setup文件
 	@echo "SOURCE_PATH = $(WS_ROOT)"                   > $(BR)/build-config.mk
 	@echo "#!/bin/bash\n"                              > $(BR)/path_setup
 	@echo 'export PATH=$(BR)/tools/ccache-bin:$$PATH' >> $(BR)/path_setup
@@ -180,16 +190,19 @@ endif
 ifeq ("$(wildcard /usr/bin/ccache )","")
 	@echo "WARNING: Please install ccache AYEC and re-run this script"
 else
+	#启用ccache
 	@rm -rf $(BR)/tools/ccache-bin
 	@mkdir -p $(BR)/tools/ccache-bin
 	@ln -s /usr/bin/ccache $(BR)/tools/ccache-bin/gcc
 	@ln -s /usr/bin/ccache $(BR)/tools/ccache-bin/g++
 endif
+	#进入编译目录BR
 	@make -C $(BR) V=$(V) is_build_tool=yes tools-install
 	@touch $@
 
 bootstrap: $(BR)/.bootstrap.ok
 
+#此目标安装依赖包
 install-dep:
 ifeq ($(OS_ID),ubuntu)
 ifeq ($(OS_VERSION_ID),14.04)
@@ -207,6 +220,7 @@ else
 	$(error "This option currently works only on Ubuntu or Centos systems")
 endif
 
+#定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TAG=argv1
 define make
 	@make -C $(BR) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
 endef
@@ -366,6 +380,7 @@ build-vat:
 run-vat:
 	@sudo $(BR)/install-$(PLATFORM)_debug-native/vpp/bin/vpp_api_test
 
+#由make函数知，此处将走$(BR) 的install-deb目标
 pkg-deb:
 	$(call make,$(PLATFORM),install-deb)
 
