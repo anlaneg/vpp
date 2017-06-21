@@ -19,6 +19,7 @@
 #ifndef included_vlib_global_funcs_h_
 #define included_vlib_global_funcs_h_
 
+//获取当前线程对应的vlib_main_t
 always_inline vlib_main_t *
 vlib_get_main (void)
 {

@@ -704,7 +704,7 @@ typedef struct
   f64 time_last_runtime_stats_clear;
 
   /* Node registrations added by constructors */
-  vlib_node_registration_t *node_registrations;
+  vlib_node_registration_t *node_registrations;//在main运行前，各node会挂在此链上
 } vlib_node_main_t;
 
 

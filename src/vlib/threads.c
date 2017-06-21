@@ -459,6 +459,7 @@ vlib_worker_thread_bootstrap_fn (void *arg)
   w->lwp = syscall (SYS_gettid);
   w->thread_id = pthread_self ();
 
+  //设置自已是第几个线程
   __os_thread_index = w - vlib_worker_threads;
 
   rv = (void *) clib_calljmp
