@@ -242,6 +242,7 @@ remove_free_elt2 (void *v, mheap_elt_t * e)
 
 static uword mheap_page_size;
 
+//将addr按页（mheap_page_size）对齐
 static_always_inline uword
 mheap_page_round (uword addr)
 {
@@ -872,6 +873,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
   void *v;
   uword size;
 
+  //如果未对mheap_page_size给值，则初始化全局变量mheap_page_size
   if (!mheap_page_size)
     mheap_page_size = clib_mem_get_page_size ();
 
@@ -880,7 +882,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
       /* No memory given, try to VM allocate some. */
       memory = clib_mem_vm_alloc (memory_size);
       if (!memory)
-	return 0;
+	return 0;//申请失败返回NULL
 
       /* No memory region implies we have virtual memory. */
       flags &= ~MHEAP_FLAG_DISABLE_VM;
@@ -901,6 +903,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
     h = uword_to_pointer (ah, void *);
     v = mheap_vector (h);
 
+    //用户要求的内存太小了，不足以存放v
     if (PREDICT_FALSE (memory + memory_size < v))
       {
 	/*

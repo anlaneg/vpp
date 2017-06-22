@@ -58,6 +58,7 @@ f64 os_cpu_clock_frequency (void);
 
 extern __thread uword __os_thread_index;
 
+//获得各个线程的index
 static_always_inline uword
 os_get_thread_index (void)
 {

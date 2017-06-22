@@ -106,6 +106,7 @@ typedef unsigned long u64;
 #endif
 
 /* Word types. */
+//word类型按cpu来定，64位是采用64bit,32位时,采用32bit
 #if uword_bits == 64
 /* 64 bit word machines. */
 typedef i64 word;

@@ -55,7 +55,7 @@
 typedef struct
 {
 #if CLIB_VEC64 > 0
-  u64 len;
+  u64 len; //长度
 #else
   u32 len; /**< Number of elements in vector (NOT its allocated length). */
 #endif
@@ -70,7 +70,7 @@ typedef struct
     @param v pointer to a vector
     @return pointer to the vector's vector_header_t
 */
-#define _vec_find(v)	((vec_header_t *) (v) - 1)
+#define _vec_find(v)	((vec_header_t *) (v) - 1) //找到vector头指针
 
 #define _vec_round_size(s) \
   (((s) + sizeof (uword) - 1) &~ (sizeof (uword) - 1))
@@ -106,6 +106,7 @@ vec_header_end (void *v, uword header_bytes)
   return v + vec_header_bytes (header_bytes);
 }
 
+//计算header_bytes合上vec_header_t结构后，按align对齐，需要多少字节
 always_inline uword
 vec_aligned_header_bytes (uword header_bytes, uword align)
 {

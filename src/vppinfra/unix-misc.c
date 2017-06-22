@@ -214,6 +214,7 @@ os_puts (u8 * string, uword string_length, uword is_error)
     ;
 }
 
+//内存申请失败后挂掉
 void os_out_of_memory (void) __attribute__ ((weak));
 void
 os_out_of_memory (void)

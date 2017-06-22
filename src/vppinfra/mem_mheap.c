@@ -109,7 +109,7 @@ clib_mem_get_page_size (void)
 uword
 clib_mem_get_page_size (void)
 {
-  return getpagesize ();
+  return getpagesize ();//获取内存页大小
 }
 #endif
 

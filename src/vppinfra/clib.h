@@ -55,17 +55,17 @@
 #define NULL ((void *) 0)
 #endif
 
-#define BITS(x)		(8*sizeof(x))
-#define ARRAY_LEN(x)	(sizeof (x)/sizeof (x[0]))
+#define BITS(x)		(8*sizeof(x)) //结构体x占用的bit数
+#define ARRAY_LEN(x)	(sizeof (x)/sizeof (x[0])) //数组x的长度
 
-#define _STRUCT_FIELD(t,f) (((t *) 0)->f)
-#define STRUCT_OFFSET_OF(t,f) ((uword) & _STRUCT_FIELD (t, f))
-#define STRUCT_BIT_OFFSET_OF(t,f) (BITS(u8) * (uword) & _STRUCT_FIELD (t, f))
-#define STRUCT_SIZE_OF(t,f)   (sizeof (_STRUCT_FIELD (t, f)))
-#define STRUCT_BITS_OF(t,f)   (BITS (_STRUCT_FIELD (t, f)))
-#define STRUCT_ARRAY_LEN(t,f) ARRAY_LEN (_STRUCT_FIELD (t, f))
-#define STRUCT_MARK(mark)     u8 mark[0]
-#define STRUCT_MARK_PTR(v, f) &(v)->f
+#define _STRUCT_FIELD(t,f) (((t *) 0)->f) //取t结构体中f的取值
+#define STRUCT_OFFSET_OF(t,f) ((uword) & _STRUCT_FIELD (t, f)) //f在t中的偏移量（单位：字节）
+#define STRUCT_BIT_OFFSET_OF(t,f) (BITS(u8) * (uword) & _STRUCT_FIELD (t, f)) //f在t中的偏移量（单位：bit）
+#define STRUCT_SIZE_OF(t,f)   (sizeof (_STRUCT_FIELD (t, f))) //t结构体成员f占用的字节数
+#define STRUCT_BITS_OF(t,f)   (BITS (_STRUCT_FIELD (t, f))) //t结构体成员f占用的bit数
+#define STRUCT_ARRAY_LEN(t,f) ARRAY_LEN (_STRUCT_FIELD (t, f)) //t结构体成员f(为数据成员），取其数组长度
+#define STRUCT_MARK(mark)     u8 mark[0] //定义一个0长度的变量（用于mark)
+#define STRUCT_MARK_PTR(v, f) &(v)->f //取v结构体中f成员的地址
 
 /* Stride in bytes between struct array elements. */
 #define STRUCT_STRIDE_OF(t,f)			\
@@ -322,6 +322,7 @@ flt_round_to_multiple (f64 x, f64 f)
   return f * flt_round_nearest (x / f);
 }
 
+//返回最大值
 #define clib_max(x,y)				\
 ({						\
   __typeof__ (x) _x = (x);			\

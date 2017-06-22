@@ -69,6 +69,7 @@ typedef struct
 
 /* Return CPU time stamp as 64bit number. */
 #if defined(__x86_64__) || defined(i386)
+//cpu时钟获取
 always_inline u64
 clib_cpu_time_now (void)
 {

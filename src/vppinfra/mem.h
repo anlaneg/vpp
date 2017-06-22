@@ -51,6 +51,7 @@
 /* Per CPU heaps. */
 extern void *clib_per_cpu_mheaps[CLIB_MAX_MHEAPS];
 
+//获得当前cpu的堆
 always_inline void *
 clib_mem_get_per_cpu_heap (void)
 {
@@ -159,7 +160,7 @@ always_inline uword
 clib_mem_is_heap_object (void *p)
 {
   void *heap = clib_mem_get_per_cpu_heap ();
-  uword offset = (uword) p - (uword) heap;
+  uword offset = (uword) p - (uword) heap;//取出p与堆间的offset
   mheap_elt_t *e, *n;
 
   if (offset >= vec_len (heap))

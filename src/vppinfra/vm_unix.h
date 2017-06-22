@@ -42,6 +42,7 @@
 #include <sys/mman.h>
 
 /* Allocate virtual address space. */
+//采用mmap申请一块内存
 always_inline void *
 clib_mem_vm_alloc (uword size)
 {
