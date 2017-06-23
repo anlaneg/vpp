@@ -54,15 +54,17 @@ always_inline void
 mheap_maybe_lock (void *v)
 {
   mheap_t *h = mheap_header (v);
+  //仅要求独占时进行加锁
   if (v && (h->flags & MHEAP_FLAG_THREAD_SAFE))
     {
       u32 my_cpu = os_get_thread_index ();
       if (h->owner_cpu == my_cpu)
 	{
-	  h->recursion_count++;
+	  h->recursion_count++;//保证可重复加锁
 	  return;
 	}
 
+      //加锁
       while (__sync_lock_test_and_set (&h->lock, 1))
 	;
 
@@ -75,6 +77,7 @@ always_inline void
 mheap_maybe_unlock (void *v)
 {
   mheap_t *h = mheap_header (v);
+  //仅要求独占时，解锁
   if (v && h->flags & MHEAP_FLAG_THREAD_SAFE)
     {
       ASSERT (os_get_thread_index () == h->owner_cpu);
@@ -651,6 +654,7 @@ mheap_get_aligned (void *v,
 
   cpu_times[0] = clib_cpu_time_now ();
 
+  //align必须是2的N次方，最小值为4
   align = clib_max (align, STRUCT_SIZE_OF (mheap_elt_t, user_data[0]));
   align = max_pow2 (align);
 
@@ -673,7 +677,7 @@ mheap_get_aligned (void *v,
   if (!v)
     v = mheap_alloc (0, 64 << 20);
 
-  mheap_maybe_lock (v);
+  mheap_maybe_lock (v);//锁住内存
 
   h = mheap_header (v);
 
@@ -893,17 +897,19 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
     uword am, av, ah;
 
     am = pointer_to_uword (memory);
-    av = mheap_page_round (am);
+    av = mheap_page_round (am);//将memory按页对齐
     v = uword_to_pointer (av, void *);
+    //考虑在h指向的内存处存放一个mheap,并使得ah按页对齐
     h = mheap_header (v);
     ah = pointer_to_uword (h);
     while (ah < am)
-      ah += mheap_page_size;
+      ah += mheap_page_size;//使ah按页对齐
 
+    //更新v,使其它面存放mheap，v按页对齐，且直接指向一个vector
     h = uword_to_pointer (ah, void *);
     v = mheap_vector (h);
 
-    //用户要求的内存太小了，不足以存放v
+    //用户要求的内存太小了，不足以存放mheap
     if (PREDICT_FALSE (memory + memory_size < v))
       {
 	/*
@@ -914,7 +920,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
 	return 0;
       }
 
-    size = memory + memory_size - v;
+    size = memory + memory_size - v;//实际申请的内存大小
   }
 
   /* VM map header so we can use memory. */

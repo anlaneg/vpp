@@ -131,13 +131,13 @@ typedef struct _vlib_node_registration
   u16 n_errors;
 
   /* Number of next node names that follow. */
-  u16 n_next_nodes;
+  u16 n_next_nodes;//下级node的数目（即next_nodes数组长度）
 
   /* Constructor link-list, don't ask... */
   struct _vlib_node_registration *next_registration;
 
   /* Names of next nodes which this node feeds into. */
-  char *next_nodes[];//下一级node
+  char *next_nodes[];//下一级node名称
 
 } vlib_node_registration_t;
 
@@ -150,7 +150,7 @@ typedef struct _vlib_node_registration
 static void __vlib_add_node_registration_##x (void)                     \
     __attribute__((__constructor__)) ;                                  \
 static void __vlib_add_node_registration_##x (void)                     \
-{                                                                       \
+{																	   \
     vlib_main_t * vm = vlib_get_main();                                 \
     x.next_registration = vm->node_main.node_registrations;             \
     vm->node_main.node_registrations = &x;                              \
@@ -287,7 +287,7 @@ typedef struct vlib_node_t
 
   /* Vector of next node names.
      Only used before next_nodes array is initialized. */
-  char **next_node_names;
+  char **next_node_names;//下一级node的名称
 
   /* Next node indices for this node. */
   u32 *next_nodes;

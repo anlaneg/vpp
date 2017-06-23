@@ -106,19 +106,21 @@ vec_header_end (void *v, uword header_bytes)
   return v + vec_header_bytes (header_bytes);
 }
 
-//计算header_bytes合上vec_header_t结构后，按align对齐，需要多少字节
+//计算header_bytes加上vec_header_t结构后，按align对齐，需要多少字节
 always_inline uword
 vec_aligned_header_bytes (uword header_bytes, uword align)
 {
   return round_pow2 (header_bytes + sizeof (vec_header_t), align);
 }
 
+//返回v地址向前走一个偏移量
 always_inline void *
 vec_aligned_header (void *v, uword header_bytes, uword align)
 {
   return v - vec_aligned_header_bytes (header_bytes, align);
 }
 
+//返回v地址向后走一个偏移量
 always_inline void *
 vec_aligned_header_end (void *v, uword header_bytes, uword align)
 {

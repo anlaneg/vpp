@@ -237,24 +237,24 @@ typedef struct
   u32 flags;
 #define MHEAP_FLAG_TRACE			(1 << 0)
 #define MHEAP_FLAG_DISABLE_VM			(1 << 1)
-#define MHEAP_FLAG_THREAD_SAFE			(1 << 2)
+#define MHEAP_FLAG_THREAD_SAFE			(1 << 2) //是否独占
 #define MHEAP_FLAG_SMALL_OBJECT_CACHE		(1 << 3)
 #define MHEAP_FLAG_VALIDATE			(1 << 4)
 
   /* Lock use when MHEAP_FLAG_THREAD_SAFE is set. */
-  volatile u32 lock;
-  volatile u32 owner_cpu;
-  int recursion_count;
+  volatile u32 lock;//锁，保护owner_cpu
+  volatile u32 owner_cpu;//此块内存当前归那个cpu所有
+  int recursion_count;//保证可重复加锁
 
   /* Number of allocated objects. */
   u64 n_elts;
 
   /* Maximum size (in bytes) this heap is allowed to grow to.
      Set to ~0 to grow heap (via vec_resize) arbitrarily. */
-  u64 max_size;
+  u64 max_size;//容许使用的大小
 
-  uword vm_alloc_offset_from_header;
-  uword vm_alloc_size;
+  uword vm_alloc_offset_from_header;//经多少offset可以到达header(释放内存用）
+  uword vm_alloc_size;//计划申请的大小
 
   /* Each successful mheap_validate call increments this serial number.
      Used to debug heap corruption problems.  GDB breakpoints can be
@@ -266,12 +266,14 @@ typedef struct
   mheap_stats_t stats;
 } mheap_t;
 
+//跳一个mheap_t结构（考虑对齐）
 always_inline mheap_t *
 mheap_header (u8 * v)
 {
   return vec_aligned_header (v, sizeof (mheap_t), 16);
 }
 
+//跳一个mheap_t结构（考虑对齐）
 always_inline u8 *
 mheap_vector (mheap_t * h)
 {

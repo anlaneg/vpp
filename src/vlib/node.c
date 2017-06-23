@@ -275,12 +275,15 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
       ASSERT (VLIB_NODE_TYPE_INTERNAL == zero.type);
     }
 
+  //node必须确保有function
   ASSERT (r->function != 0);
 
+  //申请vlib_node_t,并依据已有nodes数分配id号（递增）
   n = clib_mem_alloc_no_fail (sizeof (n[0]));
   memset (n, 0, sizeof (n[0]));
   n->index = vec_len (nm->nodes);
 
+  //放入对应索引（n被加入***）
   vec_add1 (nm->nodes, n);
 
   /* Name is always a vector so it can be formatted with %v. */
@@ -289,6 +292,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   else
     n->name = format (0, "%s", r->name);
 
+  //如果nm还未创建node_by_name表，则创建
   if (!nm->node_by_name)
     nm->node_by_name = hash_create_vec ( /* size */ 32,
 					sizeof (n->name[0]), sizeof (uword));
@@ -484,8 +488,10 @@ vlib_register_all_static_nodes (vlib_main_t * vm)
 
   /* make sure that node index 0 is not used by
      real node */
+  //注册blackholed packets
   register_node (vm, &null_node_reg);
 
+  //注册next_registration链上其它node
   r = vm->node_main.node_registrations;
   while (r)
     {
