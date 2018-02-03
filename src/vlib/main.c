@@ -41,7 +41,9 @@
 #include <vppinfra/format.h>
 #include <vlib/vlib.h>
 #include <vlib/threads.h>
+#include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
+#include <vlib/unix/unix.h>
 #include <vlib/unix/cj.h>
 
 CJ_GLOBAL_LOG_PROTOTYPE;
@@ -136,19 +138,12 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   else
     {
       f = clib_mem_alloc_aligned_no_fail (n, VLIB_FRAME_ALIGN);
-      f->thread_index = vm->thread_index;
       fi = vlib_frame_index_no_check (vm, f);
     }
 
   /* Poison frame when debugging. */
   if (CLIB_DEBUG > 0)
-    {
-      u32 save_thread_index = f->thread_index;
-
-      memset (f, 0xfe, n);
-
-      f->thread_index = save_thread_index;
-    }
+    memset (f, 0xfe, n);
 
   /* Insert magic number. */
   {
@@ -465,7 +460,7 @@ vlib_put_next_frame (vlib_main_t * vm,
   vlib_frame_t *f;
   u32 n_vectors_in_frame;
 
-  if (vm->buffer_main->extern_buffer_mgmt == 0 && CLIB_DEBUG > 0)
+  if (vm->buffer_main->callbacks_registered == 0 && CLIB_DEBUG > 0)
     vlib_put_next_frame_validate (vm, r, next_index, n_vectors_left);
 
   nf = vlib_node_runtime_get_next_frame (vm, r, next_index);
@@ -889,51 +884,31 @@ vlib_elog_main_loop_event (vlib_main_t * vm,
 		/* data to log */ n_vectors);
 }
 
+#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
+void (*vlib_buffer_trace_trajectory_cb) (vlib_buffer_t * b, u32 node_index);
+void (*vlib_buffer_trace_trajectory_init_cb) (vlib_buffer_t * b);
+
 void
-vlib_dump_context_trace (vlib_main_t * vm, u32 bi)
+vlib_buffer_trace_trajectory_init (vlib_buffer_t * b)
 {
-  vlib_node_main_t *vnm = &vm->node_main;
-  vlib_buffer_t *b;
-  u8 i, n;
-
-  if (VLIB_BUFFER_TRACE_TRAJECTORY)
+  if (PREDICT_TRUE (vlib_buffer_trace_trajectory_init_cb != 0))
     {
-      b = vlib_get_buffer (vm, bi);
-      n = b->pre_data[0];
-
-      fformat (stderr, "Context trace for bi %d b 0x%llx, visited %d\n",
-	       bi, b, n);
-
-      if (n == 0 || n > 20)
-	{
-	  fformat (stderr, "n is unreasonable\n");
-	  return;
-	}
-
-
-      for (i = 0; i < n; i++)
-	{
-	  u32 node_index;
-
-	  node_index = b->pre_data[i + 1];
-
-	  if (node_index > vec_len (vnm->nodes))
-	    {
-	      fformat (stderr, "Skip bogus node index %d\n", node_index);
-	      continue;
-	    }
-
-	  fformat (stderr, "%v (%d)\n", vnm->nodes[node_index]->name,
-		   node_index);
-	}
-    }
-  else
-    {
-      fformat (stderr,
-	       "in vlib/buffers.h, #define VLIB_BUFFER_TRACE_TRAJECTORY 1\n");
+      (*vlib_buffer_trace_trajectory_init_cb) (b);
     }
 }
 
+#endif
+
+static inline void
+add_trajectory_trace (vlib_buffer_t * b, u32 node_index)
+{
+#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
+  if (PREDICT_TRUE (vlib_buffer_trace_trajectory_cb != 0))
+    {
+      (*vlib_buffer_trace_trajectory_cb) (b, node_index);
+    }
+#endif
+}
 
 static_always_inline u64
 dispatch_node (vlib_main_t * vm,
@@ -1000,15 +975,12 @@ dispatch_node (vlib_main_t * vm,
       if (VLIB_BUFFER_TRACE_TRAJECTORY && frame)
 	{
 	  int i;
-	  int log_index;
 	  u32 *from;
 	  from = vlib_frame_vector_args (frame);
 	  for (i = 0; i < frame->n_vectors; i++)
 	    {
 	      vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
-	      ASSERT (b->pre_data[0] < 32);
-	      log_index = b->pre_data[0]++ + 1;
-	      b->pre_data[log_index] = node->node_index;
+	      add_trajectory_trace (b, node->node_index);
 	    }
 	  n = node->function (vm, node, frame);
 	}
@@ -1341,9 +1313,16 @@ dispatch_process (vlib_main_t * vm,
       p->suspended_process_frame_index = pf - nm->suspended_process_frames;
 
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
-	timing_wheel_insert (&nm->timing_wheel, p->resume_cpu_time,
-			     vlib_timing_wheel_data_set_suspended_process
-			     (node->runtime_index));
+	{
+	  TWT (tw_timer_wheel) * tw =
+	    (TWT (tw_timer_wheel) *) nm->timing_wheel;
+	  p->stop_timer_handle =
+	    TW (tw_timer_start) (tw,
+				 vlib_timing_wheel_data_set_suspended_process
+				 (node->runtime_index) /* [sic] pool idex */ ,
+				 0 /* timer_id */ ,
+				 p->resume_clock_interval);
+	}
     }
   else
     p->flags &= ~VLIB_PROCESS_IS_RUNNING;
@@ -1416,9 +1395,14 @@ dispatch_suspended_process (vlib_main_t * vm,
       n_vectors = 0;
       p->n_suspends += 1;
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
-	timing_wheel_insert (&nm->timing_wheel, p->resume_cpu_time,
-			     vlib_timing_wheel_data_set_suspended_process
-			     (node->runtime_index));
+	{
+	  p->stop_timer_handle =
+	    TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+				 vlib_timing_wheel_data_set_suspended_process
+				 (node->runtime_index) /* [sic] pool idex */ ,
+				 0 /* timer_id */ ,
+				 p->resume_clock_interval);
+	}
     }
   else
     {
@@ -1438,6 +1422,13 @@ dispatch_suspended_process (vlib_main_t * vm,
 
   return t;
 }
+
+void vl_api_send_pending_rpc_requests (vlib_main_t *) __attribute__ ((weak));
+void
+vl_api_send_pending_rpc_requests (vlib_main_t * vm)
+{
+}
+
 
 //主或者从的loop处理
 static_always_inline void
@@ -1466,17 +1457,6 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   else
     cpu_time_now = clib_cpu_time_now ();
 
-  /* Arrange for first level of timing wheel to cover times we care
-     most about. */
-  if (is_main)
-    {
-      nm->timing_wheel.min_sched_time = 10e-6;
-      nm->timing_wheel.max_sched_time = 10e-3;
-      timing_wheel_init (&nm->timing_wheel,
-			 cpu_time_now, vm->clib_time.clocks_per_second);
-      vec_alloc (nm->data_from_advancing_timing_wheel, 32);
-    }
-
   /* Pre-allocate interupt runtime indices and lock. */
   vec_alloc (nm->pending_interrupt_node_runtime_indices, 32);
   vec_alloc (last_node_runtime_indices, 32);
@@ -1502,6 +1482,9 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   while (1)
     {
       vlib_node_runtime_t *n;
+
+      if (PREDICT_FALSE (_vec_len (vm->pending_rpc_requests) > 0))
+	vl_api_send_pending_rpc_requests (vm);
 
       if (!is_main)
 	{
@@ -1534,13 +1517,19 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 
       /* Next handle interrupts. */
       {
+	/* unlocked read, for performance */
 	uword l = _vec_len (nm->pending_interrupt_node_runtime_indices);
 	uword i;
-	if (l > 0)
+	if (PREDICT_FALSE (l > 0))
 	  {
 	    u32 *tmp;
 	    if (!is_main)
-	      clib_spinlock_lock (&nm->pending_interrupt_lock);
+	      {
+		clib_spinlock_lock (&nm->pending_interrupt_lock);
+		/* Re-read w/ lock held, in case another thread added an item */
+		l = _vec_len (nm->pending_interrupt_node_runtime_indices);
+	      }
+
 	    tmp = nm->pending_interrupt_node_runtime_indices;
 	    nm->pending_interrupt_node_runtime_indices =
 	      last_node_runtime_indices;
@@ -1564,12 +1553,15 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       if (is_main)
 	{
 	  /* Check if process nodes have expired from timing wheel. */
-	  nm->data_from_advancing_timing_wheel
-	    = timing_wheel_advance (&nm->timing_wheel, cpu_time_now,
-				    nm->data_from_advancing_timing_wheel,
-				    &nm->cpu_time_next_process_ready);
+	  ASSERT (nm->data_from_advancing_timing_wheel != 0);
+
+	  nm->data_from_advancing_timing_wheel =
+	    TW (tw_timer_expire_timers_vec)
+	    ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm),
+	     nm->data_from_advancing_timing_wheel);
 
 	  ASSERT (nm->data_from_advancing_timing_wheel != 0);
+
 	  if (PREDICT_FALSE
 	      (_vec_len (nm->data_from_advancing_timing_wheel) > 0))
 	    {
@@ -1615,8 +1607,6 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 			dispatch_suspended_process (vm, di, cpu_time_now);
 		    }
 		}
-
-	      /* Reset vector. */
 	      _vec_len (nm->data_from_advancing_timing_wheel) = 0;
 	    }
 	}
@@ -1695,6 +1685,7 @@ int
 vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 {
   clib_error_t *volatile error;
+  vlib_node_main_t *nm = &vm->node_main;
 
   vm->queue_signal_callback = dummy_queue_signal_callback;
 
@@ -1710,8 +1701,17 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   if (!vm->name)
     vm->name = "VLIB";
 
-  vec_validate (vm->buffer_main, 0);
-  vlib_buffer_cb_init (vm);
+  if ((error = unix_physmem_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
+  if ((error = vlib_buffer_main_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
 
   if ((error = vlib_thread_init (vm)))
     {
@@ -1750,6 +1750,21 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vlib_buffer_get_or_create_free_list (vm,
 				       VLIB_BUFFER_DEFAULT_FREE_LIST_BYTES,
 				       "default");
+
+  nm->timing_wheel = clib_mem_alloc_aligned (sizeof (TWT (tw_timer_wheel)),
+					     CLIB_CACHE_LINE_BYTES);
+
+  vec_validate (nm->data_from_advancing_timing_wheel, 10);
+  _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+
+  /* Create the process timing wheel */
+  TW (tw_timer_wheel_init) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+			    0 /* no callback */ ,
+			    10e-6 /* timer period 10us */ ,
+			    ~0 /* max expirations per call */ );
+
+  vec_validate (vm->pending_rpc_requests, 0);
+  _vec_len (vm->pending_rpc_requests) = 0;
 
   switch (clib_setjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_NONE))
     {

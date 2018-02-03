@@ -21,10 +21,12 @@
 #include <vnet/interface.h>
 #include <pthread.h>
 #include <vlib/threads.h>
+#include <vnet/fib/fib_table.h>
+#include <vnet/mfib/mfib_table.h>
 #include <vlib/unix/unix.h>
 #include <vlibmemory/api.h>
-#include <vlibmemory/unix_shared_memory_queue.h>
 #include <vlibapi/api_helper_macros.h>
+#include <svm/queue.h>
 
 typedef struct
 {
@@ -35,6 +37,65 @@ typedef struct
   int tag;
 } data_structure_lock_t;
 
+/**
+ * @brief stats request registration indexes
+ *
+ */
+/* from .../vnet/vnet/ip/lookup.c. Yuck */
+/* *INDENT-OFF* */
+typedef CLIB_PACKED (struct
+{
+  ip4_address_t address;
+  u32 address_length: 6;
+  u32 index:	     26;
+}) ip4_route_t;
+/* *INDENT-ON* */
+
+typedef struct
+{
+  ip6_address_t address;
+  u32 address_length;
+  u32 index;
+} ip6_route_t;
+
+typedef struct
+{
+  ip4_route_t *ip4routes;
+  ip6_route_t *ip6routes;
+  mfib_prefix_t *mroutes;
+  fib_table_t **fibs;
+  mfib_table_t **mfibs;
+  hash_pair_t **pvec;
+  uword *results;
+} do_ip46_fibs_t;
+
+typedef struct
+{
+  u16 msg_id;
+  u32 size;
+  u32 client_index;
+  u32 context;
+  i32 retval;
+} client_registration_reply_t;
+
+typedef enum
+{
+#define stats_reg(n) IDX_##n,
+#include <vpp/stats/stats.reg>
+#undef stats_reg
+  STATS_REG_N_IDX,
+} stats_reg_index_t;
+
+typedef struct
+{
+  //Standard client information
+  uword *client_hash;
+  vpe_client_registration_t *clients;
+  u32 item;
+
+} vpe_client_stats_registration_t;
+
+
 typedef struct
 {
   void *mheap;
@@ -44,14 +105,57 @@ typedef struct
   u32 stats_poll_interval_in_seconds;
   u32 enable_poller;
 
-  uword *stats_registration_hash;
-  vpe_client_registration_t *stats_registrations;
+  /*
+   * stats_registrations is a vector, indexed by
+   * IDX_xxxx_COUNTER generated for each streaming
+   * stat a client can register for. (see stats.reg)
+   *
+   * The values in the vector refer to pools.
+   *
+   * The pool is of type vpe_client_stats_registration_t
+   *
+   * This typedef consists of:
+   *
+   * u32 item: This is the instance of the IDX_xxxx_COUNTER a
+   *           client is interested in.
+   * vpe_client_registration_t *clients: The list of clients interested.
+   *
+   * e.g.
+   * stats_registrations[IDX_INTERFACE_SIMPLE_COUNTERS] refers to a pool
+   * containing elements:
+   *
+   * u32 item = sw_if_index1
+   * clients = ["clienta","clientb"]
+   *
+   * When clients == NULL the pool element is freed. When the pool is empty
+   *
+   * ie
+   * 0 == pool_elts(stats_registrations[IDX_INTERFACE_SIMPLE_COUNTERS]
+   *
+   * then there is no need to process INTERFACE_SIMPLE_COUNTERS
+   *
+   * Note that u32 item = ~0 is the simple case for ALL interfaces or fibs.
+   *
+   */
+
+  uword **stats_registration_hash;
+  vpe_client_stats_registration_t **stats_registrations;
 
   /* control-plane data structure lock */
   data_structure_lock_t *data_structure_lock;
 
   /* bail out of FIB walk if set */
   clib_longjmp_t jmp_buf;
+
+  /* Vectors for Distribution funcs: do_ip4_fibs and do_ip6_fibs. */
+  do_ip46_fibs_t do_ip46_fibs;
+
+  /*
+     Working vector vars so as to not thrash memory allocator.
+     Has effect of making "static"
+   */
+  vpe_client_stats_registration_t **regs_tmp;
+  vpe_client_registration_t **clients_tmp;
 
   /* convenience */
   vlib_main_t *vlib_main;
@@ -60,10 +164,7 @@ typedef struct
   api_main_t *api_main;
 } stats_main_t;
 
-stats_main_t stats_main;
-
-void dslock (stats_main_t * sm, int release_hint, int tag);
-void dsunlock (stats_main_t * sm);
+extern stats_main_t stats_main;
 
 #endif /* __included_stats_h__ */
 

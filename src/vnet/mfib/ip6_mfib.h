@@ -79,8 +79,9 @@ ip6_mfib_get (u32 index)
  * @returns A pointer to the retrieved or created fib.
  *
  */
-extern u32 ip6_mfib_table_find_or_create_and_lock(u32 table_id);
-extern u32 ip6_mfib_table_create_and_lock(void);
+extern u32 ip6_mfib_table_find_or_create_and_lock(u32 table_id,
+                                                  mfib_source_t src);
+extern u32 ip6_mfib_table_create_and_lock(mfib_source_t src);
 
 
 static inline
@@ -115,6 +116,11 @@ extern fib_node_index_t ip6_mfib_table_lookup2(const ip6_mfib_t *mfib,
 extern void ip6_mfib_table_walk (ip6_mfib_t *mfib,
                                  mfib_table_walk_fn_t fn,
                                  void *ctx);
+
+/**
+ * @brief format (display) ipv6 MFIB mempry usage
+ */
+extern u8 *format_ip6_mfib_table_memory(u8 * s, va_list * args);
 
 #endif
 

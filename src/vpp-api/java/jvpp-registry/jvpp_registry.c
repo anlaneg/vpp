@@ -73,6 +73,7 @@ typedef struct {
 
     /* Connected indication */
     volatile u8 is_connected;
+    u32 vpe_pid;
 } jvpp_registry_main_t;
 
 jvpp_registry_main_t jvpp_registry_main __attribute__((aligned (64)));
@@ -170,7 +171,8 @@ static void vl_api_control_ping_reply_t_handler(
         }
     }
 
-    out: rm->control_ping_result_ready = 1;
+    out: rm->vpe_pid = clib_net_to_host_u32(mp->vpe_pid);
+    rm->control_ping_result_ready = 1;
 }
 
 static int find_ping_id() {
@@ -237,20 +239,19 @@ static int send_initial_control_ping() {
     }
 
     if (rv != 0) {
+        vl_msg_api_clean_handlers(rm->control_ping_reply_msg_id);
         clib_warning("first control ping failed: %d", rv);
     }
-
     return rv;
 }
 
-static int connect_to_vpe(char *name) {
+static int connect_to_vpe(char *shm_prefix, char *name) {
     jvpp_main_t * jm = &jvpp_main;
     api_main_t * am = &api_main;
     jvpp_registry_main_t * rm = &jvpp_registry_main;
 
-    if (vl_client_connect_to_vlib("/vpe-api", name, 32) < 0)
+    if (vl_client_connect_to_vlib(shm_prefix, name, 32) < 0)
         return -1;
-
     jm->my_client_index = am->my_client_index;
 
     jm->vl_input_queue = am->shmem_hdr->vl_input_queue;
@@ -268,9 +269,15 @@ static int connect_to_vpe(char *name) {
 }
 
 JNIEXPORT jobject JNICALL Java_io_fd_vpp_jvpp_VppJNIConnection_clientConnect(
-        JNIEnv *env, jclass obj, jstring clientName) {
+        JNIEnv *env, jclass obj, jstring shmPrefix, jstring clientName) {
+    /*
+     * TODO introducing memory prefix as variable can be used in hc2vpp
+     * to be able to run without root privileges
+     * https://jira.fd.io/browse/HC2VPP-176
+     */
     int rv;
     const char *client_name;
+    const char *shm_prefix;
     void vl_msg_reply_handler_hookup(void);
     jvpp_main_t * jm = &jvpp_main;
     jvpp_registry_main_t * rm = &jvpp_registry_main;
@@ -278,39 +285,38 @@ JNIEXPORT jobject JNICALL Java_io_fd_vpp_jvpp_VppJNIConnection_clientConnect(
     jclass connectionInfoClass = (*env)->FindClass(env,
             "io/fd/vpp/jvpp/VppJNIConnection$ConnectionInfo");
     jmethodID connectionInfoConstructor = (*env)->GetMethodID(env,
-            connectionInfoClass, "<init>", "(JII)V");
-
-    /*
-     * Bail out now if we're not running as root
-     */
-    if (geteuid() != 0) {
-        return (*env)->NewObject(env, connectionInfoClass,
-                connectionInfoConstructor, 0, 0,
-                VNET_API_ERROR_NOT_RUNNING_AS_ROOT);
-    }
+            connectionInfoClass, "<init>", "(JIII)V");
 
     if (rm->is_connected) {
         return (*env)->NewObject(env, connectionInfoClass,
                 connectionInfoConstructor, 0, 0,
-                VNET_API_ERROR_ALREADY_CONNECTED);
+                VNET_API_ERROR_ALREADY_CONNECTED, 0);
     }
 
     client_name = (*env)->GetStringUTFChars(env, clientName, 0);
+    shm_prefix = (*env)->GetStringUTFChars(env, shmPrefix, 0);
+
     if (!client_name) {
         return (*env)->NewObject(env, connectionInfoClass,
-                connectionInfoConstructor, 0, 0, VNET_API_ERROR_INVALID_VALUE);
+                connectionInfoConstructor, 0, 0, VNET_API_ERROR_INVALID_VALUE, 0, shmPrefix);
     }
 
-    rv = connect_to_vpe((char *) client_name);
+    if (!shm_prefix) {
+        return (*env)->NewObject(env, connectionInfoClass,
+                connectionInfoConstructor, 0, 0, VNET_API_ERROR_INVALID_VALUE, 0, shmPrefix);
+    }
+
+    rv = connect_to_vpe((char *) shm_prefix, (char *) client_name);
 
     if (rv < 0)
         clib_warning("connection failed, rv %d", rv);
 
     (*env)->ReleaseStringUTFChars(env, clientName, client_name);
+    (*env)->ReleaseStringUTFChars(env, shmPrefix, shm_prefix);
 
     return (*env)->NewObject(env, connectionInfoClass,
             connectionInfoConstructor, (jlong) pointer_to_uword (jm->vl_input_queue),
-            (jint) jm->my_client_index, (jint) rv);
+            (jint) jm->my_client_index, (jint) rv, (jint) rm->vpe_pid);
 }
 
 JNIEXPORT jint JNICALL Java_io_fd_vpp_jvpp_JVppRegistryImpl_controlPing0(

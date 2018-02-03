@@ -61,6 +61,12 @@ ethernet_mac_address_is_multicast_u64 (u64 a)
   return (a & (1ULL << (5 * 8))) != 0;
 }
 
+static inline int
+ethernet_mac_address_is_zero (u8 * mac)
+{
+  return ((*((u32 *) mac) == 0) && (*((u16 *) (mac + 4)) == 0));
+}
+
 static_always_inline int
 ethernet_frame_is_tagged (u16 type)
 {
@@ -169,6 +175,7 @@ typedef struct
 #define SUBINT_CONFIG_MATCH_3_TAG (1<<3)
 #define SUBINT_CONFIG_VALID       (1<<4)
 #define SUBINT_CONFIG_L2          (1<<5)
+#define SUBINT_CONFIG_P2P         (1<<6)
 
 } subint_config_t;
 
@@ -270,7 +277,7 @@ typedef struct
   uword *bm_loopback_instances;
 } ethernet_main_t;
 
-ethernet_main_t ethernet_main;
+extern ethernet_main_t ethernet_main;
 
 always_inline ethernet_type_info_t *
 ethernet_get_type_info (ethernet_main_t * em, ethernet_type_t type)
@@ -344,8 +351,7 @@ ethernet_setup_node (vlib_main_t * vm, u32 node_index)
 always_inline ethernet_header_t *
 ethernet_buffer_get_header (vlib_buffer_t * b)
 {
-  return (void *)
-    (b->data + vnet_buffer (b)->ethernet.start_of_ethernet_header);
+  return (void *) (b->data + vnet_buffer (b)->l2_hdr_offset);
 }
 
 /** Returns the number of VLAN headers in the current Ethernet frame in the
@@ -353,7 +359,7 @@ ethernet_buffer_get_header (vlib_buffer_t * b)
  * the number of headers is not known.
  */
 #define ethernet_buffer_get_vlan_count(b) ( \
-    ((b)->flags & ETH_BUFFER_VLAN_BITS) >> LOG2_ETH_BUFFER_VLAN_1_DEEP \
+    ((b)->flags & VNET_BUFFER_FLAGS_VLAN_BITS) >> VNET_BUFFER_F_LOG2_VLAN_1_DEEP \
 )
 
 /** Sets the number of VLAN headers in the current Ethernet frame in the
@@ -361,8 +367,8 @@ ethernet_buffer_get_header (vlib_buffer_t * b)
  * the number of headers is not known.
  */
 #define ethernet_buffer_set_vlan_count(b, v) ( \
-    (b)->flags = ((b)->flags & ~ETH_BUFFER_VLAN_BITS) | \
-        (((v) << LOG2_ETH_BUFFER_VLAN_1_DEEP) & ETH_BUFFER_VLAN_BITS) \
+    (b)->flags = ((b)->flags & ~VNET_BUFFER_FLAGS_VLAN_BITS) | \
+        (((v) << VNET_BUFFER_F_LOG2_VLAN_1_DEEP) & VNET_BUFFER_FLAGS_VLAN_BITS) \
 )
 
 /** Adjusts the vlan count by the delta in 'v' */
@@ -373,10 +379,10 @@ ethernet_buffer_get_header (vlib_buffer_t * b)
 
 /** Adjusts the vlan count by the header size byte delta in 'v' */
 #define ethernet_buffer_adjust_vlan_count_by_bytes(b, v) ( \
-    (b)->flags = ((b)->flags & ~ETH_BUFFER_VLAN_BITS) | (( \
-        ((b)->flags & ETH_BUFFER_VLAN_BITS) + \
-        ((v) << (LOG2_ETH_BUFFER_VLAN_1_DEEP - 2)) \
-    ) & ETH_BUFFER_VLAN_BITS) \
+    (b)->flags = ((b)->flags & ~VNET_BUFFER_FLAGS_VLAN_BITS) | (( \
+        ((b)->flags & VNET_BUFFER_FLAGS_VLAN_BITS) + \
+        ((v) << (VNET_BUFFER_F_LOG2_VLAN_1_DEEP - 2)) \
+    ) & VNET_BUFFER_FLAGS_VLAN_BITS) \
 )
 
 /**
@@ -543,6 +549,8 @@ int vnet_add_del_ip4_arp_change_event (vnet_main_t * vnm,
 				       uword type_opaque,
 				       uword data, int is_add);
 
+void wc_arp_set_publisher_node (uword inode_index, uword event_type);
+
 void ethernet_arp_change_mac (u32 sw_if_index);
 void ethernet_ndp_change_mac (u32 sw_if_index);
 
@@ -556,6 +564,13 @@ const u8 *ethernet_ip4_mcast_dst_addr (void);
 const u8 *ethernet_ip6_mcast_dst_addr (void);
 
 extern vlib_node_registration_t ethernet_input_node;
+
+typedef struct
+{
+  u32 sw_if_index;
+  u32 ip4;
+  u8 mac[6];
+} wc_arp_report_t;
 
 #endif /* included_ethernet_h */
 

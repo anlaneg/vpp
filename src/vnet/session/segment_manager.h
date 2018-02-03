@@ -17,8 +17,7 @@
 
 #include <vnet/vnet.h>
 #include <svm/svm_fifo_segment.h>
-
-#include <vlibmemory/unix_shared_memory_queue.h>
+#include <svm/queue.h>
 #include <vlibmemory/api.h>
 #include <vppinfra/lock.h>
 
@@ -37,8 +36,11 @@ typedef struct _segment_manager_properties
   /** Flag that indicates if additional segments should be created */
   u8 add_segment;
 
-  /** Use private memory segment instead of shared memory */
-  u8 use_private_segment;
+  /** Segment type: if set to SSVM_N_TYPES, private segments are used */
+  ssvm_segment_type_t segment_type;
+
+  /** Use one or more private mheaps, instead of the global heap */
+  u32 private_segment_count;
 } segment_manager_properties_t;
 
 typedef struct _segment_manager
@@ -51,22 +53,24 @@ typedef struct _segment_manager
   /** Owner app index */
   u32 app_index;
 
-  /** Pointer to manager properties. Could be shared among all of
-   * an app's segment managers s*/
-  segment_manager_properties_t *properties;
+  /**
+   * Pointer to manager properties. Could be shared among all of
+   * an app's segment managers s
+   */
+  u32 properties_index;
+
+  /**
+   * First segment should not be deleted unless segment manger is deleted.
+   * This also indicates that the segment manager is the first to have been
+   * allocated for the app.
+   */
+  u8 first_is_protected;
 } segment_manager_t;
+
+#define SEGMENT_MANAGER_INVALID_APP_INDEX ((u32) ~0)
 
 /** Pool of segment managers */
 extern segment_manager_t *segment_managers;
-
-always_inline segment_manager_t *
-segment_manager_new ()
-{
-  segment_manager_t *sm;
-  pool_get (segment_managers, sm);
-  memset (sm, 0, sizeof (*sm));
-  return sm;
-}
 
 always_inline segment_manager_t *
 segment_manager_get (u32 index)
@@ -88,16 +92,18 @@ segment_manager_index (segment_manager_t * sm)
   return sm - segment_managers;
 }
 
-int
-segment_manager_init (segment_manager_t * sm,
-		      segment_manager_properties_t * properties,
-		      u32 seg_size);
+segment_manager_t *segment_manager_new ();
+int segment_manager_init (segment_manager_t * sm, u32 props_index,
+			  u32 seg_size, u32 evt_queue_size);
 
-void segment_manager_get_segment_info (u32 index, u8 ** name, u32 * size);
-int
-session_manager_add_first_segment (segment_manager_t * sm, u32 segment_size);
-int session_manager_add_segment (segment_manager_t * sm);
+svm_fifo_segment_private_t *segment_manager_get_segment (u32 segment_index);
+int segment_manager_add_first_segment (segment_manager_t * sm,
+				       u32 segment_size);
+int segment_manager_add_segment (segment_manager_t * sm);
+void segment_manager_del_sessions (segment_manager_t * sm);
 void segment_manager_del (segment_manager_t * sm);
+void segment_manager_init_del (segment_manager_t * sm);
+u8 segment_manager_has_fifos (segment_manager_t * sm);
 int
 segment_manager_alloc_session_fifos (segment_manager_t * sm,
 				     svm_fifo_t ** server_rx_fifo,
@@ -106,10 +112,15 @@ segment_manager_alloc_session_fifos (segment_manager_t * sm,
 void
 segment_manager_dealloc_fifos (u32 svm_segment_index, svm_fifo_t * rx_fifo,
 			       svm_fifo_t * tx_fifo);
-unix_shared_memory_queue_t *segment_manager_alloc_queue (segment_manager_t *
-							 sm, u32 queue_size);
-void segment_manager_dealloc_queue (segment_manager_t * sm,
-				    unix_shared_memory_queue_t * q);
+svm_queue_t *segment_manager_alloc_queue (segment_manager_t * sm,
+					  u32 queue_size);
+void segment_manager_dealloc_queue (segment_manager_t * sm, svm_queue_t * q);
+void segment_manager_app_detach (segment_manager_t * sm);
+
+segment_manager_properties_t *segment_manager_properties_alloc (void);
+void segment_manager_properties_free (segment_manager_properties_t * p);
+segment_manager_properties_t *segment_manager_properties_get (u32 smp_index);
+u32 segment_manager_properties_index (segment_manager_properties_t * p);
 
 #endif /* SRC_VNET_SESSION_SEGMENT_MANAGER_H_ */
 /*

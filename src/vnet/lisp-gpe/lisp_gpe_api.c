@@ -154,13 +154,13 @@ static void
   lisp_fwd_path_t *path;
   vl_api_gpe_fwd_entry_path_details_t *rmp = NULL;
   lisp_gpe_main_t *lgm = &lisp_gpe_main;
-  unix_shared_memory_queue_t *q = NULL;
+  vl_api_registration_t *reg;
   lisp_gpe_fwd_entry_t *lfe;
 
   gpe_fwd_entry_path_dump_t_net_to_host (mp);
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   if (pool_is_free_index (lgm->lisp_fwd_entry_pool, mp->fwd_entry_index))
@@ -187,7 +187,7 @@ static void
     lisp_api_set_locator (&rmp->lcl_loc, &lgt->key->lcl, path->weight);
 
     rmp->context = mp->context;
-    vl_msg_api_send_shmem (q, (u8 *) & rmp);
+    vl_api_send_msg (reg, (u8 *) rmp);
   }
 }
 
@@ -405,7 +405,7 @@ vl_api_gpe_add_del_iface_t_handler (vl_api_gpe_add_del_iface_t * mp)
     {
       if (mp->is_add)
 	{
-	  if (~0 == lisp_gpe_tenant_l3_iface_add_or_lock (vni, dp_table))
+	  if (~0 == lisp_gpe_tenant_l3_iface_add_or_lock (vni, dp_table, 1))
 	    rv = 1;
 	}
       else
@@ -455,10 +455,10 @@ static void
     clib_memcpy (&a->rpath.frp_addr.ip6, mp->nh_addr, sizeof (ip6_address_t));
 
   a->is_add = mp->is_add;
-  a->rpath.frp_proto = mp->is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
-  a->rpath.frp_fib_index = fib_table_find (a->rpath.frp_proto,
-					   clib_net_to_host_u32
-					   (mp->table_id));
+  a->rpath.frp_proto = mp->is_ip4 ? DPO_PROTO_IP4 : DPO_PROTO_IP6;
+  a->rpath.frp_fib_index =
+    fib_table_find (dpo_proto_to_fib (a->rpath.frp_proto),
+		    clib_net_to_host_u32 (mp->table_id));
   if (~0 == a->rpath.frp_fib_index)
     {
       rv = VNET_API_ERROR_INVALID_VALUE;
@@ -484,7 +484,7 @@ gpe_native_fwd_rpaths_copy (vl_api_gpe_native_fwd_rpath_t * dst,
   vec_foreach (e, src)
   {
     memset (&dst[i], 0, sizeof (*dst));
-    table = fib_table_get (e->frp_fib_index, e->frp_proto);
+    table = fib_table_get (e->frp_fib_index, dpo_proto_to_fib (e->frp_proto));
     dst[i].fib_index = table->ft_table_id;
     dst[i].nh_sw_if_index = e->frp_sw_if_index;
     dst[i].is_ip4 = is_ip4;

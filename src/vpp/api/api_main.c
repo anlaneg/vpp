@@ -49,10 +49,13 @@ api_main_init (vlib_main_t * vm)
   vam->my_client_index = (u32) ~ 0;
   /* Ensure that vam->inbuf is never NULL */
   vec_validate (vam->inbuf, 0);
+  vec_validate (vam->cmd_reply, 0);
+  vec_reset_length (vam->cmd_reply);
   init_error_string_table (vam);
   rv = vat_plugin_init (vam);
   if (rv)
     clib_warning ("vat_plugin_init returned %d", rv);
+
   return 0;
 }
 
@@ -66,6 +69,50 @@ vat_plugin_hash_create (void)
   vam->sw_if_index_by_interface_name = hash_create_string (0, sizeof (uword));
   vam->function_by_name = hash_create_string (0, sizeof (uword));
   vam->help_by_name = hash_create_string (0, sizeof (uword));
+}
+
+static void
+maybe_register_api_client (vat_main_t * vam)
+{
+  vl_api_registration_t **regpp;
+  vl_api_registration_t *regp;
+  svm_region_t *svm;
+  void *oldheap;
+  api_main_t *am = &api_main;
+
+  if (vam->my_client_index != ~0)
+    return;
+
+  pool_get (am->vl_clients, regpp);
+
+  svm = am->vlib_rp;
+
+  pthread_mutex_lock (&svm->mutex);
+  oldheap = svm_push_data_heap (svm);
+  *regpp = clib_mem_alloc (sizeof (vl_api_registration_t));
+
+  regp = *regpp;
+  memset (regp, 0, sizeof (*regp));
+  regp->registration_type = REGISTRATION_TYPE_SHMEM;
+  regp->vl_api_registration_pool_index = regpp - am->vl_clients;
+  regp->vlib_rp = svm;
+  regp->shmem_hdr = am->shmem_hdr;
+
+  /* Loopback connection */
+  regp->vl_input_queue = am->shmem_hdr->vl_input_queue;
+
+  regp->name = format (0, "%s", "vpp-internal");
+  vec_add1 (regp->name, 0);
+
+  pthread_mutex_unlock (&svm->mutex);
+  svm_pop_heap (oldheap);
+
+  vam->my_client_index = vl_msg_api_handle_from_index_and_epoch
+    (regp->vl_api_registration_pool_index,
+     am->shmem_hdr->application_restarts);
+
+  vam->vl_input_queue = am->shmem_hdr->vl_input_queue;
+  api_sw_interface_dump (vam);
 }
 
 static clib_error_t *
@@ -82,7 +129,7 @@ api_command_fn (vlib_main_t * vm,
   int (*fp) (vat_main_t *);
   api_main_t *am = &api_main;
 
-  vam->vl_input_queue = am->shmem_hdr->vl_input_queue;
+  maybe_register_api_client (vam);
 
   /* vec_validated in the init routine */
   _vec_len (vam->inbuf) = 0;
@@ -232,8 +279,6 @@ unformat_sw_if_index (unformat_input_t * input, va_list * args)
   u32 *result = va_arg (*args, u32 *);
   vnet_main_t *vnm = vnet_get_main ();
   u32 sw_if_index = ~0;
-  u8 *if_name;
-  uword *p;
 
   if (unformat (input, "%U", unformat_vnet_sw_interface, vnm, &sw_if_index))
     {

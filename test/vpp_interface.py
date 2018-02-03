@@ -163,6 +163,12 @@ class VppInterface(object):
 
         self._local_ip4 = "172.16.%u.1" % self.sw_if_index
         self._local_ip4n = socket.inet_pton(socket.AF_INET, self.local_ip4)
+        self._local_ip4_subnet = "172.16.%u.0" % self.sw_if_index
+        self._local_ip4n_subnet = socket.inet_pton(socket.AF_INET,
+                                                   self._local_ip4_subnet)
+        self._local_ip4_bcast = "172.16.%u.255" % self.sw_if_index
+        self._local_ip4n_bcast = socket.inet_pton(socket.AF_INET,
+                                                  self._local_ip4_bcast)
         self.local_ip4_prefix_len = 24
         self.has_ip4_config = False
         self.ip4_table_id = 0
@@ -366,3 +372,15 @@ class VppInterface(object):
         self.test.vapi.proxy_arp_intfc_enable_disable(
             self.sw_if_index,
             enable)
+
+    def query_vpp_config(self):
+        dump = self.test.vapi.sw_interface_dump()
+        return self.is_interface_config_in_dump(dump)
+
+    def is_interface_config_in_dump(self, dump):
+        for i in dump:
+            if i.interface_name.rstrip(' \t\r\n\0') == self.name and \
+               i.sw_if_index == self.sw_if_index:
+                return True
+        else:
+            return False

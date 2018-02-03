@@ -43,6 +43,7 @@ typedef struct ping_run_t
   u16 icmp_id;
   u16 curr_seq;
   uword cli_process_id;
+  uword cli_thread_index;
 } ping_run_t;
 
 typedef struct ping_main_t
@@ -55,7 +56,7 @@ typedef struct ping_main_t
   ping_run_t *ping_run_by_icmp_id;
 } ping_main_t;
 
-ping_main_t ping_main;
+extern ping_main_t ping_main;
 
 #define PING_DEFAULT_DATA_LEN 60
 #define PING_DEFAULT_INTERVAL 1.0

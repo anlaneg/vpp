@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, util
+import util
 from string import Template
 
 jvpp_ifc_template = Template("""
@@ -49,6 +49,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Set;
 import java.util.logging.Logger;
+import java.util.logging.Level;
 import $base_package.callback.JVppCallback;
 import $base_package.VppConnection;
 import $base_package.JVppRegistry;
@@ -139,6 +140,9 @@ method_native_template = Template(
 method_impl_template = Template("""    public final int $name($plugin_package.$dto_package.$request request) throws io.fd.vpp.jvpp.VppInvocationException {
         java.util.Objects.requireNonNull(request,"Null request object");
         connection.checkActive();
+        if(LOG.isLoggable(Level.FINE)) {
+            LOG.fine(String.format("Sending $name event message: %s", request));
+        }
         int result=${name}0(request);
         if(result<0){
             throw new io.fd.vpp.jvpp.VppInvocationException("${name}",result);
@@ -151,6 +155,7 @@ no_arg_method_template = Template("""    int $name() throws io.fd.vpp.jvpp.VppIn
 no_arg_method_native_template = Template("""    private static native int ${name}0() throws io.fd.vpp.jvpp.VppInvocationException;""")
 no_arg_method_impl_template = Template("""    public final int $name() throws io.fd.vpp.jvpp.VppInvocationException {
         connection.checkActive();
+        LOG.fine("Sending $name event message");
         int result=${name}0();
         if(result<0){
             throw new io.fd.vpp.jvpp.VppInvocationException("${name}",result);
@@ -160,19 +165,14 @@ no_arg_method_impl_template = Template("""    public final int $name() throws io
 """)
 
 
-def generate_jvpp(func_list, base_package, plugin_package, plugin_name_underscore, dto_package, inputfile):
+def generate_jvpp(func_list, base_package, plugin_package, plugin_name_underscore, dto_package, inputfile, logger):
     """ Generates JVpp interface and JNI implementation """
-    print "Generating JVpp"
+    logger.debug("Generating JVpp interface implementation for %s" % inputfile)
     plugin_name = util.underscore_to_camelcase_upper(plugin_name_underscore)
 
     methods = []
     methods_impl = []
     for func in func_list:
-
-        # Skip structures that are used only as notifications
-        if util.is_just_notification(func['name']) or util.is_ignored(func['name']):
-            continue
-
         camel_case_name = util.underscore_to_camelcase(func['name'])
         camel_case_name_upper = util.underscore_to_camelcase_upper(func['name'])
         if util.is_reply(camel_case_name):

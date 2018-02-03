@@ -41,27 +41,33 @@ typedef enum
     MEMIF_TX_N_ERROR,
 } memif_tx_func_error_t;
 
-static char *memif_tx_func_error_strings[] = {
+static __clib_unused char *memif_tx_func_error_strings[] = {
 #define _(n,s) s,
   foreach_memif_tx_func_error
 #undef _
 };
 
+#ifndef CLIB_MULTIARCH_VARIANT
 u8 *
 format_memif_device_name (u8 * s, va_list * args)
 {
-  u32 i = va_arg (*args, u32);
+  u32 dev_instance = va_arg (*args, u32);
+  memif_main_t *mm = &memif_main;
+  memif_if_t *mif = pool_elt_at_index (mm->interfaces, dev_instance);
+  memif_socket_file_t *msf;
 
-  s = format (s, "memif%u", i);
+  msf = pool_elt_at_index (mm->socket_files, mif->socket_file_index);
+  s = format (s, "memif%lu/%lu", msf->socket_id, mif->id);
   return s;
 }
+#endif
 
-static u8 *
+static __clib_unused u8 *
 format_memif_device (u8 * s, va_list * args)
 {
   u32 dev_instance = va_arg (*args, u32);
   int verbose = va_arg (*args, int);
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   s = format (s, "MEMIF interface");
   if (verbose)
@@ -72,7 +78,7 @@ format_memif_device (u8 * s, va_list * args)
   return s;
 }
 
-static u8 *
+static __clib_unused u8 *
 format_memif_tx_trace (u8 * s, va_list * args)
 {
   s = format (s, "Unimplemented...");
@@ -106,26 +112,28 @@ memif_copy_buffer_to_tx_ring (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_buffer_t *b0;
   void *mb0;
   u32 total = 0, len;
+  u16 slot = (*head) & mask;
 
-  mb0 = memif_get_buffer (mif, ring, *head);
-  ring->desc[*head].flags = 0;
+  mb0 = memif_get_buffer (mif, ring, slot);
+  ring->desc[slot].flags = 0;
   do
     {
       b0 = vlib_get_buffer (vm, bi);
       len = b0->current_length;
-      if (PREDICT_FALSE (ring->desc[*head].buffer_length < (total + len)))
+      if (PREDICT_FALSE (ring->desc[slot].buffer_length < (total + len)))
 	{
 	  if (PREDICT_TRUE (total))
 	    {
-	      ring->desc[*head].length = total;
+	      ring->desc[slot].length = total;
 	      total = 0;
-	      ring->desc[*head].flags |= MEMIF_DESC_FLAG_NEXT;
-	      *head = (*head + 1) & mask;
-	      mb0 = memif_get_buffer (mif, ring, *head);
-	      ring->desc[*head].flags = 0;
+	      ring->desc[slot].flags |= MEMIF_DESC_FLAG_NEXT;
+	      (*head)++;
+	      slot = (*head) & mask;
+	      mb0 = memif_get_buffer (mif, ring, slot);
+	      ring->desc[slot].flags = 0;
 	    }
 	}
-      if (PREDICT_TRUE (ring->desc[*head].buffer_length >= (total + len)))
+      if (PREDICT_TRUE (ring->desc[slot].buffer_length >= (total + len)))
 	{
 	  clib_memcpy (mb0 + total, vlib_buffer_get_current (b0),
 		       CLIB_CACHE_LINE_BYTES);
@@ -146,8 +154,8 @@ memif_copy_buffer_to_tx_ring (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (PREDICT_TRUE (total))
     {
-      ring->desc[*head].length = total;
-      *head = (*head + 1) & mask;
+      ring->desc[slot].length = total;
+      (*head)++;
     }
 }
 
@@ -166,54 +174,40 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 thread_index = vlib_get_thread_index ();
   u8 tx_queues = vec_len (mif->tx_queues);
   memif_queue_t *mq;
+  int n_retries = 5;
 
   if (tx_queues < vec_len (vlib_mains))
     {
+      ASSERT (tx_queues > 0);
       qid = thread_index % tx_queues;
       clib_spinlock_lock_if_init (&mif->lockp);
     }
   else
-    {
-      qid = thread_index;
-    }
+    qid = thread_index;
+
   mq = vec_elt_at_index (mif->tx_queues, qid);
   ring = mq->ring;
   ring_size = 1 << mq->log2_ring_size;
   mask = ring_size - 1;
+retry:
 
   /* free consumed buffers */
 
   head = ring->head;
   tail = ring->tail;
 
-  if (tail > head)
-    free_slots = tail - head;
-  else
-    free_slots = ring_size - head + tail;
+  free_slots = ring_size - head + tail;
 
   while (n_left > 5 && free_slots > 1)
     {
-      if (PREDICT_TRUE (head + 5 < ring_size))
-	{
-	  CLIB_PREFETCH (memif_get_buffer (mif, ring, head + 2),
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (memif_get_buffer (mif, ring, head + 3),
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (&ring->desc[head + 4], CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (&ring->desc[head + 5], CLIB_CACHE_LINE_BYTES, STORE);
-	}
-      else
-	{
-	  CLIB_PREFETCH (memif_get_buffer (mif, ring, (head + 2) % mask),
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (memif_get_buffer (mif, ring, (head + 3) % mask),
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (&ring->desc[(head + 4) % mask],
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	  CLIB_PREFETCH (&ring->desc[(head + 5) % mask],
-			 CLIB_CACHE_LINE_BYTES, STORE);
-	}
-
+      CLIB_PREFETCH (memif_get_buffer (mif, ring, (head + 2) & mask),
+		     CLIB_CACHE_LINE_BYTES, STORE);
+      CLIB_PREFETCH (memif_get_buffer (mif, ring, (head + 3) & mask),
+		     CLIB_CACHE_LINE_BYTES, STORE);
+      CLIB_PREFETCH (&ring->desc[(head + 4) & mask], CLIB_CACHE_LINE_BYTES,
+		     STORE);
+      CLIB_PREFETCH (&ring->desc[(head + 5) & mask], CLIB_CACHE_LINE_BYTES,
+		     STORE);
       memif_prefetch_buffer_and_data (vm, buffers[2]);
       memif_prefetch_buffer_and_data (vm, buffers[3]);
 
@@ -239,16 +233,17 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   CLIB_MEMORY_STORE_BARRIER ();
   ring->head = head;
 
+  if (n_left && n_retries--)
+    goto retry;
+
   clib_spinlock_unlock_if_init (&mif->lockp);
 
   if (n_left)
     {
       vlib_error_count (vm, node->node_index, MEMIF_TX_ERROR_NO_FREE_SLOTS,
 			n_left);
-      vlib_buffer_free (vm, buffers, n_left);
     }
 
-  vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
   if ((ring->flags & MEMIF_RING_FLAG_MASK_INT) == 0 && mq->int_fd > -1)
     {
       u64 b = 1;
@@ -256,12 +251,15 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       mq->int_count++;
     }
 
+  vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+
   return frame->n_vectors;
 }
 
-static uword
-memif_interface_tx (vlib_main_t * vm,
-		    vlib_node_runtime_t * node, vlib_frame_t * frame)
+uword
+CLIB_MULTIARCH_FN (memif_interface_tx) (vlib_main_t * vm,
+					vlib_node_runtime_t * node,
+					vlib_frame_t * frame)
 {
   memif_main_t *nm = &memif_main;
   vnet_interface_output_runtime_t *rund = (void *) node->runtime_data;
@@ -273,7 +271,7 @@ memif_interface_tx (vlib_main_t * vm,
     return memif_interface_tx_inline (vm, node, frame, mif, MEMIF_RING_M2S);
 }
 
-static void
+static __clib_unused void
 memif_set_interface_next_node (vnet_main_t * vnm, u32 hw_if_index,
 			       u32 node_index)
 {
@@ -292,13 +290,13 @@ memif_set_interface_next_node (vnet_main_t * vnm, u32 hw_if_index,
     vlib_node_add_next (vlib_get_main (), memif_input_node.index, node_index);
 }
 
-static void
+static __clib_unused void
 memif_clear_hw_interface_counters (u32 instance)
 {
   /* Nothing for now */
 }
 
-static clib_error_t *
+static __clib_unused clib_error_t *
 memif_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
 				vnet_hw_interface_rx_mode mode)
 {
@@ -315,7 +313,7 @@ memif_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
   return 0;
 }
 
-static clib_error_t *
+static __clib_unused clib_error_t *
 memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 {
   memif_main_t *mm = &memif_main;
@@ -331,7 +329,7 @@ memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   return error;
 }
 
-static clib_error_t *
+static __clib_unused clib_error_t *
 memif_subif_add_del_function (vnet_main_t * vnm,
 			      u32 hw_if_index,
 			      struct vnet_sw_interface_t *st, int is_add)
@@ -340,6 +338,7 @@ memif_subif_add_del_function (vnet_main_t * vnm,
   return 0;
 }
 
+#ifndef CLIB_MULTIARCH_VARIANT
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (memif_device_class) = {
   .name = "memif",
@@ -356,8 +355,20 @@ VNET_DEVICE_CLASS (memif_device_class) = {
   .rx_mode_change_function = memif_interface_rx_mode_change,
 };
 
-VLIB_DEVICE_TX_FUNCTION_MULTIARCH(memif_device_class,
-				  memif_interface_tx)
+#if __x86_64__
+vlib_node_function_t __clib_weak memif_interface_tx_avx512;
+vlib_node_function_t __clib_weak memif_interface_tx_avx2;
+static void __clib_constructor
+dpdk_interface_tx_multiarch_select (void)
+{
+  if (memif_interface_tx_avx512 && clib_cpu_supports_avx512f ())
+    memif_device_class.tx_function = memif_interface_tx_avx512;
+  else if (memif_interface_tx_avx2 && clib_cpu_supports_avx2 ())
+    memif_device_class.tx_function = memif_interface_tx_avx2;
+}
+#endif
+#endif
+
 /* *INDENT-ON* */
 
 /*

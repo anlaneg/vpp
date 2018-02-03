@@ -46,8 +46,9 @@
 #define foreach_vpe_api_msg                             \
 _(SR_LOCALSID_ADD_DEL, sr_localsid_add_del)             \
 _(SR_POLICY_DEL, sr_policy_del)                         \
-_(SR_STEERING_ADD_DEL, sr_steering_add_del)
-//_(SR_LOCALSIDS, sr_localsids_dump)
+_(SR_STEERING_ADD_DEL, sr_steering_add_del)             \
+_(SR_SET_ENCAP_SOURCE, sr_set_encap_source)             \
+_(SR_LOCALSIDS_DUMP, sr_localsids_dump)
 //_(SR_LOCALSID_BEHAVIORS, sr_localsid_behaviors_dump)
 
 static void vl_api_sr_localsid_add_del_t_handler
@@ -60,6 +61,9 @@ static void vl_api_sr_localsid_add_del_t_handler
  *  char end_psp, u8 behavior, u32 sw_if_index, u32 vlan_index, u32 fib_table,
  *  ip46_address_t *nh_addr, void *ls_plugin_mem)
  */
+
+  VALIDATE_SW_IF_INDEX (mp);
+
   rv = sr_cli_localsid (mp->is_del,
 			(ip6_address_t *) & mp->localsid_addr,
 			mp->end_psp,
@@ -68,6 +72,8 @@ static void vl_api_sr_localsid_add_del_t_handler
 			ntohl (mp->vlan_index),
 			ntohl (mp->fib_table),
 			(ip46_address_t *) & mp->nh_addr, NULL);
+
+  BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_SR_LOCALSID_ADD_DEL_REPLY);
 }
@@ -147,6 +153,16 @@ vl_api_sr_policy_del_t_handler (vl_api_sr_policy_del_t * mp)
   REPLY_MACRO (VL_API_SR_POLICY_DEL_REPLY);
 }
 
+static void
+vl_api_sr_set_encap_source_t_handler (vl_api_sr_set_encap_source_t * mp)
+{
+  vl_api_sr_set_encap_source_reply_t *rmp;
+  int rv = 0;
+  sr_set_source ((ip6_address_t *) & mp->encaps_source);
+
+  REPLY_MACRO (VL_API_SR_POLICY_DEL_REPLY);
+}
+
 static void vl_api_sr_steering_add_del_t_handler
   (vl_api_sr_steering_add_del_t * mp)
 {
@@ -158,6 +174,9 @@ static void vl_api_sr_steering_add_del_t_handler
  *  u32 table_id, ip46_address_t *prefix, u32 mask_width, u32 sw_if_index,
  *  u8 traffic_type)
  */
+
+  VALIDATE_SW_IF_INDEX (mp);
+
   rv = sr_steering_policy (mp->is_del,
 			   (ip6_address_t *) & mp->bsid_addr,
 			   ntohl (mp->sr_policy_index),
@@ -166,8 +185,49 @@ static void vl_api_sr_steering_add_del_t_handler
 			   ntohl (mp->mask_width),
 			   ntohl (mp->sw_if_index), mp->traffic_type);
 
+  BAD_SW_IF_INDEX_LABEL;
+
   REPLY_MACRO (VL_API_SR_STEERING_ADD_DEL_REPLY);
 }
+
+static void send_sr_localsid_details
+  (ip6_sr_localsid_t * t, vl_api_registration_t * reg, u32 context)
+{
+  vl_api_sr_localsids_details_t *rmp;
+
+  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  memset (rmp, 0, sizeof (*rmp));
+  rmp->_vl_msg_id = ntohs (VL_API_SR_LOCALSIDS_DETAILS);
+  memcpy (rmp->address, &t->localsid, sizeof (ip6_address_t));
+  rmp->end_psp = t->end_psp;
+  rmp->behavior = htons (t->behavior);
+  rmp->fib_table = htonl (t->fib_table);
+  memcpy (rmp->xconnect_next_hop, &t->next_hop, sizeof (ip6_address_t));
+  rmp->xconnect_iface_or_vrf_table = htonl (t->sw_if_index);
+  rmp->context = context;
+
+  vl_api_send_msg (reg, (u8 *) rmp);
+}
+
+static void vl_api_sr_localsids_dump_t_handler
+  (vl_api_sr_localsids_dump_t * mp)
+{
+  vl_api_registration_t *reg;
+  ip6_sr_main_t *sm = &sr_main;
+  ip6_sr_localsid_t *t;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  /* *INDENT-OFF* */
+  pool_foreach (t, sm->localsids,
+  ({
+    send_sr_localsid_details(t, reg, mp->context);
+  }));
+  /* *INDENT-ON* */
+}
+
 
 /*
  * sr_api_hookup

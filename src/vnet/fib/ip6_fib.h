@@ -68,7 +68,7 @@ ip6_fib_table_fwding_lookup (ip6_main_t * im,
                              u32 fib_index,
                              const ip6_address_t * dst)
 {
-    const ip6_fib_table_instance_t *table;
+    ip6_fib_table_instance_t *table;
     int i, len;
     int rv;
     BVT(clib_bihash_kv) kv, value;
@@ -101,6 +101,16 @@ ip6_fib_table_fwding_lookup (ip6_main_t * im,
     ASSERT(0);
     return 0;
 }
+
+/**
+ * @brief Walk all entries in a sub-tree of the FIB table
+ * N.B: This is NOT safe to deletes. If you need to delete walk the whole
+ * table and store elements in a vector, then delete the elements
+ */
+extern void ip6_fib_table_sub_tree_walk(u32 fib_index,
+                                        const fib_prefix_t *root,
+                                        fib_table_walk_fn_t fn,
+                                        void *ctx);
 
 /**
  * @brief return the DPO that the LB stacks on.
@@ -144,8 +154,11 @@ ip6_src_lookup_for_packet (ip6_main_t * im,
  * \returns A pointer to the retrieved or created fib.
  *
  */
-extern u32 ip6_fib_table_find_or_create_and_lock(u32 table_id);
-extern u32 ip6_fib_table_create_and_lock(void);
+extern u32 ip6_fib_table_find_or_create_and_lock(u32 table_id,
+                                                 fib_source_t src);
+extern u32 ip6_fib_table_create_and_lock(fib_source_t src);
+
+extern u8 *format_ip6_fib_table_memory(u8 * s, va_list * args);
 
 static inline ip6_fib_t *
 ip6_fib_get (fib_node_index_t index)

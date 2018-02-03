@@ -25,6 +25,7 @@
 #include <vnet/l2/l2_input.h>
 #include <vnet/l2/l2_fib.h>
 #include <vnet/l2/l2_vtr.h>
+#include <vnet/l2/l2_learn.h>
 
 #include <vnet/vnet_msg_enum.h>
 
@@ -55,16 +56,23 @@ _(L2FIB_FLUSH_ALL, l2fib_flush_all)                         \
 _(L2FIB_FLUSH_INT, l2fib_flush_int)                         \
 _(L2FIB_FLUSH_BD, l2fib_flush_bd)                           \
 _(L2FIB_ADD_DEL, l2fib_add_del)                             \
+_(WANT_L2_MACS_EVENTS, want_l2_macs_events)		    \
 _(L2_FLAGS, l2_flags)                                       \
-_(BRIDGE_DOMAIN_ADD_DEL, bridge_domain_add_del)             \
-_(BRIDGE_DOMAIN_DUMP, bridge_domain_dump)                   \
-_(BRIDGE_FLAGS, bridge_flags)                               \
+_(SW_INTERFACE_SET_L2_XCONNECT, sw_interface_set_l2_xconnect)   \
+_(SW_INTERFACE_SET_L2_BRIDGE, sw_interface_set_l2_bridge)       \
+_(L2_PATCH_ADD_DEL, l2_patch_add_del)				\
+_(L2_INTERFACE_EFP_FILTER, l2_interface_efp_filter)             \
+_(BD_IP_MAC_ADD_DEL, bd_ip_mac_add_del)                         \
+_(BRIDGE_DOMAIN_ADD_DEL, bridge_domain_add_del)                 \
+_(BRIDGE_DOMAIN_DUMP, bridge_domain_dump)                       \
+_(BRIDGE_FLAGS, bridge_flags)                                   \
 _(L2_INTERFACE_VLAN_TAG_REWRITE, l2_interface_vlan_tag_rewrite) \
-_(L2_INTERFACE_PBB_TAG_REWRITE, l2_interface_pbb_tag_rewrite) \
-_(BRIDGE_DOMAIN_SET_MAC_AGE, bridge_domain_set_mac_age)
+_(L2_INTERFACE_PBB_TAG_REWRITE, l2_interface_pbb_tag_rewrite)   \
+_(BRIDGE_DOMAIN_SET_MAC_AGE, bridge_domain_set_mac_age)         \
+_(SW_INTERFACE_SET_VPATH, sw_interface_set_vpath)
 
 static void
-send_l2_xconnect_details (unix_shared_memory_queue_t * q, u32 context,
+send_l2_xconnect_details (vl_api_registration_t * reg, u32 context,
 			  u32 rx_sw_if_index, u32 tx_sw_if_index)
 {
   vl_api_l2_xconnect_details_t *mp;
@@ -76,21 +84,21 @@ send_l2_xconnect_details (unix_shared_memory_queue_t * q, u32 context,
   mp->rx_sw_if_index = htonl (rx_sw_if_index);
   mp->tx_sw_if_index = htonl (tx_sw_if_index);
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
 vl_api_l2_xconnect_dump_t_handler (vl_api_l2_xconnect_dump_t * mp)
 {
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   vnet_main_t *vnm = vnet_get_main ();
   vnet_interface_main_t *im = &vnm->interface_main;
   l2input_main_t *l2im = &l2input_main;
   vnet_sw_interface_t *swif;
   l2_input_config_t *config;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   /* *INDENT-OFF* */
@@ -98,7 +106,7 @@ vl_api_l2_xconnect_dump_t_handler (vl_api_l2_xconnect_dump_t * mp)
   ({
     config = vec_elt_at_index (l2im->configs, swif->sw_if_index);
     if (config->xconnect)
-      send_l2_xconnect_details (q, mp->context, swif->sw_if_index,
+      send_l2_xconnect_details (reg, mp->context, swif->sw_if_index,
                                 config->output_sw_if_index);
   }));
   /* *INDENT-ON* */
@@ -118,7 +126,7 @@ vl_api_l2_fib_clear_table_t_handler (vl_api_l2_fib_clear_table_t * mp)
 
 static void
 send_l2fib_table_entry (vpe_api_main_t * am,
-			unix_shared_memory_queue_t * q,
+			vl_api_registration_t * reg,
 			l2fib_entry_key_t * l2fe_key,
 			l2fib_entry_result_t * l2fe_res, u32 context)
 {
@@ -131,14 +139,14 @@ send_l2fib_table_entry (vpe_api_main_t * am,
   mp->bd_id =
     ntohl (l2input_main.bd_configs[l2fe_key->fields.bd_index].bd_id);
 
-  mp->mac = l2fib_make_key (l2fe_key->fields.mac, 0);
+  clib_memcpy (mp->mac, l2fe_key->fields.mac, 6);
   mp->sw_if_index = ntohl (l2fe_res->fields.sw_if_index);
   mp->static_mac = l2fe_res->fields.static_mac;
   mp->filter_mac = l2fe_res->fields.filter;
   mp->bvi_mac = l2fe_res->fields.bvi;
   mp->context = context;
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
@@ -150,11 +158,11 @@ vl_api_l2_fib_table_dump_t_handler (vl_api_l2_fib_table_dump_t * mp)
   l2fib_entry_result_t *l2fe_res = NULL;
   u32 ni, bd_id = ntohl (mp->bd_id);
   u32 bd_index;
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   uword *p;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   /* see l2fib_table_dump: ~0 means "any" */
@@ -173,7 +181,7 @@ vl_api_l2_fib_table_dump_t_handler (vl_api_l2_fib_table_dump_t * mp)
 
   vec_foreach_index (ni, l2fe_key)
   {
-    send_l2fib_table_entry (am, q, vec_elt_at_index (l2fe_key, ni),
+    send_l2fib_table_entry (am, reg, vec_elt_at_index (l2fe_key, ni),
 			    vec_elt_at_index (l2fe_res, ni), mp->context);
   }
   vec_free (l2fe_key);
@@ -187,30 +195,26 @@ vl_api_l2fib_add_del_t_handler (vl_api_l2fib_add_del_t * mp)
   l2input_main_t *l2im = &l2input_main;
   vl_api_l2fib_add_del_reply_t *rmp;
   int rv = 0;
-  u64 mac = 0;
-  u32 sw_if_index = ntohl (mp->sw_if_index);
   u32 bd_id = ntohl (mp->bd_id);
-  u32 bd_index;
-  u32 static_mac;
-  u32 filter_mac;
-  u32 bvi_mac;
-  uword *p;
+  uword *p = hash_get (bdm->bd_index_by_bd_id, bd_id);
 
-  mac = mp->mac;
-
-  p = hash_get (bdm->bd_index_by_bd_id, bd_id);
   if (!p)
     {
       rv = VNET_API_ERROR_NO_SUCH_ENTRY;
       goto bad_sw_if_index;
     }
-  bd_index = p[0];
+  u32 bd_index = p[0];
 
+  u8 mac[6];
+
+  clib_memcpy (mac, mp->mac, 6);
   if (mp->is_add)
     {
-      filter_mac = mp->filter_mac ? 1 : 0;
-      if (filter_mac == 0)
+      if (mp->filter_mac)
+	l2fib_add_filter_entry (mac, bd_index);
+      else
 	{
+	  u32 sw_if_index = ntohl (mp->sw_if_index);
 	  VALIDATE_SW_IF_INDEX (mp);
 	  if (vec_len (l2im->configs) <= sw_if_index)
 	    {
@@ -227,11 +231,11 @@ vl_api_l2fib_add_del_t_handler (vl_api_l2fib_add_del_t * mp)
 		  goto bad_sw_if_index;
 		}
 	    }
+	  u8 static_mac = mp->static_mac ? 1 : 0;
+	  u8 bvi_mac = mp->bvi_mac ? 1 : 0;
+	  l2fib_add_fwd_entry (mac, bd_index, sw_if_index, static_mac,
+			       bvi_mac);
 	}
-      static_mac = mp->static_mac ? 1 : 0;
-      bvi_mac = mp->bvi_mac ? 1 : 0;
-      l2fib_add_entry (mac, bd_index, sw_if_index, static_mac, filter_mac,
-		       bvi_mac);
     }
   else
     {
@@ -241,6 +245,61 @@ vl_api_l2fib_add_del_t_handler (vl_api_l2fib_add_del_t * mp)
   BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_L2FIB_ADD_DEL_REPLY);
+}
+
+static void
+vl_api_want_l2_macs_events_t_handler (vl_api_want_l2_macs_events_t * mp)
+{
+  int rv = 0;
+  vl_api_want_l2_macs_events_reply_t *rmp;
+  l2learn_main_t *lm = &l2learn_main;
+  l2fib_main_t *fm = &l2fib_main;
+  u32 pid = ntohl (mp->pid);
+  u32 learn_limit = ntohl (mp->learn_limit);
+
+  if (mp->enable_disable)
+    {
+      if (lm->client_pid == 0)
+	{
+	  lm->client_pid = pid;
+	  lm->client_index = mp->client_index;
+
+	  if (mp->max_macs_in_event)
+	    fm->max_macs_in_event = mp->max_macs_in_event * 10;
+	  else
+	    fm->max_macs_in_event = L2FIB_EVENT_MAX_MACS_DEFAULT;
+
+	  if (mp->scan_delay)
+	    fm->event_scan_delay = (f64) (mp->scan_delay) * 10e-3;
+	  else
+	    fm->event_scan_delay = L2FIB_EVENT_SCAN_DELAY_DEFAULT;
+
+	  /* change learn limit and flush all learned MACs */
+	  if (learn_limit && (learn_limit < L2LEARN_DEFAULT_LIMIT))
+	    lm->global_learn_limit = learn_limit;
+	  else
+	    lm->global_learn_limit = L2FIB_EVENT_LEARN_LIMIT_DEFAULT;
+
+	  l2fib_flush_all_mac (vlib_get_main ());
+	}
+      else if (lm->client_pid != pid)
+	{
+	  rv = VNET_API_ERROR_L2_MACS_EVENT_CLINET_PRESENT;
+	  goto exit;
+	}
+    }
+  else if (lm->client_pid)
+    {
+      lm->client_pid = 0;
+      lm->client_index = 0;
+      if (learn_limit && (learn_limit < L2LEARN_DEFAULT_LIMIT))
+	lm->global_learn_limit = learn_limit;
+      else
+	lm->global_learn_limit = L2LEARN_DEFAULT_LIMIT;
+    }
+
+exit:
+  REPLY_MACRO (VL_API_WANT_L2_MACS_EVENTS_REPLY);
 }
 
 static void
@@ -299,8 +358,25 @@ vl_api_l2_flags_t_handler (vl_api_l2_flags_t * mp)
   VALIDATE_SW_IF_INDEX (mp);
 
   u32 sw_if_index = ntohl (mp->sw_if_index);
-  u32 flags = ntohl (mp->feature_bitmap) & L2INPUT_VALID_MASK;
-  rbm = l2input_intf_bitmap_enable (sw_if_index, flags, mp->is_set);
+  u32 flags = ntohl (mp->feature_bitmap);
+  u32 bitmap = 0;
+
+  if (flags & L2_LEARN)
+    bitmap |= L2INPUT_FEAT_LEARN;
+
+  if (flags & L2_FWD)
+    bitmap |= L2INPUT_FEAT_FWD;
+
+  if (flags & L2_FLOOD)
+    bitmap |= L2INPUT_FEAT_FLOOD;
+
+  if (flags & L2_UU_FLOOD)
+    bitmap |= L2INPUT_FEAT_UU_FLOOD;
+
+  if (flags & L2_ARP_TERM)
+    bitmap |= L2INPUT_FEAT_ARP_TERM;
+
+  rbm = l2input_intf_bitmap_enable (sw_if_index, bitmap, mp->is_set);
 
   BAD_SW_IF_INDEX_LABEL;
 
@@ -352,6 +428,7 @@ vl_api_bridge_domain_add_del_t_handler (vl_api_bridge_domain_add_del_t * mp)
     .arp_term = mp->arp_term,
     .mac_age = mp->mac_age,
     .bd_id = ntohl (mp->bd_id),
+    .bd_tag = mp->bd_tag
   };
 
   int rv = bd_add_del (&a);
@@ -362,7 +439,7 @@ vl_api_bridge_domain_add_del_t_handler (vl_api_bridge_domain_add_del_t * mp)
 
 static void
 send_bridge_domain_details (l2input_main_t * l2im,
-			    unix_shared_memory_queue_t * q,
+			    vl_api_registration_t * reg,
 			    l2_bridge_domain_t * bd_config,
 			    u32 n_sw_ifs, u32 context)
 {
@@ -383,6 +460,13 @@ send_bridge_domain_details (l2input_main_t * l2im,
   mp->arp_term = bd_feature_arp_term (bd_config);
   mp->bvi_sw_if_index = ntohl (bd_config->bvi_sw_if_index);
   mp->mac_age = bd_config->mac_age;
+  if (bd_config->bd_tag)
+    {
+      strncpy ((char *) mp->bd_tag, (char *) bd_config->bd_tag,
+	       ARRAY_LEN (mp->bd_tag) - 1);
+      mp->bd_tag[ARRAY_LEN (mp->bd_tag) - 1] = 0;
+    }
+
   mp->context = context;
 
   sw_ifs = (vl_api_bridge_domain_sw_if_t *) mp->sw_if_details;
@@ -396,7 +480,7 @@ send_bridge_domain_details (l2input_main_t * l2im,
   }
   mp->n_sw_ifs = htonl (mp->n_sw_ifs);
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
@@ -404,17 +488,17 @@ vl_api_bridge_domain_dump_t_handler (vl_api_bridge_domain_dump_t * mp)
 {
   bd_main_t *bdm = &bd_main;
   l2input_main_t *l2im = &l2input_main;
+  vl_api_registration_t *reg;
+  u32 bd_id, bd_index, end;
 
-  unix_shared_memory_queue_t *q =
-    vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
-  u32 bd_id = ntohl (mp->bd_id);
+  bd_id = ntohl (mp->bd_id);
   if (bd_id == 0)
     return;
 
-  u32 bd_index, end;
   if (bd_id == ~0)
     bd_index = 0, end = vec_len (l2im->bd_configs);
   else
@@ -432,7 +516,7 @@ vl_api_bridge_domain_dump_t_handler (vl_api_bridge_domain_dump_t * mp)
 	l2input_bd_config_from_index (l2im, bd_index);
       /* skip dummy bd_id 0 */
       if (bd_config && (bd_config->bd_id > 0))
-	send_bridge_domain_details (l2im, q, bd_config,
+	send_bridge_domain_details (l2im, reg, bd_config,
 				    vec_len (bd_config->members),
 				    mp->context);
     }
@@ -461,13 +545,13 @@ vl_api_bridge_flags_t_handler (vl_api_bridge_flags_t * mp)
       goto out;
     }
 
-  bd_set_flags (vm, bd_index, flags, mp->is_set);
+  u32 bitmap = bd_set_flags (vm, bd_index, flags, mp->is_set);
 
 out:
   /* *INDENT-OFF* */
   REPLY_MACRO2(VL_API_BRIDGE_FLAGS_REPLY,
   ({
-    rmp->resulting_feature_bitmap = ntohl(flags);
+    rmp->resulting_feature_bitmap = ntohl(bitmap);
   }));
   /* *INDENT-ON* */
 }
@@ -548,6 +632,168 @@ static void
   BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_L2_INTERFACE_PBB_TAG_REWRITE_REPLY);
+}
+
+static void
+  vl_api_sw_interface_set_l2_xconnect_t_handler
+  (vl_api_sw_interface_set_l2_xconnect_t * mp)
+{
+  vl_api_sw_interface_set_l2_xconnect_reply_t *rmp;
+  int rv = 0;
+  u32 rx_sw_if_index = ntohl (mp->rx_sw_if_index);
+  u32 tx_sw_if_index = ntohl (mp->tx_sw_if_index);
+  vlib_main_t *vm = vlib_get_main ();
+  vnet_main_t *vnm = vnet_get_main ();
+
+  VALIDATE_RX_SW_IF_INDEX (mp);
+
+  if (mp->enable)
+    {
+      VALIDATE_TX_SW_IF_INDEX (mp);
+      rv = set_int_l2_mode (vm, vnm, MODE_L2_XC,
+			    rx_sw_if_index, 0, 0, 0, tx_sw_if_index);
+    }
+  else
+    {
+      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0, 0, 0, 0);
+    }
+
+  BAD_RX_SW_IF_INDEX_LABEL;
+  BAD_TX_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_SW_INTERFACE_SET_L2_XCONNECT_REPLY);
+}
+
+static void
+  vl_api_sw_interface_set_l2_bridge_t_handler
+  (vl_api_sw_interface_set_l2_bridge_t * mp)
+{
+  bd_main_t *bdm = &bd_main;
+  vl_api_sw_interface_set_l2_bridge_reply_t *rmp;
+  int rv = 0;
+  vlib_main_t *vm = vlib_get_main ();
+  vnet_main_t *vnm = vnet_get_main ();
+
+  VALIDATE_RX_SW_IF_INDEX (mp);
+  u32 rx_sw_if_index = ntohl (mp->rx_sw_if_index);
+
+
+  if (mp->enable)
+    {
+      VALIDATE_BD_ID (mp);
+      u32 bd_id = ntohl (mp->bd_id);
+      u32 bd_index = bd_find_or_add_bd_index (bdm, bd_id);
+      u32 bvi = mp->bvi;
+      u8 shg = mp->shg;
+      rv = set_int_l2_mode (vm, vnm, MODE_L2_BRIDGE,
+			    rx_sw_if_index, bd_index, bvi, shg, 0);
+    }
+  else
+    {
+      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0, 0, 0, 0);
+    }
+
+  BAD_RX_SW_IF_INDEX_LABEL;
+  BAD_BD_ID_LABEL;
+
+  REPLY_MACRO (VL_API_SW_INTERFACE_SET_L2_BRIDGE_REPLY);
+}
+
+static void
+vl_api_bd_ip_mac_add_del_t_handler (vl_api_bd_ip_mac_add_del_t * mp)
+{
+  bd_main_t *bdm = &bd_main;
+  vl_api_bd_ip_mac_add_del_reply_t *rmp;
+  int rv = 0;
+  u32 bd_id = ntohl (mp->bd_id);
+  u32 bd_index;
+  uword *p;
+
+  if (bd_id == 0)
+    {
+      rv = VNET_API_ERROR_BD_NOT_MODIFIABLE;
+      goto out;
+    }
+
+  p = hash_get (bdm->bd_index_by_bd_id, bd_id);
+  if (p == 0)
+    {
+      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+      goto out;
+    }
+
+  bd_index = p[0];
+  if (bd_add_del_ip_mac (bd_index, mp->ip_address,
+			 mp->mac_address, mp->is_ipv6, mp->is_add))
+    rv = VNET_API_ERROR_UNSPECIFIED;
+
+out:
+  REPLY_MACRO (VL_API_BD_IP_MAC_ADD_DEL_REPLY);
+}
+
+extern void l2_efp_filter_configure (vnet_main_t * vnet_main,
+				     u32 sw_if_index, u32 enable);
+
+static void
+vl_api_l2_interface_efp_filter_t_handler (vl_api_l2_interface_efp_filter_t *
+					  mp)
+{
+  int rv;
+  vl_api_l2_interface_efp_filter_reply_t *rmp;
+  vnet_main_t *vnm = vnet_get_main ();
+
+  // enable/disable the feature
+  l2_efp_filter_configure (vnm, mp->sw_if_index, mp->enable_disable);
+  rv = vnm->api_errno;
+
+  REPLY_MACRO (VL_API_L2_INTERFACE_EFP_FILTER_REPLY);
+}
+
+static void
+vl_api_l2_patch_add_del_t_handler (vl_api_l2_patch_add_del_t * mp)
+{
+  extern int vnet_l2_patch_add_del (u32 rx_sw_if_index, u32 tx_sw_if_index,
+				    int is_add);
+  vl_api_l2_patch_add_del_reply_t *rmp;
+  int vnet_l2_patch_add_del (u32 rx_sw_if_index, u32 tx_sw_if_index,
+			     int is_add);
+  int rv = 0;
+
+  VALIDATE_RX_SW_IF_INDEX (mp);
+  VALIDATE_TX_SW_IF_INDEX (mp);
+
+  rv = vnet_l2_patch_add_del (ntohl (mp->rx_sw_if_index),
+			      ntohl (mp->tx_sw_if_index),
+			      (int) (mp->is_add != 0));
+
+  BAD_RX_SW_IF_INDEX_LABEL;
+  BAD_TX_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_L2_PATCH_ADD_DEL_REPLY);
+}
+
+static void
+vl_api_sw_interface_set_vpath_t_handler (vl_api_sw_interface_set_vpath_t * mp)
+{
+  vl_api_sw_interface_set_vpath_reply_t *rmp;
+  int rv = 0;
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  l2input_intf_bitmap_enable (sw_if_index, L2INPUT_FEAT_VPATH, mp->enable);
+  vnet_feature_enable_disable ("ip4-unicast", "vpath-input-ip4",
+			       sw_if_index, mp->enable, 0, 0);
+  vnet_feature_enable_disable ("ip4-multicast", "vpath-input-ip4",
+			       sw_if_index, mp->enable, 0, 0);
+  vnet_feature_enable_disable ("ip6-unicast", "vpath-input-ip6",
+			       sw_if_index, mp->enable, 0, 0);
+  vnet_feature_enable_disable ("ip6-multicast", "vpath-input-ip6",
+			       sw_if_index, mp->enable, 0, 0);
+
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_SW_INTERFACE_SET_VPATH_REPLY);
 }
 
 /*

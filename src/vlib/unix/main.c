@@ -48,6 +48,7 @@
 #include <fcntl.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 /** Default CLI pager limit is not configured in startup.conf */
 #define UNIX_CLI_DEFAULT_PAGER_LIMIT 100000
@@ -55,8 +56,11 @@
 /** Default CLI history depth if not configured in startup.conf */
 #define UNIX_CLI_DEFAULT_HISTORY 50
 
+char *vlib_default_runtime_dir __attribute__ ((weak));
+char *vlib_default_runtime_dir = "vlib";
 
 unix_main_t unix_main;
+clib_file_main_t file_main;
 
 static clib_error_t *
 unix_main_init (vlib_main_t * vm)
@@ -71,7 +75,7 @@ VLIB_INIT_FUNCTION (unix_main_init);
 static void
 unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
 {
-  uword fatal;
+  uword fatal = 0;
   u8 *msg = 0;
 
   msg = format (msg, "received signal %U, PC %U",
@@ -87,10 +91,9 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
       if (unix_main.vlib_main->main_loop_exit_set)
 	{
 	  syslog (LOG_ERR | LOG_DAEMON, "received SIGTERM, exiting...");
-
-	  clib_longjmp (&unix_main.vlib_main->main_loop_exit,
-			VLIB_MAIN_LOOP_EXIT_CLI);
+	  unix_main.vlib_main->main_loop_exit_now = 1;
 	}
+      break;
       /* fall through */
     case SIGQUIT:
     case SIGINT:
@@ -313,6 +316,8 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 {
   unix_main_t *um = &unix_main;
   clib_error_t *error = 0;
+  gid_t gid;
+  int pidfd = -1;
 
   /* Defaults */
   um->cli_pager_buffer_limit = UNIX_CLI_DEFAULT_PAGER_LIMIT;
@@ -329,6 +334,8 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 	vlib_unix_cli_set_prompt (cli_prompt);
       else
 	if (unformat (input, "cli-listen %s", &um->cli_listen_socket.config))
+	;
+      else if (unformat (input, "runtime-dir %s", &um->runtime_dir))
 	;
       else if (unformat (input, "cli-line-mode"))
 	um->cli_line_mode = 1;
@@ -404,14 +411,46 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 	      vec_free (lv);
 	    }
 	}
+      else if (unformat (input, "gid %U", unformat_unix_gid, &gid))
+	{
+	  if (setegid (gid) == -1)
+	    return clib_error_return_unix (0, "setegid");
+	}
+      else if (unformat (input, "pidfile %s", &um->pidfile))
+	;
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);
     }
 
+  if (um->runtime_dir == 0)
+    {
+      uid_t uid = geteuid ();
+      if (uid == 00)
+	um->runtime_dir = format (0, "/run/%s%c",
+				  vlib_default_runtime_dir, 0);
+      else
+	um->runtime_dir = format (0, "/run/user/%u/%s%c", uid,
+				  vlib_default_runtime_dir, 0);
+    }
+
   error = setup_signal_handlers (um);
   if (error)
     return error;
+
+  if (um->pidfile)
+    {
+      if ((error = vlib_unix_validate_runtime_file (um,
+						    (char *) um->pidfile,
+						    &um->pidfile)))
+	return error;
+
+      if (((pidfd = open ((char *) um->pidfile,
+			  O_CREAT | O_WRONLY | O_TRUNC, 0644)) < 0))
+	{
+	  return clib_error_return_unix (0, "open");
+	}
+    }
 
   if (!(um->flags & UNIX_FLAG_INTERACTIVE))
     {
@@ -423,6 +462,20 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 						       0) < 0)
 	clib_error_return (0, "daemon () fails");
     }
+
+  if (pidfd >= 0)
+    {
+      u8 *lv = format (0, "%d", getpid ());
+      if (write (pidfd, (char *) lv, vec_len (lv)) != vec_len (lv))
+	{
+	  vec_free (lv);
+	  close (pidfd);
+	  return clib_error_return_unix (0, "write");
+	}
+      vec_free (lv);
+      close (pidfd);
+    }
+
   um->unix_config_complete = 1;
 
   return 0;
@@ -452,9 +505,16 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * Very useful in situations where folks don't remember or can't be bothered
  * to include CLI commands in bug reports.
  *
+ * @cfgcmd{pidfile, &lt;filename&gt;}
+ * Writes the pid of the main thread in @c filename.
+ *
  * @cfgcmd{full-coredump}
  * Ask the Linux kernel to dump all memory-mapped address regions, instead
  * of just text+data+bss.
+ *
+ * @cfgcmd{runtime-dir}
+ * Define directory where VPP is going to store all runtime files.
+ * Default is /run/vpp.
  *
  * @cfgcmd{cli-listen, &lt;address:port&gt;}
  * Bind the CLI to listen at the address and port given. @clocalhost
@@ -482,7 +542,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * Limit pager buffer to @c nn lines of output.
  * A value of @c 0 disables the pager. Default value: @c 100000
 ?*/
-VLIB_CONFIG_FUNCTION (unix_config, "unix");
+VLIB_EARLY_CONFIG_FUNCTION (unix_config, "unix");
 
 static clib_error_t *
 unix_exit (vlib_main_t * vm)
@@ -566,6 +626,7 @@ vlib_unix_main (int argc, char *argv[])
   vlib_thread_stack_init (0);
 
   __os_thread_index = 0;
+  vm->thread_index = 0;
 
   i = clib_calljmp (thread0, (uword) vm,
 		    (void *) (vlib_thread_stacks[0] +

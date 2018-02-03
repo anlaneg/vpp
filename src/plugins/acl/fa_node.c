@@ -20,12 +20,13 @@
 #include <vnet/pg/pg.h>
 #include <vppinfra/error.h>
 #include <acl/acl.h>
-#include "bihash_40_8.h"
+#include <vppinfra/bihash_40_8.h>
 
 #include <vppinfra/bihash_template.h>
 #include <vppinfra/bihash_template.c>
 
 #include "fa_node.h"
+#include "hash_lookup.h"
 
 typedef struct
 {
@@ -37,6 +38,31 @@ typedef struct
   u32 trace_bitmap;
   u8 action;
 } acl_fa_trace_t;
+
+static u8 *
+format_fa_5tuple (u8 * s, va_list * args)
+{
+  fa_5tuple_t *p5t = va_arg (*args, fa_5tuple_t *);
+
+  return format(s, "%s sw_if_index %d (lsb16 %d) l3 %s%s %U -> %U"
+                   " l4 proto %d l4_valid %d port %d -> %d tcp flags (%s) %02x rsvd %x",
+                p5t->pkt.is_input ? "input" : "output",
+                p5t->pkt.sw_if_index, p5t->l4.lsb_of_sw_if_index, p5t->pkt.is_ip6 ? "ip6" : "ip4",
+                p5t->pkt.is_nonfirst_fragment ? " non-initial fragment" : "",
+                format_ip46_address, &p5t->addr[0], p5t->pkt.is_ip6 ? IP46_TYPE_IP6 : IP46_TYPE_IP4,
+                format_ip46_address, &p5t->addr[1], p5t->pkt.is_ip6 ? IP46_TYPE_IP6 : IP46_TYPE_IP4,
+                p5t->l4.proto, p5t->pkt.l4_valid,
+                p5t->l4.port[0], p5t->l4.port[1],
+                p5t->pkt.tcp_flags_valid ? "valid": "invalid",
+                p5t->pkt.tcp_flags,
+                p5t->pkt.flags_reserved);
+}
+
+u8 *
+format_acl_plugin_5tuple (u8 * s, va_list * args)
+{
+  return format_fa_5tuple(s, args);
+}
 
 /* packet trace format function */
 static u8 *
@@ -54,6 +80,9 @@ format_acl_fa_trace (u8 * s, va_list * args)
 	    t->match_rule_index, t->trace_bitmap,
 	    t->packet_info[0], t->packet_info[1], t->packet_info[2],
 	    t->packet_info[3], t->packet_info[4], t->packet_info[5]);
+
+  /* Now also print out the packet_info in a form usable by humans */
+  s = format (s, "\n   %U", format_fa_5tuple, t->packet_info);
   return s;
 }
 
@@ -136,7 +165,7 @@ fa_acl_match_port (u16 port, u16 port_first, u16 port_last, int is_ip6)
 }
 
 int
-acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
+single_acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
 		  int is_ip6, u8 * r_action, u32 * r_acl_match_p,
 		  u32 * r_rule_match_p, u32 * trace_bitmap)
 {
@@ -169,7 +198,8 @@ acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
       clib_warning
 	("ACL_FA_NODE_DBG acl %d rule %d pkt dst addr %U match rule addr %U/%d",
 	 acl_index, i, format_ip46_address, &pkt_5tuple->addr[1],
-	 IP46_TYPE_ANY, format_ip46_address, &r->dst, IP46_TYPE_ANY,
+	 r->is_ipv6 ? IP46_TYPE_IP6: IP46_TYPE_IP4, format_ip46_address,
+         &r->dst, r->is_ipv6 ? IP46_TYPE_IP6: IP46_TYPE_IP4,
 	 r->dst_prefixlen);
 #endif
 
@@ -181,7 +211,8 @@ acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
       clib_warning
 	("ACL_FA_NODE_DBG acl %d rule %d pkt src addr %U match rule addr %U/%d",
 	 acl_index, i, format_ip46_address, &pkt_5tuple->addr[0],
-	 IP46_TYPE_ANY, format_ip46_address, &r->src, IP46_TYPE_ANY,
+	 r->is_ipv6 ? IP46_TYPE_IP6: IP46_TYPE_IP4, format_ip46_address,
+         &r->src, r->is_ipv6 ? IP46_TYPE_IP6: IP46_TYPE_IP4,
 	 r->src_prefixlen);
       clib_warning
 	("ACL_FA_NODE_DBG acl %d rule %d trying to match pkt proto %d with rule %d",
@@ -259,7 +290,7 @@ acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
 }
 
 static u8
-full_acl_match_5tuple (u32 sw_if_index, fa_5tuple_t * pkt_5tuple, int is_l2,
+linear_multi_acl_match_5tuple (u32 sw_if_index, fa_5tuple_t * pkt_5tuple, int is_l2,
 		       int is_ip6, int is_input, u32 * acl_match_p,
 		       u32 * rule_match_p, u32 * trace_bitmap)
 {
@@ -284,7 +315,7 @@ full_acl_match_5tuple (u32 sw_if_index, fa_5tuple_t * pkt_5tuple, int is_l2,
       clib_warning ("ACL_FA_NODE_DBG: Trying to match ACL: %d",
 		    acl_vector[i]);
 #endif
-      if (acl_match_5tuple
+      if (single_acl_match_5tuple
 	  (am, acl_vector[i], pkt_5tuple, is_ip6, &action,
 	   acl_match_p, rule_match_p, trace_bitmap))
 	{
@@ -303,6 +334,21 @@ full_acl_match_5tuple (u32 sw_if_index, fa_5tuple_t * pkt_5tuple, int is_l2,
   return 0;
 }
 
+static u8
+multi_acl_match_5tuple (u32 sw_if_index, fa_5tuple_t * pkt_5tuple, int is_l2,
+                       int is_ip6, int is_input, u32 * acl_match_p,
+                       u32 * rule_match_p, u32 * trace_bitmap)
+{
+  acl_main_t *am = &acl_main;
+  if (am->use_hash_acl_matching) {
+    return hash_multi_acl_match_5tuple(sw_if_index, pkt_5tuple, is_l2, is_ip6,
+                                 is_input, acl_match_p, rule_match_p, trace_bitmap);
+  } else {
+    return linear_multi_acl_match_5tuple(sw_if_index, pkt_5tuple, is_l2, is_ip6,
+                                 is_input, acl_match_p, rule_match_p, trace_bitmap);
+  }
+}
+
 static int
 offset_within_packet (vlib_buffer_t * b0, int offset)
 {
@@ -314,16 +360,24 @@ static void
 acl_fill_5tuple (acl_main_t * am, vlib_buffer_t * b0, int is_ip6,
 		 int is_input, int is_l2_path, fa_5tuple_t * p5tuple_pkt)
 {
-  int l3_offset = 14;
+  int l3_offset;
   int l4_offset;
   u16 ports[2];
   u16 proto;
+
   /* IP4 and IP6 protocol numbers of ICMP */
   static u8 icmp_protos[] = { IP_PROTOCOL_ICMP, IP_PROTOCOL_ICMP6 };
 
-  if (is_input && !(is_l2_path))
+  if (is_l2_path)
     {
-      l3_offset = 0;
+      l3_offset = ethernet_buffer_header_size(b0);
+    }
+  else
+    {
+      if (is_input)
+        l3_offset = 0;
+      else
+        l3_offset = vnet_buffer(b0)->ip.save_rewrite_length;
     }
 
   /* key[0..3] contains src/dst address and is cleared/set below */
@@ -583,27 +637,42 @@ fa_session_get_timeout (acl_main_t * am, fa_session_t * sess)
 }
 
 static void
-acl_fa_ifc_init_sessions (acl_main_t * am, int sw_if_index0)
+acl_fa_verify_init_sessions (acl_main_t * am)
 {
-  /// FIXME-MULTICORE: lock around this function
-#ifdef FA_NODE_VERBOSE_DEBUG
-  clib_warning
-    ("Initializing bihash for sw_if_index %d num buckets %lu memory size %llu",
-     sw_if_index0, am->fa_conn_table_hash_num_buckets,
-     am->fa_conn_table_hash_memory_size);
-#endif
-  BV (clib_bihash_init) (&am->fa_sessions_hash,
+  if (!am->fa_sessions_hash_is_initialized) {
+    u16 wk;
+    /* Allocate the per-worker sessions pools */
+    for (wk = 0; wk < vec_len (am->per_worker_data); wk++) {
+      acl_fa_per_worker_data_t *pw = &am->per_worker_data[wk];
+
+      /*
+      * // In lieu of trying to preallocate the pool and its free bitmap, rather use pool_init_fixed
+      * pool_alloc_aligned(pw->fa_sessions_pool, am->fa_conn_table_max_entries, CLIB_CACHE_LINE_BYTES);
+      * clib_bitmap_validate(pool_header(pw->fa_sessions_pool)->free_bitmap, am->fa_conn_table_max_entries);
+      */
+      pool_init_fixed(pw->fa_sessions_pool, am->fa_conn_table_max_entries);
+    }
+
+    /* ... and the interface session hash table */
+    BV (clib_bihash_init) (&am->fa_sessions_hash,
 			 "ACL plugin FA session bihash",
 			 am->fa_conn_table_hash_num_buckets,
 			 am->fa_conn_table_hash_memory_size);
-  am->fa_sessions_hash_is_initialized = 1;
+    am->fa_sessions_hash_is_initialized = 1;
+  }
 }
 
 static inline fa_session_t *get_session_ptr(acl_main_t *am, u16 thread_index, u32 session_index)
 {
   acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
-  fa_session_t *sess = pw->fa_sessions_pool + session_index;
+  fa_session_t *sess = pool_is_free_index (pw->fa_sessions_pool, session_index) ? 0 : pool_elt_at_index(pw->fa_sessions_pool, session_index);
   return sess;
+}
+
+static inline int is_valid_session_ptr(acl_main_t *am, u16 thread_index, fa_session_t *sess)
+{
+  acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
+  return ((sess != 0) && ((sess - pw->fa_sessions_pool) < pool_len(pw->fa_sessions_pool)));
 }
 
 static void
@@ -632,9 +701,6 @@ acl_fa_conn_list_add_session (acl_main_t * am, fa_full_session_id_t sess_id, u64
 
   if (~0 == pw->fa_conn_list_head[list_id]) {
     pw->fa_conn_list_head[list_id] = sess_id.session_index;
-    /* If it is a first conn in any list, kick the cleaner */
-    vlib_process_signal_event (am->vlib_main, am->fa_cleaner_node_index,
-                                 ACL_FA_CLEANER_RESCHEDULE, 0);
   }
 }
 
@@ -709,6 +775,7 @@ acl_fa_track_session (acl_main_t * am, int is_input, u32 sw_if_index, u64 now,
 static void
 acl_fa_delete_session (acl_main_t * am, u32 sw_if_index, fa_full_session_id_t sess_id)
 {
+  void *oldheap = clib_mem_set_heap(am->acl_mheap);
   fa_session_t *sess = get_session_ptr(am, sess_id.thread_index, sess_id.session_index);
   ASSERT(sess->thread_index == os_get_thread_index ());
   BV (clib_bihash_add_del) (&am->fa_sessions_hash,
@@ -717,8 +784,9 @@ acl_fa_delete_session (acl_main_t * am, u32 sw_if_index, fa_full_session_id_t se
   pool_put_index (pw->fa_sessions_pool, sess_id.session_index);
   /* Deleting from timer structures not needed,
      as the caller must have dealt with the timers. */
-  vec_validate (am->fa_session_dels_by_sw_if_index, sw_if_index);
-  am->fa_session_dels_by_sw_if_index[sw_if_index]++;
+  vec_validate (pw->fa_session_dels_by_sw_if_index, sw_if_index);
+  clib_mem_set_heap (oldheap);
+  pw->fa_session_dels_by_sw_if_index[sw_if_index]++;
   clib_smp_atomic_add(&am->fa_session_total_dels, 1);
 }
 
@@ -733,10 +801,14 @@ acl_fa_can_add_session (acl_main_t * am, int is_input, u32 sw_if_index)
 static u64
 acl_fa_get_list_head_expiry_time(acl_main_t *am, acl_fa_per_worker_data_t *pw, u64 now, u16 thread_index, int timeout_type)
 {
-  if (~0 == pw->fa_conn_list_head[timeout_type]) {
+  fa_session_t *sess = get_session_ptr(am, thread_index, pw->fa_conn_list_head[timeout_type]);
+  /*
+   * We can not check just the index here because inbetween the worker thread might
+   * dequeue the connection from the head just as we are about to check it.
+   */
+  if (!is_valid_session_ptr(am, thread_index, sess)) {
     return ~0LL; // infinity.
   } else {
-    fa_session_t *sess = get_session_ptr(am, thread_index, pw->fa_conn_list_head[timeout_type]);
     u64 timeout_time =
               sess->link_enqueue_time + fa_session_get_list_timeout (am, sess);
     return timeout_time;
@@ -843,7 +915,7 @@ acl_fa_try_recycle_session (acl_main_t * am, int is_input, u16 thread_index, u32
   }
 }
 
-static void
+static fa_session_t *
 acl_fa_add_session (acl_main_t * am, int is_input, u32 sw_if_index, u64 now,
 		    fa_5tuple_t * p5tuple)
 {
@@ -851,6 +923,7 @@ acl_fa_add_session (acl_main_t * am, int is_input, u32 sw_if_index, u64 now,
   clib_bihash_kv_40_8_t kv;
   fa_full_session_id_t f_sess_id;
   uword thread_index = os_get_thread_index();
+  void *oldheap = clib_mem_set_heap(am->acl_mheap);
   acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
 
   f_sess_id.thread_index = thread_index;
@@ -877,18 +950,16 @@ acl_fa_add_session (acl_main_t * am, int is_input, u32 sw_if_index, u64 now,
 
 
 
-  if (!acl_fa_ifc_has_sessions (am, sw_if_index))
-    {
-      acl_fa_ifc_init_sessions (am, sw_if_index);
-    }
-
+  ASSERT(am->fa_sessions_hash_is_initialized == 1);
   BV (clib_bihash_add_del) (&am->fa_sessions_hash,
 			    &kv, 1);
   acl_fa_conn_list_add_session(am, f_sess_id, now);
 
-  vec_validate (am->fa_session_adds_by_sw_if_index, sw_if_index);
-  am->fa_session_adds_by_sw_if_index[sw_if_index]++;
+  vec_validate (pw->fa_session_adds_by_sw_if_index, sw_if_index);
+  clib_mem_set_heap (oldheap);
+  pw->fa_session_adds_by_sw_if_index[sw_if_index]++;
   clib_smp_atomic_add(&am->fa_session_total_adds, 1);
+  return sess;
 }
 
 static int
@@ -915,7 +986,6 @@ acl_fa_node_fn (vlib_main_t * vm,
   u32 pkts_acl_permit = 0;
   u32 pkts_restart_session_timer = 0;
   u32 trace_bitmap = 0;
-  u32 feature_bitmap0;
   acl_main_t *am = &acl_main;
   fa_5tuple_t fa_5tuple, kv_sess;
   clib_bihash_kv_40_8_t value_sess;
@@ -961,8 +1031,6 @@ acl_fa_node_fn (vlib_main_t * vm,
 	    sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 	  else
 	    sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_TX];
-	  if (is_l2_path)
-	    feature_bitmap0 = vnet_buffer (b0)->l2.feature_bitmap;
 
 	  /*
 	   * Extract the L3/L4 matching info into a 5-tuple structure,
@@ -973,6 +1041,10 @@ acl_fa_node_fn (vlib_main_t * vm,
 	  acl_fill_5tuple (am, b0, is_ip6, is_input, is_l2_path, &fa_5tuple);
           fa_5tuple.l4.lsb_of_sw_if_index = sw_if_index0 & 0xffff;
 	  acl_make_5tuple_session_key (is_input, &fa_5tuple, &kv_sess);
+	  fa_5tuple.pkt.sw_if_index = sw_if_index0;
+          fa_5tuple.pkt.is_ip6 = is_ip6;
+          fa_5tuple.pkt.is_input = is_input;
+          fa_5tuple.pkt.mask_type_index_lsb = ~0;
 #ifdef FA_NODE_VERBOSE_DEBUG
 	  clib_warning
 	    ("ACL_FA_NODE_DBG: session 5-tuple %016llx %016llx %016llx %016llx %016llx : %016llx",
@@ -1039,7 +1111,7 @@ acl_fa_node_fn (vlib_main_t * vm,
 	  if (acl_check_needed)
 	    {
 	      action =
-		full_acl_match_5tuple (sw_if_index0, &fa_5tuple, is_l2_path,
+		multi_acl_match_5tuple (sw_if_index0, &fa_5tuple, is_l2_path,
 				       is_ip6, is_input, &match_acl_in_index,
 				       &match_rule_index, &trace_bitmap);
 	      error0 = action;
@@ -1052,8 +1124,10 @@ acl_fa_node_fn (vlib_main_t * vm,
 
 		  if (acl_fa_can_add_session (am, is_input, sw_if_index0))
 		    {
-                      acl_fa_add_session (am, is_input, sw_if_index0, now,
-					  &kv_sess);
+                      fa_session_t *sess = acl_fa_add_session (am, is_input, sw_if_index0, now,
+					                       &kv_sess);
+                      acl_fa_track_session (am, is_input, sw_if_index0, now,
+                                            sess, &fa_5tuple);
 		      pkts_new_session += 1;
 		    }
 		  else
@@ -1069,9 +1143,7 @@ acl_fa_node_fn (vlib_main_t * vm,
 	  if (action > 0)
 	    {
 	      if (is_l2_path)
-		next0 =
-		  feat_bitmap_get_next_node_index (l2_feat_next_node_index,
-						   feature_bitmap0);
+		next0 = vnet_l2_feature_next (b0, l2_feat_next_node_index, 0);
 	      else
 		vnet_feature_next (sw_if_index0, &next0, b0);
 	    }
@@ -1322,8 +1394,10 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
      if (num_expired >= am->fa_max_deleted_sessions_per_interval) {
        /* there was too much work, we should get an interrupt ASAP */
        pw->interrupt_is_needed = 1;
+       pw->interrupt_is_unwanted = 0;
      } else if (num_expired <= am->fa_min_deleted_sessions_per_interval) {
        /* signal that they should trigger us less */
+       pw->interrupt_is_needed = 0;
        pw->interrupt_is_unwanted = 1;
      } else {
        /* the current rate of interrupts is ok */
@@ -1331,6 +1405,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
        pw->interrupt_is_unwanted = 0;
      }
    }
+   pw->interrupt_generation = am->fa_interrupt_generation;
    return 0;
 }
 
@@ -1339,11 +1414,11 @@ send_one_worker_interrupt (vlib_main_t * vm, acl_main_t *am, int thread_index)
 {
   acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
   if (!pw->interrupt_is_pending) {
+    pw->interrupt_is_pending = 1;
     vlib_node_set_interrupt_pending (vlib_mains[thread_index],
                   acl_fa_worker_session_cleaner_process_node.index);
-    pw->interrupt_is_pending = 1;
     /* if the interrupt was requested, mark that done. */
-    pw->interrupt_is_needed = 0;
+    /* pw->interrupt_is_needed = 0; */
   }
 }
 
@@ -1364,7 +1439,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 				vlib_frame_t * f)
 {
   acl_main_t *am = &acl_main;
-  u64 now = clib_cpu_time_now ();
+  u64 now;
   f64 cpu_cps = vm->clib_time.clocks_per_second;
   u64 next_expire;
   /* We should check if there are connections to clean up - at least twice a second */
@@ -1374,7 +1449,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 
   am->fa_current_cleaner_timer_wait_interval = max_timer_wait_interval;
   am->fa_cleaner_node_index = acl_fa_session_cleaner_process_node.index;
-
+  am->fa_interrupt_generation = 1;
   while (1)
     {
       now = clib_cpu_time_now ();
@@ -1410,8 +1485,8 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
         }
       }
 
-      /* If no pending connections then no point in timing out */
-      if (!has_pending_conns)
+      /* If no pending connections and no ACL applied then no point in timing out */
+      if (!has_pending_conns && (0 == am->fa_total_enabled_count))
         {
           am->fa_cleaner_cnt_wait_without_timeout++;
           (void) vlib_process_wait_for_event (vm);
@@ -1433,7 +1508,6 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 	    }
 	}
 
-      now = clib_cpu_time_now ();
       switch (event_type)
 	{
 	case ~0:
@@ -1446,6 +1520,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 	  {
             uword *clear_sw_if_index_bitmap = 0;
 	    uword *sw_if_index0;
+            int clear_all = 0;
 #ifdef FA_NODE_VERBOSE_DEBUG
 	    clib_warning("ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX received");
 #endif
@@ -1457,7 +1532,17 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		("ACL_FA_NODE_CLEAN: ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX: %d",
 		 *sw_if_index0);
 #endif
-              clear_sw_if_index_bitmap = clib_bitmap_set(clear_sw_if_index_bitmap, *sw_if_index0, 1);
+              if (*sw_if_index0 == ~0)
+                {
+                  clear_all = 1;
+                }
+              else
+                {
+                  if (!pool_is_free_index (am->vnet_main->interface_main.sw_interfaces, *sw_if_index0))
+                    {
+                      clear_sw_if_index_bitmap = clib_bitmap_set(clear_sw_if_index_bitmap, *sw_if_index0, 1);
+                    }
+                }
 	    }
 #ifdef FA_NODE_VERBOSE_DEBUG
 	    clib_warning("ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX bitmap: %U", format_bitmap_hex, clear_sw_if_index_bitmap);
@@ -1477,7 +1562,15 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
               if (pw0->clear_in_process) {
                 clib_warning("ERROR-BUG! Could not initiate cleaning on worker because another cleanup in progress");
 	      } else {
-                pw0->pending_clear_sw_if_index_bitmap = clib_bitmap_dup(clear_sw_if_index_bitmap);
+                if (clear_all)
+                  {
+                    /* if we need to clear all, then just clear the interfaces that we are servicing */
+                    pw0->pending_clear_sw_if_index_bitmap = clib_bitmap_dup(pw0->serviced_sw_if_index_bitmap);
+                  }
+                else
+                  {
+                    pw0->pending_clear_sw_if_index_bitmap = clib_bitmap_dup(clear_sw_if_index_bitmap);
+                  }
                 pw0->clear_in_process = 1;
               }
             }
@@ -1525,6 +1618,23 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
       if (event_data)
 	_vec_len (event_data) = 0;
 
+      /*
+       * If the interrupts were not processed yet, ensure we wait a bit,
+       * but up to a point.
+       */
+      int need_more_wait = 0;
+      int max_wait_cycles = 100;
+      do {
+        need_more_wait = 0;
+        vec_foreach(pw0, am->per_worker_data) {
+          if (pw0->interrupt_generation != am->fa_interrupt_generation) {
+            need_more_wait = 1;
+          }
+        }
+        if (need_more_wait) {
+          vlib_process_suspend(vm, 0.0001);
+        }
+      } while (need_more_wait && (--max_wait_cycles > 0));
 
       int interrupts_needed = 0;
       int interrupts_unwanted = 0;
@@ -1542,12 +1652,15 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
       if (interrupts_needed) {
         /* they need more interrupts, do less waiting around next time */
         am->fa_current_cleaner_timer_wait_interval /= 2;
+        /* never go into zero-wait either though - we need to give the space to others */
+        am->fa_current_cleaner_timer_wait_interval += 1; 
       } else if (interrupts_unwanted) {
         /* slowly increase the amount of sleep up to a limit */
         if (am->fa_current_cleaner_timer_wait_interval < max_timer_wait_interval)
           am->fa_current_cleaner_timer_wait_interval += cpu_cps * am->fa_cleaner_wait_time_increment;
       }
       am->fa_cleaner_cnt_event_cycles++;
+      am->fa_interrupt_generation++;
     }
   /* NOT REACHED */
   return 0;
@@ -1558,22 +1671,39 @@ void
 acl_fa_enable_disable (u32 sw_if_index, int is_input, int enable_disable)
 {
   acl_main_t *am = &acl_main;
+  if (enable_disable) {
+    acl_fa_verify_init_sessions(am);
+    am->fa_total_enabled_count++;
+    void *oldheap = clib_mem_set_heap (am->vlib_main->heap_base);
+    vlib_process_signal_event (am->vlib_main, am->fa_cleaner_node_index,
+                                 ACL_FA_CLEANER_RESCHEDULE, 0);
+    clib_mem_set_heap (oldheap);
+  } else {
+    am->fa_total_enabled_count--;
+  }
+
   if (is_input)
     {
+      ASSERT(clib_bitmap_get(am->fa_in_acl_on_sw_if_index, sw_if_index) != enable_disable);
+      void *oldheap = clib_mem_set_heap (am->vlib_main->heap_base);
       vnet_feature_enable_disable ("ip4-unicast", "acl-plugin-in-ip4-fa",
 				   sw_if_index, enable_disable, 0, 0);
       vnet_feature_enable_disable ("ip6-unicast", "acl-plugin-in-ip6-fa",
 				   sw_if_index, enable_disable, 0, 0);
+      clib_mem_set_heap (oldheap);
       am->fa_in_acl_on_sw_if_index =
 	clib_bitmap_set (am->fa_in_acl_on_sw_if_index, sw_if_index,
 			 enable_disable);
     }
   else
     {
+      ASSERT(clib_bitmap_get(am->fa_out_acl_on_sw_if_index, sw_if_index) != enable_disable);
+      void *oldheap = clib_mem_set_heap (am->vlib_main->heap_base);
       vnet_feature_enable_disable ("ip4-output", "acl-plugin-out-ip4-fa",
 				   sw_if_index, enable_disable, 0, 0);
       vnet_feature_enable_disable ("ip6-output", "acl-plugin-out-ip6-fa",
 				   sw_if_index, enable_disable, 0, 0);
+      clib_mem_set_heap (oldheap);
       am->fa_out_acl_on_sw_if_index =
 	clib_bitmap_set (am->fa_out_acl_on_sw_if_index, sw_if_index,
 			 enable_disable);
@@ -1584,12 +1714,25 @@ acl_fa_enable_disable (u32 sw_if_index, int is_input, int enable_disable)
 #ifdef FA_NODE_VERBOSE_DEBUG
       clib_warning("ENABLE-DISABLE: clean the connections on interface %d", sw_if_index);
 #endif
+      void *oldheap = clib_mem_set_heap (am->vlib_main->heap_base);
       vlib_process_signal_event (am->vlib_main, am->fa_cleaner_node_index,
 				 ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX,
 				 sw_if_index);
+      clib_mem_set_heap (oldheap);
     }
 }
 
+void
+show_fa_sessions_hash(vlib_main_t * vm, u32 verbose)
+{
+  acl_main_t *am = &acl_main;
+  if (am->fa_sessions_hash_is_initialized) {
+    vlib_cli_output(vm, "\nSession lookup hash table:\n%U\n\n",
+                  BV (format_bihash), &am->fa_sessions_hash, verbose);
+  } else {
+    vlib_cli_output(vm, "\nSession lookup hash table is not allocated.\n\n");
+  }
+}
 
 
 /* *INDENT-OFF* */

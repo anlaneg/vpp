@@ -418,7 +418,10 @@ msg_handler_internal (api_main_t * am,
       if (do_it)
 	{
 	  if (!am->is_mp_safe[id])
-	    vl_msg_api_barrier_sync ();
+	    {
+	      vl_msg_api_barrier_trace_context (am->msg_names[id]);
+	      vl_msg_api_barrier_sync ();
+	    }
 	  (*am->msg_handlers[id]) (the_msg);
 	  if (!am->is_mp_safe[id])
 	    vl_msg_api_barrier_release ();
@@ -498,7 +501,10 @@ vl_msg_api_handler_with_vm_node (api_main_t * am,
 	vl_msg_api_trace (am, am->rx_trace, the_msg);
 
       if (!am->is_mp_safe[id])
-	vl_msg_api_barrier_sync ();
+	{
+	  vl_msg_api_barrier_trace_context (am->msg_names[id]);
+	  vl_msg_api_barrier_sync ();
+	}
       (*handler) (the_msg, vm, node);
       if (!am->is_mp_safe[id])
 	vl_msg_api_barrier_release ();
@@ -659,15 +665,32 @@ vl_msg_api_config (vl_msg_api_msg_config_t * c)
 {
   api_main_t *am = &api_main;
 
-  ASSERT (c->id > 0);
+  /*
+   * This happens during the java core tests if the message
+   * dictionary is missing newly added xxx_reply_t messages.
+   * Should never happen, but since I shot myself in the foot once
+   * this way, I thought I'd make it easy to debug if I ever do
+   * it again... (;-)...
+   */
+  if (c->id == 0)
+    {
+      if (c->name)
+	clib_warning ("Trying to register %s with a NULL msg id!", c->name);
+      else
+	clib_warning ("Trying to register a NULL msg with a NULL msg id!");
+      clib_warning ("Did you forget to call setup_message_id_table?");
+      return;
+    }
 
 #define _(a) vec_validate (am->a, c->id);
   foreach_msg_api_vector;
 #undef _
 
-  if (am->msg_names[c->id])
-    clib_warning ("BUG: multiple registrations of 'vl_api_%s_t_handler'",
-		  c->name);
+  if (am->msg_handlers[c->id] && am->msg_handlers[c->id] != c->handler)
+    clib_warning
+      ("BUG: re-registering 'vl_api_%s_t_handler'."
+       "Handler was %llx, replaced by %llx",
+       c->name, am->msg_handlers[c->id], c->handler);
 
   am->msg_names[c->id] = c->name;
   am->msg_handlers[c->id] = c->handler;
@@ -709,6 +732,18 @@ vl_msg_api_set_handlers (int id, char *name, void *handler, void *cleanup,
 }
 
 void
+vl_msg_api_clean_handlers (int msg_id)
+{
+  vl_msg_api_msg_config_t cfg;
+  vl_msg_api_msg_config_t *c = &cfg;
+
+  memset (c, 0, sizeof (*c));
+
+  c->id = msg_id;
+  vl_msg_api_config (c);
+}
+
+void
 vl_msg_api_set_cleanup_handler (int msg_id, void *fp)
 {
   api_main_t *am = &api_main;
@@ -719,11 +754,11 @@ vl_msg_api_set_cleanup_handler (int msg_id, void *fp)
 }
 
 void
-vl_msg_api_queue_handler (unix_shared_memory_queue_t * q)
+vl_msg_api_queue_handler (svm_queue_t * q)
 {
   uword msg;
 
-  while (!unix_shared_memory_queue_sub (q, (u8 *) & msg, 0))
+  while (!svm_queue_sub (q, (u8 *) & msg, SVM_Q_WAIT, 0))
     vl_msg_api_handler ((void *) msg);
 }
 
@@ -895,6 +930,30 @@ vl_msg_api_add_msg_name_crc (api_main_t * am, const char *string, u32 id)
   hash_set_mem (am->msg_index_by_name_and_crc, string, id);
 }
 
+void
+vl_msg_api_add_version (api_main_t * am, const char *string,
+			u32 major, u32 minor, u32 patch)
+{
+  api_version_t version = {.major = major,.minor = minor,.patch = patch };
+  ASSERT (strlen (string) < 64);
+  strncpy (version.name, string, 64 - 1);
+  vec_add1 (am->api_version_list, version);
+}
+
+u32
+vl_msg_api_get_msg_index (u8 * name_and_crc)
+{
+  api_main_t *am = &api_main;
+  uword *p;
+
+  if (am->msg_index_by_name_and_crc)
+    {
+      p = hash_get_mem (am->msg_index_by_name_and_crc, name_and_crc);
+      if (p)
+	return p[0];
+    }
+  return ~0;
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

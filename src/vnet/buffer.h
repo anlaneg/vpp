@@ -42,36 +42,66 @@
 
 #include <vlib/vlib.h>
 
-/* VLIB buffer flags for ip4/ip6 packets.  Set by input interfaces for ip4/ip6
-   tcp/udp packets with hardware computed checksums. */
-#define LOG2_IP_BUFFER_L4_CHECKSUM_COMPUTED LOG2_VLIB_BUFFER_FLAG_USER(1)
-#define LOG2_IP_BUFFER_L4_CHECKSUM_CORRECT  LOG2_VLIB_BUFFER_FLAG_USER(2)
-#define IP_BUFFER_L4_CHECKSUM_COMPUTED (1 << LOG2_IP_BUFFER_L4_CHECKSUM_COMPUTED)
-#define IP_BUFFER_L4_CHECKSUM_CORRECT  (1 << LOG2_IP_BUFFER_L4_CHECKSUM_CORRECT)
-
-/* VLAN header flags.
- * These bits are zeroed in vlib_buffer_init_for_free_list()
- * meaning wherever the buffer comes from they have a reasonable
- * value (eg, if ip4/ip6 generates the packet.)
+/**
+ * Flags that are set in the high order bits of ((vlib_buffer*)b)->flags
  */
-#define LOG2_ETH_BUFFER_VLAN_2_DEEP LOG2_VLIB_BUFFER_FLAG_USER(3)
-#define LOG2_ETH_BUFFER_VLAN_1_DEEP LOG2_VLIB_BUFFER_FLAG_USER(4)
-#define ETH_BUFFER_VLAN_2_DEEP (1 << LOG2_ETH_BUFFER_VLAN_2_DEEP)
-#define ETH_BUFFER_VLAN_1_DEEP (1 << LOG2_ETH_BUFFER_VLAN_1_DEEP)
-#define ETH_BUFFER_VLAN_BITS (ETH_BUFFER_VLAN_1_DEEP | \
-                              ETH_BUFFER_VLAN_2_DEEP)
+#define foreach_vnet_buffer_field \
+  _( 1, L4_CHECKSUM_COMPUTED, "l4-cksum-computed")	\
+  _( 2, L4_CHECKSUM_CORRECT, "l4-cksum-correct")	\
+  _( 3, VLAN_2_DEEP, "vlan-2-deep")			\
+  _( 4, VLAN_1_DEEP, "vlan-1-deep")			\
+  _( 5, SPAN_CLONE, "span-clone")			\
+  _( 6, HANDOFF_NEXT_VALID, "handoff-next-valid")	\
+  _( 7, LOCALLY_ORIGINATED, "local")			\
+  _( 8, IS_IP4, "ip4")					\
+  _( 9, IS_IP6, "ip6")					\
+  _(10, OFFLOAD_IP_CKSUM, "offload-ip-cksum")		\
+  _(11, OFFLOAD_TCP_CKSUM, "offload-tcp-cksum")		\
+  _(12, OFFLOAD_UDP_CKSUM, "offload-udp-cksum")		\
+  _(13, IS_NATED, "nated")				\
+  _(14, L2_HDR_OFFSET_VALID, 0)				\
+  _(15, L3_HDR_OFFSET_VALID, 0)				\
+  _(16, L4_HDR_OFFSET_VALID, 0)
 
-#define LOG2_BUFFER_HANDOFF_NEXT_VALID LOG2_VLIB_BUFFER_FLAG_USER(6)
-#define BUFFER_HANDOFF_NEXT_VALID (1 << LOG2_BUFFER_HANDOFF_NEXT_VALID)
+#define VNET_BUFFER_FLAGS_VLAN_BITS \
+  (VNET_BUFFER_F_VLAN_1_DEEP | VNET_BUFFER_F_VLAN_2_DEEP)
 
-#define LOG2_VNET_BUFFER_LOCALLY_ORIGINATED LOG2_VLIB_BUFFER_FLAG_USER(7)
-#define VNET_BUFFER_LOCALLY_ORIGINATED (1 << LOG2_VNET_BUFFER_LOCALLY_ORIGINATED)
+enum
+{
+#define _(bit, name, v) VNET_BUFFER_F_##name  = (1 << LOG2_VLIB_BUFFER_FLAG_USER(bit)),
+  foreach_vnet_buffer_field
+#undef _
+};
 
-#define LOG2_VNET_BUFFER_SPAN_CLONE LOG2_VLIB_BUFFER_FLAG_USER(8)
-#define VNET_BUFFER_SPAN_CLONE (1 << LOG2_VNET_BUFFER_SPAN_CLONE)
+enum
+{
+#define _(bit, name, v) VNET_BUFFER_F_LOG2_##name  = LOG2_VLIB_BUFFER_FLAG_USER(bit),
+  foreach_vnet_buffer_field
+#undef _
+};
+
+/**
+ * @brief Flags set in ((vnet_buffer(b)->flags
+ */
+#define foreach_vnet_opaque_flag \
+  _( 1, IS_DVR, "DVR-processed")
+
+enum
+{
+#define _(bit, name, v) VNET_OPAQUE_F_##name  = (1 << bit),
+  foreach_vnet_opaque_flag
+#undef _
+};
+
+enum
+{
+#define _(bit, name, v) VNET_OPAQUE_F_LOG2_##name  = bit,
+  foreach_vnet_opaque_flag
+#undef _
+};
+
 
 #define foreach_buffer_opaque_union_subtype     \
-_(ethernet)                                     \
 _(ip)                                           \
 _(swt)                                          \
 _(l2)                                           \
@@ -84,6 +114,7 @@ _(ipsec)					\
 _(map)						\
 _(map_t)					\
 _(ip_frag)					\
+_(mpls)					        \
 _(tcp)
 
 /*
@@ -100,16 +131,13 @@ _(tcp)
 typedef struct
 {
   u32 sw_if_index[VLIB_N_RX_TX];
+  i16 l2_hdr_offset;
+  i16 l3_hdr_offset;
+  i16 l4_hdr_offset;
+  u16 flags;
 
   union
   {
-    /* Ethernet. */
-    struct
-    {
-      /* Saved value of current header by ethernet-input. */
-      i32 start_of_ethernet_header;
-    } ethernet;
-
     /* IP4/6 buffer opaque. */
     struct
     {
@@ -126,8 +154,14 @@ typedef struct
 	     protocol and ports. */
 	  u32 flow_hash;
 
-	  /* next protocol */
-	  u32 save_protocol;
+	  union
+	  {
+	    /* next protocol */
+	    u32 save_protocol;
+
+	    /* Hint for transport protocols */
+	    u32 fib_index;
+	  };
 
 	  /* Rewrite length */
 	  u32 save_rewrite_length;
@@ -144,8 +178,17 @@ typedef struct
 	  u32 data;
 	} icmp;
 
-	/* IP header offset from vlib_buffer.data - saved by ip*_local nodes */
-	i32 start_of_ip_header;
+	/* reassembly */
+	struct
+	{
+	  u16 fragment_first;
+	  u16 fragment_last;
+	  u16 range_first;
+	  u16 range_last;
+	  u32 next_range_bi;
+	  u16 ip6_frag_hdr_offset;
+	  u16 estimated_mtu;
+	} reass;
       };
 
     } ip;
@@ -160,6 +203,15 @@ typedef struct
       u8 ttl;
       u8 exp;
       u8 first;
+      /*
+       * BIER - the nubmer of bytes in the header.
+       *  the len field inthe header is not authoritative. It's the
+       * value in the table that counts.
+       */
+      struct
+      {
+	u8 n_bytes;
+      } bier;
     } mpls;
 
     /* ip4-in-ip6 softwire termination, only valid there */
@@ -170,13 +222,14 @@ typedef struct
     } swt;
 
     /* l2 bridging path, only valid there */
-    struct
+    struct opaque_l2
     {
       u32 feature_bitmap;
       u16 bd_index;		/* bridge-domain index */
       u8 l2_len;		/* ethernet header length */
       u8 shg;			/* split-horizon group */
       u16 l2fib_sn;		/* l2fib bd/int seq_num */
+      u8 bd_age;		/* aging enabled */
     } l2;
 
     /* l2tpv3 softwire encap, only valid there */
@@ -195,9 +248,12 @@ typedef struct
     /* L2 classify */
     struct
     {
-      u64 pad;
-      u32 table_index;
-      u32 opaque_index;
+      struct opaque_l2 pad;
+      union
+      {
+	u32 table_index;
+	u32 opaque_index;
+      };
       u64 hash;
     } l2_classify;
 
@@ -245,6 +301,7 @@ typedef struct
     /* IP Fragmentation */
     struct
     {
+      u32 pad[2];		/* do not overlay w/ ip.adj_index[0,1] */
       u16 header_offset;
       u16 mtu;
       u8 next_index;
@@ -285,6 +342,25 @@ typedef struct
       u8 flags;
     } tcp;
 
+    /* SCTP */
+    struct
+    {
+      u32 connection_index;
+      u16 sid; /**< Stream ID */
+      u16 ssn; /**< Stream Sequence Number */
+      u32 tsn; /**< Transmission Sequence Number */
+      u16 hdr_offset;		/**< offset relative to ip hdr */
+      u16 data_offset;		/**< offset relative to ip hdr */
+      u16 data_len;		/**< data len */
+      u8 flags;
+    } sctp;
+
+    /* SNAT */
+    struct
+    {
+      u32 flags;
+    } snat;
+
     u32 unused[6];
   };
 } vnet_buffer_opaque_t;
@@ -293,8 +369,8 @@ typedef struct
  * The opaque field of the vlib_buffer_t is intepreted as a
  * vnet_buffer_opaque_t. Hence it should be big enough to accommodate one.
  */
-STATIC_ASSERT (sizeof (vnet_buffer_opaque_t) <= STRUCT_SIZE_OF (vlib_buffer_t,
-								opaque),
+STATIC_ASSERT (sizeof (vnet_buffer_opaque_t) <=
+	       STRUCT_SIZE_OF (vlib_buffer_t, opaque),
 	       "VNET buffer meta-data too large for vlib_buffer");
 
 #define vnet_buffer(b) ((vnet_buffer_opaque_t *) (b)->opaque)
@@ -304,10 +380,28 @@ typedef struct
 {
   union
   {
+#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
+    /* buffer trajectory tracing */
+    struct
+    {
+      u16 *trajectory_trace;
+    };
+#endif
+    u32 unused[12];
   };
 } vnet_buffer_opaque2_t;
 
+#define vnet_buffer2(b) ((vnet_buffer_opaque2_t *) (b)->opaque2)
 
+/*
+ * The opaque2 field of the vlib_buffer_t is intepreted as a
+ * vnet_buffer_opaque2_t. Hence it should be big enough to accommodate one.
+ */
+STATIC_ASSERT (sizeof (vnet_buffer_opaque2_t) <=
+	       STRUCT_SIZE_OF (vlib_buffer_t, opaque2),
+	       "VNET buffer opaque2 meta-data too large for vlib_buffer");
+
+format_function_t format_vnet_buffer;
 
 #endif /* included_vnet_buffer_h */
 

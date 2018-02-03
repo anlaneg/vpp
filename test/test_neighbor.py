@@ -5,7 +5,8 @@ from socket import AF_INET, AF_INET6, inet_pton
 
 from framework import VppTestCase, VppTestRunner
 from vpp_neighbor import VppNeighbor, find_nbr
-from vpp_ip_route import VppIpRoute, VppRoutePath, find_route
+from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, \
+    VppIpTable
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, ARP, Dot1Q
@@ -39,11 +40,13 @@ class ARPTestCase(VppTestCase):
         self.pg1.config_ip6()
 
         # pg3 in a different VRF
+        self.tbl = VppIpTable(self, 1)
+        self.tbl.add_vpp_config()
+
         self.pg3.set_table_ip4(1)
         self.pg3.config_ip4()
 
     def tearDown(self):
-        super(ARPTestCase, self).tearDown()
         self.pg0.unconfig_ip4()
         self.pg0.unconfig_ip6()
 
@@ -51,9 +54,12 @@ class ARPTestCase(VppTestCase):
         self.pg1.unconfig_ip6()
 
         self.pg3.unconfig_ip4()
+        self.pg3.set_table_ip4(0)
 
         for i in self.pg_interfaces:
             i.admin_down()
+
+        super(ARPTestCase, self).tearDown()
 
     def verify_arp_req(self, rx, smac, sip, dip):
         ether = rx[Ether]
@@ -126,23 +132,13 @@ class ARPTestCase(VppTestCase):
         self.assertEqual(ip.src, sip)
         self.assertEqual(ip.dst, dip)
 
-    def send_and_assert_no_replies(self, intf, pkts, remark):
-        intf.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        timeout = 1
-        for i in self.pg_interfaces:
-            i.get_capture(0, timeout=timeout)
-            i.assert_nothing_captured(remark=remark)
-            timeout = 0.1
-
     def test_arp(self):
         """ ARP """
 
         #
         # Generate some hosts on the LAN
         #
-        self.pg1.generate_remote_hosts(10)
+        self.pg1.generate_remote_hosts(11)
 
         #
         # Send IP traffic to one of these unresolved hosts.
@@ -496,6 +492,65 @@ class ARPTestCase(VppTestCase):
                              self.pg1._remote_hosts[9].ip4)
 
         #
+        # Add a hierachy of routes for a host in the sub-net.
+        # Should still get an ARP resp since the cover is attached
+        #
+        p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg1.remote_mac) /
+             ARP(op="who-has",
+                 hwsrc=self.pg1.remote_mac,
+                 pdst=self.pg1.local_ip4,
+                 psrc=self.pg1.remote_hosts[10].ip4))
+
+        r1 = VppIpRoute(self, self.pg1.remote_hosts[10].ip4, 30,
+                        [VppRoutePath(self.pg1.remote_hosts[10].ip4,
+                                      self.pg1.sw_if_index)])
+        r1.add_vpp_config()
+
+        self.pg1.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
+        self.verify_arp_resp(rx[0],
+                             self.pg1.local_mac,
+                             self.pg1.remote_mac,
+                             self.pg1.local_ip4,
+                             self.pg1.remote_hosts[10].ip4)
+
+        r2 = VppIpRoute(self, self.pg1.remote_hosts[10].ip4, 32,
+                        [VppRoutePath(self.pg1.remote_hosts[10].ip4,
+                                      self.pg1.sw_if_index)])
+        r2.add_vpp_config()
+
+        self.pg1.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
+        self.verify_arp_resp(rx[0],
+                             self.pg1.local_mac,
+                             self.pg1.remote_mac,
+                             self.pg1.local_ip4,
+                             self.pg1.remote_hosts[10].ip4)
+
+        #
+        # add an ARP entry that's not on the sub-net and so whose
+        # adj-fib fails the refinement check. then send an ARP request
+        # from that source
+        #
+        a1 = VppNeighbor(self,
+                         self.pg0.sw_if_index,
+                         self.pg0.remote_mac,
+                         "100.100.100.50")
+        a1.add_vpp_config()
+
+        p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
+             ARP(op="who-has",
+                 hwsrc=self.pg0.remote_mac,
+                 psrc="100.100.100.50",
+                 pdst=self.pg0.remote_ip4))
+        self.send_and_assert_no_replies(self.pg0, p,
+                                        "ARP req for from failed adj-fib")
+
+        #
         # ERROR Cases
         #  1 - don't respond to ARP request for address not within the
         #      interface's sub-net
@@ -536,7 +591,8 @@ class ARPTestCase(VppTestCase):
         #
         #  2 - don't respond to ARP request from an address not within the
         #      interface's sub-net
-        #
+        #   2b - to a prxied address
+        #   2c - not within a differents interface's sub-net
         p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
              ARP(op="who-has",
                  hwsrc=self.pg0.remote_mac,
@@ -552,6 +608,13 @@ class ARPTestCase(VppTestCase):
         self.send_and_assert_no_replies(
             self.pg0, p,
             "ARP req for non-local source - unnum")
+        p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
+             ARP(op="who-has",
+                 hwsrc=self.pg0.remote_mac,
+                 psrc=self.pg1.remote_ip4,
+                 pdst=self.pg0.local_ip4))
+        self.send_and_assert_no_replies(self.pg0, p,
+                                        "ARP req for non-local source 2c")
 
         #
         #  3 - don't respond to ARP request from an address that belongs to
@@ -568,7 +631,6 @@ class ARPTestCase(VppTestCase):
         #
         #  4 - don't respond to ARP requests that has mac source different
         #      from ARP request HW source
-        #      the router
         #
         p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
              ARP(op="who-has",
@@ -577,6 +639,19 @@ class ARPTestCase(VppTestCase):
                  pdst=self.pg0.local_ip4))
         self.send_and_assert_no_replies(self.pg0, p,
                                         "ARP req for non-local source")
+
+        #
+        #  5 - don't respond to ARP requests for address within the
+        #      interface's sub-net but not the interface's address
+        #
+        self.pg0.generate_remote_hosts(2)
+        p = (Ether(dst="ff:ff:ff:ff:ff:ff", src=self.pg0.remote_mac) /
+             ARP(op="who-has",
+                 hwsrc=self.pg0.remote_mac,
+                 psrc=self.pg0.remote_hosts[0].ip4,
+                 pdst=self.pg0.remote_hosts[1].ip4))
+        self.send_and_assert_no_replies(self.pg0, p,
+                                        "ARP req for non-local destination")
 
         #
         # cleanup
@@ -588,6 +663,71 @@ class ARPTestCase(VppTestCase):
         # need this to flush the adj-fibs
         self.pg2.unset_unnumbered(self.pg1.sw_if_index)
         self.pg2.admin_down()
+        self.pg1.admin_down()
+
+    def test_proxy_mirror_arp(self):
+        """ Interface Mirror Proxy ARP """
+
+        #
+        # When VPP has an interface whose address is also applied to a TAP
+        # interface on the host, then VPP's TAP interface will be unnumbered
+        # to the 'real' interface and do proxy ARP from the host.
+        # the curious aspect of this setup is that ARP requests from the host
+        # will come from the VPP's own address.
+        #
+        self.pg0.generate_remote_hosts(2)
+
+        arp_req_from_me = (Ether(src=self.pg2.remote_mac,
+                                 dst="ff:ff:ff:ff:ff:ff") /
+                           ARP(op="who-has",
+                               hwsrc=self.pg2.remote_mac,
+                               pdst=self.pg0.remote_hosts[1].ip4,
+                               psrc=self.pg0.local_ip4))
+
+        #
+        # Configure Proxy ARP for the subnet on PG0addresses on pg0
+        #
+        self.vapi.proxy_arp_add_del(self.pg0._local_ip4n_subnet,
+                                    self.pg0._local_ip4n_bcast)
+
+        # Make pg2 un-numbered to pg0
+        #
+        self.pg2.set_unnumbered(self.pg0.sw_if_index)
+
+        #
+        # Enable pg2 for proxy ARP
+        #
+        self.pg2.set_proxy_arp()
+
+        #
+        # Send the ARP request with an originating address that
+        # is VPP's own address
+        #
+        self.pg2.add_stream(arp_req_from_me)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg2.get_capture(1)
+        self.verify_arp_resp(rx[0],
+                             self.pg2.local_mac,
+                             self.pg2.remote_mac,
+                             self.pg0.remote_hosts[1].ip4,
+                             self.pg0.local_ip4)
+
+        #
+        # validate we have not learned an ARP entry as a result of this
+        #
+        self.assertFalse(find_nbr(self,
+                                  self.pg2.sw_if_index,
+                                  self.pg0.local_ip4))
+
+        #
+        # cleanup
+        #
+        self.pg2.set_proxy_arp(0)
+        self.vapi.proxy_arp_add_del(self.pg0._local_ip4n_subnet,
+                                    self.pg0._local_ip4n_bcast,
+                                    is_add=0)
 
     def test_proxy_arp(self):
         """ Proxy ARP """
@@ -947,6 +1087,62 @@ class ARPTestCase(VppTestCase):
                        self.pg1.remote_hosts[1].mac,
                        self.pg0.remote_ip4,
                        self.pg1.remote_hosts[1].ip4)
+
+    def test_arp_static(self):
+        """ ARP Static"""
+        self.pg2.generate_remote_hosts(3)
+
+        #
+        # Add a static ARP entry
+        #
+        static_arp = VppNeighbor(self,
+                                 self.pg2.sw_if_index,
+                                 self.pg2.remote_hosts[1].mac,
+                                 self.pg2.remote_hosts[1].ip4,
+                                 is_static=1)
+        static_arp.add_vpp_config()
+
+        #
+        # Add the connected prefix to the interface
+        #
+        self.pg2.config_ip4()
+
+        #
+        # We should now find the adj-fib
+        #
+        self.assertTrue(find_nbr(self,
+                                 self.pg2.sw_if_index,
+                                 self.pg2.remote_hosts[1].ip4,
+                                 is_static=1))
+        self.assertTrue(find_route(self,
+                                   self.pg2.remote_hosts[1].ip4,
+                                   32))
+
+        #
+        # remove the connected
+        #
+        self.pg2.unconfig_ip4()
+
+        #
+        # put the interface into table 1
+        #
+        self.pg2.set_table_ip4(1)
+
+        #
+        # configure the same connected and expect to find the
+        # adj fib in the new table
+        #
+        self.pg2.config_ip4()
+        self.assertTrue(find_route(self,
+                                   self.pg2.remote_hosts[1].ip4,
+                                   32,
+                                   table_id=1))
+
+        #
+        # clean-up
+        #
+        self.pg2.unconfig_ip4()
+        self.pg2.set_table_ip4(0)
 
 
 if __name__ == '__main__':

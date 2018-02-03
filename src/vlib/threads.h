@@ -18,6 +18,22 @@
 #include <vlib/main.h>
 #include <linux/sched.h>
 
+/*
+ * To enable detailed tracing of barrier usage, including call stacks and
+ * timings, define BARRIER_TRACING here or in relevant TAGS.  If also used
+ * with CLIB_DEBUG, timing will _not_ be representative of normal code
+ * execution.
+ *
+ */
+
+// #define BARRIER_TRACING 1
+
+/*
+ * Two options for barrier tracing output: syslog & elog.
+ */
+
+// #define BARRIER_TRACING_ELOG 1
+
 extern vlib_main_t **vlib_mains;
 
 void vlib_set_thread_name (char *name);
@@ -102,6 +118,11 @@ typedef struct
   vlib_thread_registration_t *registration;
   u8 *name;
   u64 barrier_sync_count;
+#ifdef BARRIER_TRACING
+  const char *barrier_caller;
+  const char *barrier_context;
+#endif
+  volatile u32 *node_reforks_required;
 
   long lwp;
   int lcore_id;
@@ -150,6 +171,13 @@ typedef struct
   frame_queue_nelt_counter_t *frame_queue_histogram;
 } vlib_frame_queue_main_t;
 
+typedef struct
+{
+  uword node_index;
+  uword type_opaque;
+  uword data;
+} vlib_process_signal_event_mt_args_t;
+
 /* Called early, in thread 0's context */
 clib_error_t *vlib_thread_init (vlib_main_t * vm);
 
@@ -178,8 +206,16 @@ u32 vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts);
 #define BARRIER_SYNC_TIMEOUT (1.0)
 #endif
 
-void vlib_worker_thread_barrier_sync (vlib_main_t * vm);
+#ifdef BARRIER_TRACING
+#define vlib_worker_thread_barrier_sync(X) {vlib_worker_threads[0].barrier_caller=__FUNCTION__;vlib_worker_thread_barrier_sync_int(X);}
+#else
+#define vlib_worker_thread_barrier_sync(X) vlib_worker_thread_barrier_sync_int(X)
+#endif
+
+
+void vlib_worker_thread_barrier_sync_int (vlib_main_t * vm);
 void vlib_worker_thread_barrier_release (vlib_main_t * vm);
+void vlib_worker_thread_node_refork (void);
 
 static_always_inline uword
 vlib_get_thread_index (void)
@@ -370,6 +406,15 @@ vlib_worker_thread_barrier_check (void)
       if (CLIB_DEBUG > 0)
 	vm->parked_at_barrier = 0;
       clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, -1);
+
+      if (PREDICT_FALSE (*vlib_worker_threads->node_reforks_required))
+	{
+	  vlib_worker_thread_node_refork ();
+	  clib_smp_atomic_add (vlib_worker_threads->node_reforks_required,
+			       -1);
+	  while (*vlib_worker_threads->node_reforks_required)
+	    ;
+	}
     }
 }
 
@@ -473,9 +518,14 @@ vlib_get_worker_handoff_queue_elt (u32 frame_queue_index,
 }
 
 u8 *vlib_thread_stack_init (uword thread_index);
-
 int vlib_thread_cb_register (struct vlib_main_t *vm,
 			     vlib_thread_callbacks_t * cb);
+extern void *rpc_call_main_thread_cb_fn;
+
+void
+vlib_process_signal_event_mt_helper (vlib_process_signal_event_mt_args_t *
+				     args);
+void vlib_rpc_call_main_thread (void *function, u8 * args, u32 size);
 
 #endif /* included_vlib_threads_h */
 

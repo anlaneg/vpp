@@ -22,54 +22,91 @@
 /* M: construct, but don't yet send a message */
 #define M(T, mp)                                                \
 do {                                                            \
+    socket_client_main_t *scm = vam->socket_client_main;	\
     vam->result_ready = 0;                                      \
-    mp = vl_msg_api_alloc_as_if_client(sizeof(*mp));            \
+    if (scm && scm->socket_enable)                              \
+      mp = vl_socket_client_msg_alloc (sizeof(*mp));		\
+    else                                                        \
+      mp = vl_msg_api_alloc_as_if_client(sizeof(*mp));          \
     memset (mp, 0, sizeof (*mp));                               \
     mp->_vl_msg_id = ntohs (VL_API_##T+__plugin_msg_base);      \
     mp->client_index = vam->my_client_index;                    \
 } while(0);
 
+/* MPING: construct a control-ping message, don't send it yet */
+#define MPING(T, mp)                                            \
+do {                                                            \
+    socket_client_main_t *scm = vam->socket_client_main;	\
+    vam->result_ready = 0;                                      \
+    if (scm && scm->socket_enable)                                     \
+      mp = vl_socket_client_msg_alloc (sizeof(*mp));		\
+    else                                                        \
+      mp = vl_msg_api_alloc_as_if_client(sizeof(*mp));          \
+    memset (mp, 0, sizeof (*mp));                               \
+    mp->_vl_msg_id = ntohs (VL_API_##T+__plugin_msg_base);      \
+    mp->client_index = vam->my_client_index;                    \
+    if (scm)							\
+      scm->control_pings_outstanding++;                        	\
+} while(0);
+
 #define M2(T, mp, n)                                            \
 do {                                                            \
+    socket_client_main_t *scm = vam->socket_client_main;	\
     vam->result_ready = 0;                                      \
-    mp = vl_msg_api_alloc_as_if_client(sizeof(*mp)+(n));        \
+    if (scm && scm->socket_enable)                                     \
+      mp = vl_socket_client_msg_alloc (sizeof(*mp));		\
+    else                                                        \
+      mp = vl_msg_api_alloc_as_if_client(sizeof(*mp) + n);      \
     memset (mp, 0, sizeof (*mp));                               \
     mp->_vl_msg_id = ntohs (VL_API_##T+__plugin_msg_base);      \
     mp->client_index = vam->my_client_index;                    \
 } while(0);
 
 /* S: send a message */
-#define S(mp) (vl_msg_api_send_shmem (vam->vl_input_queue, (u8 *)&mp))
+#define S(mp)                                                   \
+do {                                                            \
+  socket_client_main_t *scm = vam->socket_client_main;         	\
+  if (scm && scm->socket_enable)                                       \
+    vl_socket_client_write ();					\
+  else                                                          \
+    vl_msg_api_send_shmem (vam->vl_input_queue, (u8 *)&mp);     \
+ } while (0);
 
 /* W: wait for results, with timeout */
-#define W(ret)					\
-do {                                            \
-    f64 timeout = vat_time_now (vam) + 1.0;     \
-    ret = -99;                                  \
-                                                \
-    while (vat_time_now (vam) < timeout) {      \
-        if (vam->result_ready == 1) {           \
-            ret = vam->retval;                  \
-            break;                              \
-        }                                       \
-        vat_suspend (vam->vlib_main, 1e-5);     \
-    }                                           \
+#define W(ret)                                                  \
+do {                                                            \
+    f64 timeout = vat_time_now (vam) + 1.0;                     \
+    socket_client_main_t *scm = vam->socket_client_main;	\
+    ret = -99;                                                  \
+                                                                \
+    if (scm && scm->socket_enable)					\
+      vl_socket_client_read (5);                       		\
+    while (vat_time_now (vam) < timeout) {                      \
+        if (vam->result_ready == 1) {                           \
+            ret = vam->retval;                                  \
+            break;                                              \
+        }                                                       \
+        vat_suspend (vam->vlib_main, 1e-5);                     \
+    }                                                           \
 } while(0);
 
 /* W2: wait for results, with timeout */
-#define W2(ret, body)				\
-do {                                            \
-    f64 timeout = vat_time_now (vam) + 1.0;     \
-    ret = -99;                                  \
-                                                \
-    while (vat_time_now (vam) < timeout) {      \
-        if (vam->result_ready == 1) {           \
-	  (body);                               \
-	  ret = vam->retval;                    \
-          break;                                \
-        }                                       \
-        vat_suspend (vam->vlib_main, 1e-5);     \
-    }                                           \
+#define W2(ret, body)                                           \
+do {                                                            \
+    f64 timeout = vat_time_now (vam) + 1.0;                     \
+    socket_client_main_t *scm = vam->socket_client_main;	\
+    ret = -99;                                                  \
+                                                                \
+    if (scm && scm->socket_enable)					\
+      vl_socket_client_read (5);                       		\
+    while (vat_time_now (vam) < timeout) {                      \
+        if (vam->result_ready == 1) {                           \
+	  (body);                                               \
+	  ret = vam->retval;                                    \
+          break;                                                \
+        }                                                       \
+        vat_suspend (vam->vlib_main, 1e-5);                     \
+    }                                                           \
 } while(0);
 
 

@@ -43,6 +43,10 @@ typedef enum fib_source_t_ {
      */
     FIB_SOURCE_CLASSIFY,
     /**
+     * A route the is being 'proxied' on behalf of another device
+     */
+    FIB_SOURCE_PROXY,
+    /**
      * Route added as a result of interface configuration.
      * this will also come from the API/CLI, but the distinction is
      * that is from confiiguration on an interface, not a 'ip route' command
@@ -56,6 +60,10 @@ typedef enum fib_source_t_ {
      * A high priority source a plugin can use
      */
     FIB_SOURCE_PLUGIN_HI,
+    /**
+     * From the BIER subsystem
+     */
+    FIB_SOURCE_BIER,
     /**
      * From the control plane API
      */
@@ -136,6 +144,8 @@ STATIC_ASSERT (sizeof(fib_source_t) == 1,
 #define FIB_SOURCES {					\
     [FIB_SOURCE_SPECIAL] = "special",			\
     [FIB_SOURCE_INTERFACE] = "interface",		\
+    [FIB_SOURCE_PROXY] = "proxy",                       \
+    [FIB_SOURCE_BIER] = "BIER",			        \
     [FIB_SOURCE_API] = "API",			        \
     [FIB_SOURCE_CLI] = "CLI",			        \
     [FIB_SOURCE_ADJ] = "adjacency",			\
@@ -203,15 +213,15 @@ typedef enum fib_entry_attribute_t_ {
      */
     FIB_ENTRY_ATTRIBUTE_URPF_EXEMPT,
     /**
+     * This FIB entry imposes its source information on all prefixes
+     * that is covers
+     */
+    FIB_ENTRY_ATTRIBUTE_COVERED_INHERIT,
+    /**
      * Marker. add new entries before this one.
      */
-    FIB_ENTRY_ATTRIBUTE_LAST = FIB_ENTRY_ATTRIBUTE_MULTICAST,
+    FIB_ENTRY_ATTRIBUTE_LAST = FIB_ENTRY_ATTRIBUTE_COVERED_INHERIT,
 } fib_entry_attribute_t;
-
-/**
- * The maximum number of sources
- */
-#define FIB_ENTRY_ATTRIBUTE_MAX (FIB_ENTRY_ATTRIBUTE_LAST+1)
 
 #define FIB_ENTRY_ATTRIBUTES {		       		\
     [FIB_ENTRY_ATTRIBUTE_CONNECTED] = "connected",	\
@@ -222,11 +232,12 @@ typedef enum fib_entry_attribute_t_ {
     [FIB_ENTRY_ATTRIBUTE_LOCAL]     = "local",		\
     [FIB_ENTRY_ATTRIBUTE_URPF_EXEMPT] = "uRPF-exempt",  \
     [FIB_ENTRY_ATTRIBUTE_MULTICAST] = "multicast",	\
+    [FIB_ENTRY_ATTRIBUTE_COVERED_INHERIT] = "covered-inherit",  \
 }
 
 #define FOR_EACH_FIB_ATTRIBUTE(_item)			\
     for (_item = FIB_ENTRY_ATTRIBUTE_FIRST;		\
-	 _item < FIB_ENTRY_ATTRIBUTE_MAX;		\
+	 _item <= FIB_ENTRY_ATTRIBUTE_LAST;		\
 	 _item++)
 
 typedef enum fib_entry_flag_t_ {
@@ -239,6 +250,7 @@ typedef enum fib_entry_flag_t_ {
     FIB_ENTRY_FLAG_IMPORT    = (1 << FIB_ENTRY_ATTRIBUTE_IMPORT),
     FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT = (1 << FIB_ENTRY_ATTRIBUTE_URPF_EXEMPT),
     FIB_ENTRY_FLAG_MULTICAST = (1 << FIB_ENTRY_ATTRIBUTE_MULTICAST),
+    FIB_ENTRY_FLAG_COVERED_INHERIT = (1 << FIB_ENTRY_ATTRIBUTE_COVERED_INHERIT),
 } __attribute__((packed)) fib_entry_flag_t;
 
 /**
@@ -258,9 +270,13 @@ typedef enum fib_entry_src_attribute_t_ {
      */
     FIB_ENTRY_SRC_ATTRIBUTE_ACTIVE,
     /**
+     * the source is inherited from its cover
+     */
+    FIB_ENTRY_SRC_ATTRIBUTE_INHERITED,
+    /**
      * Marker. add new entries before this one.
      */
-    FIB_ENTRY_SRC_ATTRIBUTE_LAST = FIB_ENTRY_SRC_ATTRIBUTE_ACTIVE,
+    FIB_ENTRY_SRC_ATTRIBUTE_LAST = FIB_ENTRY_SRC_ATTRIBUTE_INHERITED,
 } fib_entry_src_attribute_t;
 
 #define FIB_ENTRY_SRC_ATTRIBUTE_MAX (FIB_ENTRY_SRC_ATTRIBUTE_LAST+1)
@@ -268,12 +284,19 @@ typedef enum fib_entry_src_attribute_t_ {
 #define FIB_ENTRY_SRC_ATTRIBUTES {		 \
     [FIB_ENTRY_SRC_ATTRIBUTE_ADDED]  = "added",	 \
     [FIB_ENTRY_SRC_ATTRIBUTE_ACTIVE] = "active", \
+    [FIB_ENTRY_SRC_ATTRIBUTE_INHERITED] = "inherited", \
 }
+
+#define FOR_EACH_FIB_SRC_ATTRIBUTE(_item)      		\
+    for (_item = FIB_ENTRY_SRC_ATTRIBUTE_FIRST;		\
+	 _item < FIB_ENTRY_SRC_ATTRIBUTE_MAX;		\
+	 _item++)
 
 typedef enum fib_entry_src_flag_t_ {
     FIB_ENTRY_SRC_FLAG_NONE   = 0,
     FIB_ENTRY_SRC_FLAG_ADDED  = (1 << FIB_ENTRY_SRC_ATTRIBUTE_ADDED),
     FIB_ENTRY_SRC_FLAG_ACTIVE = (1 << FIB_ENTRY_SRC_ATTRIBUTE_ACTIVE),
+    FIB_ENTRY_SRC_FLAG_INHERITED = (1 << FIB_ENTRY_SRC_ATTRIBUTE_INHERITED),
 } __attribute__ ((packed)) fib_entry_src_flag_t;
 
 /*
@@ -436,6 +459,7 @@ typedef struct fib_entry_t_ {
 #define FIB_ENTRY_FORMAT_DETAIL2 (0x2)
 
 extern u8 *format_fib_entry (u8 * s, va_list * args);
+extern u8 *format_fib_source (u8 * s, va_list * args);
 
 extern fib_node_index_t fib_entry_create_special(u32 fib_index,
 						 const fib_prefix_t *prefix,
@@ -471,6 +495,10 @@ extern fib_entry_src_flag_t fib_entry_special_remove(fib_node_index_t fib_entry_
 extern fib_entry_src_flag_t fib_entry_path_remove(fib_node_index_t fib_entry_index,
 						  fib_source_t source,
 						  const fib_route_path_t *rpath);
+
+extern void fib_entry_inherit(fib_node_index_t cover,
+                              fib_node_index_t covered);
+
 extern fib_entry_src_flag_t fib_entry_delete(fib_node_index_t fib_entry_index,
 					     fib_source_t source);
 

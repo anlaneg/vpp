@@ -91,7 +91,7 @@ clock_frequency_from_proc_filesystem (void)
   if (fd < 0)
     return cpu_freq;
 
-  unformat_init_unix_file (&input, fd);
+  unformat_init_clib_file (&input, fd);
 
   ppc_timebase = 0;
   while (unformat_check_input (&input) != UNFORMAT_END_OF_INPUT)
@@ -130,7 +130,7 @@ clock_frequency_from_sys_filesystem (void)
   if (fd < 0)
     goto done;
 
-  unformat_init_unix_file (&input, fd);
+  unformat_init_clib_file (&input, fd);
   unformat (&input, "%f", &cpu_freq);
   cpu_freq *= 1e3;		/* measured in kHz */
   unformat_free (&input);
@@ -142,16 +142,19 @@ done:
 f64
 os_cpu_clock_frequency (void)
 {
+#if defined (__aarch64__)
+  /* The system counter increments at a fixed frequency. It is distributed
+   * to each core which has registers for reading the current counter value
+   * as well as the clock frequency. The system counter is not clocked at
+   * the same frequency as the core. */
+  u32 hz;
+  asm volatile ("mrs %0, cntfrq_el0":"=r" (hz));
+  return (f64) hz;
+#endif
   f64 cpu_freq;
 
   if (clib_cpu_supports_invariant_tsc ())
     return estimate_clock_frequency (1e-3);
-
-#if defined (__aarch64__)
-  u64 tsc;
-  asm volatile ("mrs %0, CNTFRQ_EL0":"=r" (tsc));
-  return (f64) tsc;
-#endif
 
   /* First try /sys version. */
   cpu_freq = clock_frequency_from_sys_filesystem ();

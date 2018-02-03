@@ -19,29 +19,57 @@ DPDK_INSTALL_DIR      ?= $(CURDIR)/_install
 DPDK_PKTMBUF_HEADROOM ?= 128
 DPDK_DOWNLOAD_DIR     ?= $(HOME)/Downloads
 DPDK_DEBUG            ?= n
-DPDK_CRYPTO_SW_PMD    ?= n
 DPDK_MLX4_PMD         ?= n
 DPDK_MLX5_PMD         ?= n
 
 B := $(DPDK_BUILD_DIR)
 I := $(DPDK_INSTALL_DIR)
-DPDK_VERSION ?= 17.05
-PKG_SUFFIX ?= vpp5
+DPDK_VERSION ?= 17.11
+PKG_SUFFIX ?= vpp1
 DPDK_BASE_URL ?= http://fast.dpdk.org/rel
 DPDK_TARBALL := dpdk-$(DPDK_VERSION).tar.xz
 DPDK_TAR_URL := $(DPDK_BASE_URL)/$(DPDK_TARBALL)
-DPDK_17.02_TARBALL_MD5_CKSUM := 6b9f7387c35641f4e8dbba3e528f2376
-DPDK_17.05_TARBALL_MD5_CKSUM := 0a68c31cd6a6cabeed0a4331073e4c05
+DPDK_17.08_TARBALL_MD5_CKSUM := 0641f59ea8ea98afefa7cfa2699f6241
+DPDK_17.11_TARBALL_MD5_CKSUM := 53ee9e054a8797c9e67ffa0eb5d0c701
 DPDK_SOURCE := $(B)/dpdk-$(DPDK_VERSION)
+MACHINE=$(shell uname -m)
 
-ifeq ($(DPDK_CRYPTO_SW_PMD),y)
-AESNIMB_LIB_TARBALL := v0.44-gcm.2.tar.gz
-AESNIMB_LIB_TARBALL_URL := http://github.com/01org/intel-ipsec-mb/archive/$(AESNIMB_LIB_TARBALL)
-AESNIMB_LIB_SOURCE := $(B)/intel-ipsec-mb-0.44-gcm.2
-ISA_L_CRYPTO_LIB_TARBALL := isa_l_crypto.tar.gz
-ISA_L_CRYPTO_LIB_TARBALL_URL := http://github.com/01org/isa-l_crypto/archive/master.tar.gz
-ISA_L_CRYPTO_LIB_SOURCE := $(B)/isa-l_crypto-master
+NASM_BASE_URL := http://www.nasm.us/pub/nasm/releasebuilds
+NASM_VER := 2.13.01
+NASM_TARBALL := nasm-$(NASM_VER).tar.xz
+NASM_TAR_URL := $(NASM_BASE_URL)/$(NASM_VER)/$(NASM_TARBALL)
+NASM_SOURCE := $(B)/nasm-$(NASM_VER)
+
+ISA_L_CRYPTO_LIB := n
+
+ifeq ($(DPDK_VERSION),17.08)
+IPSEC_MB_VER ?= 0.46
+else
+IPSEC_MB_VER ?= 0.47
 endif
+ISA_L_CRYPTO_VER := 2.18.0
+
+ifeq ($(MACHINE),$(filter $(MACHINE),x86_64))
+  AESNI ?= y
+# DPDK pre 17.08 depends on ISA-L Crypto library for GCM PMD
+  ifneq ($(firstword $(sort $(DPDK_VERSION), 17.08)), 17.08)
+  ISA_L_CRYPTO_LIB = y
+  IPSEC_MB_VER = 0.45
+  $(info Building ISA-L Crypto $(ISA_L_CRYPTO_VER) library)
+  endif
+$(info Building IPSec-MB $(IPSEC_MB_VER) library)
+else
+  AESNI ?= N
+endif
+
+AESNIMB_LIB_TARBALL := v$(IPSEC_MB_VER).tar.gz
+AESNIMB_LIB_TARBALL_URL := http://github.com/01org/intel-ipsec-mb/archive/$(AESNIMB_LIB_TARBALL)
+AESNIMB_LIB_SOURCE := $(B)/intel-ipsec-mb-$(IPSEC_MB_VER)
+
+ISA_L_CRYPTO_LIB_TARBALL := v$(ISA_L_CRYPTO_VER).tar.gz
+ISA_L_CRYPTO_LIB_TARBALL_URL := http://github.com/01org/isa-l_crypto/archive/$(ISA_L_CRYPTO_LIB_TARBALL)
+ISA_L_CRYPTO_LIB_SOURCE := $(B)/isa-l_crypto-$(ISA_L_CRYPTO_VER)
+ISA_L_CRYPTO_INSTALL_DIR := $(ISA_L_CRYPTO_LIB_SOURCE)/install
 
 ifneq (,$(findstring clang,$(CC)))
 DPDK_CC=clang
@@ -50,8 +78,6 @@ DPDK_CC=icc
 else
 DPDK_CC=gcc
 endif
-
-MACHINE=$(shell uname -m)
 
 ##############################################################################
 # Intel x86
@@ -62,26 +88,74 @@ DPDK_MACHINE          ?= nhm
 DPDK_TUNE             ?= core-avx2
 
 ##############################################################################
-# Cavium ThunderX
+# ARM64
 ##############################################################################
-else ifneq (,$(findstring thunder,$(shell cat /sys/bus/pci/devices/0000:00:01.0/uevent | grep cavium)))
+else ifeq ($(MACHINE),aarch64)
 export CROSS=""
-DPDK_TARGET           ?= arm64-thunderx-linuxapp-$(DPDK_CC)
-DPDK_MACHINE          ?= thunderx
+DPDK_TARGET           ?= arm64-armv8a-linuxapp-$(DPDK_CC)
+DPDK_MACHINE          ?= armv8a
 DPDK_TUNE             ?= generic
 
+CPU_IMP_ARM                     = 0x41
+CPU_IMP_CAVIUM                  = 0x43
+
+CPU_PART_ARM_CORTEX_A53         = 0xd03
+CPU_PART_ARM_CORTEX_A57         = 0xd07
+CPU_PART_ARM_CORTEX_A72         = 0xd08
+CPU_PART_ARM_CORTEX_A73         = 0xd09
+
+CPU_PART_CAVIUM_THUNDERX        = 0x0a1
+CPU_PART_CAVIUM_THUNDERX_81XX   = 0x0a2
+CPU_PART_CAVIUM_THUNDERX_83XX   = 0x0a3
+
+MIDR_IMPLEMENTER=$(shell awk '/implementer/ {print $$4;exit}' /proc/cpuinfo)
+MIDR_PARTNUM=$(shell awk '/part/ {print $$4;exit}' /proc/cpuinfo)
+
+ifeq ($(MIDR_IMPLEMENTER),$(CPU_IMP_ARM))
 ##############################################################################
-# Unknown platofrm
+# Arm Cortex
 ##############################################################################
+CPU_PART_ARM_TUNE := $(CPU_PART_ARM_CORTEX_A53)/cortex-a53 \
+		     $(CPU_PART_ARM_CORTEX_A57)/cortex-a57 \
+		     $(CPU_PART_ARM_CORTEX_A72)/cortex-a72 \
+		     $(CPU_PART_ARM_CORTEX_A73)/cortex-a73
+CPU_TUNE = $(notdir $(filter $(MIDR_PARTNUM)/%,$(CPU_PART_ARM_TUNE)))
+ifneq ($(CPU_TUNE),)
+DPDK_TUNE             = $(CPU_TUNE)
 else
-$(error unknown platform)
+$(warning Unknown Arm CPU)
 endif
 
-JOBS := $(shell grep processor /proc/cpuinfo | wc -l)
+else ifeq ($(MIDR_IMPLEMENTER),$(CPU_IMP_CAVIUM))
+##############################################################################
+# Cavium ThunderX
+##############################################################################
+ifneq (,$(findstring $(MIDR_PARTNUM),$(CPU_PART_CAVIUM_THUNDERX) \
+	$(CPU_PART_CAVIUM_THUNDERX_81XX) $(CPU_PART_CAVIUM_THUNDERX_83XX)))
+DPDK_TARGET           = arm64-thunderx-linuxapp-$(DPDK_CC)
+DPDK_MACHINE          = thunderx
+else
+$(warning Unknown Cavium CPU)
+endif
+endif
+
+##############################################################################
+# Unknown platform
+##############################################################################
+else
+$(error Unknown platform)
+endif
+
+# /proc/cpuinfo does not exist on platforms without a /proc and on some
+# platforms, notably inside containers, it has no content. In those cases
+# we assume there's 1 processor; we use 2*ncpu for the -j option.
+# NB: GNU Make 4.2 will let us use '$(file </proc/cpuinfo)' to both test
+# for file presence and content; for now this will have to do.
+JOBS := $(if $(shell [ -f /proc/cpuinfo ] && head /proc/cpuinfo),\
+	$(shell grep -c ^processor /proc/cpuinfo), 2)
 
 # compiler/linker custom arguments
 DPDK_CPU_CFLAGS := -pie -fPIC
-DPDK_EXTRA_LDFLAGS := -g
 
 ifeq ($(DPDK_DEBUG),n)
 DPDK_EXTRA_CFLAGS := -g -mtune=$(DPDK_TUNE)
@@ -89,11 +163,11 @@ else
 DPDK_EXTRA_CFLAGS := -g -O0
 endif
 
-ifeq ($(DPDK_CRYPTO_SW_PMD),y)
-DPDK_EXTRA_CFLAGS += -I$(I)/include
+ifeq ($(ISA_L_CRYPTO_LIB),y)
+DPDK_EXTRA_CFLAGS += -I$(ISA_L_CRYPTO_INSTALL_DIR)/include -Wl,-z,muldefs
 DPDK_EXTRA_LDFLAGS += -L$(I)/lib
-DPDK_MAKE_EXTRA_ARGS += AESNI_MULTI_BUFFER_LIB_PATH=$(AESNIMB_LIB_SOURCE)
 endif
+DPDK_MAKE_EXTRA_ARGS += AESNI_MULTI_BUFFER_LIB_PATH=$(AESNIMB_LIB_SOURCE)
 
 # assemble DPDK make arguments
 DPDK_MAKE_ARGS := -C $(DPDK_SOURCE) -j $(JOBS) \
@@ -104,8 +178,6 @@ DPDK_MAKE_ARGS := -C $(DPDK_SOURCE) -j $(JOBS) \
 	CPU_CFLAGS="$(DPDK_CPU_CFLAGS)" \
 	DESTDIR=$(I) \
         $(DPDK_MAKE_EXTRA_ARGS)
-
-DPDK_SOURCE_FILES := $(shell  [ -e $(DPDK_SOURCE) ] && find $(DPDK_SOURCE) -name "*.[chS]")
 
 define set
 @if grep -q CONFIG_$1 $@ ; \
@@ -137,11 +209,12 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_PMD_BOND,y)
 	$(call set,RTE_LIBRTE_IP_FRAG,y)
 	$(call set,RTE_LIBRTE_PMD_QAT,y)
-	$(call set,RTE_LIBRTE_PMD_AESNI_MB,$(DPDK_CRYPTO_SW_PMD))
-	$(call set,RTE_LIBRTE_PMD_AESNI_GCM,$(DPDK_CRYPTO_SW_PMD))
+	$(call set,RTE_LIBRTE_PMD_AESNI_MB,$(AESNI))
+	$(call set,RTE_LIBRTE_PMD_AESNI_GCM,$(AESNI))
 	$(call set,RTE_LIBRTE_MLX4_PMD,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_PMD,$(DPDK_MLX5_PMD))
 	@# not needed
+	$(call set,RTE_LIBRTE_PMD_TAP,n)
 	$(call set,RTE_LIBRTE_TIMER,n)
 	$(call set,RTE_LIBRTE_CFGFILE,n)
 	$(call set,RTE_LIBRTE_LPM,n)
@@ -151,6 +224,7 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_PORT,n)
 	$(call set,RTE_LIBRTE_TABLE,n)
 	$(call set,RTE_LIBRTE_PIPELINE,n)
+	$(call set,RTE_LIBRTE_FLOW_CLASSIFY,n)
 	$(call set,RTE_KNI_KMOD,n)
 	$(call set,RTE_EAL_IGB_UIO,n)
 	@rm -f .config.ok
@@ -161,6 +235,12 @@ $(CURDIR)/$(DPDK_TARBALL):
 		else curl -o $(CURDIR)/$(DPDK_TARBALL) -LO $(DPDK_TAR_URL) ; \
 	fi
 	@rm -f $(B)/.download.ok
+
+$(CURDIR)/$(NASM_TARBALL):
+	@if [ -e $(DPDK_DOWNLOAD_DIR)/$(NASM_TARBALL) ] ; \
+		then cp $(DPDK_DOWNLOAD_DIR)/$(NASM_TARBALL) $(CURDIR) ; \
+		else curl -o $(CURDIR)/$(NASM_TARBALL) -LO $(NASM_TAR_URL) ; \
+	fi
 
 $(CURDIR)/$(AESNIMB_LIB_TARBALL):
 	@if [ -e $(DPDK_DOWNLOAD_DIR)/$(AESNIMB_LIB_TARBALL) ] ; \
@@ -175,8 +255,11 @@ $(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL):
 	fi
 
 DPDK_DOWNLOADS = $(CURDIR)/$(DPDK_TARBALL)
-ifeq ($(DPDK_CRYPTO_SW_PMD),y)
+ifeq ($(AESNI),y)
+DPDK_DOWNLOADS += $(CURDIR)/$(NASM_TARBALL)
 DPDK_DOWNLOADS += $(CURDIR)/$(AESNIMB_LIB_TARBALL)
+endif
+ifeq ($(ISA_L_CRYPTO_LIB),y)
 DPDK_DOWNLOADS += $(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL)
 endif
 
@@ -194,9 +277,13 @@ download: $(B)/.download.ok
 $(B)/.extract.ok: $(B)/.download.ok
 	@echo --- extracting $(DPDK_TARBALL) ---
 	@tar --directory $(B) --extract --file $(CURDIR)/$(DPDK_TARBALL)
-ifeq ($(DPDK_CRYPTO_SW_PMD),y)
+ifeq ($(AESNI),y)
+	@echo --- extracting $(NASM_TARBALL) ---
+	@tar --directory $(B) --extract --file $(CURDIR)/$(NASM_TARBALL)
 	@echo --- extracting $(AESNIMB_LIB_TARBALL) ---
 	@tar --directory $(B) --extract --file $(CURDIR)/$(AESNIMB_LIB_TARBALL)
+endif
+ifeq ($(ISA_L_CRYPTO_LIB),y)
 	@echo --- extracting $(ISA_L_CRYPTO_LIB_TARBALL) ---
 	@tar --directory $(B) --extract --file $(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL)
 endif
@@ -225,18 +312,43 @@ $(B)/.config.ok: $(B)/.patch.ok $(B)/custom-config
 .PHONY: config
 config: $(B)/.config.ok
 
-$(B)/.build.ok: $(DPDK_SOURCE_FILES)
-	@if [ ! -e $(B)/.config.ok ] ; then echo 'Please run "make config" first' && false ; fi
-ifeq ($(DPDK_CRYPTO_SW_PMD),y)
-	# Build IPsec_MB library
+.PHONY: build-nasm
+build-nasm:
+	cd $(NASM_SOURCE) && sh configure && make -j
+
+.PHONY: build-ipsec-mb
+build-ipsec-mb:
 	mkdir -p $(I)/lib/
-	make -C $(AESNIMB_LIB_SOURCE) -j NO_GCM=y
+	# Do not build GCM stuff if we are building ISA_L
+	make -C $(AESNIMB_LIB_SOURCE) -j NO_GCM=$(ISA_L_CRYPTO_LIB) \
+	  DEBUG=$(DPDK_DEBUG) EXTRA_CFLAGS=-fPIC NASM=$(NASM_SOURCE)/nasm
 	cp $(AESNIMB_LIB_SOURCE)/libIPSec_MB.a $(I)/lib/
-	# Build ISA-L Crypto library
-	cd $(ISA_L_CRYPTO_LIB_SOURCE) && ./autogen.sh && ./configure --prefix=$(I)
+
+.PHONY: build-isal-crypto
+build-isal-crypto:
+	mkdir -p $(I)/lib/
+	cd $(ISA_L_CRYPTO_LIB_SOURCE) && ./autogen.sh && \
+	  ./configure --prefix=$(ISA_L_CRYPTO_INSTALL_DIR) \
+	  --libdir=$(ISA_L_CRYPTO_INSTALL_DIR)/lib CFLAGS='-fPIC -DPIC -O2'
 	make -C $(ISA_L_CRYPTO_LIB_SOURCE) -j install
-endif
+	cp $(ISA_L_CRYPTO_INSTALL_DIR)/lib/libisal_crypto.a $(I)/lib/
+
+.PHONY: build-dpdk
+build-dpdk:
+	@if [ ! -e $(B)/.config.ok ] ; then echo 'Please run "make config" first' && false ; fi
 	@make $(DPDK_MAKE_ARGS) install
+
+# Order matters
+ifeq ($(AESNI),y)
+BUILD_TARGETS += build-nasm
+BUILD_TARGETS += build-ipsec-mb
+endif
+ifeq ($(ISA_L_CRYPTO_LIB),y)
+BUILD_TARGETS += build-isal-crypto
+endif
+BUILD_TARGETS += build-dpdk
+
+$(B)/.build.ok: $(BUILD_TARGETS)
 	@touch $@
 
 .PHONY: build
@@ -274,6 +386,11 @@ build-deb: $(DEV_DEB)
 
 install-deb:
 ifneq ($(INSTALLED_DEB_VER),$(DPDK_VERSION)-$(PKG_SUFFIX))
+	@echo "=========================================================="
+	@echo " Out of date DPDK package installed."
+	@echo " Installed: $(INSTALLED_DEB_VER)"
+	@echo " Needed: $(DPDK_VERSION)-$(PKG_SUFFIX)"
+	@echo "=========================================================="
 	@make $(DEV_DEB)
 	@sudo dpkg -i $(DEV_DEB)
 else
@@ -317,7 +434,7 @@ build-rpm: $(DEV_RPM)
 
 install-rpm:
 ifneq ($(INSTALLED_RPM_VER),$(DPDK_VERSION)-$(PKG_SUFFIX))
-	@make $(DEV_RPM)
+	@$(MAKE) $(DEV_RPM)
 	sudo rpm -Uih $(DEV_RPM)
 else
 	@echo "=========================================================="

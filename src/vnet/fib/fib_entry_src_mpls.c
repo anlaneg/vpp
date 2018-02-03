@@ -57,13 +57,13 @@ static void
 fib_entry_src_mpls_add (fib_entry_src_t *src,
                         const fib_entry_t *entry,
                         fib_entry_flag_t flags,
-                        fib_protocol_t proto,
+                        dpo_proto_t proto,
                         const dpo_id_t *dpo)
 {
     src->fes_pl =
 	fib_path_list_create_special(proto,
 				     FIB_PATH_LIST_FLAG_DROP,
-				     drop_dpo_get(fib_proto_to_dpo(proto)));
+				     drop_dpo_get(proto));
 }
 
 static void
@@ -94,7 +94,9 @@ fib_entry_src_mpls_set_data (fib_entry_src_t *src,
 	    fib_table_entry_delete_index(src->mpls.fesm_lfes[eos],
 					 FIB_SOURCE_SPECIAL);
         }
-        fib_table_unlock(MPLS_FIB_DEFAULT_TABLE_ID, FIB_PROTOCOL_MPLS);
+        fib_table_unlock(MPLS_FIB_DEFAULT_TABLE_ID,
+                         FIB_PROTOCOL_MPLS,
+                         FIB_SOURCE_MPLS);
         src->mpls.fesm_label = label;
     }
     else
@@ -113,7 +115,8 @@ fib_entry_src_mpls_set_data (fib_entry_src_t *src,
         {
             fib_index =
 		fib_table_find_or_create_and_lock(FIB_PROTOCOL_MPLS,
-						  MPLS_FIB_DEFAULT_TABLE_ID);
+						  MPLS_FIB_DEFAULT_TABLE_ID,
+                                                  FIB_SOURCE_MPLS);
         }
 	else
 	{
@@ -167,7 +170,7 @@ static u8*
 fib_entry_src_mpls_format (fib_entry_src_t *src,
 			   u8* s)
 {
-    return (format(s, "MPLS local-label:%d", src->mpls.fesm_label));
+    return (format(s, " local-label:%d", src->mpls.fesm_label));
 }
 
 const static fib_entry_src_vft_t mpls_src_vft = {

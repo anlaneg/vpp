@@ -16,6 +16,7 @@
 #include <vnet/ip/ip.h>
 #include <vnet/dpo/mpls_label_dpo.h>
 #include <vnet/mpls/mpls.h>
+#include <vnet/dpo/drop_dpo.h>
 
 /*
  * pool of all MPLS Label DPOs
@@ -53,6 +54,17 @@ mpls_label_dpo_create (mpls_label_t *label_stack,
     u32 ii;
 
     mld = mpls_label_dpo_alloc();
+
+    if (MPLS_LABEL_DPO_MAX_N_LABELS < vec_len(label_stack))
+    {
+        clib_warning("Label stack size exceeded");
+        dpo_stack(DPO_MPLS_LABEL,
+                  mld->mld_payload_proto,
+                  &mld->mld_dpo,
+                  drop_dpo_get(DPO_PROTO_MPLS));
+        return (mpls_label_dpo_get_index(mld));
+    }
+
     mld->mld_n_labels = vec_len(label_stack);
     mld->mld_n_hdr_bytes = mld->mld_n_labels * sizeof(mld->mld_hdr[0]);
     mld->mld_payload_proto = payload_proto;
@@ -105,9 +117,17 @@ format_mpls_label_dpo (u8 *s, va_list *args)
     mpls_label_dpo_t *mld;
     u32 ii;
 
-    mld = mpls_label_dpo_get(index);
-
     s = format(s, "mpls-label:[%d]:", index);
+
+    if (pool_is_free_index(mpls_label_dpo_pool, index))
+    {
+        /*
+         * the packet trace can be printed after the DPO has been deleted
+         */
+        return (s);
+    }
+
+    mld = mpls_label_dpo_get(index);
 
     for (ii = 0; ii < mld->mld_n_labels; ii++)
     {
@@ -192,7 +212,8 @@ mpls_label_imposition_inline (vlib_main_t * vm,
                               vlib_node_runtime_t * node,
                               vlib_frame_t * from_frame,
                               u8 payload_is_ip4,
-                              u8 payload_is_ip6)
+                              u8 payload_is_ip6,
+                              u8 payload_is_ethernet)
 {
     u32 n_left_from, next_index, * from, * to_next;
 
@@ -319,6 +340,13 @@ mpls_label_imposition_inline (vlib_main_t * vm,
                 ttl1 = ip1->hop_limit;
                 ttl2 = ip2->hop_limit;
                 ttl3 = ip3->hop_limit;
+            }
+            else if (payload_is_ethernet)
+            {
+                /*
+                 * nothing to chang ein the ethernet header
+                 */
+                ttl0 = ttl1 = ttl2 = ttl3 = 255;
             }
             else
             {
@@ -534,7 +562,7 @@ format_mpls_label_imposition_trace (u8 * s, va_list * args)
     CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
     mpls_label_imposition_trace_t * t;
     mpls_unicast_header_t hdr;
-    uword indent;
+    u32 indent;
 
     t = va_arg (*args, mpls_label_imposition_trace_t *);
     indent = format_get_indent (s);
@@ -551,7 +579,7 @@ mpls_label_imposition (vlib_main_t * vm,
                        vlib_node_runtime_t * node,
                        vlib_frame_t * frame)
 {
-    return (mpls_label_imposition_inline(vm, node, frame, 0, 0));
+    return (mpls_label_imposition_inline(vm, node, frame, 0, 0, 0));
 }
 
 VLIB_REGISTER_NODE (mpls_label_imposition_node) = {
@@ -573,7 +601,7 @@ ip4_mpls_label_imposition (vlib_main_t * vm,
                            vlib_node_runtime_t * node,
                            vlib_frame_t * frame)
 {
-    return (mpls_label_imposition_inline(vm, node, frame, 1, 0));
+    return (mpls_label_imposition_inline(vm, node, frame, 1, 0, 0));
 }
 
 VLIB_REGISTER_NODE (ip4_mpls_label_imposition_node) = {
@@ -595,7 +623,7 @@ ip6_mpls_label_imposition (vlib_main_t * vm,
                            vlib_node_runtime_t * node,
                            vlib_frame_t * frame)
 {
-    return (mpls_label_imposition_inline(vm, node, frame, 0, 1));
+    return (mpls_label_imposition_inline(vm, node, frame, 0, 1, 0));
 }
 
 VLIB_REGISTER_NODE (ip6_mpls_label_imposition_node) = {
@@ -611,6 +639,28 @@ VLIB_REGISTER_NODE (ip6_mpls_label_imposition_node) = {
 };
 VLIB_NODE_FUNCTION_MULTIARCH (ip6_mpls_label_imposition_node,
                               ip6_mpls_label_imposition)
+
+static uword
+ethernet_mpls_label_imposition (vlib_main_t * vm,
+                                vlib_node_runtime_t * node,
+                                vlib_frame_t * frame)
+{
+    return (mpls_label_imposition_inline(vm, node, frame, 0, 0, 1));
+}
+
+VLIB_REGISTER_NODE (ethernet_mpls_label_imposition_node) = {
+    .function = ethernet_mpls_label_imposition,
+    .name = "ethernet-mpls-label-imposition",
+    .vector_size = sizeof (u32),
+
+    .format_trace = format_mpls_label_imposition_trace,
+    .n_next_nodes = 1,
+    .next_nodes = {
+        [0] = "error-drop",
+    }
+};
+VLIB_NODE_FUNCTION_MULTIARCH (ethernet_mpls_label_imposition_node,
+                              ethernet_mpls_label_imposition)
 
 static void
 mpls_label_dpo_mem_show (void)
@@ -643,11 +693,18 @@ const static char* const mpls_label_imp_mpls_nodes[] =
     "mpls-label-imposition",
     NULL,
 };
+const static char* const mpls_label_imp_ethernet_nodes[] =
+{
+    "ethernet-mpls-label-imposition",
+    NULL,
+};
+
 const static char* const * const mpls_label_imp_nodes[DPO_PROTO_NUM] =
 {
     [DPO_PROTO_IP4]  = mpls_label_imp_ip4_nodes,
     [DPO_PROTO_IP6]  = mpls_label_imp_ip6_nodes,
     [DPO_PROTO_MPLS] = mpls_label_imp_mpls_nodes,
+    [DPO_PROTO_ETHERNET] = mpls_label_imp_ethernet_nodes,
 };
 
 

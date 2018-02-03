@@ -25,19 +25,21 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+
 #include <vppinfra/format.h>
 #include <vppinfra/byte_order.h>
 #include <vppinfra/error.h>
+#include <svm/queue.h>
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
-#include <vlibmemory/api.h>
-#include <vlibmemory/unix_shared_memory_queue.h>
-
+#include <vlibmemory/memory_api.h>
 #include <vlibmemory/vl_memory_msg_enum.h>
 
 #define vl_typedefs
 #include <vlibmemory/vl_memory_api_h.h>
 #undef vl_typedefs
+
+#define DEBUG_MESSAGE_BUFFER_OVERRUN 0
 
 static inline void *
 vl_msg_api_alloc_internal (int nbytes, int pool, int may_return_null)
@@ -45,12 +47,18 @@ vl_msg_api_alloc_internal (int nbytes, int pool, int may_return_null)
   int i;
   msgbuf_t *rv;
   ring_alloc_t *ap;
-  unix_shared_memory_queue_t *q;
+  svm_queue_t *q;
   void *oldheap;
   vl_shmem_hdr_t *shmem_hdr;
   api_main_t *am = &api_main;
 
   shmem_hdr = am->shmem_hdr;
+
+#if DEBUG_MESSAGE_BUFFER_OVERRUN > 0
+  nbytes += 4;
+#endif
+
+  ASSERT (pool == 0 || vlib_get_thread_index () == 0);
 
   if (shmem_hdr == 0)
     {
@@ -172,7 +180,16 @@ vl_msg_api_alloc_internal (int nbytes, int pool, int may_return_null)
   pthread_mutex_unlock (&am->vlib_rp->mutex);
 
 out:
+#if DEBUG_MESSAGE_BUFFER_OVERRUN > 0
+  {
+    nbytes -= 4;
+    u32 *overrun;
+    overrun = (u32 *) (rv->data + nbytes - sizeof (msgbuf_t));
+    *overrun = 0x1badbabe;
+  }
+#endif
   rv->data_len = htonl (nbytes - sizeof (msgbuf_t));
+
   return (rv->data);
 }
 
@@ -213,6 +230,25 @@ vl_msg_api_alloc_as_if_client_or_null (int nbytes)
   return vl_msg_api_alloc_internal (nbytes, 0, 1 /* may_return_null */ );
 }
 
+void *
+vl_mem_api_alloc_as_if_client_w_reg (vl_api_registration_t * reg, int nbytes)
+{
+  api_main_t *am = &api_main;
+  vl_shmem_hdr_t *save_shmem_hdr = am->shmem_hdr;
+  svm_region_t *vlib_rp, *save_vlib_rp = am->vlib_rp;
+  void *msg;
+
+  vlib_rp = am->vlib_rp = reg->vlib_rp;
+  am->shmem_hdr = (void *) vlib_rp->user_ctx;
+
+  msg = vl_msg_api_alloc_internal (nbytes, 0, 0 /* may_return_null */ );
+
+  am->shmem_hdr = save_shmem_hdr;
+  am->vlib_rp = save_vlib_rp;
+
+  return msg;
+}
+
 void
 vl_msg_api_free (void *a)
 {
@@ -231,11 +267,27 @@ vl_msg_api_free (void *a)
     {
       rv->q = 0;
       rv->gc_mark_timestamp = 0;
+#if DEBUG_MESSAGE_BUFFER_OVERRUN > 0
+      {
+	u32 *overrun;
+	overrun = (u32 *) (rv->data + ntohl (rv->data_len));
+	ASSERT (*overrun == 0x1badbabe);
+      }
+#endif
       return;
     }
 
   pthread_mutex_lock (&am->vlib_rp->mutex);
   oldheap = svm_push_data_heap (am->vlib_rp);
+
+#if DEBUG_MESSAGE_BUFFER_OVERRUN > 0
+  {
+    u32 *overrun;
+    overrun = (u32 *) (rv->data + ntohl (rv->data_len));
+    ASSERT (*overrun == 0x1badbabe);
+  }
+#endif
+
   clib_mem_free (rv);
   svm_pop_heap (oldheap);
   pthread_mutex_unlock (&am->vlib_rp->mutex);
@@ -329,24 +381,170 @@ vl_set_api_pvt_heap_size (u64 size)
   am->api_pvt_heap_size = size;
 }
 
+static void
+vl_api_default_mem_config (vl_shmem_hdr_t * shmem_hdr)
+{
+  api_main_t *am = &api_main;
+  u32 vlib_input_queue_length;
+
+  /* vlib main input queue */
+  vlib_input_queue_length = 1024;
+  if (am->vlib_input_queue_length)
+    vlib_input_queue_length = am->vlib_input_queue_length;
+
+  shmem_hdr->vl_input_queue =
+    svm_queue_init (vlib_input_queue_length, sizeof (uword),
+		    getpid (), am->vlib_signal);
+
+#define _(sz,n)                                                 \
+    do {                                                        \
+        ring_alloc_t _rp;                                       \
+        _rp.rp = svm_queue_init ((n), (sz), 0, 0); \
+        _rp.size = (sz);                                        \
+        _rp.nitems = n;                                         \
+        _rp.hits = 0;                                           \
+        _rp.misses = 0;                                         \
+        vec_add1(shmem_hdr->vl_rings, _rp);                     \
+    } while (0);
+
+  foreach_vl_aring_size;
+#undef _
+
+#define _(sz,n)                                                 \
+    do {                                                        \
+        ring_alloc_t _rp;                                       \
+        _rp.rp = svm_queue_init ((n), (sz), 0, 0); \
+        _rp.size = (sz);                                        \
+        _rp.nitems = n;                                         \
+        _rp.hits = 0;                                           \
+        _rp.misses = 0;                                         \
+        vec_add1(shmem_hdr->client_rings, _rp);                 \
+    } while (0);
+
+  foreach_clnt_aring_size;
+#undef _
+}
+
+void
+vl_api_mem_config (vl_shmem_hdr_t * hdr, vl_api_shm_elem_config_t * config)
+{
+  api_main_t *am = &api_main;
+  vl_api_shm_elem_config_t *c;
+  ring_alloc_t *rp;
+  u32 size;
+
+  if (!config)
+    {
+      vl_api_default_mem_config (hdr);
+      return;
+    }
+
+  vec_foreach (c, config)
+  {
+    switch (c->type)
+      {
+      case VL_API_QUEUE:
+	hdr->vl_input_queue = svm_queue_init (c->count,
+					      c->size,
+					      getpid (), am->vlib_signal);
+	continue;
+      case VL_API_VLIB_RING:
+	vec_add2 (hdr->vl_rings, rp, 1);
+	break;
+      case VL_API_CLIENT_RING:
+	vec_add2 (hdr->client_rings, rp, 1);
+	break;
+      default:
+	clib_warning ("unknown config type: %d", c->type);
+	continue;
+      }
+
+    size = sizeof (ring_alloc_t) + c->size;
+    rp->rp = svm_queue_init (c->count, size, 0, 0);
+    rp->size = size;
+    rp->nitems = c->count;
+    rp->hits = 0;
+    rp->misses = 0;
+  }
+}
+
+void
+vl_init_shmem (svm_region_t * vlib_rp, vl_api_shm_elem_config_t * config,
+	       int is_vlib, int is_private_region)
+{
+  api_main_t *am = &api_main;
+  vl_shmem_hdr_t *shmem_hdr = 0;
+  void *oldheap;
+  ASSERT (vlib_rp);
+
+  /* $$$$ need private region config parameters */
+
+  oldheap = svm_push_data_heap (vlib_rp);
+
+  vec_validate (shmem_hdr, 0);
+  shmem_hdr->version = VL_SHM_VERSION;
+  shmem_hdr->clib_file_index = VL_API_INVALID_FI;
+
+  /* Set up the queue and msg ring allocator */
+  vl_api_mem_config (shmem_hdr, config);
+
+  if (is_private_region == 0)
+    {
+      am->shmem_hdr = shmem_hdr;
+      am->vlib_rp = vlib_rp;
+      am->our_pid = getpid ();
+      if (is_vlib)
+	am->shmem_hdr->vl_pid = am->our_pid;
+    }
+  else
+    shmem_hdr->vl_pid = am->our_pid;
+
+  svm_pop_heap (oldheap);
+
+  /*
+   * After absolutely everything that a client might see is set up,
+   * declare the shmem region valid
+   */
+  vlib_rp->user_ctx = shmem_hdr;
+
+  pthread_mutex_unlock (&vlib_rp->mutex);
+}
+
 int
 vl_map_shmem (const char *region_name, int is_vlib)
 {
   svm_map_region_args_t _a, *a = &_a;
   svm_region_t *vlib_rp, *root_rp;
-  void *oldheap;
-  vl_shmem_hdr_t *shmem_hdr = 0;
   api_main_t *am = &api_main;
-  int i;
+  int i, rv;
   struct timespec ts, tsrem;
-  u32 vlib_input_queue_length;
-
-  if (is_vlib == 0)
-    svm_region_init_chroot (am->root_path);
+  char *vpe_api_region_suffix = "-vpe-api";
 
   memset (a, 0, sizeof (*a));
 
-  a->name = region_name;
+  if (strstr (region_name, vpe_api_region_suffix))
+    {
+      u8 *root_path = format (0, "%s", region_name);
+      _vec_len (root_path) = (vec_len (root_path) -
+			      strlen (vpe_api_region_suffix));
+      vec_terminate_c_string (root_path);
+      a->root_path = (const char *) root_path;
+      am->root_path = (const char *) root_path;
+    }
+
+  if (is_vlib == 0)
+    {
+      rv = svm_region_init_chroot (am->root_path);
+      if (rv)
+	return rv;
+    }
+
+  if (a->root_path != NULL)
+    {
+      a->name = "/vpe-api";
+    }
+  else
+    a->name = region_name;
   a->size = am->api_size ? am->api_size : (16 << 20);
   a->flags = SVM_FLAGS_MHEAP;
   a->uid = am->api_uid;
@@ -366,7 +564,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
       am->our_pid = getpid ();
       if (is_vlib)
 	{
-	  unix_shared_memory_queue_t *q;
+	  svm_queue_t *q;
 	  uword old_msg;
 	  /*
 	   * application restart. Reset cached pids, API message
@@ -399,9 +597,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
 
 	mutex_ok:
 	  am->vlib_rp = vlib_rp;
-	  while (unix_shared_memory_queue_sub (q,
-					       (u8 *) & old_msg,
-					       1 /* nowait */ )
+	  while (svm_queue_sub (q, (u8 *) & old_msg, SVM_Q_NOWAIT, 0)
 		 != -2 /* queue underflow */ )
 	    {
 	      vl_msg_api_free_nolock ((void *) old_msg);
@@ -452,65 +648,9 @@ vl_map_shmem (const char *region_name, int is_vlib)
     }
 
   /* Nope, it's our problem... */
+  vl_init_shmem (vlib_rp, 0 /* default config */ , 1 /* is vlib */ ,
+		 0 /* is_private_region */ );
 
-  oldheap = svm_push_data_heap (vlib_rp);
-
-  vec_validate (shmem_hdr, 0);
-  shmem_hdr->version = VL_SHM_VERSION;
-
-  /* vlib main input queue */
-  vlib_input_queue_length = 1024;
-  if (am->vlib_input_queue_length)
-    vlib_input_queue_length = am->vlib_input_queue_length;
-
-  shmem_hdr->vl_input_queue =
-    unix_shared_memory_queue_init (vlib_input_queue_length, sizeof (uword),
-				   getpid (), am->vlib_signal);
-
-  /* Set up the msg ring allocator */
-#define _(sz,n)                                                 \
-    do {                                                        \
-        ring_alloc_t _rp;                                       \
-        _rp.rp = unix_shared_memory_queue_init ((n), (sz), 0, 0); \
-        _rp.size = (sz);                                        \
-        _rp.nitems = n;                                         \
-        _rp.hits = 0;                                           \
-        _rp.misses = 0;                                         \
-        vec_add1(shmem_hdr->vl_rings, _rp);                     \
-    } while (0);
-
-  foreach_vl_aring_size;
-#undef _
-
-#define _(sz,n)                                                 \
-    do {                                                        \
-        ring_alloc_t _rp;                                       \
-        _rp.rp = unix_shared_memory_queue_init ((n), (sz), 0, 0); \
-        _rp.size = (sz);                                        \
-        _rp.nitems = n;                                         \
-        _rp.hits = 0;                                           \
-        _rp.misses = 0;                                         \
-        vec_add1(shmem_hdr->client_rings, _rp);                 \
-    } while (0);
-
-  foreach_clnt_aring_size;
-#undef _
-
-  am->shmem_hdr = shmem_hdr;
-  am->vlib_rp = vlib_rp;
-  am->our_pid = getpid ();
-  if (is_vlib)
-    am->shmem_hdr->vl_pid = am->our_pid;
-
-  svm_pop_heap (oldheap);
-
-  /*
-   * After absolutely everything that a client might see is set up,
-   * declare the shmem region valid
-   */
-  vlib_rp->user_ctx = shmem_hdr;
-
-  pthread_mutex_unlock (&vlib_rp->mutex);
   vec_add1 (am->mapped_shmem_regions, vlib_rp);
   return 0;
 }
@@ -523,8 +663,8 @@ vl_register_mapped_shmem_region (svm_region_t * rp)
   vec_add1 (am->mapped_shmem_regions, rp);
 }
 
-void
-vl_unmap_shmem (void)
+static void
+vl_unmap_shmem_internal (u8 is_client)
 {
   svm_region_t *rp;
   int i;
@@ -536,13 +676,14 @@ vl_unmap_shmem (void)
   for (i = 0; i < vec_len (am->mapped_shmem_regions); i++)
     {
       rp = am->mapped_shmem_regions[i];
-      svm_region_unmap (rp);
+      is_client ? svm_region_unmap_client (rp) : svm_region_unmap (rp);
     }
 
   vec_free (am->mapped_shmem_regions);
   am->shmem_hdr = 0;
 
-  svm_region_exit ();
+  is_client ? svm_region_exit_client () : svm_region_exit ();
+
   /* $$$ more careful cleanup, valgrind run... */
   vec_free (am->msg_handlers);
   vec_free (am->msg_endian_handlers);
@@ -550,19 +691,19 @@ vl_unmap_shmem (void)
 }
 
 void
-vl_msg_api_send_shmem (unix_shared_memory_queue_t * q, u8 * elem)
+vl_unmap_shmem (void)
 {
-  api_main_t *am = &api_main;
-  uword *trace = (uword *) elem;
-
-  if (am->tx_trace && am->tx_trace->enabled)
-    vl_msg_api_trace (am, am->tx_trace, (void *) trace[0]);
-
-  (void) unix_shared_memory_queue_add (q, elem, 0 /* nowait */ );
+  vl_unmap_shmem_internal (0);
 }
 
 void
-vl_msg_api_send_shmem_nolock (unix_shared_memory_queue_t * q, u8 * elem)
+vl_unmap_shmem_client (void)
+{
+  vl_unmap_shmem_internal (1);
+}
+
+void
+vl_msg_api_send_shmem (svm_queue_t * q, u8 * elem)
 {
   api_main_t *am = &api_main;
   uword *trace = (uword *) elem;
@@ -570,71 +711,25 @@ vl_msg_api_send_shmem_nolock (unix_shared_memory_queue_t * q, u8 * elem)
   if (am->tx_trace && am->tx_trace->enabled)
     vl_msg_api_trace (am, am->tx_trace, (void *) trace[0]);
 
-  (void) unix_shared_memory_queue_add_nolock (q, elem);
+  (void) svm_queue_add (q, elem, 0 /* nowait */ );
 }
 
-u32
-vl_api_get_msg_index (u8 * name_and_crc)
+int
+vl_mem_api_can_send (svm_queue_t * q)
+{
+  return (q->cursize < q->maxsize);
+}
+
+void
+vl_msg_api_send_shmem_nolock (svm_queue_t * q, u8 * elem)
 {
   api_main_t *am = &api_main;
-  uword *p;
+  uword *trace = (uword *) elem;
 
-  if (am->msg_index_by_name_and_crc)
-    {
-      p = hash_get_mem (am->msg_index_by_name_and_crc, name_and_crc);
-      if (p)
-	return p[0];
-    }
-  return ~0;
-}
+  if (am->tx_trace && am->tx_trace->enabled)
+    vl_msg_api_trace (am, am->tx_trace, (void *) trace[0]);
 
-static inline vl_api_registration_t *
-vl_api_client_index_to_registration_internal (u32 handle)
-{
-  vl_api_registration_t **regpp;
-  vl_api_registration_t *regp;
-  api_main_t *am = &api_main;
-  u32 index;
-
-  index = vl_msg_api_handle_get_index (handle);
-  if ((am->shmem_hdr->application_restarts & VL_API_EPOCH_MASK)
-      != vl_msg_api_handle_get_epoch (handle))
-    {
-      vl_msg_api_increment_missing_client_counter ();
-      return 0;
-    }
-
-  regpp = am->vl_clients + index;
-
-  if (pool_is_free (am->vl_clients, regpp))
-    {
-      vl_msg_api_increment_missing_client_counter ();
-      return 0;
-    }
-  regp = *regpp;
-  return (regp);
-}
-
-vl_api_registration_t *
-vl_api_client_index_to_registration (u32 index)
-{
-  return (vl_api_client_index_to_registration_internal (index));
-}
-
-unix_shared_memory_queue_t *
-vl_api_client_index_to_input_queue (u32 index)
-{
-  vl_api_registration_t *regp;
-  api_main_t *am = &api_main;
-
-  /* Special case: vlib trying to send itself a message */
-  if (index == (u32) ~ 0)
-    return (am->shmem_hdr->vl_input_queue);
-
-  regp = vl_api_client_index_to_registration_internal (index);
-  if (!regp)
-    return 0;
-  return (regp->vl_input_queue);
+  (void) svm_queue_add_nolock (q, elem);
 }
 
 /*

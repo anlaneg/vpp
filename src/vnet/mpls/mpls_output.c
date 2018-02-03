@@ -24,9 +24,6 @@ typedef struct {
   /* Adjacency taken. */
   u32 adj_index;
   u32 flow_hash;
-
-  /* Packet data, possibly *after* rewrite. */
-  u8 packet_data[64 - 1*sizeof(u32)];
 } mpls_output_trace_t;
 
 #define foreach_mpls_output_next        	\
@@ -45,16 +42,11 @@ format_mpls_output_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   mpls_output_trace_t * t = va_arg (*args, mpls_output_trace_t *);
-  uword indent = format_get_indent (s);
 
   s = format (s, "adj-idx %d : %U flow hash: 0x%08x",
               t->adj_index,
               format_ip_adjacency, t->adj_index, FORMAT_IP_ADJACENCY_NONE,
 	      t->flow_hash);
-  s = format (s, "\n%U%U",
-              format_white_space, indent,
-              format_ip_adjacency_packet_data,
-              t->adj_index, t->packet_data, sizeof (t->packet_data));
   return s;
 }
 
@@ -193,8 +185,12 @@ mpls_output_inline (vlib_main_t * vm,
             }
           if (is_midchain)
           {
-              adj0->sub_type.midchain.fixup_func(vm, adj0, p0);
-              adj1->sub_type.midchain.fixup_func(vm, adj1, p1);
+	      adj0->sub_type.midchain.fixup_func
+                (vm, adj0, p0,
+                 adj0->sub_type.midchain.fixup_data);
+	      adj1->sub_type.midchain.fixup_func
+                (vm, adj1, p1,
+                 adj1->sub_type.midchain.fixup_data);
           }
 
           p0->error = error_node->errors[error0];
@@ -206,9 +202,6 @@ mpls_output_inline (vlib_main_t * vm,
                                                         p0, sizeof (*tr));
               tr->adj_index = vnet_buffer(p0)->ip.adj_index[VLIB_TX];
               tr->flow_hash = vnet_buffer(p0)->ip.flow_hash;
-              clib_memcpy (tr->packet_data,
-                           vlib_buffer_get_current (p0),
-                           sizeof (tr->packet_data));
             }
           if (PREDICT_FALSE(p1->flags & VLIB_BUFFER_IS_TRACED))
             {
@@ -216,9 +209,6 @@ mpls_output_inline (vlib_main_t * vm,
                                                         p1, sizeof (*tr));
               tr->adj_index = vnet_buffer(p1)->ip.adj_index[VLIB_TX];
               tr->flow_hash = vnet_buffer(p1)->ip.flow_hash;
-              clib_memcpy (tr->packet_data,
-                           vlib_buffer_get_current (p1),
-                           sizeof (tr->packet_data));
             }
 
           vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
@@ -280,7 +270,9 @@ mpls_output_inline (vlib_main_t * vm,
             }
           if (is_midchain)
           {
-              adj0->sub_type.midchain.fixup_func(vm, adj0, p0);
+	      adj0->sub_type.midchain.fixup_func
+                (vm, adj0, p0,
+                 adj0->sub_type.midchain.fixup_data);
           }
 
           p0->error = error_node->errors[error0];
@@ -466,7 +458,7 @@ format_mpls_adj_incomplete_trace (u8 * s, va_list * args)
     CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
     CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
     mpls_adj_incomplete_trace_t * t;
-    uword indent;
+    u32 indent;
 
     t = va_arg (*args, mpls_adj_incomplete_trace_t *);
     indent = format_get_indent (s);

@@ -23,6 +23,12 @@
 #include <vnet/mpls/packet.h>
 
 /**
+ * Keep a lock per-source and a total
+ */
+#define FIB_TABLE_N_LOCKS (FIB_SOURCE_MAX+1)
+#define FIB_TABLE_TOTAL_LOCKS FIB_SOURCE_MAX
+
+/**
  * @brief 
  *   A protocol Independent FIB table
  */
@@ -34,9 +40,9 @@ typedef struct fib_table_t_
     fib_protocol_t ft_proto;
 
     /**
-     * number of locks on the table
+     * per-source number of locks on the table
      */
-    u16 ft_locks;
+    u16 ft_locks[FIB_TABLE_N_LOCKS];
 
     /**
      * Table ID (hash key) for this FIB.
@@ -73,7 +79,7 @@ typedef struct fib_table_t_
  * @brief
  *  Format the description/name of the table
  */
-extern u8* format_fib_table_name(u8* s, va_list ap);
+extern u8* format_fib_table_name(u8* s, va_list *ap);
 
 /**
  * @brief
@@ -288,7 +294,7 @@ extern fib_node_index_t fib_table_entry_path_add(u32 fib_index,
 						 const fib_prefix_t *prefix,
 						 fib_source_t source,
 						 fib_entry_flag_t flags,
-						 fib_protocol_t next_hop_proto,
+						 dpo_proto_t next_hop_proto,
 						 const ip46_address_t *next_hop,
 						 u32 next_hop_sw_if_index,
 						 u32 next_hop_fib_index,
@@ -364,7 +370,7 @@ extern fib_node_index_t fib_table_entry_path_add2(u32 fib_index,
 extern void fib_table_entry_path_remove(u32 fib_index,
 					const fib_prefix_t *prefix,
 					fib_source_t source,
-					fib_protocol_t next_hop_proto,
+					dpo_proto_t next_hop_proto,
 					const ip46_address_t *next_hop,
 					u32 next_hop_sw_if_index,
 					u32 next_hop_fib_index,
@@ -471,7 +477,7 @@ extern fib_node_index_t fib_table_entry_update_one_path(u32 fib_index,
 							const fib_prefix_t *prefix,
 							fib_source_t source,
 							fib_entry_flag_t flags,
-							fib_protocol_t next_hop_proto,
+							dpo_proto_t next_hop_proto,
 							const ip46_address_t *next_hop,
 							u32 next_hop_sw_if_index,
 							u32 next_hop_fib_index,
@@ -628,9 +634,38 @@ extern u32 fib_table_find(fib_protocol_t proto, u32 table_id);
  *
  * @return fib_index
  *  The index of the FIB
+ *
+ * @param source
+ *  The ID of the client/source.
  */
 extern u32 fib_table_find_or_create_and_lock(fib_protocol_t proto,
-					     u32 table_id);
+					     u32 table_id,
+                                             fib_source_t source);
+
+/**
+ * @brief
+ *  Get the index of the FIB for a Table-ID. This DOES create the
+ * FIB if it does not exist.
+ *
+ * @paran proto
+ *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @param table-id
+ *  The Table-ID
+ *
+ * @return fib_index
+ *  The index of the FIB
+ *
+ * @param source
+ *  The ID of the client/source.
+ *
+ * @param name
+ *  The client is choosing the name they want the table to have
+ */
+extern u32 fib_table_find_or_create_and_lock_w_name(fib_protocol_t proto,
+                                                    u32 table_id,
+                                                    fib_source_t source,
+                                                    const u8 *name);
 
 /**
  * @brief
@@ -643,10 +678,14 @@ extern u32 fib_table_find_or_create_and_lock(fib_protocol_t proto,
  * @param fmt
  *  A string to describe the table
  *
+ * @param source
+ *  The ID of the client/source.
+ *
  * @return fib_index
  *  The index of the FIB
  */
 extern u32 fib_table_create_and_lock(fib_protocol_t proto,
+                                     fib_source_t source,
                                      const char *const fmt,
                                      ...);
 
@@ -658,7 +697,7 @@ extern u32 fib_table_create_and_lock(fib_protocol_t proto,
  *  The index of the FIB
  *
  * @paran proto
- *  The protocol of the FIB (and thus the entries therein)
+ *  The protocol the packets the flow hash will be calculated for.
  *
  * @return The flow hash config
  */
@@ -704,9 +743,13 @@ extern void fib_table_set_flow_hash_config(u32 fib_index,
  *
  * @paran proto
  *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @param source
+ *  The ID of the client/source.
  */ 
 extern void fib_table_unlock(u32 fib_index,
-			     fib_protocol_t proto);
+			     fib_protocol_t proto,
+                             fib_source_t source);
 
 /**
  * @brief
@@ -718,9 +761,13 @@ extern void fib_table_unlock(u32 fib_index,
  *
  * @paran proto
  *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @param source
+ *  The ID of the client/source.
  */ 
 extern void fib_table_lock(u32 fib_index,
-			   fib_protocol_t proto);
+			   fib_protocol_t proto,
+                           fib_source_t source);
 
 /**
  * @brief
@@ -746,10 +793,29 @@ extern fib_table_t *fib_table_get(fib_node_index_t index,
 				  fib_protocol_t proto);
 
 /**
+ * @brief return code controlling how a table walk proceeds
+ */
+typedef enum fib_table_walk_rc_t_
+{
+    /**
+     * Continue on to the next entry
+     */
+    FIB_TABLE_WALK_CONTINUE,
+    /**
+     * Do no traverse down this sub-tree
+     */
+    FIB_TABLE_WALK_SUB_TREE_STOP,
+    /**
+     * Stop the walk completely
+     */
+    FIB_TABLE_WALK_STOP,
+} fib_table_walk_rc_t;
+
+/**
  * @brief Call back function when walking entries in a FIB table
  */
-typedef int (*fib_table_walk_fn_t)(fib_node_index_t fei,
-                                   void *ctx);
+typedef fib_table_walk_rc_t (*fib_table_walk_fn_t)(fib_node_index_t fei,
+                                                   void *ctx);
 
 /**
  * @brief Walk all entries in a FIB table
@@ -760,5 +826,22 @@ extern void fib_table_walk(u32 fib_index,
                            fib_protocol_t proto,
                            fib_table_walk_fn_t fn,
                            void *ctx);
+
+/**
+ * @brief Walk all entries in a sub-tree FIB table. The 'root' paraneter
+ * is the prefix at the root of the sub-tree.
+ * N.B: This is NOT safe to deletes. If you need to delete walk the whole
+ * table and store elements in a vector, then delete the elements
+ */
+extern void fib_table_sub_tree_walk(u32 fib_index,
+                                    fib_protocol_t proto,
+                                    const fib_prefix_t *root,
+                                    fib_table_walk_fn_t fn,
+                                    void *ctx);
+
+/**
+ * @brief format (display) the memory used by the FIB tables
+ */
+extern u8 *format_fib_table_memory(u8 *s, va_list *args);
 
 #endif

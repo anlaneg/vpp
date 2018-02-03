@@ -10,15 +10,22 @@
 /build-root/path_setup
 /build-root/build-config.mk
 /build-root/deb/debian/vpp-plugins/
+/build-root/deb/.pybuild/
 /build-root/*.deb
 /build-root/*.rpm
+/build-root/*.tar.xz
 /build-root/*.changes
+/build-root/rpmbuild/
 /build-root/test-doc/
 /build-root/test-cov/
 /build-root/python/
+/build-root/vapi_test/
+/build-root/vom_test/
 /build-config.mk
 /dpdk/*.tar.gz
 /dpdk/*.tar.xz
+/dpdk/vpp-dpdk*.deb
+/dpdk/vpp-dpdk*.changes
 /path_setup
 /tools/
 # start autotools ignore
@@ -48,16 +55,18 @@ ltmain.sh
 ylwrap
 test-driver
 
-.cproject
 *.iml
 .bootstrap.ok
 .settings
+.autotools
 # stop autotools ignore
 
 # OSX and some IDE
 .DS_Store
 .idea/
 .project
+.cproject
+.vscode/
 
 # cscope and ctags
 /cscope.*
@@ -91,3 +100,6 @@ GTAGS
 
 # vppctl command list
 /src/scripts/vppctl-cmd-list
+
+# No core files
+**/core

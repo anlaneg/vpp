@@ -54,18 +54,7 @@ static void vl_api_gre_add_del_tunnel_t_handler
   vl_api_gre_add_del_tunnel_reply_t *rmp;
   int rv = 0;
   vnet_gre_add_del_tunnel_args_t _a, *a = &_a;
-  u32 outer_fib_id;
-  u32 p;
   u32 sw_if_index = ~0;
-
-  p = fib_table_find (!mp->is_ipv6 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6,
-		      ntohl (mp->outer_fib_id));
-  if (p == ~0)
-    {
-      rv = VNET_API_ERROR_NO_SUCH_FIB;
-      goto out;
-    }
-  outer_fib_id = p;
 
   /* Check src & dst are different */
   if ((mp->is_ipv6 && memcmp (mp->src_address, mp->dst_address, 16) == 0) ||
@@ -92,7 +81,7 @@ static void vl_api_gre_add_del_tunnel_t_handler
       clib_memcpy (&(a->dst.ip6), mp->dst_address, 16);
     }
 
-  a->outer_fib_id = outer_fib_id;
+  a->outer_fib_id = ntohl (mp->outer_fib_id);
   rv = vnet_gre_add_del_tunnel (a, &sw_if_index);
 
 out:
@@ -105,7 +94,7 @@ out:
 }
 
 static void send_gre_tunnel_details
-  (gre_tunnel_t * t, unix_shared_memory_queue_t * q, u32 context)
+  (gre_tunnel_t * t, vl_api_registration_t * reg, u32 context)
 {
   vl_api_gre_tunnel_details_t *rmp;
   u8 is_ipv6 = t->tunnel_dst.fp_proto == FIB_PROTOCOL_IP6 ? 1 : 0;
@@ -133,22 +122,20 @@ static void send_gre_tunnel_details
   rmp->context = context;
   rmp->is_ipv6 = is_ipv6;
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void
 vl_api_gre_tunnel_dump_t_handler (vl_api_gre_tunnel_dump_t * mp)
 {
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   gre_main_t *gm = &gre_main;
   gre_tunnel_t *t;
   u32 sw_if_index;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
-    {
-      return;
-    }
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
 
   sw_if_index = ntohl (mp->sw_if_index);
 
@@ -157,7 +144,7 @@ vl_api_gre_tunnel_dump_t_handler (vl_api_gre_tunnel_dump_t * mp)
       /* *INDENT-OFF* */
       pool_foreach (t, gm->tunnels,
       ({
-        send_gre_tunnel_details(t, q, mp->context);
+        send_gre_tunnel_details(t, reg, mp->context);
       }));
       /* *INDENT-ON* */
     }
@@ -169,7 +156,7 @@ vl_api_gre_tunnel_dump_t_handler (vl_api_gre_tunnel_dump_t * mp)
 	  return;
 	}
       t = &gm->tunnels[gm->tunnel_index_by_sw_if_index[sw_if_index]];
-      send_gre_tunnel_details (t, q, mp->context);
+      send_gre_tunnel_details (t, reg, mp->context);
     }
 }
 

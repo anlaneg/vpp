@@ -15,10 +15,10 @@
 #
 
 import argparse
-import importlib
 import sys
 import os
 import json
+import logging
 
 from jvppgen import types_gen
 from jvppgen import callback_gen
@@ -29,8 +29,7 @@ from jvppgen import jvpp_future_facade_gen
 from jvppgen import jvpp_impl_gen
 from jvppgen import jvpp_c_gen
 from jvppgen import util
-
-blacklist = [ "memclnt.api", "flowprobe.api" ]
+from jvppgen import enum_gen
 
 # Invocation:
 # ~/Projects/vpp/vpp-api/jvpp/gen$ mkdir -p java/io/fd/vpp/jvpp && cd java/io/fd/vpp/jvpp
@@ -51,17 +50,33 @@ args = parser.parse_args()
 sys.path.append(".")
 cwd = os.getcwd()
 
-print "Generating Java API for %s" % args.inputfiles
-print "inputfiles %s" % args.inputfiles
+# Initialize logger
+try:
+    verbose = int(os.getenv("V", 0))
+except:
+    verbose = 0
+
+log_level = logging.WARNING
+if verbose == 1:
+    log_level = logging.INFO
+elif verbose >= 2:
+    log_level = logging.DEBUG
+
+logging.basicConfig(stream=sys.stdout, level=log_level)
+logger = logging.getLogger("JVPP GEN")
+logger.setLevel(log_level)
+
+
+logger.info("Generating Java API for %s" % args.inputfiles)
 plugin_name = args.plugin_name
-print "plugin_name %s" % plugin_name
+logger.debug("plugin_name: %s" % plugin_name)
 
 cfg = {}
 
 base_package = 'io.fd.vpp.jvpp'
 plugin_package = base_package + '.' + plugin_name
 root_dir = os.path.abspath(args.root_dir)
-print "root_dir %s" % root_dir
+logger.debug("root_dir: %s" % root_dir)
 work_dir = root_dir + "/target/" + plugin_package.replace(".","/")
 
 try:
@@ -73,10 +88,11 @@ except OSError:
 os.chdir(work_dir)
 
 for inputfile in args.inputfiles:
-    if any(substring in inputfile for substring in blacklist):
-        print "WARNING: Imput file %s blacklisted" % inputfile
-        continue
     _cfg = json.load(open(cwd + "/" + inputfile, 'r'))
+    if 'enums' in cfg:
+        cfg['enums'].extend(_cfg['enums'])
+    else:
+        cfg['enums'] = _cfg['enums']
     if 'types' in cfg:
         cfg['types'].extend(_cfg['types'])
     else:
@@ -173,17 +189,23 @@ future_package = 'future'
 callback_facade_package = 'callfacade'
 
 types_list, types_name = get_definitions(cfg['types'])
-
-types_gen.generate_types(types_list, plugin_package, types_package, args.inputfiles)
-
 func_list, func_name = get_definitions(cfg['messages'])
 
-dto_gen.generate_dtos(func_list, base_package, plugin_package, plugin_name.title(), dto_package, args.inputfiles)
-jvpp_impl_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name, dto_package, args.inputfiles)
-callback_gen.generate_callbacks(func_list, base_package, plugin_package, plugin_name.title(), callback_package, dto_package, args.inputfiles)
-notification_gen.generate_notification_registry(func_list, base_package, plugin_package, plugin_name.title(), notification_package, callback_package, dto_package, args.inputfiles)
-jvpp_c_gen.generate_jvpp(func_list, plugin_name, args.inputfiles, root_dir)
-jvpp_future_facade_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name.title(), dto_package, callback_package, notification_package, future_package, args.inputfiles)
-jvpp_callback_facade_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name.title(), dto_package, callback_package, notification_package, callback_facade_package, args.inputfiles)
+enum_gen.generate_enums(cfg['enums'], args.inputfiles, logger)
+types_gen.generate_types(types_list, plugin_package, types_package, args.inputfiles, logger)
+dto_gen.generate_dtos(func_list, base_package, plugin_package, plugin_name.title(), dto_package, args.inputfiles,
+                      logger)
+jvpp_impl_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name, dto_package, args.inputfiles, logger)
+callback_gen.generate_callbacks(func_list, base_package, plugin_package, plugin_name.title(), callback_package,
+                                dto_package, args.inputfiles, logger)
+notification_gen.generate_notification_registry(func_list, base_package, plugin_package, plugin_name.title(),
+                                                notification_package, callback_package, dto_package, args.inputfiles,
+                                                logger)
+jvpp_c_gen.generate_jvpp(func_list, plugin_name, args.inputfiles, root_dir, logger)
+jvpp_future_facade_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name.title(), dto_package,
+                                     callback_package, notification_package, future_package, args.inputfiles, logger)
+jvpp_callback_facade_gen.generate_jvpp(func_list, base_package, plugin_package, plugin_name.title(), dto_package,
+                                       callback_package, notification_package, callback_facade_package, args.inputfiles,
+                                       logger)
 
-print "Java API for %s generated successfully" % args.inputfiles
+logger.info("Java API for %s generated successfully" % args.inputfiles)

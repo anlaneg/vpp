@@ -34,6 +34,10 @@ typedef struct
   /* maximum number of dynamically learned mac entries */
   u32 global_learn_limit;
 
+  /* client waiting for L2 MAC events for learned and aged MACs */
+  u32 client_pid;
+  u32 client_index;
+
   /* Next nodes for each feature */
   u32 feat_next_node_index[32];
 
@@ -42,8 +46,9 @@ typedef struct
   vnet_main_t *vnet_main;
 } l2learn_main_t;
 
+#define L2LEARN_DEFAULT_LIMIT (L2FIB_NUM_BUCKETS * 64)
 
-l2learn_main_t l2learn_main;
+extern l2learn_main_t l2learn_main;
 
 extern vlib_node_registration_t l2fib_mac_age_scanner_process_node;
 

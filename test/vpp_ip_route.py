@@ -29,6 +29,15 @@ class MRouteEntryFlags:
     MFIB_ENTRY_FLAG_INHERIT_ACCEPT = 8
 
 
+class DpoProto:
+    DPO_PROTO_IP4 = 0
+    DPO_PROTO_IP6 = 1
+    DPO_PROTO_MPLS = 2
+    DPO_PROTO_ETHERNET = 3
+    DPO_PROTO_BIER = 4
+    DPO_PROTO_NSH = 5
+
+
 def find_route(test, ip_addr, len, table_id=0, inet=AF_INET):
     if inet == AF_INET:
         s = 4
@@ -46,6 +55,46 @@ def find_route(test, ip_addr, len, table_id=0, inet=AF_INET):
     return False
 
 
+class VppIpTable(VppObject):
+
+    def __init__(self,
+                 test,
+                 table_id,
+                 is_ip6=0):
+        self._test = test
+        self.table_id = table_id
+        self.is_ip6 = is_ip6
+
+    def add_vpp_config(self):
+        self._test.vapi.ip_table_add_del(
+            self.table_id,
+            is_ipv6=self.is_ip6,
+            is_add=1)
+        self._test.registry.register(self, self._test.logger)
+
+    def remove_vpp_config(self):
+        self._test.vapi.ip_table_add_del(
+            self.table_id,
+            is_ipv6=self.is_ip6,
+            is_add=0)
+
+    def query_vpp_config(self):
+        # find the default route
+        return find_route(self._test,
+                          "::" if self.is_ip6 else "0.0.0.0",
+                          0,
+                          self.table_id,
+                          inet=AF_INET6 if self.is_ip6 == 1 else AF_INET)
+
+    def __str__(self):
+        return self.object_id()
+
+    def object_id(self):
+        return ("table-%s-%d" %
+                ("v6" if self.is_ip6 == 1 else "v4",
+                 self.table_id))
+
+
 class VppRoutePath(object):
 
     def __init__(
@@ -55,37 +104,52 @@ class VppRoutePath(object):
             nh_table_id=0,
             labels=[],
             nh_via_label=MPLS_LABEL_INVALID,
-            is_ip6=0,
             rpf_id=0,
             is_interface_rx=0,
             is_resolve_host=0,
-            is_resolve_attached=0):
+            is_resolve_attached=0,
+            is_source_lookup=0,
+            is_udp_encap=0,
+            is_dvr=0,
+            next_hop_id=0xffffffff,
+            proto=DpoProto.DPO_PROTO_IP4):
         self.nh_itf = nh_sw_if_index
         self.nh_table_id = nh_table_id
         self.nh_via_label = nh_via_label
         self.nh_labels = labels
         self.weight = 1
         self.rpf_id = rpf_id
-        self.is_ip4 = 1 if is_ip6 == 0 else 0
-        if self.is_ip4:
+        self.proto = proto
+        if self.proto is DpoProto.DPO_PROTO_IP6:
+            self.nh_addr = inet_pton(AF_INET6, nh_addr)
+        elif self.proto is DpoProto.DPO_PROTO_IP4:
             self.nh_addr = inet_pton(AF_INET, nh_addr)
         else:
-            self.nh_addr = inet_pton(AF_INET6, nh_addr)
+            self.nh_addr = inet_pton(AF_INET6, "::")
         self.is_resolve_host = is_resolve_host
         self.is_resolve_attached = is_resolve_attached
         self.is_interface_rx = is_interface_rx
+        self.is_source_lookup = is_source_lookup
         self.is_rpf_id = 0
         if rpf_id != 0:
             self.is_rpf_id = 1
             self.nh_itf = rpf_id
+        self.is_udp_encap = is_udp_encap
+        self.next_hop_id = next_hop_id
+        self.is_dvr = is_dvr
 
 
 class VppMRoutePath(VppRoutePath):
 
-    def __init__(self, nh_sw_if_index, flags):
-        super(VppMRoutePath, self).__init__("0.0.0.0",
-                                            nh_sw_if_index)
+    def __init__(self, nh_sw_if_index, flags,
+                 proto=DpoProto.DPO_PROTO_IP4,
+                 bier_imp=0):
+        super(VppMRoutePath, self).__init__(
+            "::" if proto is DpoProto.DPO_PROTO_IP6 else "0.0.0.0",
+            nh_sw_if_index,
+            proto=proto)
         self.nh_i_flags = flags
+        self.bier_imp = bier_imp
 
 
 class VppIpRoute(VppObject):
@@ -142,9 +206,13 @@ class VppIpRoute(VppObject):
                         path.nh_labels),
                     next_hop_via_label=path.nh_via_label,
                     next_hop_table_id=path.nh_table_id,
+                    next_hop_id=path.next_hop_id,
                     is_ipv6=self.is_ip6,
+                    is_dvr=path.is_dvr,
                     is_resolve_host=path.is_resolve_host,
                     is_resolve_attached=path.is_resolve_attached,
+                    is_source_lookup=path.is_source_lookup,
+                    is_udp_encap=path.is_udp_encap,
                     is_multipath=1 if len(self.paths) > 1 else 0)
         self._test.registry.register(self, self._test.logger)
 
@@ -171,8 +239,11 @@ class VppIpRoute(VppObject):
                     table_id=self.table_id,
                     next_hop_table_id=path.nh_table_id,
                     next_hop_via_label=path.nh_via_label,
+                    next_hop_id=path.next_hop_id,
                     is_add=0,
-                    is_ipv6=self.is_ip6)
+                    is_udp_encap=path.is_udp_encap,
+                    is_ipv6=self.is_ip6,
+                    is_dvr=path.is_dvr)
 
     def query_vpp_config(self):
         return find_route(self._test,
@@ -220,8 +291,10 @@ class VppIpMRoute(VppObject):
                                               self.grp_addr,
                                               self.grp_addr_len,
                                               self.e_flags,
+                                              path.proto,
                                               path.nh_itf,
                                               path.nh_i_flags,
+                                              bier_imp=path.bier_imp,
                                               rpf_id=self.rpf_id,
                                               table_id=self.table_id,
                                               is_ipv6=self.is_ip6)
@@ -233,9 +306,11 @@ class VppIpMRoute(VppObject):
                                               self.grp_addr,
                                               self.grp_addr_len,
                                               self.e_flags,
+                                              path.proto,
                                               path.nh_itf,
                                               path.nh_i_flags,
                                               table_id=self.table_id,
+                                              bier_imp=path.bier_imp,
                                               is_add=0,
                                               is_ipv6=self.is_ip6)
 
@@ -245,6 +320,7 @@ class VppIpMRoute(VppObject):
                                           self.grp_addr,
                                           self.grp_addr_len,
                                           self.e_flags,
+                                          0,
                                           0xffffffff,
                                           0,
                                           table_id=self.table_id,
@@ -256,6 +332,7 @@ class VppIpMRoute(VppObject):
                                           self.grp_addr,
                                           self.grp_addr_len,
                                           self.e_flags,
+                                          0,
                                           0xffffffff,
                                           0,
                                           rpf_id=self.rpf_id,
@@ -271,16 +348,21 @@ class VppIpMRoute(VppObject):
                                           self.grp_addr,
                                           self.grp_addr_len,
                                           self.e_flags,
+                                          path.proto,
                                           path.nh_itf,
                                           path.nh_i_flags,
                                           table_id=self.table_id,
                                           is_ipv6=self.is_ip6)
 
     def query_vpp_config(self):
-        dump = self._test.vapi.ip_fib_dump()
+        if self.is_ip6:
+            dump = self._test.vapi.ip6_mfib_dump()
+        else:
+            dump = self._test.vapi.ip_mfib_dump()
         for e in dump:
-            if self.grp_addr == e.address \
+            if self.grp_addr == e.grp_address \
                and self.grp_addr_len == e.address_length \
+               and self.src_addr == e.src_address \
                and self.table_id == e.table_id:
                 return True
         return False
@@ -381,6 +463,39 @@ class VppMplsIpBind(VppObject):
                    self.dest_addr_len))
 
 
+class VppMplsTable(VppObject):
+
+    def __init__(self,
+                 test,
+                 table_id):
+        self._test = test
+        self.table_id = table_id
+
+    def add_vpp_config(self):
+        self._test.vapi.mpls_table_add_del(
+            self.table_id,
+            is_add=1)
+        self._test.registry.register(self, self._test.logger)
+
+    def remove_vpp_config(self):
+        self._test.vapi.mpls_table_add_del(
+            self.table_id,
+            is_add=0)
+
+    def query_vpp_config(self):
+        # find the default route
+        dump = self._test.vapi.mpls_fib_dump()
+        if len(dump):
+            return True
+        return False
+
+    def __str__(self):
+        return self.object_id()
+
+    def object_id(self):
+        return ("table-mpls-%d" % (self.table_id))
+
+
 class VppMplsRoute(VppObject):
     """
     MPLS Route/LSP
@@ -401,7 +516,7 @@ class VppMplsRoute(VppObject):
             self._test.vapi.mpls_route_add_del(
                 self.local_label,
                 self.eos_bit,
-                path.is_ip4,
+                path.proto,
                 path.nh_addr,
                 path.nh_itf,
                 is_multicast=self.is_multicast,
@@ -420,7 +535,7 @@ class VppMplsRoute(VppObject):
         for path in self.paths:
             self._test.vapi.mpls_route_add_del(self.local_label,
                                                self.eos_bit,
-                                               1,
+                                               path.proto,
                                                path.nh_addr,
                                                path.nh_itf,
                                                is_rpf_id=path.is_rpf_id,

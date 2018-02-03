@@ -25,7 +25,7 @@
 
 #include <vlibapi/api.h>
 #include <vlibmemory/api.h>
-#include <vlibsocket/api.h>
+
 
 /* define message IDs */
 #include <memif/memif_msg_enum.h>
@@ -60,7 +60,7 @@
  */
 #define REPLY_MACRO(t)                                          \
 do {                                                            \
-    unix_shared_memory_queue_t * q =                            \
+    svm_queue_t * q =                            \
     vl_api_client_index_to_input_queue (mp->client_index);      \
     if (!q)                                                     \
         return;                                                 \
@@ -75,7 +75,7 @@ do {                                                            \
 
 #define REPLY_MACRO2(t, body)                                   \
 do {                                                            \
-    unix_shared_memory_queue_t * q =                            \
+    svm_queue_t * q =                            \
     vl_api_client_index_to_input_queue (mp->client_index);      \
     if (!q)                                                     \
         return;                                                 \
@@ -88,11 +88,59 @@ do {                                                            \
     vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
 } while(0);
 
-#define foreach_memif_plugin_api_msg                     \
-_(MEMIF_CREATE, memif_create)                            \
-_(MEMIF_DELETE, memif_delete)                            \
-_(MEMIF_DETAILS, memif_details)                          \
-_(MEMIF_DUMP, memif_dump)                                \
+#define foreach_memif_plugin_api_msg					\
+_(MEMIF_SOCKET_FILENAME_ADD_DEL, memif_socket_filename_add_del)	\
+_(MEMIF_CREATE, memif_create)						\
+_(MEMIF_DELETE, memif_delete)						\
+_(MEMIF_SOCKET_FILENAME_DUMP, memif_socket_filename_dump)		\
+_(MEMIF_DUMP, memif_dump)						\
+
+
+/**
+ * @brief Message handler for memif_socket_filename_add_del API.
+ * @param mp the vl_api_memif_socket_filename_add_del_t API message
+ */
+void
+  vl_api_memif_socket_filename_add_del_t_handler
+  (vl_api_memif_socket_filename_add_del_t * mp)
+{
+  memif_main_t *mm = &memif_main;
+  u8 is_add;
+  u32 socket_id;
+  u32 len;
+  u8 *socket_filename;
+  vl_api_memif_socket_filename_add_del_reply_t *rmp;
+  int rv;
+
+  /* is_add */
+  is_add = mp->is_add;
+
+  /* socket_id */
+  socket_id = clib_net_to_host_u32 (mp->socket_id);
+  if (socket_id == 0 || socket_id == ~0)
+    {
+      rv = VNET_API_ERROR_INVALID_ARGUMENT;
+      goto reply;
+    }
+
+  /* socket filename */
+  socket_filename = 0;
+  mp->socket_filename[ARRAY_LEN (mp->socket_filename) - 1] = 0;
+  len = strlen ((char *) mp->socket_filename);
+  if (len > 0)
+    {
+      vec_validate (socket_filename, len);
+      strncpy ((char *) socket_filename, (char *) mp->socket_filename, len);
+    }
+
+  rv = memif_socket_filename_add_del (is_add, socket_id, socket_filename);
+
+  vec_free (socket_filename);
+
+reply:
+  REPLY_MACRO (VL_API_MEMIF_SOCKET_FILENAME_ADD_DEL_REPLY);
+}
+
 
 /**
  * @brief Message handler for memif_create API.
@@ -112,15 +160,8 @@ vl_api_memif_create_t_handler (vl_api_memif_create_t * mp)
   /* id */
   args.id = clib_net_to_host_u32 (mp->id);
 
-  /* socket filename */
-  mp->socket_filename[ARRAY_LEN (mp->socket_filename) - 1] = 0;
-  if (strlen ((char *) mp->socket_filename) > 0)
-    {
-      vec_validate (args.socket_filename,
-		    strlen ((char *) mp->socket_filename));
-      strncpy ((char *) args.socket_filename, (char *) mp->socket_filename,
-	       vec_len (args.socket_filename));
-    }
+  /* socket-id */
+  args.socket_id = clib_net_to_host_u32 (mp->socket_id);
 
   /* secret */
   mp->secret[ARRAY_LEN (mp->secret) - 1] = 0;
@@ -133,10 +174,23 @@ vl_api_memif_create_t_handler (vl_api_memif_create_t * mp)
 
   /* role */
   args.is_master = (mp->role == 0);
+
+  /* mode */
+  args.mode = mp->mode;
+
+  /* rx/tx queues */
   if (args.is_master == 0)
     {
-      args.rx_queues = mp->rx_queues;
-      args.tx_queues = mp->tx_queues;
+      args.rx_queues = MEMIF_DEFAULT_RX_QUEUES;
+      args.tx_queues = MEMIF_DEFAULT_TX_QUEUES;
+      if (mp->rx_queues)
+	{
+	  args.rx_queues = mp->rx_queues;
+	}
+      if (mp->tx_queues)
+	{
+	  args.tx_queues = mp->tx_queues;
+	}
     }
 
   /* ring size */
@@ -167,16 +221,10 @@ vl_api_memif_create_t_handler (vl_api_memif_create_t * mp)
 
   rv = memif_create_if (vm, &args);
 
-  vec_free (args.socket_filename);
   vec_free (args.secret);
 
 reply:
-  /* *INDENT-OFF* */
-  REPLY_MACRO2 (VL_API_MEMIF_CREATE_REPLY,
-    ({
-       rmp->sw_if_index = htonl (args.sw_if_index);
-    }));
-  /* *INDENT-ON* */
+  REPLY_MACRO (VL_API_MEMIF_CREATE_REPLY);
 }
 
 /**
@@ -192,19 +240,22 @@ vl_api_memif_delete_t_handler (vl_api_memif_delete_t * mp)
   vl_api_memif_delete_reply_t *rmp;
   vnet_hw_interface_t *hi =
     vnet_get_sup_hw_interface (vnm, ntohl (mp->sw_if_index));
-  memif_if_t *mif = pool_elt_at_index (mm->interfaces, hi->dev_instance);
+  memif_if_t *mif;
   int rv = 0;
 
   if (hi == NULL || memif_device_class.index != hi->dev_class_index)
     rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
   else
-    rv = memif_delete_if (vm, mif);
+    {
+      mif = pool_elt_at_index (mm->interfaces, hi->dev_instance);
+      rv = memif_delete_if (vm, mif);
+    }
 
   REPLY_MACRO (VL_API_MEMIF_DELETE_REPLY);
 }
 
 static void
-send_memif_details (unix_shared_memory_queue_t * q,
+send_memif_details (vl_api_registration_t * reg,
 		    memif_if_t * mif,
 		    vnet_sw_interface_t * swif,
 		    u8 * interface_name, u32 context)
@@ -212,9 +263,8 @@ send_memif_details (unix_shared_memory_queue_t * q,
   vl_api_memif_details_t *mp;
   vnet_main_t *vnm = vnet_get_main ();
   memif_main_t *mm = &memif_main;
-  memif_socket_file_t *msf = vec_elt_at_index (mm->socket_files,
-					       mif->socket_file_index);
   vnet_hw_interface_t *hwif;
+  memif_socket_file_t *msf;
 
   hwif = vnet_get_sup_hw_interface (vnm, swif->sw_if_index);
 
@@ -227,20 +277,25 @@ send_memif_details (unix_shared_memory_queue_t * q,
   mp->sw_if_index = htonl (swif->sw_if_index);
   strncpy ((char *) mp->if_name,
 	   (char *) interface_name, ARRAY_LEN (mp->if_name) - 1);
-  memcpy (mp->hw_addr, hwif->hw_address, ARRAY_LEN (mp->hw_addr));
+
+  if (hwif->hw_address)
+    {
+      memcpy (mp->hw_addr, hwif->hw_address, ARRAY_LEN (mp->hw_addr));
+    }
 
   mp->id = clib_host_to_net_u32 (mif->id);
-  mp->role = (mif->flags & MEMIF_IF_FLAG_IS_SLAVE) ? 1 : 0;
-  strncpy ((char *) mp->socket_filename,
-	   (char *) msf->filename, ARRAY_LEN (mp->socket_filename) - 1);
 
+  msf = pool_elt_at_index (mm->socket_files, mif->socket_file_index);
+  mp->socket_id = clib_host_to_net_u32 (msf->socket_id);
+
+  mp->role = (mif->flags & MEMIF_IF_FLAG_IS_SLAVE) ? 1 : 0;
   mp->ring_size = htonl (1 << mif->run.log2_ring_size);
   mp->buffer_size = htons (mif->run.buffer_size);
 
   mp->admin_up_down = (swif->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ? 1 : 0;
   mp->link_up_down = (hwif->flags & VNET_HW_INTERFACE_FLAG_LINK_UP) ? 1 : 0;
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 /**
@@ -255,10 +310,10 @@ vl_api_memif_dump_t_handler (vl_api_memif_dump_t * mp)
   vnet_sw_interface_t *swif;
   memif_if_t *mif;
   u8 *if_name = 0;
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   /* *INDENT-OFF* */
@@ -270,7 +325,7 @@ vl_api_memif_dump_t_handler (vl_api_memif_dump_t * mp)
 			format_vnet_sw_interface_name,
 			vnm, swif, 0);
 
-      send_memif_details (q, mif, swif, if_name, mp->context);
+      send_memif_details (reg, mif, swif, if_name, mp->context);
       _vec_len (if_name) = 0;
     }));
   /* *INDENT-ON* */
@@ -278,14 +333,56 @@ vl_api_memif_dump_t_handler (vl_api_memif_dump_t * mp)
   vec_free (if_name);
 }
 
+static void
+send_memif_socket_filename_details (vl_api_registration_t * reg,
+				    u32 socket_id,
+				    u8 * socket_filename, u32 context)
+{
+  vl_api_memif_socket_filename_details_t *mp;
+  memif_main_t *mm = &memif_main;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  memset (mp, 0, sizeof (*mp));
+
+  mp->_vl_msg_id = htons (VL_API_MEMIF_SOCKET_FILENAME_DETAILS
+			  + mm->msg_id_base);
+  mp->context = context;
+
+  mp->socket_id = clib_host_to_net_u32 (socket_id);
+  strncpy ((char *) mp->socket_filename,
+	   (char *) socket_filename, ARRAY_LEN (mp->socket_filename) - 1);
+
+  vl_api_send_msg (reg, (u8 *) mp);
+}
+
 /**
- * @brief Message handler for memif_details API.
- * @param mp vl_api_memif_details_t * mp the api message
+ * @brief Message handler for memif_socket_filename_dump API.
+ * @param mp vl_api_memif_socket_filename_dump_t api message
  */
 void
-vl_api_memif_details_t_handler (vl_api_memif_details_t * mp)
+  vl_api_memif_socket_filename_dump_t_handler
+  (vl_api_memif_socket_filename_dump_t * mp)
 {
-  clib_warning ("BUG");
+  memif_main_t *mm = &memif_main;
+  vl_api_registration_t *reg;
+  u32 sock_id;
+  u32 msf_idx;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  /* *INDENT-OFF* */
+  hash_foreach (sock_id, msf_idx, mm->socket_file_index_by_sock_id,
+    ({
+      memif_socket_file_t *msf;
+      u8 *filename;
+
+      msf = pool_elt_at_index(mm->socket_files, msf_idx);
+      filename = msf->filename;
+      send_memif_socket_filename_details(reg, sock_id, filename, mp->context);
+    }));
+  /* *INDENT-ON* */
 }
 
 #define vl_msg_name_crc_list

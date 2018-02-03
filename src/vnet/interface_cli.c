@@ -39,7 +39,10 @@
 
 /**
  * @file
- * Interface CLI.
+ * @brief Interface CLI.
+ *
+ * Source code for several CLI interface commands.
+ *
  */
 
 #include <vnet/vnet.h>
@@ -47,6 +50,8 @@
 #include <vppinfra/bitmap.h>
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/fib/ip6_fib.h>
+#include <vnet/l2/l2_output.h>
+#include <vnet/l2/l2_input.h>
 
 static int
 compare_interface_names (void *a1, void *a2)
@@ -163,46 +168,88 @@ done:
   return error;
 }
 
-/* *INDENT-OFF* */
 /*?
- * Displays various information about the state of the current terminal
- * session.
+ * Display more detailed information about all or a list of given interfaces.
+ * The verboseness of the output can be controlled by the following optional
+ * parameters:
+ * - brief: Only show name, index and state (default for bonded interfaces).
+ * - verbose: Also display additional attributes (default for all other interfaces).
+ * - detail: Also display all remaining attributes and extended statistics.
+ *
+ * To limit the output of the command to bonded interfaces and their slave
+ * interfaces, use the '<em>bond</em>' optional parameter.
  *
  * @cliexpar
- * @cliexstart{show hardware}
- * Name                Link  Hardware
- * GigabitEthernet2/0/0               up   GigabitEthernet2/0/0
- * Ethernet address 00:50:56:b7:7c:83
- * Intel 82545em_copper
- *   link up, media 1000T full-duplex, master,
- *   0 unprocessed, 384 total buffers on rx queue 0 ring
- *   237 buffers in driver rx cache
- *   rx total packets                                    1816
- *   rx total bytes                                    181084
- *   rx good packets                                     1816
- *   rx good bytes                                     181084
- *   rx 65 127 byte packets                              1586
- *   rx 256 511 byte packets                              230
- *   tx total packets                                     346
- *   tx total bytes                                     90224
- *   tx good packets                                      346
- *   tx good bytes                                      88840
- *   tx 64 byte packets                                     1
- *   tx 65 127 byte packets                               115
- *   tx 256 511 byte packets                              230
+ * Example of how to display default data for all interfaces:
+ * @cliexstart{show hardware-interfaces}
+ *               Name                Idx   Link  Hardware
+ * GigabitEthernet7/0/0               1     up   GigabitEthernet7/0/0
+ *   Ethernet address ec:f4:bb:c0:bc:fc
+ *   Intel e1000
+ *     carrier up full duplex speed 1000 mtu 9216
+ *     rx queues 1, rx desc 1024, tx queues 3, tx desc 1024
+ *     cpu socket 0
+ * GigabitEthernet7/0/1               2     up   GigabitEthernet7/0/1
+ *   Ethernet address ec:f4:bb:c0:bc:fd
+ *   Intel e1000
+ *     carrier up full duplex speed 1000 mtu 9216
+ *     rx queues 1, rx desc 1024, tx queues 3, tx desc 1024
+ *     cpu socket 0
+ * VirtualEthernet0/0/0               3     up   VirtualEthernet0/0/0
+ *   Ethernet address 02:fe:a5:a9:8b:8e
+ * VirtualEthernet0/0/1               4     up   VirtualEthernet0/0/1
+ *   Ethernet address 02:fe:c0:4e:3b:b0
+ * VirtualEthernet0/0/2               5     up   VirtualEthernet0/0/2
+ *   Ethernet address 02:fe:1f:73:92:81
+ * VirtualEthernet0/0/3               6     up   VirtualEthernet0/0/3
+ *   Ethernet address 02:fe:f2:25:c4:68
+ * local0                             0    down  local0
+ *   local
+ * @cliexend
+ * Example of how to display '<em>verbose</em>' data for an interface by name and
+ * software index (where 2 is the software index):
+ * @cliexstart{show hardware-interfaces GigabitEthernet7/0/0 2 verbose}
+ *               Name                Idx   Link  Hardware
+ * GigabitEthernet7/0/0               1     up   GigabitEthernet7/0/0
+ *   Ethernet address ec:f4:bb:c0:bc:fc
+ *   Intel e1000
+ *     carrier up full duplex speed 1000 mtu 9216
+ *     rx queues 1, rx desc 1024, tx queues 3, tx desc 1024
+ *     cpu socket 0
+ * GigabitEthernet7/0/1               2    down  GigabitEthernet7/0/1
+ *   Ethernet address ec:f4:bb:c0:bc:fd
+ *   Intel e1000
+ *     carrier up full duplex speed 1000 mtu 9216
+ *     rx queues 1, rx desc 1024, tx queues 3, tx desc 1024
+ *     cpu socket 0
  * @cliexend
  ?*/
+/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_hw_interfaces_command, static) = {
   .path = "show hardware-interfaces",
-  .short_help = "show hardware-interfaces [brief|verbose|detail] [bond] [<if-name1> <if-name2> ...]",
+  .short_help = "show hardware-interfaces [brief|verbose|detail] [bond] "
+    "[<interface> [<interface> [..]]] [<sw_idx> [<sw_idx> [..]]]",
   .function = show_or_clear_hw_interfaces,
 };
 /* *INDENT-ON* */
 
+
+/*?
+ * Clear the extended statistics for all or a list of given interfaces
+ * (statistics associated with the '<em>show hardware-interfaces</em>' command).
+ *
+ * @cliexpar
+ * Example of how to clear the extended statistics for all interfaces:
+ * @cliexcmd{clear hardware-interfaces}
+ * Example of how to clear the extended statistics for an interface by
+ * name and software index (where 2 is the software index):
+ * @cliexcmd{clear hardware-interfaces GigabitEthernet7/0/0 2}
+ ?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (clear_hw_interface_counters_command, static) = {
   .path = "clear hardware-interfaces",
-  .short_help = "Clear hardware interfaces statistics",
+  .short_help = "clear hardware-interfaces "
+    "[<interface> [<interface> [..]]] [<sw_idx> [<sw_idx> [..]]]",
   .function = show_or_clear_hw_interfaces,
 };
 /* *INDENT-ON* */
@@ -262,6 +309,20 @@ show_sw_interfaces (vlib_main_t * vm,
   if (show_features)
     {
       vnet_interface_features_show (vm, sw_if_index);
+
+      l2_input_config_t *l2_input = l2input_intf_config (sw_if_index);
+      u32 fb = l2_input->feature_bitmap;
+      /* intf input features are masked by bridge domain */
+      if (l2_input->bridge)
+	fb &= l2input_bd_config (l2_input->bd_index)->feature_bitmap;
+      vlib_cli_output (vm, "\nl2-input:\n%U", format_l2_input_features, fb);
+
+      l2_output_config_t *l2_output = l2output_intf_config (sw_if_index);
+      vlib_cli_output (vm, "\nl2-output:");
+      if (l2_output->out_vtr_flag)
+	vlib_cli_output (vm, "%10s (%s)", "VTR", "--internal--");
+      vlib_cli_output (vm, "%U", format_l2_output_features,
+		       l2_output->feature_bitmap);
       return 0;
     }
   if (show_tag)
@@ -285,9 +346,10 @@ show_sw_interfaces (vlib_main_t * vm,
       _vec_len (sorted_sis) = 0;
       pool_foreach (si, im->sw_interfaces, (
 					     {
-					     if (vnet_swif_is_api_visible
-						 (si)) vec_add1 (sorted_sis,
-								 si[0]);}
+					     int visible =
+					     vnet_swif_is_api_visible (si);
+					     if (visible)
+					     vec_add1 (sorted_sis, si[0]);}
 		    ));
 
       /* Sort by name. */
@@ -298,18 +360,12 @@ show_sw_interfaces (vlib_main_t * vm,
     {
       vec_foreach (si, sorted_sis)
       {
-	l2input_main_t *l2m = &l2input_main;
 	ip4_main_t *im4 = &ip4_main;
 	ip6_main_t *im6 = &ip6_main;
 	ip_lookup_main_t *lm4 = &im4->lookup_main;
 	ip_lookup_main_t *lm6 = &im6->lookup_main;
 	ip_interface_address_t *ia = 0;
-	ip4_address_t *r4;
-	ip6_address_t *r6;
 	u32 fib_index4 = 0, fib_index6 = 0;
-	ip4_fib_t *fib4;
-	ip6_fib_t *fib6;
-	l2_input_config_t *config;
 
 	if (vec_len (im4->fib_index_by_sw_if_index) > si->sw_if_index)
 	  fib_index4 = vec_elt (im4->fib_index_by_sw_if_index,
@@ -319,86 +375,69 @@ show_sw_interfaces (vlib_main_t * vm,
 	  fib_index6 = vec_elt (im6->fib_index_by_sw_if_index,
 				si->sw_if_index);
 
-	fib4 = ip4_fib_get (fib_index4);
-	fib6 = ip6_fib_get (fib_index6);
+	ip4_fib_t *fib4 = ip4_fib_get (fib_index4);
+	ip6_fib_t *fib6 = ip6_fib_get (fib_index6);
 
 	if (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED)
 	  vlib_cli_output
 	    (vm, "%U (%s): \n  unnumbered, use %U",
-	     format_vnet_sw_if_index_name,
-	     vnm, si->sw_if_index,
+	     format_vnet_sw_if_index_name, vnm, si->sw_if_index,
 	     (si->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ? "up" : "dn",
 	     format_vnet_sw_if_index_name, vnm, si->unnumbered_sw_if_index);
-
 	else
-	  {
-	    vlib_cli_output (vm, "%U (%s):",
-			     format_vnet_sw_if_index_name,
-			     vnm, si->sw_if_index,
-			     (si->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
-			     ? "up" : "dn");
-	  }
+	  vlib_cli_output
+	    (vm, "%U (%s):",
+	     format_vnet_sw_if_index_name, vnm, si->sw_if_index,
+	     (si->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ? "up" : "dn");
 
-	/* Display any L2 addressing info */
-	vec_validate (l2m->configs, si->sw_if_index);
-	config = vec_elt_at_index (l2m->configs, si->sw_if_index);
-	if (config->bridge)
+	/* Display any L2 info */
+	l2_input_config_t *l2_input = l2input_intf_config (si->sw_if_index);
+	if (l2_input->bridge)
 	  {
-	    u32 bd_id = l2input_main.bd_configs[config->bd_index].bd_id;
-	    vlib_cli_output (vm, "  l2 bridge bd_id %d%s%d", bd_id,
-			     config->bvi ? " bvi shg " : " shg ",
-			     config->shg);
+	    bd_main_t *bdm = &bd_main;
+	    u32 bd_id = l2input_main.bd_configs[l2_input->bd_index].bd_id;
+	    vlib_cli_output (vm, "  L2 bridge bd-id %d idx %d shg %d %s",
+			     bd_id, bd_find_index (bdm, bd_id), l2_input->shg,
+			     l2_input->bvi ? "bvi" : " ");
 	  }
-	else if (config->xconnect)
-	  {
-	    vlib_cli_output (vm, "  l2 xconnect %U",
-			     format_vnet_sw_if_index_name,
-			     vnm, config->output_sw_if_index);
-	  }
+	else if (l2_input->xconnect)
+	  vlib_cli_output (vm, "  L2 xconnect %U",
+			   format_vnet_sw_if_index_name, vnm,
+			   l2_input->output_sw_if_index);
 
+	/* *INDENT-OFF* */
 	/* Display any IP4 addressing info */
-          /* *INDENT-OFF* */
-	  foreach_ip_interface_address (lm4, ia, si->sw_if_index,
-					1 /* honor unnumbered */,
-	  ({
-            r4 = ip_interface_address_get_address (lm4, ia);
-            if (fib4->table_id)
-              {
-                vlib_cli_output (vm, "  %U/%d table %d",
-                                 format_ip4_address, r4,
-                                 ia->address_length,
-                                 fib4->table_id);
-              }
-            else
-              {
-                vlib_cli_output (vm, "  %U/%d",
-                                 format_ip4_address, r4,
-                                 ia->address_length);
-              }
-          }));
-          /* *INDENT-ON* */
+	foreach_ip_interface_address (lm4, ia, si->sw_if_index,
+				      1 /* honor unnumbered */,
+	({
+	  ip4_address_t *r4 = ip_interface_address_get_address (lm4, ia);
+	  if (fib4->table_id)
+	    vlib_cli_output (vm, "  L3 %U/%d ip4 table-id %d fib-idx %d",
+			     format_ip4_address, r4, ia->address_length,
+			     fib4->table_id,
+			     ip4_fib_index_from_table_id (fib4->table_id));
+	  else
+	    vlib_cli_output (vm, "  L3 %U/%d",
+			     format_ip4_address, r4, ia->address_length);
+        }));
+	/* *INDENT-ON* */
 
+	/* *INDENT-OFF* */
 	/* Display any IP6 addressing info */
-          /* *INDENT-OFF* */
-          foreach_ip_interface_address (lm6, ia, si->sw_if_index,
-                                        1 /* honor unnumbered */,
-          ({
-            r6 = ip_interface_address_get_address (lm6, ia);
-            if (fib6->table_id)
-              {
-                vlib_cli_output (vm, "  %U/%d table %d",
-                                 format_ip6_address, r6,
-                                 ia->address_length,
-                                 fib6->table_id);
-              }
-            else
-              {
-                vlib_cli_output (vm, "  %U/%d",
-                                 format_ip6_address, r6,
-                                 ia->address_length);
-              }
-          }));
-          /* *INDENT-ON* */
+	foreach_ip_interface_address (lm6, ia, si->sw_if_index,
+				      1 /* honor unnumbered */,
+        ({
+	  ip6_address_t *r6 = ip_interface_address_get_address (lm6, ia);
+	  if (fib6->table_id)
+	    vlib_cli_output (vm, "  L3 %U/%d ip6 table-id %d fib-idx %d",
+			     format_ip6_address, r6, ia->address_length,
+			     fib6->table_id,
+			     ip6_fib_index_from_table_id (fib6->table_id));
+	  else
+	    vlib_cli_output (vm, "  L3 %U/%d",
+			     format_ip6_address, r6, ia->address_length);
+        }));
+	/* *INDENT-ON* */
       }
     }
   else
@@ -417,7 +456,7 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_sw_interfaces_command, static) = {
   .path = "show interface",
-  .short_help = "show interface [address|addr|features|feat] [<if-name1> <if-name2> ...]",
+  .short_help = "show interface [address|addr|features|feat] [<interface> [<interface> [..]]]",
   .function = show_sw_interfaces,
 };
 /* *INDENT-ON* */
@@ -486,10 +525,18 @@ clear_interface_counters (vlib_main_t * vm,
   return 0;
 }
 
+/*?
+ * Clear the statistics for all interfaces (statistics associated with the
+ * '<em>show interface</em>' command).
+ *
+ * @cliexpar
+ * Example of how to clear the statistics for all interfaces:
+ * @cliexcmd{clear interfaces}
+ ?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (clear_interface_counters_command, static) = {
   .path = "clear interfaces",
-  .short_help = "Clear interfaces statistics",
+  .short_help = "clear interfaces",
   .function = clear_interface_counters,
 };
 /* *INDENT-ON* */
@@ -733,54 +780,97 @@ done:
   return error;
 }
 
-/* *INDENT-OFF* */
 /*?
- * Create vlan subinterfaces
+ * This command is used to add VLAN IDs to interfaces, also known as subinterfaces.
+ * The primary input to this command is the '<em>interface</em>' and '<em>subId</em>'
+ * (subinterface Id) parameters. If no additional VLAN ID is provide, the VLAN ID is
+ * assumed to be the '<em>subId</em>'. The VLAN ID and '<em>subId</em>' can be different,
+ * but this is not recommended.
+ *
+ * This command has several variations:
+ * - <b>create sub-interfaces <interface> <subId></b> - Create a subinterface to
+ * process packets with a given 802.1q VLAN ID (same value as the '<em>subId</em>').
+ *
+ * - <b>create sub-interfaces <interface> <subId> default</b> - Adding the
+ * '<em>default</em>' parameter indicates that packets with VLAN IDs that do not
+ * match any other subinterfaces should be sent to this subinterface.
+ *
+ * - <b>create sub-interfaces <interface> <subId> untagged</b> - Adding the
+ * '<em>untagged</em>' parameter indicates that packets no VLAN IDs should be sent
+ * to this subinterface.
+ *
+ * - <b>create sub-interfaces <interface> <subId>-<subId></b> - Create a range of
+ * subinterfaces to handle a range of VLAN IDs.
+ *
+ * - <b>create sub-interfaces <interface> <subId> dot1q|dot1ad <vlanId>|any [exact-match]</b> -
+ * Use this command to specify the outer VLAN ID, to either be explicited or to make the
+ * VLAN ID different from the '<em>subId</em>'.
+ *
+ * - <b>create sub-interfaces <interface> <subId> dot1q|dot1ad <vlanId>|any inner-dot1q
+ * <vlanId>|any [exact-match]</b> - Use this command to specify the outer VLAN ID and
+ * the innner VLAN ID.
+ *
+ * When '<em>dot1q</em>' or '<em>dot1ad</em>' is explictly entered, subinterfaces
+ * can be configured as either exact-match or non-exact match. Non-exact match is the CLI
+ * default. If '<em>exact-match</em>' is specified, packets must have the same number of
+ * VLAN tags as the configuration. For non-exact-match, packets must at least that number
+ * of tags. L3 (routed) interfaces must be configured as exact-match. L2 interfaces are
+ * typically configured as non-exact-match. If '<em>dot1q</em>' or '<em>dot1ad</em>' is NOT
+ * entered, then the default behavior is exact-match.
+ *
+ * Use the '<em>show interface</em>' command to display all subinterfaces.
  *
  * @cliexpar
- * @cliexstart{create sub-interfaces}
+ * @parblock
+ * Example of how to create a VLAN subinterface 11 to process packets on 802.1q VLAN ID 11:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 11}
  *
- * To create a vlan subinterface 11 to process packets on 802.1q VLAN id 11, use:
+ * The previous example is shorthand and is equivalent to:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 11 dot1q 11 exact-match}
  *
- *  vpp# create sub GigabitEthernet2/0/0 11
  *
- * This shorthand is equivalent to:
- *  vpp# create sub GigabitEthernet2/0/0 11 dot1q 11 exact-match
+ * Example of how to create a subinterface number that is different from the VLAN ID:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 11 dot1q 100}
  *
- * You can specify a subinterface number that is different from the vlan id:
- *  vpp# create sub GigabitEthernet2/0/0 11 dot1q 100
  *
- * You can create qinq and q-in-any interfaces:
- *  vpp# create sub GigabitEthernet2/0/0 11 dot1q 100 inner-dot1q 200
- *  vpp# create sub GigabitEthernet2/0/0 12 dot1q 100 inner-dot1q any
+ * Examples of how to create q-in-q and q-in-any subinterfaces:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 11 dot1q 100 inner-dot1q 200}
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 12 dot1q 100 inner-dot1q any}
  *
- * You can also create dot1ad interfaces:
- *  vpp# create sub GigabitEthernet2/0/0 11 dot1ad 11
- *  vpp# create sub GigabitEthernet2/0/0 12 dot1q 100 inner-dot1q 200
+ * Examples of how to create dot1ad interfaces:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 11 dot1ad 11}
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 12 dot1ad 100 inner-dot1q 200}
  *
- * Subinterfaces can be configured as either exact-match or non-exact match.
- * Non-exact match is the CLI default. If exact-match is specified,
- * packets must have the same number of vlan tags as the configuration.
- * For non-exact-match, packets must at least that number of tags.
- * L3 (routed) interfaces must be configured as exact-match.
- * L2 interfaces are typically configured as non-exact-match.
  *
- * For example, a packet with outer vlan 100 and inner 200 would match this interface:
- *  vpp# create sub GigabitEthernet2/0/0 5 dot1q 100
+ * Examples of '<em>exact-match</em>' versus non-exact match. A packet with
+ * outer VLAN 100 and inner VLAN 200 would match this interface, because the default
+ * is non-exact match:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 5 dot1q 100}
  *
- * but would not match this interface:
- *  vpp# create sub GigabitEthernet2/0/0 5 dot1q 100 exact-match
+ * However, the same packet would NOT match this interface because '<em>exact-match</em>'
+ * is specified and only one VLAN is configured, but packet contains two VLANs:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 5 dot1q 100 exact-match}
  *
- * There are two special subinterfaces that can be configured. Subinterface untagged has no vlan tags:
- *  vpp# create sub GigabitEthernet2/0/0 5 untagged
  *
- * The subinterface default matches any packet that does not match any other subinterface:
- *  vpp# create sub GigabitEthernet2/0/0 7 default
- * @cliexend
+ * Example of how to created a subinterface to process untagged packets:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 5 untagged}
+ *
+ * Example of how to created a subinterface to process any packet with a VLAN ID that
+ * does not match any other subinterface:
+ * @cliexcmd{create sub-interfaces GigabitEthernet2/0/0 7 default}
+ *
+ * When subinterfaces are created, they are in the down state. Example of how to
+ * enable a newly created subinterface:
+ * @cliexcmd{set interface GigabitEthernet2/0/0.7 up}
+ * @endparblock
  ?*/
+/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (create_sub_interfaces_command, static) = {
   .path = "create sub-interfaces",
-  .short_help = "create sub-interfaces <nn>[-<nn>] [dot1q|dot1ad|default|untagged]",
+  .short_help = "create sub-interfaces <interface> "
+    "{<subId> [default|untagged]} | "
+    "{<subId>-<subId>} | "
+    "{<subId> dot1q|dot1ad <vlanId>|any [inner-dot1q <vlanId>|any] [exact-match]}",
   .function = create_sub_interfaces,
 };
 /* *INDENT-ON* */
@@ -817,19 +907,24 @@ done:
 }
 
 
-/* *INDENT-OFF* */
 /*?
- * Interface admin up/down
+ * This command is used to change the admin state (up/down) of an interface.
+ *
+ * If an interface is down, the optional '<em>punt</em>' flag can also be set.
+ * The '<em>punt</em>' flag implies the interface is disabled for forwarding
+ * but punt all traffic to slow-path. Use the '<em>enable</em>' flag to clear
+ * '<em>punt</em>' flag (interface is still down).
  *
  * @cliexpar
- * @cliexstart{set interface state}
- *  vpp# set interface state GigabitEthernet2/0/0 up
- *  vpp# set interface state GigabitEthernet2/0/0 down
- * @cliexend
+ * Example of how to configure the admin state of an interface to '<em>up</em?':
+ * @cliexcmd{set interface state GigabitEthernet2/0/0 up}
+ * Example of how to configure the admin state of an interface to '<em>down</em?':
+ * @cliexcmd{set interface state GigabitEthernet2/0/0 down}
  ?*/
+/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_state_command, static) = {
   .path = "set interface state",
-  .short_help = "set interface state <if-name> [up|down|punt|enable]",
+  .short_help = "set interface state <interface> [up|down|punt|enable]",
   .function = set_state,
 };
 /* *INDENT-ON* */
@@ -898,7 +993,7 @@ set_unnumbered (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_unnumbered_command, static) = {
   .path = "set interface unnumbered",
-  .short_help = "set interface unnumbered [<intfc> use <intfc> | del <intfc>]",
+  .short_help = "set interface unnumbered [<interface> use <interface> | del <interface>]",
   .function = set_unnumbered,
 };
 /* *INDENT-ON* */
@@ -991,7 +1086,7 @@ renumber_interface_command_fn (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (renumber_interface_command, static) = {
   .path = "renumber interface",
-  .short_help = "renumber interface <if-name> <new-dev-instance>",
+  .short_help = "renumber interface <interface> <new-dev-instance>",
   .function = renumber_interface_command_fn,
 };
 /* *INDENT-ON* */
@@ -1027,7 +1122,7 @@ promiscuous_cmd (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_interface_promiscuous_cmd, static) = {
   .path = "set interface promiscuous",
-  .short_help = "set interface promiscuous [on | off] <intfc>",
+  .short_help = "set interface promiscuous [on|off] <interface>",
   .function = promiscuous_cmd,
 };
 /* *INDENT-ON* */
@@ -1073,7 +1168,7 @@ mtu_cmd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_interface_mtu_cmd, static) = {
   .path = "set interface mtu",
-  .short_help = "set interface mtu <value> <intfc>",
+  .short_help = "set interface mtu <value> <interface>",
   .function = mtu_cmd,
 };
 /* *INDENT-ON* */
@@ -1083,9 +1178,10 @@ set_interface_mac_address (vlib_main_t * vm, unformat_input_t * input,
 			   vlib_cli_command_t * cmd)
 {
   vnet_main_t *vnm = vnet_get_main ();
+  vnet_sw_interface_t *si = NULL;
   clib_error_t *error = 0;
   u32 sw_if_index = ~0;
-  u64 mac = 0;
+  u8 mac[6] = { 0 };
 
   if (!unformat_user (input, unformat_vnet_sw_interface, vnm, &sw_if_index))
     {
@@ -1093,13 +1189,14 @@ set_interface_mac_address (vlib_main_t * vm, unformat_input_t * input,
 				 format_unformat_error, input);
       goto done;
     }
-  if (!unformat_user (input, unformat_ethernet_address, &mac))
+  if (!unformat_user (input, unformat_ethernet_address, mac))
     {
       error = clib_error_return (0, "expected mac address `%U'",
 				 format_unformat_error, input);
       goto done;
     }
-  error = vnet_hw_interface_change_mac_address (vnm, sw_if_index, mac);
+  si = vnet_get_sw_interface (vnm, sw_if_index);
+  error = vnet_hw_interface_change_mac_address (vnm, si->hw_if_index, mac);
 done:
   return error;
 }
@@ -1121,7 +1218,7 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_interface_mac_address_cmd, static) = {
   .path = "set interface mac address",
-  .short_help = "set interface mac address <intfc> <mac-address>",
+  .short_help = "set interface mac address <interface> <mac-address>",
   .function = set_interface_mac_address,
 };
 /* *INDENT-ON* */
@@ -1146,7 +1243,7 @@ set_tag (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (set_tag_command, static) = {
   .path = "set interface tag",
-  .short_help = "set interface tag <intfc> <tag>",
+  .short_help = "set interface tag <interface> <tag>",
   .function = set_tag,
 };
 /* *INDENT-ON* */
@@ -1170,7 +1267,7 @@ clear_tag (vlib_main_t * vm, unformat_input_t * input,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (clear_tag_command, static) = {
   .path = "clear interface tag",
-  .short_help = "clear interface tag <intfc>",
+  .short_help = "clear interface tag <interface>",
   .function = clear_tag,
 };
 /* *INDENT-ON* */
@@ -1186,6 +1283,9 @@ set_hw_interface_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
   vnet_hw_interface_rx_mode old_mode;
   int rv;
 
+  if (mode == VNET_HW_INTERFACE_RX_MODE_DEFAULT)
+    mode = hw->default_rx_mode;
+
   rv = vnet_hw_interface_get_rx_mode (vnm, hw_if_index, queue_id, &old_mode);
   switch (rv)
     {
@@ -1195,6 +1295,8 @@ set_hw_interface_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
       break;
     case VNET_API_ERROR_INVALID_INTERFACE:
       return clib_error_return (0, "invalid interface");
+    case VNET_API_ERROR_INVALID_QUEUE:
+      return clib_error_return (0, "invalid queue");
     default:
       return clib_error_return (0, "unknown error");
     }
@@ -1216,11 +1318,40 @@ set_hw_interface_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
       return clib_error_return (0, "unsupported");
     case VNET_API_ERROR_INVALID_INTERFACE:
       return clib_error_return (0, "invalid interface");
+    case VNET_API_ERROR_INVALID_QUEUE:
+      return clib_error_return (0, "invalid queue");
     default:
       return clib_error_return (0, "unknown error");
     }
 
   return 0;
+}
+
+clib_error_t *
+set_hw_interface_change_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
+				 u8 queue_id_valid, u32 queue_id,
+				 vnet_hw_interface_rx_mode mode)
+{
+  clib_error_t *error = 0;
+  vnet_hw_interface_t *hw;
+  int i;
+
+  hw = vnet_get_hw_interface (vnm, hw_if_index);
+
+  if (queue_id_valid == 0)
+    {
+      for (i = 0; i < vec_len (hw->dq_runtime_index_by_queue); i++)
+	{
+	  error = set_hw_interface_rx_mode (vnm, hw_if_index, i, mode);
+	  if (error)
+	    break;
+	}
+      hw->default_rx_mode = mode;
+    }
+  else
+    error = set_hw_interface_rx_mode (vnm, hw_if_index, queue_id, mode);
+
+  return (error);
 }
 
 static clib_error_t *
@@ -1230,11 +1361,10 @@ set_interface_rx_mode (vlib_main_t * vm, unformat_input_t * input,
   clib_error_t *error = 0;
   unformat_input_t _line_input, *line_input = &_line_input;
   vnet_main_t *vnm = vnet_get_main ();
-  vnet_hw_interface_t *hw;
   u32 hw_if_index = (u32) ~ 0;
   u32 queue_id = (u32) ~ 0;
   vnet_hw_interface_rx_mode mode = VNET_HW_INTERFACE_RX_MODE_UNKNOWN;
-  int i;
+  u8 queue_id_valid = 0;
 
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1245,7 +1375,7 @@ set_interface_rx_mode (vlib_main_t * vm, unformat_input_t * input,
 	  (line_input, "%U", unformat_vnet_hw_interface, vnm, &hw_if_index))
 	;
       else if (unformat (line_input, "queue %d", &queue_id))
-	;
+	queue_id_valid = 1;
       else if (unformat (line_input, "polling"))
 	mode = VNET_HW_INTERFACE_RX_MODE_POLLING;
       else if (unformat (line_input, "interrupt"))
@@ -1269,38 +1399,44 @@ set_interface_rx_mode (vlib_main_t * vm, unformat_input_t * input,
   if (mode == VNET_HW_INTERFACE_RX_MODE_UNKNOWN)
     return clib_error_return (0, "please specify valid rx-mode");
 
-  hw = vnet_get_hw_interface (vnm, hw_if_index);
-
-  if (queue_id == ~0)
-    for (i = 0; i < vec_len (hw->dq_runtime_index_by_queue); i++)
-      {
-	error = set_hw_interface_rx_mode (vnm, hw_if_index, i, mode);
-	if (error)
-	  break;
-      }
-  else
-    error = set_hw_interface_rx_mode (vnm, hw_if_index, queue_id, mode);
+  error = set_hw_interface_change_rx_mode (vnm, hw_if_index, queue_id_valid,
+					   queue_id, mode);
 
   return (error);
 }
 
 /*?
- * This command is used to assign a given interface, and optionally a
- * given queue, to a different thread. If the '<em>queue</em>' is not provided,
- * it defaults to 0.
+ * This command is used to assign the RX packet processing mode (polling,
+ * interrupt, adaptive) of the a given interface, and optionally a
+ * given queue. If the '<em>queue</em>' is not provided, the '<em>mode</em>'
+ * is applied to all queues of the interface. Not all interfaces support
+ * all modes. To display the current rx-mode use the command
+ * '<em>show interface rx-placement</em>'.
  *
  * @cliexpar
- * Example of how to display the interface placement:
+ * Example of how to assign rx-mode to all queues on an interface:
+ * @cliexcmd{set interface rx-mode VirtualEthernet0/0/12 polling}
+ * Example of how to assign rx-mode to one queue of an interface:
+ * @cliexcmd{set interface rx-mode VirtualEthernet0/0/12 queue 0 interrupt}
+ * Example of how to display the rx-mode of all interfaces:
  * @cliexstart{show interface rx-placement}
  * Thread 1 (vpp_wk_0):
- *   GigabitEthernet0/8/0 queue 0
- *   GigabitEthernet0/9/0 queue 0
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/0 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 0 (interrupt)
+ *     VirtualEthernet0/0/12 queue 2 (polling)
+ *     VirtualEthernet0/0/13 queue 0 (polling)
+ *     VirtualEthernet0/0/13 queue 2 (polling)
  * Thread 2 (vpp_wk_1):
- *   GigabitEthernet0/8/0 queue 1
- *   GigabitEthernet0/9/0 queue 1
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/1 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 1 (polling)
+ *     VirtualEthernet0/0/12 queue 3 (polling)
+ *     VirtualEthernet0/0/13 queue 1 (polling)
+ *     VirtualEthernet0/0/13 queue 3 (polling)
  * @cliexend
- * Example of how to assign a interface and queue to a thread:
- * @cliexcmd{set interface placement GigabitEthernet0/8/0 queue 1 thread 1}
 ?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (cmd_set_if_rx_mode,static) = {
@@ -1333,8 +1469,10 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
 
         vec_foreach (dq, rt->devices_and_queues)
 	  {
+	    vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm,
+							     dq->hw_if_index);
 	    s = format (s, "    %U queue %u (%U)\n",
-			format_vnet_sw_if_index_name, vnm, dq->hw_if_index,
+			format_vnet_sw_if_index_name, vnm, hi->sw_if_index,
 			dq->queue_id,
 			format_vnet_hw_interface_rx_mode, dq->mode);
 	  }
@@ -1353,6 +1491,31 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
   return 0;
 }
 
+/*?
+ * This command is used to display the interface and queue worker
+ * thread placement.
+ *
+ * @cliexpar
+ * Example of how to display the interface placement:
+ * @cliexstart{show interface rx-placement}
+ * Thread 1 (vpp_wk_0):
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/0 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 0 (polling)
+ *     VirtualEthernet0/0/12 queue 2 (polling)
+ *     VirtualEthernet0/0/13 queue 0 (polling)
+ *     VirtualEthernet0/0/13 queue 2 (polling)
+ * Thread 2 (vpp_wk_1):
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/1 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 1 (polling)
+ *     VirtualEthernet0/0/12 queue 3 (polling)
+ *     VirtualEthernet0/0/13 queue 1 (polling)
+ *     VirtualEthernet0/0/13 queue 3 (polling)
+ * @cliexend
+?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_interface_rx_placement, static) = {
   .path = "show interface rx-placement",
@@ -1427,30 +1590,59 @@ set_interface_rx_placement (vlib_main_t * vm, unformat_input_t * input,
 /*?
  * This command is used to assign a given interface, and optionally a
  * given queue, to a different thread. If the '<em>queue</em>' is not provided,
- * it defaults to 0.
+ * it defaults to 0. The '<em>worker</em>' parameter is zero based and the index
+ * in the thread name, for example, 0 in the thread name '<em>vpp_wk_0</em>'.
  *
  * @cliexpar
  * Example of how to display the interface placement:
- * @cliexstart{show interface placement}
+ * @cliexstart{show interface rx-placement}
  * Thread 1 (vpp_wk_0):
- *   GigabitEthernet0/8/0 queue 0
- *   GigabitEthernet0/9/0 queue 0
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/0 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 0 (polling)
+ *     VirtualEthernet0/0/12 queue 2 (polling)
+ *     VirtualEthernet0/0/13 queue 0 (polling)
+ *     VirtualEthernet0/0/13 queue 2 (polling)
  * Thread 2 (vpp_wk_1):
- *   GigabitEthernet0/8/0 queue 1
- *   GigabitEthernet0/9/0 queue 1
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/1 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 1 (polling)
+ *     VirtualEthernet0/0/12 queue 3 (polling)
+ *     VirtualEthernet0/0/13 queue 1 (polling)
+ *     VirtualEthernet0/0/13 queue 3 (polling)
  * @cliexend
- * Example of how to assign a interface and queue to a thread:
- * @cliexcmd{set interface placement GigabitEthernet0/8/0 queue 1 thread 1}
+ * Example of how to assign a interface and queue to a worker thread:
+ * @cliexcmd{set interface rx-placement VirtualEthernet0/0/12 queue 1 worker 0}
+ * Example of how to display the interface placement:
+ * @cliexstart{show interface rx-placement}
+ * Thread 1 (vpp_wk_0):
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/0 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 0 (polling)
+ *     VirtualEthernet0/0/12 queue 1 (polling)
+ *     VirtualEthernet0/0/12 queue 2 (polling)
+ *     VirtualEthernet0/0/13 queue 0 (polling)
+ *     VirtualEthernet0/0/13 queue 2 (polling)
+ * Thread 2 (vpp_wk_1):
+ *   node dpdk-input:
+ *     GigabitEthernet7/0/1 queue 0 (polling)
+ *   node vhost-user-input:
+ *     VirtualEthernet0/0/12 queue 3 (polling)
+ *     VirtualEthernet0/0/13 queue 1 (polling)
+ *     VirtualEthernet0/0/13 queue 3 (polling)
+ * @cliexend
 ?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (cmd_set_if_rx_placement,static) = {
     .path = "set interface rx-placement",
-    .short_help = "set interface rx-placement <hw-interface> [queue <n>] "
+    .short_help = "set interface rx-placement <interface> [queue <n>] "
       "[worker <n> | main]",
     .function = set_interface_rx_placement,
     .is_mp_safe = 1,
 };
-
 /* *INDENT-ON* */
 /*
  * fd.io coding-style-patch-verification: ON

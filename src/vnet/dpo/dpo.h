@@ -59,14 +59,11 @@ typedef u32 index_t;
  */
 typedef enum dpo_proto_t_
 {
-#if CLIB_DEBUG > 0
-    DPO_PROTO_IP4 = 1,
-#else
     DPO_PROTO_IP4 = 0,
-#endif
     DPO_PROTO_IP6,
-    DPO_PROTO_ETHERNET,
     DPO_PROTO_MPLS,
+    DPO_PROTO_ETHERNET,
+    DPO_PROTO_BIER,
     DPO_PROTO_NSH,
 } __attribute__((packed)) dpo_proto_t;
 
@@ -79,6 +76,7 @@ typedef enum dpo_proto_t_
     [DPO_PROTO_ETHERNET]  = "ethernet", \
     [DPO_PROTO_MPLS] = "mpls",	\
     [DPO_PROTO_NSH] = "nsh",    \
+    [DPO_PROTO_BIER] = "bier",	\
 }
 
 #define FOR_EACH_DPO_PROTO(_proto)    \
@@ -116,7 +114,15 @@ typedef enum dpo_type_t_ {
     DPO_MPLS_LABEL,
     DPO_MPLS_DISPOSITION,
     DPO_MFIB_ENTRY,
-    DPO_INTERFACE,
+    DPO_INTERFACE_RX,
+    DPO_INTERFACE_TX,
+    DPO_DVR,
+    DPO_L3_PROXY,
+    DPO_BIER_TABLE,
+    DPO_BIER_FMASK,
+    DPO_BIER_IMP,
+    DPO_BIER_DISP_TABLE,
+    DPO_BIER_DISP_ENTRY,
     DPO_LAST,
 } __attribute__((packed)) dpo_type_t;
 
@@ -141,8 +147,16 @@ typedef enum dpo_type_t_ {
     [DPO_CLASSIFY] = "dpo-classify",	\
     [DPO_MPLS_LABEL] = "dpo-mpls-label", \
     [DPO_MPLS_DISPOSITION] = "dpo-mpls-diposition", \
-    [DPO_MFIB_ENTRY] = "dpo-mfib_entry", \
-    [DPO_INTERFACE] = "dpo-interface"	\
+    [DPO_MFIB_ENTRY] = "dpo-mfib-entry", \
+    [DPO_INTERFACE_RX] = "dpo-interface-rx",	\
+    [DPO_INTERFACE_TX] = "dpo-interface-tx",	\
+    [DPO_DVR] = "dpo-dvr",	\
+    [DPO_L3_PROXY] = "dpo-l3-proxy",	\
+    [DPO_BIER_TABLE] = "bier-table",	\
+    [DPO_BIER_FMASK] = "bier-fmask",	\
+    [DPO_BIER_IMP] = "bier-imposition",	\
+    [DPO_BIER_DISP_ENTRY] = "bier-disp-entry",	\
+    [DPO_BIER_DISP_TABLE] = "bier-disp-table",	\
 }
 
 /**
@@ -273,6 +287,11 @@ extern u8 *format_dpo_type(u8 * s, va_list * args);
 extern u8 *format_dpo_proto(u8 * s, va_list * args);
 
 /**
+ * @brief format a DPO protocol
+ */
+extern vnet_link_t dpo_proto_to_link(dpo_proto_t dp);
+
+/**
  * @brief
  *  Set and stack a DPO.
  *  The DPO passed is set to the parent DPO and the necessary
@@ -305,15 +324,25 @@ extern void dpo_stack(dpo_type_t child_type,
  * @param child_node
  *  The VLIB grpah node index to create an arc from to the parent
  *
- * @parem dpo
+ * @param dpo
  *  This is the DPO to stack and set.
  *
- * @paren parent_dpo
+ * @param parent_dpo
  *  The parent DPO to stack onto.
  */ 
 extern void dpo_stack_from_node(u32 child_node,
                                 dpo_id_t *dpo,
                                 const dpo_id_t *parent);
+
+/**
+ * Get a uRPF interface for the DPO
+ *
+ * @param dpo
+ *  The DPO from which to get the uRPF interface
+ *
+ * @return valid SW interface index or ~0
+ */
+extern u32 dpo_get_urpf(const dpo_id_t *dpo);
 
 /**
  * @brief  A lock function registered for a DPO type
@@ -329,6 +358,18 @@ typedef void (*dpo_unlock_fn_t)(dpo_id_t *dpo);
  * @brief An memory usage show command
  */
 typedef void (*dpo_mem_show_t)(void);
+
+/**
+ * @brief Given a DPO instance return a vector of node indices that
+ * the type/instance will use.
+ */
+typedef u32* (*dpo_get_next_node_t)(const dpo_id_t *dpo);
+
+/**
+ * @brief Given a DPO instance return an interface that can
+ * be used in an uRPF check
+ */
+typedef u32 (*dpo_get_urpf_t)(const dpo_id_t *dpo);
 
 /**
  * @brief A virtual function table regisitered for a DPO type
@@ -351,6 +392,17 @@ typedef struct dpo_vft_t_
      * A show memory usage function
      */
     dpo_mem_show_t dv_mem_show;
+    /**
+     * A function to get the next VLIB node given an instance
+     * of the DPO. If this is null, then the node's name MUST be
+     * retreiveable from the nodes names array passed in the register
+     * function
+     */
+    dpo_get_next_node_t dv_get_next_node;
+    /**
+     * Get uRPF interface
+     */
+    dpo_get_urpf_t dv_get_urpf;
 } dpo_vft_t;
 
 

@@ -53,9 +53,6 @@ typedef struct
   /* split horizon group */
   u8 shg;
 
-  /* sequence number for interface based flush of MACs */
-  u8 seq_num;
-
 } l2_input_config_t;
 
 
@@ -105,7 +102,7 @@ l2input_bd_config (u32 bd_index)
 
 /* L2 input features */
 
-/* Mappings from feature ID to graph node name */
+/* Mappings from feature ID to graph node name in reverse order */
 #define foreach_l2input_feat                    \
  _(DROP,          "feature-bitmap-drop")        \
  _(XCONNECT,      "l2-output")                  \
@@ -115,11 +112,13 @@ l2input_bd_config (u32 bd_index)
  _(FWD,           "l2-fwd")                     \
  _(RW,            "l2-rw")                      \
  _(LEARN,         "l2-learn")                   \
+ _(L2_EMULATION,  "l2-emulation")               \
  _(VTR,           "l2-input-vtr")               \
  _(VPATH,         "vpath-input-l2")             \
  _(ACL,           "l2-input-acl")               \
  _(POLICER_CLAS,  "l2-policer-classify")	\
- _(INPUT_CLASSIFY, "l2-input-classify")
+ _(INPUT_CLASSIFY, "l2-input-classify")         \
+ _(SPAN,          "span-l2-input")
 
 /* Feature bitmap positions */
 typedef enum
@@ -127,13 +126,10 @@ typedef enum
 #define _(sym,str) L2INPUT_FEAT_##sym##_BIT,
   foreach_l2input_feat
 #undef _
-    L2INPUT_N_FEAT,
-  L2INPUT_VALID_MASK =
-#define _(sym,str) L2INPUT_FEAT_##sym##_BIT |
-    foreach_l2input_feat
-#undef _
-    0,
+  L2INPUT_N_FEAT
 } l2input_feat_t;
+
+STATIC_ASSERT (L2INPUT_N_FEAT <= 32, "too many l2 input features");
 
 /* Feature bit masks */
 typedef enum
@@ -141,11 +137,20 @@ typedef enum
 #define _(sym,str) L2INPUT_FEAT_##sym = (1<<L2INPUT_FEAT_##sym##_BIT),
   foreach_l2input_feat
 #undef _
+    L2INPUT_VALID_MASK =
+#define _(sym,str) L2INPUT_FEAT_##sym |
+    foreach_l2input_feat
+#undef _
+  0
 } l2input_feat_masks_t;
+
+STATIC_ASSERT ((u64) L2INPUT_VALID_MASK == (1ull << L2INPUT_N_FEAT) - 1, "");
 
 /** Return an array of strings containing graph node names of each feature */
 char **l2input_get_feat_names (void);
 
+/* arg0 - u32 feature_bitmap */
+u8 *format_l2_input_features (u8 * s, va_list * args);
 
 static_always_inline u8
 bd_feature_flood (l2_bridge_domain_t * bd_config)

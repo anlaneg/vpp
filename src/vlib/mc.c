@@ -109,7 +109,7 @@ mc_seq_cmp (u32 x, u32 y)
 void *
 mc_get_vlib_buffer (vlib_main_t * vm, u32 n_bytes, u32 * bi_return)
 {
-  u32 n_alloc, bi;
+  u32 n_alloc, bi = 0;
   vlib_buffer_t *b;
 
   n_alloc = vlib_buffer_alloc (vm, &bi, 1);
@@ -2523,7 +2523,7 @@ format_mc_main (u8 * s, va_list * args)
   mc_main_t *mcm = va_arg (*args, mc_main_t *);
   mc_stream_t *t;
   mc_stream_peer_t *p, *ps;
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   s = format (s, "MC state %U, %d streams joined, global sequence 0x%x",
 	      format_mc_relay_state, mcm->relay_state,

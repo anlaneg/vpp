@@ -50,7 +50,7 @@ typedef struct
   uword if_index;
   u32 hw_if_index;
   u32 sw_if_index;
-  u32 unix_file_index;
+  u32 clib_file_index;
 
   u32 per_interface_next_index;
   u8 is_admin_up;
@@ -98,7 +98,7 @@ typedef struct
   u32 input_cpu_count;
 } netmap_main_t;
 
-netmap_main_t netmap_main;
+extern netmap_main_t netmap_main;
 extern vnet_device_class_t netmap_device_class;
 extern vlib_node_registration_t netmap_input_node;
 

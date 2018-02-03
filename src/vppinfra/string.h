@@ -53,6 +53,10 @@
 #include <vppinfra/standalone_string.h>
 #endif
 
+#if _x86_64_
+#include <x86intrin.h>
+#endif
+
 /* Exchanges source and destination. */
 void clib_memswap (void *_a, void *_b, uword bytes);
 
@@ -61,8 +65,10 @@ void clib_memswap (void *_a, void *_b, uword bytes);
  * so don't let it anywhere near them.
  */
 #ifndef __COVERITY__
-#if __AVX__
-#include <vppinfra/memcpy_avx.h>
+#if __AVX512F__
+#include <vppinfra/memcpy_avx512.h>
+#elif __AVX2__
+#include <vppinfra/memcpy_avx2.h>
 #elif __SSSE3__
 #include <vppinfra/memcpy_sse3.h>
 #else
@@ -71,6 +77,74 @@ void clib_memswap (void *_a, void *_b, uword bytes);
 #else /* __COVERITY__ */
 #define clib_memcpy(a,b,c) memcpy(a,b,c)
 #endif
+
+/*
+ * Copy 64 bytes of data to 4 destinations
+ * this function is typically used in quad-loop case when whole cacheline
+ * needs to be copied to 4 different places. First it reads whole cacheline
+ * to 1/2/4 SIMD registers and then it writes data to 4 destinations.
+ */
+
+static_always_inline void
+clib_memcpy64_x4 (void *d0, void *d1, void *d2, void *d3, void *s)
+{
+#if defined (__AVX512F__)
+  __m512i r0 = _mm512_loadu_si512 (s);
+
+  _mm512_storeu_si512 (d0, r0);
+  _mm512_storeu_si512 (d1, r0);
+  _mm512_storeu_si512 (d2, r0);
+  _mm512_storeu_si512 (d3, r0);
+
+#elif defined (__AVX2__)
+  __m256i r0 = _mm256_loadu_si256 ((__m256i *) (s + 0 * 32));
+  __m256i r1 = _mm256_loadu_si256 ((__m256i *) (s + 1 * 32));
+
+  _mm256_storeu_si256 ((__m256i *) (d0 + 0 * 32), r0);
+  _mm256_storeu_si256 ((__m256i *) (d0 + 1 * 32), r1);
+
+  _mm256_storeu_si256 ((__m256i *) (d1 + 0 * 32), r0);
+  _mm256_storeu_si256 ((__m256i *) (d1 + 1 * 32), r1);
+
+  _mm256_storeu_si256 ((__m256i *) (d2 + 0 * 32), r0);
+  _mm256_storeu_si256 ((__m256i *) (d2 + 1 * 32), r1);
+
+  _mm256_storeu_si256 ((__m256i *) (d3 + 0 * 32), r0);
+  _mm256_storeu_si256 ((__m256i *) (d3 + 1 * 32), r1);
+
+#elif defined (__SSSE3__)
+  __m128i r0 = _mm_loadu_si128 ((__m128i *) (s + 0 * 16));
+  __m128i r1 = _mm_loadu_si128 ((__m128i *) (s + 1 * 16));
+  __m128i r2 = _mm_loadu_si128 ((__m128i *) (s + 2 * 16));
+  __m128i r3 = _mm_loadu_si128 ((__m128i *) (s + 3 * 16));
+
+  _mm_storeu_si128 ((__m128i *) (d0 + 0 * 16), r0);
+  _mm_storeu_si128 ((__m128i *) (d0 + 1 * 16), r1);
+  _mm_storeu_si128 ((__m128i *) (d0 + 2 * 16), r2);
+  _mm_storeu_si128 ((__m128i *) (d0 + 3 * 16), r3);
+
+  _mm_storeu_si128 ((__m128i *) (d1 + 0 * 16), r0);
+  _mm_storeu_si128 ((__m128i *) (d1 + 1 * 16), r1);
+  _mm_storeu_si128 ((__m128i *) (d1 + 2 * 16), r2);
+  _mm_storeu_si128 ((__m128i *) (d1 + 3 * 16), r3);
+
+  _mm_storeu_si128 ((__m128i *) (d2 + 0 * 16), r0);
+  _mm_storeu_si128 ((__m128i *) (d2 + 1 * 16), r1);
+  _mm_storeu_si128 ((__m128i *) (d2 + 2 * 16), r2);
+  _mm_storeu_si128 ((__m128i *) (d2 + 3 * 16), r3);
+
+  _mm_storeu_si128 ((__m128i *) (d3 + 0 * 16), r0);
+  _mm_storeu_si128 ((__m128i *) (d3 + 1 * 16), r1);
+  _mm_storeu_si128 ((__m128i *) (d3 + 2 * 16), r2);
+  _mm_storeu_si128 ((__m128i *) (d3 + 3 * 16), r3);
+
+#else
+  clib_memcpy (d0, s, 64);
+  clib_memcpy (d1, s, 64);
+  clib_memcpy (d2, s, 64);
+  clib_memcpy (d3, s, 64);
+#endif
+}
 
 #endif /* included_clib_string_h */
 

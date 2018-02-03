@@ -10,9 +10,10 @@ import tempfile
 import time
 import resource
 import faulthandler
+import random
 from collections import deque
 from threading import Thread, Event
-from inspect import getdoc
+from inspect import getdoc, isclass
 from traceback import format_exception
 from logging import FileHandler, DEBUG, Formatter
 from scapy.packet import Raw
@@ -23,6 +24,7 @@ from vpp_lo_interface import VppLoInterface
 from vpp_papi_provider import VppPapiProvider
 from log import *
 from vpp_object import VppObjectRegistry
+from vpp_punt_socket import vpp_uds_socket_name
 if os.name == 'posix' and sys.version_info[0] < 3:
     # using subprocess32 is recommended by python official documentation
     # @ https://docs.python.org/2/library/subprocess.html
@@ -68,17 +70,45 @@ class _PacketInfo(object):
 
 def pump_output(testclass):
     """ pump output from vpp stdout/stderr to proper queues """
+    stdout_fragment = ""
+    stderr_fragment = ""
     while not testclass.pump_thread_stop_flag.wait(0):
         readable = select.select([testclass.vpp.stdout.fileno(),
                                   testclass.vpp.stderr.fileno(),
                                   testclass.pump_thread_wakeup_pipe[0]],
                                  [], [])[0]
         if testclass.vpp.stdout.fileno() in readable:
-            read = os.read(testclass.vpp.stdout.fileno(), 1024)
-            testclass.vpp_stdout_deque.append(read)
+            read = os.read(testclass.vpp.stdout.fileno(), 102400)
+            if len(read) > 0:
+                split = read.splitlines(True)
+                if len(stdout_fragment) > 0:
+                    split[0] = "%s%s" % (stdout_fragment, split[0])
+                if len(split) > 0 and split[-1].endswith("\n"):
+                    limit = None
+                else:
+                    limit = -1
+                    stdout_fragment = split[-1]
+                testclass.vpp_stdout_deque.extend(split[:limit])
+                if not testclass.cache_vpp_output:
+                    for line in split[:limit]:
+                        testclass.logger.debug(
+                            "VPP STDOUT: %s" % line.rstrip("\n"))
         if testclass.vpp.stderr.fileno() in readable:
-            read = os.read(testclass.vpp.stderr.fileno(), 1024)
-            testclass.vpp_stderr_deque.append(read)
+            read = os.read(testclass.vpp.stderr.fileno(), 102400)
+            if len(read) > 0:
+                split = read.splitlines(True)
+                if len(stderr_fragment) > 0:
+                    split[0] = "%s%s" % (stderr_fragment, split[0])
+                if len(split) > 0 and split[-1].endswith("\n"):
+                    limit = None
+                else:
+                    limit = -1
+                    stderr_fragment = split[-1]
+                testclass.vpp_stderr_deque.extend(split[:limit])
+                if not testclass.cache_vpp_output:
+                    for line in split[:limit]:
+                        testclass.logger.debug(
+                            "VPP STDERR: %s" % line.rstrip("\n"))
         # ignoring the dummy pipe here intentionally - the flag will take care
         # of properly terminating the loop
 
@@ -90,6 +120,52 @@ def running_extended_tests():
     except:
         return False
     return False
+
+
+def running_on_centos():
+    try:
+        os_id = os.getenv("OS_ID")
+        return True if "centos" in os_id.lower() else False
+    except:
+        return False
+    return False
+
+
+class KeepAliveReporter(object):
+    """
+    Singleton object which reports test start to parent process
+    """
+    _shared_state = {}
+
+    def __init__(self):
+        self.__dict__ = self._shared_state
+
+    @property
+    def pipe(self):
+        return self._pipe
+
+    @pipe.setter
+    def pipe(self, pipe):
+        if hasattr(self, '_pipe'):
+            raise Exception("Internal error - pipe should only be set once.")
+        self._pipe = pipe
+
+    def send_keep_alive(self, test):
+        """
+        Write current test tmpdir & desc to keep-alive pipe to signal liveness
+        """
+        if self.pipe is None:
+            # if not running forked..
+            return
+
+        if isclass(test):
+            desc = test.__name__
+        else:
+            desc = test.shortDescription()
+            if not desc:
+                desc = str(test)
+
+        self.pipe.send((desc, test.vpp_bin, test.tempdir, test.vpp.pid))
 
 
 class VppTestCase(unittest.TestCase):
@@ -144,6 +220,12 @@ class VppTestCase(unittest.TestCase):
             d = os.getenv("DEBUG")
         except:
             d = None
+        try:
+            c = os.getenv("CACHE_OUTPUT", "1")
+            cls.cache_vpp_output = \
+                False if c.lower() in ("n", "no", "0") else True
+        except:
+            cls.cache_vpp_output = True
         cls.set_debug_flags(d)
         cls.vpp_bin = os.getenv('VPP_TEST_BIN', "vpp")
         cls.plugin_path = os.getenv('VPP_TEST_PLUGIN_PATH')
@@ -170,11 +252,12 @@ class VppTestCase(unittest.TestCase):
         if coredump_size is None:
             coredump_size = "coredump-size unlimited"
         cls.vpp_cmdline = [cls.vpp_bin, "unix",
-                           "{", "nodaemon", debug_cli, coredump_size, "}",
-                           "api-trace", "{", "on", "}",
+                           "{", "nodaemon", debug_cli, "full-coredump",
+                           coredump_size, "}", "api-trace", "{", "on", "}",
                            "api-segment", "{", "prefix", cls.shm_prefix, "}",
                            "plugins", "{", "plugin", "dpdk_plugin.so", "{",
-                           "disable", "}", "}"]
+                           "disable", "}", "}",
+                           "punt", "{", "socket", cls.punt_socket_path, "}"]
         if plugin_path is not None:
             cls.vpp_cmdline.extend(["plugin_path", plugin_path])
         cls.logger.info("vpp_cmdline: %s" % cls.vpp_cmdline)
@@ -236,9 +319,10 @@ class VppTestCase(unittest.TestCase):
         Remove shared memory files, start vpp and connect the vpp-api
         """
         gc.collect()  # run garbage collection first
+        random.seed()
         cls.logger = getLogger(cls.__name__)
         cls.tempdir = tempfile.mkdtemp(
-            prefix='vpp-unittest-' + cls.__name__ + '-')
+            prefix='vpp-unittest-%s-' % cls.__name__)
         cls.file_handler = FileHandler("%s/log.txt" % cls.tempdir)
         cls.file_handler.setFormatter(
             Formatter(fmt='%(asctime)s,%(msecs)03d %(message)s',
@@ -246,6 +330,7 @@ class VppTestCase(unittest.TestCase):
         cls.file_handler.setLevel(DEBUG)
         cls.logger.addHandler(cls.file_handler)
         cls.shm_prefix = cls.tempdir.split("/")[-1]
+        cls.punt_socket_path = '%s/%s' % (cls.tempdir, vpp_uds_socket_name)
         os.chdir(cls.tempdir)
         cls.logger.info("Temporary dir is %s, shm prefix is %s",
                         cls.tempdir, cls.shm_prefix)
@@ -257,10 +342,12 @@ class VppTestCase(unittest.TestCase):
         cls.vpp_dead = False
         cls.registry = VppObjectRegistry()
         cls.vpp_startup_failed = False
+        cls.reporter = KeepAliveReporter()
         # need to catch exceptions here because if we raise, then the cleanup
         # doesn't get called and we might end with a zombie vpp
         try:
             cls.run_vpp()
+            cls.reporter.send_keep_alive(cls)
             cls.vpp_stdout_deque = deque()
             cls.vpp_stderr_deque = deque()
             cls.pump_thread_stop_flag = Event()
@@ -394,6 +481,7 @@ class VppTestCase(unittest.TestCase):
 
     def setUp(self):
         """ Clear trace before running each test"""
+        self.reporter.send_keep_alive(self)
         self.logger.debug("--- setUp() for %s.%s(%s) called ---" %
                           (self.__class__.__name__, self._testMethodName,
                            self._testMethodDoc))
@@ -414,13 +502,16 @@ class VppTestCase(unittest.TestCase):
         type(self).test_instance = self
 
     @classmethod
-    def pg_enable_capture(cls, interfaces):
+    def pg_enable_capture(cls, interfaces=None):
         """
         Enable capture on packet-generator interfaces
 
-        :param interfaces: iterable interface indexes
+        :param interfaces: iterable interface indexes (if None,
+                           use self.pg_interfaces)
 
         """
+        if interfaces is None:
+            interfaces = cls.pg_interfaces
         for i in interfaces:
             i.enable_capture()
 
@@ -488,19 +579,21 @@ class VppTestCase(unittest.TestCase):
         return result
 
     @staticmethod
-    def extend_packet(packet, size):
+    def extend_packet(packet, size, padding=' '):
         """
-        Extend packet to given size by padding with spaces
+        Extend packet to given size by padding with spaces or custom padding
         NOTE: Currently works only when Raw layer is present.
 
         :param packet: packet
         :param size: target size
+        :param padding: padding used to extend the payload
 
         """
         packet_len = len(packet) + 4
         extend = size - packet_len
         if extend > 0:
-            packet[Raw].load += ' ' * extend
+            num = (extend / len(padding)) + 1
+            packet[Raw].load += (padding * num)[:extend]
 
     @classmethod
     def reset_packet_infos(cls):
@@ -654,13 +747,32 @@ class VppTestCase(unittest.TestCase):
         time.sleep(timeout)
         after = time.time()
         if after - before > 2 * timeout:
-            cls.logger.error(
-                    "time.sleep() derp! slept for %ss instead of ~%ss!" % (
-                        after - before, timeout))
+            cls.logger.error("unexpected time.sleep() result - "
+                             "slept for %ss instead of ~%ss!" % (
+                                 after - before, timeout))
         if hasattr(cls, 'logger'):
             cls.logger.debug(
                 "Finished sleep (%s) - slept %ss (wanted %ss)" % (
                     remark, after - before, timeout))
+
+    def send_and_assert_no_replies(self, intf, pkts, remark=""):
+        self.vapi.cli("clear trace")
+        intf.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        timeout = 1
+        for i in self.pg_interfaces:
+            i.get_capture(0, timeout=timeout)
+            i.assert_nothing_captured(remark=remark)
+            timeout = 0.1
+
+    def send_and_expect(self, input, pkts, output):
+        self.vapi.cli("clear trace")
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = output.get_capture(len(pkts))
+        return rx
 
 
 class TestCasePrinter(object):
@@ -741,6 +853,30 @@ class VppTestResult(unittest.TestResult):
         unittest.TestResult.addSkip(self, test, reason)
         self.result_string = colorize("SKIP", YELLOW)
 
+    def symlink_failed(self, test):
+        logger = None
+        if hasattr(test, 'logger'):
+            logger = test.logger
+        if hasattr(test, 'tempdir'):
+            try:
+                failed_dir = os.getenv('VPP_TEST_FAILED_DIR')
+                link_path = '%s/%s-FAILED' % (failed_dir,
+                                              test.tempdir.split("/")[-1])
+                if logger:
+                    logger.debug("creating a link to the failed test")
+                    logger.debug("os.symlink(%s, %s)" %
+                                 (test.tempdir, link_path))
+                os.symlink(test.tempdir, link_path)
+            except Exception as e:
+                if logger:
+                    logger.error(e)
+
+    def send_failure_through_pipe(self, test):
+        if hasattr(self, 'test_framework_failed_pipe'):
+            pipe = self.test_framework_failed_pipe
+            if pipe:
+                pipe.send(test.__class__)
+
     def addFailure(self, test, err):
         """
         Record a test failed result
@@ -760,8 +896,11 @@ class VppTestResult(unittest.TestResult):
         if hasattr(test, 'tempdir'):
             self.result_string = colorize("FAIL", RED) + \
                 ' [ temp dir used by test case: ' + test.tempdir + ' ]'
+            self.symlink_failed(test)
         else:
             self.result_string = colorize("FAIL", RED) + ' [no temp dir]'
+
+        self.send_failure_through_pipe(test)
 
     def addError(self, test, err):
         """
@@ -782,8 +921,11 @@ class VppTestResult(unittest.TestResult):
         if hasattr(test, 'tempdir'):
             self.result_string = colorize("ERROR", RED) + \
                 ' [ temp dir used by test case: ' + test.tempdir + ' ]'
+            self.symlink_failed(test)
         else:
             self.result_string = colorize("ERROR", RED) + ' [no temp dir]'
+
+        self.send_failure_through_pipe(test)
 
     def getDescription(self, test):
         """
@@ -856,6 +998,22 @@ class VppTestResult(unittest.TestResult):
             self.stream.writeln("%s" % err)
 
 
+class Filter_by_test_option:
+    def __init__(self, filter_file_name, filter_class_name, filter_func_name):
+        self.filter_file_name = filter_file_name
+        self.filter_class_name = filter_class_name
+        self.filter_func_name = filter_func_name
+
+    def __call__(self, file_name, class_name, func_name):
+        if self.filter_file_name and file_name != self.filter_file_name:
+            return False
+        if self.filter_class_name and class_name != self.filter_class_name:
+            return False
+        if self.filter_func_name and func_name != self.filter_func_name:
+            return False
+        return True
+
+
 class VppTestRunner(unittest.TextTestRunner):
     """
     A basic test runner implementation which prints results to standard error.
@@ -865,13 +1023,19 @@ class VppTestRunner(unittest.TextTestRunner):
         """Class maintaining the results of the tests"""
         return VppTestResult
 
-    def __init__(self, stream=sys.stderr, descriptions=True, verbosity=1,
-                 failfast=False, buffer=False, resultclass=None):
+    def __init__(self, keep_alive_pipe=None, failed_pipe=None,
+                 stream=sys.stderr, descriptions=True,
+                 verbosity=1, failfast=False, buffer=False, resultclass=None):
         # ignore stream setting here, use hard-coded stdout to be in sync
         # with prints from VppTestCase methods ...
         super(VppTestRunner, self).__init__(sys.stdout, descriptions,
                                             verbosity, failfast, buffer,
                                             resultclass)
+        reporter = KeepAliveReporter()
+        reporter.pipe = keep_alive_pipe
+        # this is super-ugly, but very simple to implement and works as long
+        # as we run only one test at the same time
+        VppTestResult.test_framework_failed_pipe = failed_pipe
 
     test_option = "TEST"
 
@@ -906,13 +1070,13 @@ class VppTestRunner(unittest.TextTestRunner):
                     filter_file_name = 'test_%s' % f
         return filter_file_name, filter_class_name, filter_func_name
 
-    def filter_tests(self, tests, filter_file, filter_class, filter_func):
+    @staticmethod
+    def filter_tests(tests, filter_cb):
         result = unittest.suite.TestSuite()
         for t in tests:
             if isinstance(t, unittest.suite.TestSuite):
                 # this is a bunch of tests, recursively filter...
-                x = self.filter_tests(t, filter_file, filter_class,
-                                      filter_func)
+                x = filter_tests(t, filter_cb)
                 if x.countTestCases() > 0:
                     result.addTest(x)
             elif isinstance(t, unittest.TestCase):
@@ -922,11 +1086,7 @@ class VppTestRunner(unittest.TextTestRunner):
                 # test_classifier.TestClassifier.test_acl_ip
                 # apply filtering only if it is so
                 if len(parts) == 3:
-                    if filter_file and filter_file != parts[0]:
-                        continue
-                    if filter_class and filter_class != parts[1]:
-                        continue
-                    if filter_func and filter_func != parts[2]:
+                    if not filter_cb(parts[0], parts[1], parts[2]):
                         continue
                 result.addTest(t)
             else:
@@ -946,10 +1106,41 @@ class VppTestRunner(unittest.TextTestRunner):
         filter_file, filter_class, filter_func = self.parse_test_option()
         print("Active filters: file=%s, class=%s, function=%s" % (
             filter_file, filter_class, filter_func))
-        filtered = self.filter_tests(test, filter_file, filter_class,
-                                     filter_func)
+        filter_cb = Filter_by_test_option(
+            filter_file, filter_class, filter_func)
+        filtered = self.filter_tests(test, filter_cb)
         print("%s out of %s tests match specified filters" % (
             filtered.countTestCases(), test.countTestCases()))
         if not running_extended_tests():
             print("Not running extended tests (some tests will be skipped)")
         return super(VppTestRunner, self).run(filtered)
+
+
+class Worker(Thread):
+    def __init__(self, args, logger):
+        self.logger = logger
+        self.args = args
+        self.result = None
+        super(Worker, self).__init__()
+
+    def run(self):
+        executable = self.args[0]
+        self.logger.debug("Running executable w/args `%s'" % self.args)
+        env = os.environ.copy()
+        env["CK_LOG_FILE_NAME"] = "-"
+        self.process = subprocess.Popen(
+            self.args, shell=False, env=env, preexec_fn=os.setpgrp,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = self.process.communicate()
+        self.logger.debug("Finished running `%s'" % executable)
+        self.logger.info("Return code is `%s'" % self.process.returncode)
+        self.logger.info(single_line_delim)
+        self.logger.info("Executable `%s' wrote to stdout:" % executable)
+        self.logger.info(single_line_delim)
+        self.logger.info(out)
+        self.logger.info(single_line_delim)
+        self.logger.info("Executable `%s' wrote to stderr:" % executable)
+        self.logger.info(single_line_delim)
+        self.logger.error(err)
+        self.logger.info(single_line_delim)
+        self.result = self.process.returncode

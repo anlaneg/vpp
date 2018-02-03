@@ -15,7 +15,7 @@ AUTOMAKE_OPTIONS = foreign
 ACLOCAL_AMFLAGS = -I m4
 AM_LIBTOOLFLAGS = --quiet
 
-AM_CFLAGS = -Wall -I${top_srcdir} -I${top_builddir} \
+AM_CFLAGS = @CPU_FLAGS@ -Wall -I${top_srcdir} -I${top_builddir} \
   -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/linux \
   -I@top_srcdir@/plugins -I@top_builddir@/plugins
 
@@ -68,7 +68,7 @@ JAR_FILES += jvpp-registry-$(PACKAGE_VERSION).jar
 jvpp_registry_ok = jvpp-registry/io_fd_vpp_jvpp_VppJNIConnection.h
 
 jvpp-registry/io_fd_vpp_jvpp_VppJNIConnection.h: $(jvpp_registry_src_files)
-	@echo "  JAPIGEN  $@"
+	@echo "  JVPP GEN  $@"
 	@rm -rf jvpp-registry/target
 	@mkdir -p jvpp-registry/target
 	@$(JAVAC) -d jvpp-registry/target $^
@@ -77,10 +77,10 @@ jvpp-registry/io_fd_vpp_jvpp_VppJNIConnection.h: $(jvpp_registry_src_files)
 	@touch jvpp-registry.ok
 
 define japigen
-	@echo "  JAPIGEN  $@"
+	@echo "  JVPP GEN  $@"
 	@rm -rf jvpp-$(1)/target
 	@ @srcdir@/jvpp/gen/jvpp_gen.py --plugin_name $(1) --root_dir jvpp-$(1) \
-	  -i $(jvpp_$(1)_json_files) > /dev/null
+	  -i $(jvpp_$(1)_json_files)
 	@find jvpp-$(1)/target -name \*.java > jvpp-$(1).generated.files
 	@find @srcdir@/jvpp-$(1) -name \*.java > jvpp-$(1).static.files
 	@$(JAVAC) -classpath jvpp-registry/target \
@@ -102,8 +102,12 @@ libjvpp_core_la_DEPENDENCIES = libjvpp_common.la
 BUILT_SOURCES += jvpp-core/io_fd_vpp_jvpp_core_JVppCoreImpl.h
 JAR_FILES += jvpp-core-$(PACKAGE_VERSION).jar
 CLEANDIRS += jvpp-core/target
+
+# Include all VPP API files
 jvpp_core_json_files = $(shell find @top_builddir@/vnet/ -type f -name '*.api.json')
-jvpp_core_json_files += @top_builddir@/vpp/api/vpe.api.json
+jvpp_core_json_files += $(shell find @top_builddir@/vpp/ -type f -name '*.api.json')
+# except for plugins and unsupported ones:
+# jvpp_core_json_files += @top_builddir@/vlibmemory/memclnt.api.json
 
 jvpp-core/io_fd_vpp_jvpp_core_JVppCoreImpl.h: $(jvpp_registry_ok) $(jvpp_core_json_files)
 	$(call japigen,core,JVppCoreImpl)
@@ -149,23 +153,43 @@ jvpp-gtpu/io_fd_vpp_jvpp_gtpu_JVppGtpuImpl.h: $(jvpp_registry_ok) $(jvpp_gtpu_js
 endif
 
 #
-# SNAT Plugin
+# PPPOE Plugin
 #
-if ENABLE_SNAT_PLUGIN
-noinst_LTLIBRARIES += libjvpp_snat.la
-libjvpp_snat_la_SOURCES = jvpp-snat/jvpp_snat.c
-libjvpp_snat_la_CPPFLAGS = -Ijvpp-snat
-libjvpp_snat_la_LIBADD = $(JVPP_LIBS)
-libjvpp_snat_la_DEPENDENCIES = libjvpp_common.la
+if ENABLE_PPPOE_PLUGIN
+noinst_LTLIBRARIES += libjvpp_pppoe.la
+libjvpp_pppoe_la_SOURCES = jvpp-pppoe/jvpp_pppoe.c
+libjvpp_pppoe_la_CPPFLAGS = -Ijvpp-pppoe
+libjvpp_pppoe_la_LIBADD = $(JVPP_LIBS)
+libjvpp_pppoe_la_DEPENDENCIES = libjvpp_common.la
 
-BUILT_SOURCES += jvpp-snat/io_fd_vpp_jvpp_snat_JVppSnatImpl.h
-JAR_FILES += jvpp-snat-$(PACKAGE_VERSION).jar
-CLEANDIRS += jvpp-snat/target
+BUILT_SOURCES += jvpp-pppoe/io_fd_vpp_jvpp_pppoe_JVppPppoeImpl.h
+JAR_FILES += jvpp-pppoe-$(PACKAGE_VERSION).jar
+CLEANDIRS += jvpp-pppoe/target
 
-jvpp_snat_json_files = @top_builddir@/plugins/snat/snat.api.json
+jvpp_pppoe_json_files = @top_builddir@/plugins/pppoe/pppoe.api.json
 
-jvpp-snat/io_fd_vpp_jvpp_snat_JVppSnatImpl.h: $(jvpp_registry_ok) $(jvpp_snat_json_files)
-	$(call japigen,snat,JVppSnatImpl)
+jvpp-pppoe/io_fd_vpp_jvpp_pppoe_JVppPppoeImpl.h: $(jvpp_registry_ok) $(jvpp_pppoe_json_files)
+	$(call japigen,pppoe,JVppPppoeImpl)
+endif
+
+#
+# NAT Plugin
+#
+if ENABLE_NAT_PLUGIN
+noinst_LTLIBRARIES += libjvpp_nat.la
+libjvpp_nat_la_SOURCES = jvpp-nat/jvpp_nat.c
+libjvpp_nat_la_CPPFLAGS = -Ijvpp-nat
+libjvpp_nat_la_LIBADD = $(JVPP_LIBS)
+libjvpp_nat_la_DEPENDENCIES = libjvpp_common.la
+
+BUILT_SOURCES += jvpp-nat/io_fd_vpp_jvpp_nat_JVppNatImpl.h
+JAR_FILES += jvpp-nat-$(PACKAGE_VERSION).jar
+CLEANDIRS += jvpp-nat/target
+
+jvpp_nat_json_files = @top_builddir@/plugins/nat/nat.api.json
+
+jvpp-nat/io_fd_vpp_jvpp_nat_JVppNatImpl.h: $(jvpp_registry_ok) $(jvpp_nat_json_files)
+	$(call japigen,nat,JVppNatImpl)
 endif
 
 #

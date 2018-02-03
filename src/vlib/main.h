@@ -85,6 +85,8 @@ typedef struct vlib_main_t
 
   /* Jump target to exit main loop with given code. */
   u32 main_loop_exit_set;
+  /* Set e.g. in the SIGTERM signal handler, checked in a safe place... */
+  volatile u32 main_loop_exit_now;
   clib_longjmp_t main_loop_exit;
 #define VLIB_MAIN_LOOP_EXIT_NONE 0
 #define VLIB_MAIN_LOOP_EXIT_PANIC 1
@@ -107,9 +109,21 @@ typedef struct vlib_main_t
 
   /* Allocate/free buffer memory for DMA transfers, descriptor rings, etc.
      buffer memory is guaranteed to be cache-aligned. */
-  void *(*os_physmem_alloc_aligned) (vlib_physmem_main_t * pm,
+
+  clib_error_t *(*os_physmem_region_alloc) (struct vlib_main_t * vm,
+					    char *name, u32 size,
+					    u8 numa_node, u32 flags,
+					    vlib_physmem_region_index_t *
+					    idx);
+
+  void (*os_physmem_region_free) (struct vlib_main_t * vm,
+				  vlib_physmem_region_index_t idx);
+
+  void *(*os_physmem_alloc_aligned) (struct vlib_main_t * vm,
+				     vlib_physmem_region_index_t idx,
 				     uword n_bytes, uword alignment);
-  void (*os_physmem_free) (void *x);
+  void (*os_physmem_free) (struct vlib_main_t * vm,
+			   vlib_physmem_region_index_t idx, void *x);
 
   /* Node graph main structure. */
   vlib_node_main_t node_main;//node相关的结构
@@ -180,6 +194,24 @@ typedef struct vlib_main_t
 
   /* Attempt to do a post-mortem elog dump */
   int elog_post_mortem_dump;
+
+  /*
+   * Need to call vlib_worker_thread_node_runtime_update before
+   * releasing worker thread barrier. Only valid in vlib_global_main.
+   */
+  int need_vlib_worker_thread_node_runtime_update;
+
+  /*
+   * Barrier epoch - Set to current time, each time barrier_sync or
+   * barrier_release is called with zero recursion.
+   */
+  f64 barrier_epoch;
+
+  /* Earliest barrier can be closed again */
+  f64 barrier_no_close_before;
+
+  /* Vector of pending RPC requests */
+  uword *pending_rpc_requests;
 
 } vlib_main_t;
 
@@ -313,6 +345,9 @@ vlib_increment_main_loop_counter (vlib_main_t * vm)
   vm->main_loop_nodes_processed = 0;
   vm->vector_counts_per_main_loop[i] = v;
   vm->node_counts_per_main_loop[i] = n;
+
+  if (PREDICT_FALSE (vm->main_loop_exit_now))
+    clib_longjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_CLI);
 }
 
 always_inline void vlib_set_queue_signal_callback

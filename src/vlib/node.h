@@ -43,7 +43,6 @@
 #include <vppinfra/cpu.h>
 #include <vppinfra/longjmp.h>
 #include <vppinfra/lock.h>
-#include <vppinfra/timing_wheel.h>
 #include <vlib/trace.h>		/* for vlib_trace_filter_t */
 
 /* Forward declaration. */
@@ -331,7 +330,7 @@ typedef struct vlib_node_t
 
 /* Max number of vector elements to process at once per node. */
 #define VLIB_FRAME_SIZE 256
-#define VLIB_FRAME_ALIGN VLIB_MAX_CPUS
+#define VLIB_FRAME_ALIGN CLIB_CACHE_LINE_BYTES
 
 /* Calling frame (think stack frame) for a node. */
 typedef struct vlib_frame_t
@@ -347,9 +346,6 @@ typedef struct vlib_frame_t
 
   /* Number of vector elements currently in frame. */
   u16 n_vectors;
-
-  /* Owner thread / heap id */
-  u16 thread_index;
 
   /* Scalar and vector arguments to next node. */
   u8 arguments[0];
@@ -546,8 +542,14 @@ typedef struct
   /* Pool of currently valid event types. */
   vlib_process_event_type_t *event_type_pool;
 
-  /* When suspending saves cpu cycle counter when process is to be resumed. */
-  u64 resume_cpu_time;
+  /*
+   * When suspending saves clock time (10us ticks) when process
+   * is to be resumed.
+   */
+  u64 resume_clock_interval;
+
+  /* Handle from timer code, to cancel an unexpired timer */
+  u32 stop_timer_handle;
 
   /* Default output function and its argument for any CLI outputs
      within the process. */
@@ -668,7 +670,7 @@ typedef struct
   vlib_pending_frame_t *pending_frames;
 
   /* Timing wheel for scheduling time-based node dispatch. */
-  timing_wheel_t timing_wheel;
+  void *timing_wheel;
 
   vlib_signal_timed_event_data_t *signal_timed_event_data_pool;
 
@@ -676,7 +678,7 @@ typedef struct
   u32 *data_from_advancing_timing_wheel;
 
   /* CPU time of next process to be ready on timing wheel. */
-  u64 cpu_time_next_process_ready;
+  f64 time_next_process_ready;
 
   /* Vector of process nodes.
      One for each node of type VLIB_NODE_TYPE_PROCESS. */

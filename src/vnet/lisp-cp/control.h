@@ -19,25 +19,30 @@
 #include <vnet/vnet.h>
 #include <vnet/lisp-cp/gid_dictionary.h>
 #include <vnet/lisp-cp/lisp_types.h>
+#include <vppinfra/timing_wheel.h>
 
 #define NUMBER_OF_RETRIES                   1
 #define PENDING_MREQ_EXPIRATION_TIME        3.0	/* seconds */
 #define PENDING_MREQ_QUEUE_LEN              5
 
-#define PENDING_MREG_EXPIRATION_TIME        3.0	/* seconds */
 #define RLOC_PROBING_INTERVAL               60.0
 
 /* when map-registration is enabled "quick registration" takes place first.
    In this mode ETR sends map-register messages at an increased frequency
    until specified message count is reached */
-#define QUICK_MAP_REGISTER_MSG_COUNT        3
+#define QUICK_MAP_REGISTER_MSG_COUNT        5
 #define QUICK_MAP_REGISTER_INTERVAL         3.0
 
 /* normal map-register period */
 #define MAP_REGISTER_INTERVAL               60.0
 
-/* 15 minutes */
-#define MAP_REGISTER_DEFAULT_TTL            900
+/* how many tries until next map-server election */
+#define MAX_EXPIRED_MAP_REGISTERS_DEFAULT   3
+
+#define PENDING_MREG_EXPIRATION_TIME        3.0	/* seconds */
+
+/* 24 hours */
+#define MAP_REGISTER_DEFAULT_TTL            86400
 
 typedef struct
 {
@@ -49,6 +54,11 @@ typedef struct
   u64 *nonces;
   u8 to_be_removed;
 } pending_map_request_t;
+
+typedef struct
+{
+  f64 time_to_expire;
+} pending_map_register_t;
 
 typedef struct
 {
@@ -93,6 +103,12 @@ typedef struct
   u32 ip4;
 } lisp_api_l2_arp_entry_t;
 
+typedef struct
+{
+  u8 mac[6];
+  u8 ip6[16];
+} lisp_api_ndp_entry_t;
+
 typedef enum
 {
   MR_MODE_DST_ONLY = 0,
@@ -101,7 +117,10 @@ typedef enum
 } map_request_mode_t;
 
 #define foreach_lisp_flag_bit       \
-  _(USE_PETR, "Use Proxy-ETR")                  \
+  _(USE_PETR, "Use Proxy-ETR")                    \
+  _(XTR_MODE, "ITR/ETR mode")                     \
+  _(PETR_MODE, "Use Proxy-ETR")                   \
+  _(PITR_MODE, "Proxy-ITR mode")                  \
   _(STATS_ENABLED, "Statistics enabled")
 
 typedef enum lisp_flag_bits
@@ -123,6 +142,12 @@ typedef struct
   ip_address_t addr;
   u32 bd;
 } lisp_l2_arp_key_t;
+
+typedef enum
+{
+  LISP_TRANSPORT_PROTOCOL_UDP = 1,
+  LISP_TRANSPORT_PROTOCOL_API
+} lisp_transport_protocol_t;
 
 typedef struct
 {
@@ -170,6 +195,12 @@ typedef struct
   /* hash map of forwarding entries by mapping index */
   u32 *fwd_entry_by_mapping_index;
 
+  /* pool of vectors of rmts per lcl mapping in adjacencies */
+  u32 **lcl_to_rmt_adjacencies;
+
+  /* hash of pool positions of vectors of rmts by lcl mapping index */
+  u32 *lcl_to_rmt_adjs_by_lcl_idx;
+
   /* forwarding entries pool */
   fwd_entry_t *fwd_entry_pool;
 
@@ -178,6 +209,9 @@ typedef struct
 
   /* pool of pending map requests */
   pending_map_request_t *pending_map_requests_pool;
+
+  /* pool of pending map registers */
+  pending_map_register_t *pending_map_registers_pool;
 
   /* hash map of sent map register messages */
   uword *map_register_messages_by_nonce;
@@ -193,8 +227,10 @@ typedef struct
    * since the vector may be modified during request resend/retry procedure
    * and break things :-) */
   ip_address_t active_map_resolver;
+  ip_address_t active_map_server;
 
   u8 do_map_resolver_election;
+  u8 do_map_server_election;
 
   /* map-request  locator set index */
   u32 mreq_itr_rlocs;
@@ -213,11 +249,9 @@ typedef struct
   /* Proxy ITR map index */
   u32 pitr_map_index;
 
-  /** Proxy ETR map index */
+  /** Proxy ETR map index used for 'use-petr'.
+   *  Not related to PETR tunnel mode  */
   u32 petr_map_index;
-
-  /* LISP PITR mode */
-  u8 lisp_pitr;
 
   /* mapping index for NSH */
   u32 nsh_map_index;
@@ -236,6 +270,16 @@ typedef struct
 
   /** Per thread pool of records shared with thread0 */
   map_records_arg_t **map_records_args_pool;
+
+  /* TTL used for all mappings when registering */
+  u32 map_register_ttl;
+
+  /* control variables for map server election */
+  u32 max_expired_map_registers;
+  u32 expired_map_registers;
+
+  /** either UDP based or binary API. Default is UDP */
+  lisp_transport_protocol_t transport_protocol;
 
   /* commodity */
   ip4_main_t *im4;
@@ -307,9 +351,11 @@ vnet_lisp_add_del_local_mapping (vnet_lisp_add_del_mapping_args_t * a,
 				 u32 * map_index_result);
 
 int
-vnet_lisp_add_del_mapping (gid_address_t * deid, locator_t * dlocs, u8 action,
-			   u8 authoritative, u32 ttl, u8 is_add, u8 is_static,
-			   u32 * res_map_index);
+vnet_lisp_add_mapping (vnet_lisp_add_del_mapping_args_t * a,
+		       locator_t * rlocs, u32 * res_map_index,
+		       u8 * is_changed);
+
+int vnet_lisp_del_mapping (gid_address_t * eid, u32 * res_map_index);
 
 typedef struct
 {
@@ -357,10 +403,26 @@ int vnet_lisp_rloc_probe_enable_disable (u8 is_enable);
 int vnet_lisp_map_register_enable_disable (u8 is_enable);
 u8 vnet_lisp_map_register_state_get (void);
 u8 vnet_lisp_rloc_probe_state_get (void);
-int vnet_lisp_add_del_l2_arp_entry (gid_address_t * key, u8 * mac, u8 is_add);
+int vnet_lisp_add_del_l2_arp_ndp_entry (gid_address_t * key, u8 * mac,
+					u8 is_add);
 u32 *vnet_lisp_l2_arp_bds_get (void);
 lisp_api_l2_arp_entry_t *vnet_lisp_l2_arp_entries_get_by_bd (u32 bd);
 int vnet_lisp_nsh_set_locator_set (u8 * locator_set_name, u8 is_add);
+int vnet_lisp_map_register_set_ttl (u32 ttl);
+u32 vnet_lisp_map_register_get_ttl (void);
+int vnet_lisp_map_register_fallback_threshold_set (u32 value);
+u32 vnet_lisp_map_register_fallback_threshold_get (void);
+u32 *vnet_lisp_ndp_bds_get (void);
+lisp_api_ndp_entry_t *vnet_lisp_ndp_entries_get_by_bd (u32 bd);
+u32 vnet_lisp_set_transport_protocol (u8 protocol);
+lisp_transport_protocol_t vnet_lisp_get_transport_protocol (void);
+
+extern int vnet_lisp_enable_disable_xtr_mode (u8 is_enabled);
+extern int vnet_lisp_enable_disable_pitr_mode (u8 is_enabled);
+extern int vnet_lisp_enable_disable_petr_mode (u8 is_enabled);
+extern u8 vnet_lisp_get_xtr_mode (void);
+extern u8 vnet_lisp_get_pitr_mode (void);
+extern u8 vnet_lisp_get_petr_mode (void);
 
 map_records_arg_t *parse_map_reply (vlib_buffer_t * b);
 

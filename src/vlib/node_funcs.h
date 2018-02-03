@@ -46,6 +46,7 @@
 #define included_vlib_node_funcs_h
 
 #include <vppinfra/fifo.h>
+#include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
 /** \brief Get vlib node by index.
  @warning This function will ASSERT if @c i is out of range.
@@ -215,24 +216,21 @@ always_inline vlib_frame_t *
 vlib_get_frame_no_check (vlib_main_t * vm, uword frame_index)
 {
   vlib_frame_t *f;
-  u32 thread_index = frame_index & VLIB_CPU_MASK;
-  u32 offset = frame_index & VLIB_OFFSET_MASK;
-  vm = vlib_mains[thread_index];
-  f = vm->heap_base + offset;
+  f = vm->heap_base + (frame_index * VLIB_FRAME_ALIGN);
   return f;
 }
 
 always_inline u32
 vlib_frame_index_no_check (vlib_main_t * vm, vlib_frame_t * f)
 {
-  u32 i;
+  uword i;
 
-  ASSERT (((uword) f & VLIB_CPU_MASK) == 0);
-
-  vm = vlib_mains[f->thread_index];
+  ASSERT (((uword) f & (VLIB_FRAME_ALIGN - 1)) == 0);
 
   i = ((u8 *) f - (u8 *) vm->heap_base);
-  return i | f->thread_index;
+  ASSERT ((i / VLIB_FRAME_ALIGN) <= 0xFFFFFFFFULL);
+
+  return i / VLIB_FRAME_ALIGN;
 }
 
 always_inline vlib_frame_t *
@@ -409,17 +407,19 @@ vlib_frame_t *vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index);
 void vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index,
 			     vlib_frame_t * f);
 
-always_inline vlib_process_t *
-vlib_get_current_process (vlib_main_t * vm)
-{
-  vlib_node_main_t *nm = &vm->node_main;
-  return vec_elt (nm->processes, nm->current_process_index);
-}
-
 always_inline uword
 vlib_in_process_context (vlib_main_t * vm)
 {
   return vm->node_main.current_process_index != ~0;
+}
+
+always_inline vlib_process_t *
+vlib_get_current_process (vlib_main_t * vm)
+{
+  vlib_node_main_t *nm = &vm->node_main;
+  if (vlib_in_process_context (vm))
+    return vec_elt (nm->processes, nm->current_process_index);
+  return 0;
 }
 
 always_inline uword
@@ -428,14 +428,14 @@ vlib_current_process (vlib_main_t * vm)
   return vlib_get_current_process (vm)->node_runtime.node_index;
 }
 
-/** Returns TRUE if a process suspend time is less than 1us
+/** Returns TRUE if a process suspend time is less than 10us
     @param dt - remaining poll time in seconds
-    @returns 1 if dt < 1e-6, 0 otherwise
+    @returns 1 if dt < 10e-6, 0 otherwise
 */
 always_inline uword
 vlib_process_suspend_time_is_zero (f64 dt)
 {
-  return dt < 1e-6;
+  return dt < 10e-6;
 }
 
 /** Suspend a vlib cooperative multi-tasking thread for a period of time
@@ -450,7 +450,6 @@ vlib_process_suspend (vlib_main_t * vm, f64 dt)
   uword r;
   vlib_node_main_t *nm = &vm->node_main;
   vlib_process_t *p = vec_elt (nm->processes, nm->current_process_index);
-  u64 dt_cpu = dt * vm->clib_time.clocks_per_second;
 
   if (vlib_process_suspend_time_is_zero (dt))
     return VLIB_PROCESS_RESUME_LONGJMP_RESUME;
@@ -459,7 +458,8 @@ vlib_process_suspend (vlib_main_t * vm, f64 dt)
   r = clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
   if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
     {
-      p->resume_cpu_time = clib_cpu_time_now () + dt_cpu;
+      /* expiration time in 10us ticks */
+      p->resume_clock_interval = dt * 1e5;
       clib_longjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
     }
 
@@ -718,8 +718,7 @@ vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
   r = clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
   if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
     {
-      p->resume_cpu_time = (clib_cpu_time_now ()
-			    + (dt * vm->clib_time.clocks_per_second));
+      p->resume_clock_interval = dt * 1e5;
       clib_longjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
     }
 
@@ -834,7 +833,8 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
       p->flags = p_flags | VLIB_PROCESS_RESUME_PENDING;
       vec_add1 (nm->data_from_advancing_timing_wheel, x);
       if (delete_from_wheel)
-	timing_wheel_delete (&nm->timing_wheel, x);
+	TW (tw_timer_stop) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+			    p->stop_timer_handle);
     }
 
   return data_to_be_written_by_caller;
@@ -850,6 +850,9 @@ vlib_process_signal_event_data (vlib_main_t * vm,
   vlib_node_t *n = vlib_get_node (vm, node_index);
   vlib_process_t *p = vec_elt (nm->processes, n->runtime_index);
   uword *h, t;
+
+  /* Must be in main thread */
+  ASSERT (vlib_get_thread_index () == 0);
 
   h = hash_get (p->event_type_index_by_type_opaque, type_opaque);
   if (!h)
@@ -895,7 +898,6 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
   else
     {
       vlib_signal_timed_event_data_t *te;
-      u64 dt_cpu = dt * vm->clib_time.clocks_per_second;
 
       pool_get_aligned (nm->signal_timed_event_data_pool, te, sizeof (te[0]));
 
@@ -911,10 +913,12 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
       te->process_node_index = n->runtime_index;
       te->event_type_index = t;
 
-      timing_wheel_insert (&nm->timing_wheel, clib_cpu_time_now () + dt_cpu,
-			   vlib_timing_wheel_data_set_timed_event (te -
-								   nm->
-								   signal_timed_event_data_pool));
+      p->stop_timer_handle =
+	TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+			     vlib_timing_wheel_data_set_timed_event
+			     (te - nm->signal_timed_event_data_pool),
+			     0 /* timer_id */ ,
+			     (vlib_time_now (vm) + dt) * 1e5);
 
       /* Inline data big enough to hold event? */
       if (te->n_data_bytes < sizeof (te->inline_event_data))
@@ -959,6 +963,29 @@ vlib_process_signal_event_pointer (vlib_main_t * vm,
   void **d = vlib_process_signal_event_data (vm, node_index, type_opaque,
 					     1 /* elts */ , sizeof (data));
   d[0] = data;
+}
+
+/**
+ * Signal event to process from any thread.
+ *
+ * When in doubt, use this.
+ */
+always_inline void
+vlib_process_signal_event_mt (vlib_main_t * vm,
+			      uword node_index, uword type_opaque, uword data)
+{
+  if (vlib_get_thread_index () != 0)
+    {
+      vlib_process_signal_event_mt_args_t args = {
+	.node_index = node_index,
+	.type_opaque = type_opaque,
+	.data = data,
+      };
+      vlib_rpc_call_main_thread (vlib_process_signal_event_mt_helper,
+				 (u8 *) & args, sizeof (args));
+    }
+  else
+    vlib_process_signal_event (vm, node_index, type_opaque, data);
 }
 
 always_inline void
@@ -1068,6 +1095,9 @@ vlib_node_vectors_per_main_loop_as_integer (vlib_main_t * vm, u32 node_index)
 void
 vlib_frame_free (vlib_main_t * vm, vlib_node_runtime_t * r, vlib_frame_t * f);
 
+/* Return the edge index if present, ~0 otherwise */
+uword vlib_node_get_next (vlib_main_t * vm, uword node, uword next_node);
+
 /* Add next node to given node in given slot. */
 uword
 vlib_node_add_next_with_slot (vlib_main_t * vm,
@@ -1091,6 +1121,12 @@ vlib_node_add_named_next (vlib_main_t * vm, uword node, char *name)
 {
   return vlib_node_add_named_next_with_slot (vm, node, name, ~0);
 }
+
+/**
+ * Get list of nodes
+ */
+vlib_node_t ***vlib_node_get_nodes (vlib_main_t * vm, u32 max_threads,
+				    int include_stats);
 
 /* Query node given name. */
 vlib_node_t *vlib_get_node_by_name (vlib_main_t * vm, u8 * name);

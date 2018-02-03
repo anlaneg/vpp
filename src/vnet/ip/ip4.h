@@ -42,7 +42,9 @@
 
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/lookup.h>
+#include <vnet/buffer.h>
 #include <vnet/feature/feature.h>
+#include <vnet/ip/icmp46_packet.h>
 
 typedef struct ip4_mfib_t
 {
@@ -70,6 +72,16 @@ typedef struct
   ip4_add_del_interface_address_function_t *function;
   uword function_opaque;
 } ip4_add_del_interface_address_callback_t;
+
+typedef void (ip4_table_bind_function_t)
+  (struct ip4_main_t * im,
+   uword opaque, u32 sw_if_index, u32 new_fib_index, u32 old_fib_index);
+
+typedef struct
+{
+  ip4_table_bind_function_t *function;
+  uword function_opaque;
+} ip4_table_bind_callback_t;
 
 /**
  * @brief IPv4 main type.
@@ -116,6 +128,9 @@ typedef struct ip4_main_t
     ip4_add_del_interface_address_callback_t
     * add_del_interface_address_callbacks;
 
+  /** Functions to call when interface to table biding changes. */
+  ip4_table_bind_callback_t *table_bind_callbacks;
+
   /** Template used to generate IP4 ARP packets. */
   vlib_packet_template_t ip4_arp_request_packet_template;
 
@@ -133,6 +148,12 @@ typedef struct ip4_main_t
 
     u8 pad[2];
   } host_config;
+
+  /** Heapsize for the Mtries */
+  uword mtrie_heap_size;
+
+  /** The memory heap for the mtries */
+  void *mtrie_mheap;
 } ip4_main_t;
 
 /** Global ip4 main structure. */
@@ -164,18 +185,6 @@ ip4_destination_matches_interface (ip4_main_t * im,
 {
   ip4_address_t *a = ip_interface_address_get_address (&im->lookup_main, ia);
   return ip4_destination_matches_route (im, key, a, ia->address_length);
-}
-
-/* As above but allows for unaligned destinations (e.g. works right from IP header of packet). */
-always_inline uword
-ip4_unaligned_destination_matches_route (ip4_main_t * im,
-					 ip4_address_t * key,
-					 ip4_address_t * dest,
-					 uword dest_length)
-{
-  return 0 ==
-    ((clib_mem_unaligned (&key->data_u32, u32) ^ dest->
-      data_u32) & im->fib_masks[dest_length]);
 }
 
 always_inline int
@@ -266,6 +275,12 @@ int vnet_set_ip4_flow_hash (u32 table_id,
 int vnet_set_ip4_classify_intfc (vlib_main_t * vm, u32 sw_if_index,
 				 u32 table_index);
 
+void ip4_punt_policer_add_del (u8 is_add, u32 policer_index);
+
+void ip4_punt_redirect_add (u32 rx_sw_if_index,
+			    u32 tx_sw_if_index, ip46_address_t * nh);
+void ip4_punt_redirect_del (u32 rx_sw_if_index);
+
 /* Compute flow hash.  We'll use it to select which adjacency to use for this
    flow.  And other things. */
 always_inline u32
@@ -328,7 +343,8 @@ u32 ip4_tcp_udp_validate_checksum (vlib_main_t * vm, vlib_buffer_t * p0);
  */
 always_inline void *
 vlib_buffer_push_ip4 (vlib_main_t * vm, vlib_buffer_t * b,
-		      ip4_address_t * src, ip4_address_t * dst, int proto)
+		      ip4_address_t * src, ip4_address_t * dst, int proto,
+		      u8 csum_offload)
 {
   ip4_header_t *ih;
 
@@ -346,7 +362,18 @@ vlib_buffer_push_ip4 (vlib_main_t * vm, vlib_buffer_t * b,
   ih->src_address.as_u32 = src->as_u32;
   ih->dst_address.as_u32 = dst->as_u32;
 
-  ih->checksum = ip4_header_checksum (ih);
+  /* Offload ip4 header checksum generation */
+  if (csum_offload)
+    {
+      ih->checksum = 0;
+      b->flags |= VNET_BUFFER_F_OFFLOAD_IP_CKSUM | VNET_BUFFER_F_IS_IP4;
+      vnet_buffer (b)->l3_hdr_offset = (u8 *) ih - b->data;
+      vnet_buffer (b)->l4_hdr_offset = vnet_buffer (b)->l3_hdr_offset +
+	sizeof (*ih);
+    }
+  else
+    ih->checksum = ip4_header_checksum (ih);
+
   return ih;
 }
 #endif /* included_ip_ip4_h */

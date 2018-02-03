@@ -1,7 +1,5 @@
 /*
  *------------------------------------------------------------------
- * api.h
- *
  * Copyright (c) 2009 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,145 +15,132 @@
  *------------------------------------------------------------------
  */
 
-#ifndef included_vlibmemory_api_h
-#define included_vlibmemory_api_h
+#ifndef included_vlibmemory_api_common_h
+#define included_vlibmemory_api_common_h
 
-#include <vppinfra/error.h>
-#include <svm/svm.h>
-#include <vlib/vlib.h>
-#include <vlibmemory/unix_shared_memory_queue.h>
-#include <vlib/unix/unix.h>
+#include <svm/svm_common.h>
 #include <vlibapi/api.h>
-
-/* Allocated in shared memory */
-
-/*
- * Ring-allocation scheme for client API messages
- *
- * Only one proc/thread has control of a given message buffer.
- * To free a buffer allocated from one of these rings, we clear
- * a field in the buffer (header), and leave.
- *
- * No locks, no hits, no errors...
- */
-typedef struct ring_alloc_
-{
-  unix_shared_memory_queue_t *rp;
-  u16 size;
-  u16 nitems;
-  u32 hits;
-  u32 misses;
-} ring_alloc_t;
-
-/*
- * Initializers for the (shared-memory) rings
- * _(size, n). Note: each msg has an 8 byte header.
- * Might want to change that to an index sometime.
- */
-#define foreach_vl_aring_size                   \
-_(64+8, 1024)                                   \
-_(256+8, 128)                                   \
-_(1024+8, 64)
-
-#define foreach_clnt_aring_size                 \
-_(1024+8, 1024)                                 \
-_(2048+8, 128)                                  \
-_(4096+8, 8)
-
-typedef struct vl_shmem_hdr_
-{
-  int version;
-
-  /* getpid () for the VLIB client process */
-  volatile int vl_pid;
-
-  /* Client sends VLIB msgs here. */
-  unix_shared_memory_queue_t *vl_input_queue;
-
-  /* Vector of rings; one for each size. */
-
-  /* VLIB allocates buffers to send msgs to clients here. */
-  ring_alloc_t *vl_rings;
-
-  /* Clients allocate buffer to send msgs to VLIB here. */
-  ring_alloc_t *client_rings;
-
-  /* Number of detected application restarts */
-  u32 application_restarts;
-
-  /* Number of messages reclaimed during application restart */
-  u32 restart_reclaims;
-
-  /* Number of garbage-collected messages */
-  u32 garbage_collects;
-
-} vl_shmem_hdr_t;
-
-#define VL_SHM_VERSION 2
-
-#define VL_API_EPOCH_MASK 0xFF
-#define VL_API_EPOCH_SHIFT 8
-
-static inline u32
-vl_msg_api_handle_get_epoch (u32 index)
-{
-  return (index & VL_API_EPOCH_MASK);
-}
-
-static inline u32
-vl_msg_api_handle_get_index (u32 index)
-{
-  return (index >> VL_API_EPOCH_SHIFT);
-}
-
-static inline u32
-vl_msg_api_handle_from_index_and_epoch (u32 index, u32 epoch)
-{
-  u32 handle;
-  ASSERT (index < 0x00FFFFFF);
-
-  handle = (index << VL_API_EPOCH_SHIFT) | (epoch & VL_API_EPOCH_MASK);
-  return handle;
-}
-
-void *vl_msg_api_alloc (int nbytes);
-void *vl_msg_api_alloc_or_null (int nbytes);
-void *vl_msg_api_alloc_as_if_client (int nbytes);
-void *vl_msg_api_alloc_as_if_client_or_null (int nbytes);
-void vl_msg_api_free (void *a);
-int vl_map_shmem (const char *region_name, int is_vlib);
-void vl_register_mapped_shmem_region (svm_region_t * rp);
-void vl_unmap_shmem (void);
-void vl_msg_api_send_shmem (unix_shared_memory_queue_t * q, u8 * elem);
-void vl_msg_api_send_shmem_nolock (unix_shared_memory_queue_t * q, u8 * elem);
-void vl_msg_api_send (vl_api_registration_t * rp, u8 * elem);
-int vl_client_connect (const char *name, int ctx_quota, int input_queue_size);
-void vl_client_disconnect (void);
-unix_shared_memory_queue_t *vl_api_client_index_to_input_queue (u32 index);
-vl_api_registration_t *vl_api_client_index_to_registration (u32 index);
-int vl_client_api_map (const char *region_name);
-void vl_client_api_unmap (void);
-void vl_set_memory_region_name (const char *name);
-void vl_set_memory_root_path (const char *root_path);
-void vl_set_memory_uid (int uid);
-void vl_set_memory_gid (int gid);
-void vl_set_global_memory_baseva (u64 baseva);
-void vl_set_global_memory_size (u64 size);
-void vl_set_api_memory_size (u64 size);
-void vl_set_global_pvt_heap_size (u64 size);
-void vl_set_api_pvt_heap_size (u64 size);
-void vl_enable_disable_memory_api (vlib_main_t * vm, int yesno);
-void vl_client_disconnect_from_vlib (void);
-int vl_client_connect_to_vlib (const char *svm_name,
-			       const char *client_name, int rx_queue_size);
-int vl_client_connect_to_vlib_no_rx_pthread (const char *svm_name,
-					     const char *client_name,
-					     int rx_queue_size);
-u16 vl_client_get_first_plugin_msg_id (const char *plugin_name);
+#include <vlibmemory/memory_api.h>
+#include <vlibmemory/memory_client.h>
+#include <vlibmemory/socket_api.h>
+#include <vlibmemory/socket_client.h>
 
 void vl_api_rpc_call_main_thread (void *fp, u8 * data, u32 data_length);
+u16 vl_client_get_first_plugin_msg_id (const char *plugin_name);
+void vl_api_send_pending_rpc_requests (vlib_main_t * vm);
+u8 *vl_api_serialize_message_table (api_main_t * am, u8 * vector);
 
-#endif /* included_vlibmemory_api_h */
+always_inline void
+vl_api_send_msg (vl_api_registration_t * rp, u8 * elem)
+{
+  if (PREDICT_FALSE (rp->registration_type > REGISTRATION_TYPE_SHMEM))
+    {
+      vl_socket_api_send (rp, elem);
+    }
+  else
+    {
+      vl_msg_api_send_shmem (rp->vl_input_queue, (u8 *) & elem);
+    }
+}
+
+always_inline int
+vl_api_can_send_msg (vl_api_registration_t * rp)
+{
+  if (PREDICT_FALSE (rp->registration_type > REGISTRATION_TYPE_SHMEM))
+    return 1;
+  else
+    return vl_mem_api_can_send (rp->vl_input_queue);
+}
+
+always_inline vl_api_registration_t *
+vl_api_client_index_to_registration (u32 index)
+{
+  if (PREDICT_FALSE (socket_main.current_rp != 0))
+    return socket_main.current_rp;
+
+  return (vl_mem_api_client_index_to_registration (index));
+}
+
+always_inline u32
+vl_api_registration_file_index (vl_api_registration_t * reg)
+{
+  return reg->clib_file_index;
+}
+
+always_inline clib_file_t *
+vl_api_registration_file (vl_api_registration_t * reg)
+{
+  return clib_file_get (&file_main, vl_api_registration_file_index (reg));
+}
+
+always_inline void
+vl_api_registration_del_file (vl_api_registration_t * reg)
+{
+  clib_file_t *cf = vl_api_registration_file (reg);
+  if (cf)
+    clib_file_del (&file_main, cf);
+}
+
+always_inline clib_error_t *
+vl_api_send_fd_msg (vl_api_registration_t * reg, int fd_to_send)
+{
+  clib_file_t *cf = vl_api_registration_file (reg);
+  if (cf)
+    return vl_sock_api_send_fd_msg (cf->file_descriptor, fd_to_send);
+  return 0;
+}
+
+always_inline clib_error_t *
+vl_api_recv_fd_msg (vl_api_registration_t * reg, int *fd_to_recv, u32 wait)
+{
+  clib_file_t *cf = vl_api_registration_file (reg);
+  if (cf)
+    return vl_sock_api_recv_fd_msg (cf->file_descriptor, fd_to_recv, wait);
+  return 0;
+}
+
+/*
+ * vl_api_clnt process data used by transports (socket api in particular)
+ */
+extern vlib_node_registration_t vl_api_clnt_node;
+extern volatile int **vl_api_queue_cursizes;
+
+typedef enum vl_api_clnt_process_events
+{
+  QUEUE_SIGNAL_EVENT = 1,
+  SOCKET_READ_EVENT
+} vl_api_clnt_process_events_t;
+
+#define foreach_histogram_bucket                \
+_(400)                                          \
+_(200)                                          \
+_(100)                                          \
+_(10)
+
+typedef enum
+{
+#define _(n) SLEEP_##n##_US,
+  foreach_histogram_bucket
+#undef _
+    SLEEP_N_BUCKETS,
+} histogram_index_t;
+
+extern u64 vector_rate_histogram[];
+
+/*
+ * sockclnt APIs XXX are these actually used anywhere?
+ */
+vl_api_registration_t *sockclnt_get_registration (u32 index);
+void socksvr_add_pending_output (struct clib_file *uf,
+				 struct vl_api_registration_ *cf,
+				 u8 * buffer, uword buffer_bytes);
+void vl_socket_process_msg (struct clib_file *uf,
+			    struct vl_api_registration_ *rp, i8 * input_v);
+u32 sockclnt_open_index (char *client_name, char *hostname, int port);
+void sockclnt_close_index (u32 index);
+void vl_client_msg_api_send (vl_api_registration_t * cm, u8 * elem);
+
+#endif /* included_vlibmemory_api_common_h */
 
 /*
  * fd.io coding-style-patch-verification: ON

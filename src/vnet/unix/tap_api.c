@@ -59,21 +59,20 @@ _(SW_INTERFACE_TAP_DUMP, sw_interface_tap_dump)
  * WARNING: replicated pending api refactor completion
  */
 static void
-send_sw_interface_flags_deleted (vpe_api_main_t * am,
-				 unix_shared_memory_queue_t * q,
-				 u32 sw_if_index)
+send_sw_interface_event_deleted (vpe_api_main_t * am,
+				 vl_api_registration_t * reg, u32 sw_if_index)
 {
-  vl_api_sw_interface_set_flags_t *mp;
+  vl_api_sw_interface_event_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_SET_FLAGS);
+  mp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_EVENT);
   mp->sw_if_index = ntohl (sw_if_index);
 
   mp->admin_up_down = 0;
   mp->link_up_down = 0;
   mp->deleted = 1;
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
@@ -83,7 +82,7 @@ vl_api_tap_connect_t_handler (vl_api_tap_connect_t * mp)
   int rv;
   vl_api_tap_connect_reply_t *rmp;
   vnet_main_t *vnm = vnet_get_main ();
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   u32 sw_if_index = (u32) ~ 0;
   u8 *tag;
   vnet_tap_connect_args_t _a, *ap = &_a;
@@ -119,8 +118,8 @@ vl_api_tap_connect_t_handler (vl_api_tap_connect_t * mp)
       vnet_set_sw_interface_tag (vnm, tag, sw_if_index);
     }
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (!q)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
@@ -129,7 +128,7 @@ vl_api_tap_connect_t_handler (vl_api_tap_connect_t * mp)
   rmp->retval = ntohl (rv);
   rmp->sw_if_index = ntohl (sw_if_index);
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void
@@ -137,7 +136,7 @@ vl_api_tap_modify_t_handler (vl_api_tap_modify_t * mp)
 {
   int rv;
   vl_api_tap_modify_reply_t *rmp;
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   u32 sw_if_index = (u32) ~ 0;
   vlib_main_t *vm = vlib_get_main ();
   vnet_tap_connect_args_t _a, *ap = &_a;
@@ -154,8 +153,8 @@ vl_api_tap_modify_t_handler (vl_api_tap_modify_t * mp)
 
   rv = vnet_tap_modify (vm, ap);
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (!q)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
@@ -164,7 +163,7 @@ vl_api_tap_modify_t_handler (vl_api_tap_modify_t * mp)
   rmp->retval = ntohl (rv);
   rmp->sw_if_index = ntohl (sw_if_index);
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void
@@ -174,7 +173,7 @@ vl_api_tap_delete_t_handler (vl_api_tap_delete_t * mp)
   int rv;
   vpe_api_main_t *vam = &vpe_api_main;
   vl_api_tap_delete_reply_t *rmp;
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   u32 sw_if_index = ntohl (mp->sw_if_index);
 
   rv = vnet_tap_delete (vm, sw_if_index);
@@ -184,8 +183,8 @@ vl_api_tap_delete_t_handler (vl_api_tap_delete_t * mp)
       vnet_clear_sw_interface_tag (vnm, sw_if_index);
     }
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (!q)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
@@ -193,15 +192,15 @@ vl_api_tap_delete_t_handler (vl_api_tap_delete_t * mp)
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 
   if (!rv)
-    send_sw_interface_flags_deleted (vam, q, sw_if_index);
+    send_sw_interface_event_deleted (vam, reg, sw_if_index);
 }
 
 static void
 send_sw_interface_tap_details (vpe_api_main_t * am,
-			       unix_shared_memory_queue_t * q,
+			       vl_api_registration_t * reg,
 			       tapcli_interface_details_t * tap_if,
 			       u32 context)
 {
@@ -214,7 +213,7 @@ send_sw_interface_tap_details (vpe_api_main_t * am,
 	   (char *) tap_if->dev_name, ARRAY_LEN (mp->dev_name) - 1);
   mp->context = context;
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
@@ -222,12 +221,12 @@ vl_api_sw_interface_tap_dump_t_handler (vl_api_sw_interface_tap_dump_t * mp)
 {
   int rv = 0;
   vpe_api_main_t *am = &vpe_api_main;
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   tapcli_interface_details_t *tapifs = NULL;
   tapcli_interface_details_t *tap_if = NULL;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   rv = vnet_tap_dump_ifs (&tapifs);
@@ -236,7 +235,7 @@ vl_api_sw_interface_tap_dump_t_handler (vl_api_sw_interface_tap_dump_t * mp)
 
   vec_foreach (tap_if, tapifs)
   {
-    send_sw_interface_tap_details (am, q, tap_if, mp->context);
+    send_sw_interface_tap_details (am, reg, tap_if, mp->context);
   }
 
   vec_free (tapifs);

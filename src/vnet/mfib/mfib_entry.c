@@ -238,9 +238,7 @@ format_mfib_entry (u8 * s, va_list * args)
 static mfib_entry_t*
 mfib_entry_from_fib_node (fib_node_t *node)
 {
-#if CLIB_DEBUG > 0
     ASSERT(FIB_NODE_TYPE_MFIB_ENTRY == node->fn_type);
-#endif
     return ((mfib_entry_t*)node);
 }
 
@@ -300,7 +298,7 @@ mfib_entry_src_find (const mfib_entry_t *mfib_entry,
 
 static mfib_entry_src_t *
 mfib_entry_src_find_or_create (mfib_entry_t *mfib_entry,
-                              mfib_source_t source)
+                               mfib_source_t source)
 {
     mfib_entry_src_t *esrc;
 
@@ -332,6 +330,17 @@ mfib_entry_get_best_src (const mfib_entry_t *mfib_entry)
     }
 
     return (bsrc);
+}
+
+int
+mfib_entry_is_sourced (fib_node_index_t mfib_entry_index,
+                       mfib_source_t source)
+{
+    mfib_entry_t *mfib_entry;
+
+    mfib_entry = mfib_entry_get(mfib_entry_index);
+
+    return (NULL != mfib_entry_src_find(mfib_entry, source, NULL));
 }
 
 static void
@@ -393,7 +402,7 @@ mfib_entry_alloc (u32 fib_index,
 {
     mfib_entry_t *mfib_entry;
 
-    pool_get(mfib_entry_pool, mfib_entry);
+    pool_get_aligned(mfib_entry_pool, mfib_entry, CLIB_CACHE_LINE_BYTES);
 
     fib_node_init(&mfib_entry->mfe_node,
                   FIB_NODE_TYPE_MFIB_ENTRY);
@@ -524,6 +533,7 @@ mfib_entry_src_collect_forwarding (fib_node_index_t pl_index,
     case FIB_FORW_CHAIN_TYPE_MPLS_EOS:
     case FIB_FORW_CHAIN_TYPE_ETHERNET:
     case FIB_FORW_CHAIN_TYPE_NSH:
+    case FIB_FORW_CHAIN_TYPE_BIER:
         ASSERT(0);
         break;
     }
@@ -764,18 +774,16 @@ mfib_entry_update (fib_node_index_t mfib_entry_index,
          * entry
          */
         fib_node_index_t old_pl_index;
-        fib_protocol_t fp;
+        dpo_proto_t dp;
         dpo_id_t dpo = DPO_INVALID;
 
-        fp = mfib_entry_get_proto(mfib_entry);
+        dp = fib_proto_to_dpo(mfib_entry_get_proto(mfib_entry));
         old_pl_index = msrc->mfes_pl;
 
-        dpo_set(&dpo, DPO_REPLICATE,
-                fib_proto_to_dpo(fp),
-                repi);
+        dpo_set(&dpo, DPO_REPLICATE, dp, repi);
 
         msrc->mfes_pl =
-            fib_path_list_create_special(fp,
+            fib_path_list_create_special(dp,
                                          FIB_PATH_LIST_FLAG_EXCLUSIVE,
                                          &dpo);
 
@@ -1216,6 +1224,16 @@ mfib_entry_get_fib_index (fib_node_index_t mfib_entry_index)
     mfib_entry = mfib_entry_get(mfib_entry_index);
 
     return (mfib_entry->mfe_fib_index);
+}
+
+const dpo_id_t*
+mfib_entry_contribute_ip_forwarding (fib_node_index_t mfib_entry_index)
+{
+    mfib_entry_t *mfib_entry;
+
+    mfib_entry = mfib_entry_get(mfib_entry_index);
+
+    return (&mfib_entry->mfe_rep);
 }
 
 void

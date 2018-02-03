@@ -73,7 +73,8 @@ always_inline vnet_sw_interface_t *
 vnet_get_sup_sw_interface (vnet_main_t * vnm, u32 sw_if_index)
 {
   vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, sw_if_index);
-  if (sw->type == VNET_SW_INTERFACE_TYPE_SUB)
+  if (sw->type == VNET_SW_INTERFACE_TYPE_SUB ||
+      sw->type == VNET_SW_INTERFACE_TYPE_P2P)
     sw = vnet_get_sw_interface (vnm, sw->sup_sw_if_index);
   return sw;
 }
@@ -158,6 +159,14 @@ u32 vnet_register_interface (vnet_main_t * vnm,
 			     u32 dev_class_index,
 			     u32 dev_instance,
 			     u32 hw_class_index, u32 hw_instance);
+
+/**
+ * Set interface output node - for interface registered without its output/tx
+ * nodes created because its VNET_DEVICE_CLASS did not specify any tx_function.
+ * This is typically the case for tunnel interfaces.
+ */
+void vnet_set_interface_output_node (vnet_main_t * vnm,
+				     u32 hw_if_index, u32 node_index);
 
 /* Creates a software interface given template. */
 clib_error_t *vnet_create_sw_interface (vnet_main_t * vnm,
@@ -273,7 +282,15 @@ clib_error_t *vnet_rename_interface (vnet_main_t * vnm, u32 hw_if_index,
 /* Change interface mac address*/
 clib_error_t *vnet_hw_interface_change_mac_address (vnet_main_t * vnm,
 						    u32 hw_if_index,
-						    u64 mac_address);
+						    u8 * mac_address);
+
+/* Change rx-mode */
+clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
+					       u32 hw_if_index,
+					       u8 queue_id_valid,
+					       u32 queue_id,
+					       vnet_hw_interface_rx_mode
+					       mode);
 
 /* Formats sw/hw interface. */
 format_function_t format_vnet_hw_interface;
@@ -301,9 +318,8 @@ typedef struct
   u32 is_deleted;
 } vnet_interface_output_runtime_t;
 
-/* Interface output functions. */
+/* Interface output function. */
 void *vnet_interface_output_node_multiarch_select (void);
-void *vnet_interface_output_node_flatten_multiarch_select (void);
 
 word vnet_sw_interface_compare (vnet_main_t * vnm, uword sw_if_index0,
 				uword sw_if_index1);

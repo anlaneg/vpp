@@ -184,6 +184,32 @@ void ip_del_all_interface_addresses (vlib_main_t * vm, u32 sw_if_index);
 extern vlib_node_registration_t ip4_inacl_node;
 extern vlib_node_registration_t ip6_inacl_node;
 
+void ip_table_create (fib_protocol_t fproto, u32 table_id, u8 is_api,
+		      const u8 * name);
+
+void ip_table_delete (fib_protocol_t fproto, u32 table_id, u8 is_api);
+
+int ip_table_bind (fib_protocol_t fproto, u32 sw_if_index,
+		   u32 table_id, u8 is_api);
+
+u8 ip_is_zero (ip46_address_t * ip46_address, u8 is_ip4);
+u8 ip_is_local_host (ip46_address_t * ip46_address, u8 is_ip4);
+u8 ip_is_local (u32 fib_index, ip46_address_t * ip46_address, u8 is_ip4);
+u8 ip_interface_has_address (u32 sw_if_index, ip46_address_t * ip, u8 is_ip4);
+void ip_copy (ip46_address_t * dst, ip46_address_t * src, u8 is_ip4);
+void ip_set (ip46_address_t * dst, void *src, u8 is_ip4);
+void *ip_interface_get_first_ip (u32 sw_if_index, u8 is_ip4);
+void ip4_address_normalize (ip4_address_t * ip4, u8 preflen);
+void ip6_address_normalize (ip6_address_t * ip6, u8 preflen);
+void ip4_preflen_to_mask (u8 pref_len, ip4_address_t * ip);
+u32 ip4_mask_to_preflen (ip4_address_t * mask);
+void ip4_prefix_max_address_host_order (ip4_address_t * ip, u8 plen,
+					ip4_address_t * res);
+void ip6_prefix_max_address_host_order (ip6_address_t * ip, u8 plen,
+					ip6_address_t * res);
+void ip6_preflen_to_mask (u8 pref_len, ip6_address_t * mask);
+u32 ip6_mask_to_preflen (ip6_address_t * mask);
+
 #endif /* included_ip_main_h */
 
 /*

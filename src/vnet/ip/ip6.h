@@ -103,6 +103,16 @@ typedef struct
   uword function_opaque;
 } ip6_add_del_interface_address_callback_t;
 
+typedef void (ip6_table_bind_function_t)
+  (struct ip6_main_t * im,
+   uword opaque, u32 sw_if_index, u32 new_fib_index, u32 old_fib_index);
+
+typedef struct
+{
+  ip6_table_bind_function_t *function;
+  uword function_opaque;
+} ip6_table_bind_callback_t;
+
 /**
  * Enumeration of the FIB table instance types
  */
@@ -183,6 +193,9 @@ typedef struct ip6_main_t
     ip6_add_del_interface_address_callback_t
     * add_del_interface_address_callbacks;
 
+  /** Functions to call when interface to table biding changes. */
+  ip6_table_bind_callback_t *table_bind_callbacks;
+
   /* Template used to generate IP6 neighbor solicitation packets. */
   vlib_packet_template_t discover_neighbor_packet_template;
 
@@ -216,6 +229,11 @@ extern vlib_node_registration_t ip6_rewrite_local_node;
 extern vlib_node_registration_t ip6_discover_neighbor_node;
 extern vlib_node_registration_t ip6_glean_node;
 extern vlib_node_registration_t ip6_midchain_node;
+
+extern void ip6_forward_next_trace (vlib_main_t * vm,
+				    vlib_node_runtime_t * node,
+				    vlib_frame_t * frame,
+				    vlib_rx_or_tx_t which_adj_index);
 
 always_inline uword
 ip6_destination_matches_route (const ip6_main_t * im,
@@ -375,9 +393,16 @@ int vnet_ip6_nd_term (vlib_main_t * vm,
 		      ethernet_header_t * eth,
 		      ip6_header_t * ip, u32 sw_if_index, u16 bd_index);
 
+void send_ip6_na (vlib_main_t * vm, vnet_hw_interface_t * hi);
+
 u8 *format_ip6_forward_next_trace (u8 * s, va_list * args);
 
 u32 ip6_tcp_udp_icmp_validate_checksum (vlib_main_t * vm, vlib_buffer_t * p0);
+
+void ip6_punt_policer_add_del (u8 is_add, u32 policer_index);
+void ip6_punt_redirect_add (u32 rx_sw_if_index,
+			    u32 tx_sw_if_index, ip46_address_t * nh);
+void ip6_punt_redirect_del (u32 rx_sw_if_index);
 
 int vnet_set_ip6_classify_intfc (vlib_main_t * vm, u32 sw_if_index,
 				 u32 table_index);
@@ -574,6 +599,7 @@ vlib_buffer_push_ip6 (vlib_main_t * vm, vlib_buffer_t * b,
 	       sizeof (ip6h->src_address));
   clib_memcpy (ip6h->dst_address.as_u8, dst->as_u8,
 	       sizeof (ip6h->src_address));
+  b->flags |= VNET_BUFFER_F_IS_IP6;
 
   return ip6h;
 }

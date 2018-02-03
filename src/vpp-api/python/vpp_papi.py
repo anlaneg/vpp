@@ -15,10 +15,23 @@
 #
 
 from __future__ import print_function
-import sys, os, logging, collections, struct, json, threading, glob
-import atexit, Queue
-
+import sys
+import os
+import logging
+import collections
+import struct
+import json
+import threading
+import fnmatch
+import atexit
 from cffi import FFI
+import cffi
+
+if sys.version[0] == '2':
+    import Queue as queue
+else:
+    import queue as queue
+
 ffi = FFI()
 ffi.cdef("""
 typedef void (*vac_callback_t)(unsigned char * data, int len);
@@ -50,15 +63,28 @@ def vpp_atexit(self):
 
 vpp_object = None
 
+
+def vpp_iterator(d):
+    if sys.version[0] == '2':
+        return d.iteritems()
+    else:
+        return d.items()
+
+
 @ffi.callback("void(unsigned char *, int)")
 def vac_callback_sync(data, len):
     vpp_object.msg_handler_sync(ffi.buffer(data, len))
+
+
 @ffi.callback("void(unsigned char *, int)")
 def vac_callback_async(data, len):
     vpp_object.msg_handler_async(ffi.buffer(data, len))
+
+
 @ffi.callback("void(void *, unsigned char *, int)")
 def vac_error_handler(arg, msg, msg_len):
-    vpp_object.logger.warning("PNEUM: %s", ffi.string(msg, msg_len))
+    vpp_object.logger.warning("VPP API client:: %s", ffi.string(msg, msg_len))
+
 
 class Empty(object):
     pass
@@ -85,8 +111,8 @@ class VPP():
     provides a means to register a callback function to receive
     these messages in a background thread.
     """
-    def __init__(self, apifiles = None, testmode = False, async_thread = True,
-                 logger = logging.getLogger('vpp_papi'), loglevel = 'debug'):
+    def __init__(self, apifiles=None, testmode=False, async_thread=True,
+                 logger=logging.getLogger('vpp_papi'), loglevel='debug', read_timeout=0):
         """Create a VPP API object.
 
         apifiles is a list of files containing API
@@ -103,22 +129,29 @@ class VPP():
         self.messages = {}
         self.id_names = []
         self.id_msgdef = []
-        self.buffersize = 10000
         self.connected = False
         self.header = struct.Struct('>HI')
         self.apifiles = []
         self.event_callback = None
-        self.message_queue = Queue.Queue()
-        self.read_timeout = 0
+        self.message_queue = queue.Queue()
+        self.read_timeout = read_timeout
         self.vpp_api = vpp_api
         if async_thread:
-            self.event_thread = threading.Thread(target=self.thread_msg_handler)
+            self.event_thread = threading.Thread(
+                target=self.thread_msg_handler)
             self.event_thread.daemon = True
             self.event_thread.start()
 
         if not apifiles:
             # Pick up API definitions from default directory
-            apifiles = glob.glob('/usr/share/vpp/api/*.api.json')
+            try:
+                apifiles = self.find_api_files()
+            except RuntimeError:
+                # In test mode we don't care that we can't find the API files
+                if testmode:
+                    apifiles = []
+                else:
+                    raise
 
         for file in apifiles:
             with open(file) as apidef_file:
@@ -128,7 +161,7 @@ class VPP():
 
                 for m in api['messages']:
                     self.add_message(m[0], m[1:])
-	self.apifiles = apifiles
+        self.apifiles = apifiles
 
         # Basic sanity check
         if len(self.messages) == 0 and not testmode:
@@ -140,66 +173,210 @@ class VPP():
         # Register error handler
         vpp_api.vac_set_error_handler(vac_error_handler)
 
+        # Support legacy CFFI
+        # from_buffer supported from 1.8.0
+        (major, minor, patch) = [int(s) for s in cffi.__version__.split('.', 3)]
+        if major >= 1 and minor >= 8:
+            self._write = self._write_new_cffi
+        else:
+            self._write = self._write_legacy_cffi
+
     class ContextId(object):
         """Thread-safe provider of unique context IDs."""
         def __init__(self):
             self.context = 0
-	    self.lock = threading.Lock()
+            self.lock = threading.Lock()
+
         def __call__(self):
             """Get a new unique (or, at least, not recently used) context."""
-	    with self.lock:
-		self.context += 1
-		return self.context
+            with self.lock:
+                self.context += 1
+                return self.context
     get_context = ContextId()
+
+    @classmethod
+    def find_api_dir(cls):
+        """Attempt to find the best directory in which API definition
+        files may reside. If the value VPP_API_DIR exists in the environment
+        then it is first on the search list. If we're inside a recognized
+        location in a VPP source tree (src/scripts and src/vpp-api/python)
+        then entries from there to the likely locations in build-root are
+        added. Finally the location used by system packages is added.
+
+        :returns: A single directory name, or None if no such directory
+            could be found.
+        """
+        dirs = []
+
+        if 'VPP_API_DIR' in os.environ:
+            dirs.append(os.environ['VPP_API_DIR'])
+
+        # perhaps we're in the 'src/scripts' or 'src/vpp-api/python' dir;
+        # in which case, plot a course to likely places in the src tree
+        import __main__ as main
+        if hasattr(main, '__file__'):
+            # get the path of the calling script
+            localdir = os.path.dirname(os.path.realpath(main.__file__))
+        else:
+            # use cwd if there is no calling script
+            localdir = os.cwd()
+        localdir_s = localdir.split(os.path.sep)
+
+        def dmatch(dir):
+            """Match dir against right-hand components of the script dir"""
+            d = dir.split('/')  # param 'dir' assumes a / separator
+            l = len(d)
+            return len(localdir_s) > l and localdir_s[-l:] == d
+
+        def sdir(srcdir, variant):
+            """Build a path from srcdir to the staged API files of
+            'variant'  (typically '' or '_debug')"""
+            # Since 'core' and 'plugin' files are staged
+            # in separate directories, we target the parent dir.
+            return os.path.sep.join((
+                srcdir,
+                'build-root',
+                'install-vpp%s-native' % variant,
+                'vpp',
+                'share',
+                'vpp',
+                'api',
+            ))
+
+        srcdir = None
+        if dmatch('src/scripts'):
+            srcdir = os.path.sep.join(localdir_s[:-2])
+        elif dmatch('src/vpp-api/python'):
+            srcdir = os.path.sep.join(localdir_s[:-3])
+        elif dmatch('test'):
+            # we're apparently running tests
+            srcdir = os.path.sep.join(localdir_s[:-1])
+
+        if srcdir:
+            # we're in the source tree, try both the debug and release
+            # variants.
+            x = 'vpp/share/vpp/api'
+            dirs.append(sdir(srcdir, '_debug'))
+            dirs.append(sdir(srcdir, ''))
+
+        # Test for staged copies of the scripts
+        # For these, since we explicitly know if we're running a debug versus
+        # release variant, target only the relevant directory
+        if dmatch('build-root/install-vpp_debug-native/vpp/bin'):
+            srcdir = os.path.sep.join(localdir_s[:-4])
+            dirs.append(sdir(srcdir, '_debug'))
+        if dmatch('build-root/install-vpp-native/vpp/bin'):
+            srcdir = os.path.sep.join(localdir_s[:-4])
+            dirs.append(sdir(srcdir, ''))
+
+        # finally, try the location system packages typically install into
+        dirs.append(os.path.sep.join(('', 'usr', 'share', 'vpp', 'api')))
+
+        # check the directories for existance; first one wins
+        for dir in dirs:
+            if os.path.isdir(dir):
+                return dir
+
+        return None
+
+    @classmethod
+    def find_api_files(cls, api_dir=None, patterns='*'):
+        """Find API definition files from the given directory tree with the
+        given pattern. If no directory is given then find_api_dir() is used
+        to locate one. If no pattern is given then all definition files found
+        in the directory tree are used.
+
+        :param api_dir: A directory tree in which to locate API definition
+            files; subdirectories are descended into.
+            If this is None then find_api_dir() is called to discover it.
+        :param patterns: A list of patterns to use in each visited directory
+            when looking for files.
+            This can be a list/tuple object or a comma-separated string of
+            patterns. Each value in the list will have leading/trialing
+            whitespace stripped.
+            The pattern specifies the first part of the filename, '.api.json'
+            is appended.
+            The results are de-duplicated, thus overlapping patterns are fine.
+            If this is None it defaults to '*' meaning "all API files".
+        :returns: A list of file paths for the API files found.
+        """
+        if api_dir is None:
+            api_dir = cls.find_api_dir()
+            if api_dir is None:
+                raise RuntimeError("api_dir cannot be located")
+
+        if isinstance(patterns, list) or isinstance(patterns, tuple):
+            patterns = [p.strip() + '.api.json' for p in patterns]
+        else:
+            patterns = [p.strip() + '.api.json' for p in patterns.split(",")]
+
+        api_files = []
+        for root, dirnames, files in os.walk(api_dir):
+            # iterate all given patterns and de-dup the result
+            files = set(sum([fnmatch.filter(files, p) for p in patterns], []))
+            for filename in files:
+                api_files.append(os.path.join(root, filename))
+
+        return api_files
 
     def status(self):
         """Debug function: report current VPP API status to stdout."""
         print('Connected') if self.connected else print('Not Connected')
         print('Read API definitions from', ', '.join(self.apifiles))
 
-    def __struct (self, t, n = None, e = -1, vl = None):
+    def __struct(self, t, n=None, e=-1, vl=None):
         """Create a packing structure for a message."""
-        base_types = { 'u8' : 'B',
-                       'u16' : 'H',
-                       'u32' : 'I',
-                       'i32' : 'i',
-                       'u64' : 'Q',
-                       'f64' : 'd',
-                       }
+        base_types = {'u8': 'B',
+                      'u16': 'H',
+                      'u32': 'I',
+                      'i32': 'i',
+                      'u64': 'Q',
+                      'f64': 'd', }
         pack = None
         if t in base_types:
             pack = base_types[t]
             if not vl:
                 if e > 0 and t == 'u8':
                     # Fixed byte array
-                    return struct.Struct('>' + str(e) + 's')
+                    s = struct.Struct('>' + str(e) + 's')
+                    return s.size, s
                 if e > 0:
                     # Fixed array of base type
-                    return [e, struct.Struct('>' + base_types[t])]
+                    s = struct.Struct('>' + base_types[t])
+                    return s.size, [e, s]
                 elif e == 0:
                     # Old style variable array
-                    return [-1, struct.Struct('>' + base_types[t])]
+                    s = struct.Struct('>' + base_types[t])
+                    return s.size, [-1, s]
             else:
                 # Variable length array
-                return [vl, struct.Struct('>s')] if t == 'u8' else \
-                    [vl, struct.Struct('>' + base_types[t])]
+                if t == 'u8':
+                    s = struct.Struct('>s')
+                    return s.size, [vl, s]
+                else:
+                    s = struct.Struct('>' + base_types[t])
+                return s.size, [vl, s]
 
-            return struct.Struct('>' + base_types[t])
+            s = struct.Struct('>' + base_types[t])
+            return s.size, s
 
         if t in self.messages:
-            ### Return a list in case of array ###
+            size = self.messages[t]['sizes'][0]
+
+            # Return a list in case of array
             if e > 0 and not vl:
-                return [e, lambda self, encode, buf, offset, args: (
+                return size, [e, lambda self, encode, buf, offset, args: (
                     self.__struct_type(encode, self.messages[t], buf, offset,
                                        args))]
             if vl:
-                return [vl, lambda self, encode, buf, offset, args: (
+                return size, [vl, lambda self, encode, buf, offset, args: (
                     self.__struct_type(encode, self.messages[t], buf, offset,
                                        args))]
             elif e == 0:
                 # Old style VLA
-                raise NotImplementedError(1, 'No support for compound types ' + t)
-            return lambda self, encode, buf, offset, args: (
+                raise NotImplementedError(1,
+                                          'No support for compound types ' + t)
+            return size, lambda self, encode, buf, offset, args: (
                 self.__struct_type(encode, self.messages[t], buf, offset, args)
             )
 
@@ -218,14 +395,18 @@ class VPP():
 
         for k in kwargs:
             if k not in msgdef['args']:
-                raise ValueError(1, 'Invalid field-name in message call ' + k)
+                raise ValueError(1,'Non existing argument [' + k + ']' + \
+                                 ' used in call to: ' + \
+                                 self.id_names[kwargs['_vl_msg_id']] + '()' )
 
-        for k,v in msgdef['args'].iteritems():
+        for k, v in vpp_iterator(msgdef['args']):
             off += size
             if k in kwargs:
                 if type(v) is list:
                     if callable(v[1]):
                         e = kwargs[v[0]] if v[0] in kwargs else v[0]
+                        if e != len(kwargs[k]):
+                            raise (ValueError(1, 'Input list length mismatch: %s (%s != %s)' %  (k, e, len(kwargs[k]))))
                         size = 0
                         for i in range(e):
                             size += v[1](self, True, buf, off + size,
@@ -233,6 +414,8 @@ class VPP():
                     else:
                         if v[0] in kwargs:
                             l = kwargs[v[0]]
+                            if l != len(kwargs[k]):
+                                raise ValueError(1, 'Input list length mismatch: %s (%s != %s)' % (k, l, len(kwargs[k])))
                         else:
                             l = len(kwargs[k])
                         if v[1].size == 1:
@@ -247,6 +430,8 @@ class VPP():
                     if callable(v):
                         size = v(self, True, buf, off, kwargs[k])
                     else:
+                        if type(kwargs[k]) is str and v.size < len(kwargs[k]):
+                            raise ValueError(1, 'Input list length mismatch: %s (%s < %s)' % (k, v.size, len(kwargs[k])))
                         v.pack_into(buf, off, kwargs[k])
                         size = v.size
             else:
@@ -254,15 +439,22 @@ class VPP():
 
         return off + size - offset
 
-
     def __getitem__(self, name):
         if name in self.messages:
             return self.messages[name]
         return None
 
+    def get_size(self, sizes, kwargs):
+        total_size = sizes[0]
+        for e in sizes[1]:
+            if e in kwargs and type(kwargs[e]) is list:
+                total_size += len(kwargs[e]) * sizes[1][e]
+        return total_size
+
     def encode(self, msgdef, kwargs):
         # Make suitably large buffer
-        buf = bytearray(self.buffersize)
+        size = self.get_size(msgdef['sizes'], kwargs)
+        buf = bytearray(size)
         offset = 0
         size = self.__struct_type(True, msgdef, buf, offset, kwargs)
         return buf[:offset + size]
@@ -274,19 +466,19 @@ class VPP():
         res = []
         off = offset
         size = 0
-        for k,v in msgdef['args'].iteritems():
+        for k, v in vpp_iterator(msgdef['args']):
             off += size
             if type(v) is list:
                 lst = []
-                if callable(v[1]): # compound type
+                if callable(v[1]):  # compound type
                     size = 0
-                    if v[0] in msgdef['args']: # vla
+                    if v[0] in msgdef['args']:  # vla
                         e = res[v[2]]
-                    else: # fixed array
+                    else:  # fixed array
                         e = v[0]
                     res.append(lst)
                     for i in range(e):
-                        (s,l) = v[1](self, False, buf, off + size, None)
+                        (s, l) = v[1](self, False, buf, off + size, None)
                         lst.append(l)
                         size += s
                     continue
@@ -308,7 +500,8 @@ class VPP():
                         size += v[1].size
             else:
                 if callable(v):
-                    (s,l) = v(self, False, buf, off, None)
+                    size = 0
+                    (s, l) = v(self, False, buf, off, None)
                     res.append(l)
                     size += s
                 else:
@@ -322,14 +515,31 @@ class VPP():
             return self.messages[name]['return_tuple']
         return None
 
-    def add_message(self, name, msgdef, typeonly = False):
+    def duplicate_check_ok(self, name, msgdef):
+        crc = None
+        for c in msgdef:
+            if type(c) is dict and 'crc' in c:
+                crc = c['crc']
+                break
+        if crc:
+            # We can get duplicates because of imports
+            if crc == self.messages[name]['crc']:
+                return True
+        return False
+
+    def add_message(self, name, msgdef, typeonly=False):
         if name in self.messages:
+            if typeonly:
+                if self.duplicate_check_ok(name, msgdef):
+                    return
             raise ValueError('Duplicate message name: ' + name)
 
         args = collections.OrderedDict()
         argtypes = collections.OrderedDict()
         fields = []
         msg = {}
+        total_size = 0
+        sizes = {}
         for i, f in enumerate(msgdef):
             if type(f) is dict and 'crc' in f:
                 msg['crc'] = f['crc']
@@ -338,31 +548,47 @@ class VPP():
             field_name = f[1]
             if len(f) == 3 and f[2] == 0 and i != len(msgdef) - 2:
                 raise ValueError('Variable Length Array must be last: ' + name)
-            args[field_name] = self.__struct(*f)
+            size, s = self.__struct(*f)
+            args[field_name] = s
+            if type(s) == list and type(s[0]) == int and type(s[1]) == struct.Struct:
+                if s[0] < 0:
+                    sizes[field_name] = size
+                else:
+                    sizes[field_name] = size
+                    total_size += s[0] * size
+            else:
+                sizes[field_name] = size
+                total_size += size
+
             argtypes[field_name] = field_type
-            if len(f) == 4: # Find offset to # elements field
-                args[field_name].append(args.keys().index(f[3]) - i)
+            if len(f) == 4:  # Find offset to # elements field
+                idx = list(args.keys()).index(f[3]) - i
+                args[field_name].append(idx)
             fields.append(field_name)
         msg['return_tuple'] = collections.namedtuple(name, fields,
-                                                     rename = True)
+                                                     rename=True)
         self.messages[name] = msg
         self.messages[name]['args'] = args
         self.messages[name]['argtypes'] = argtypes
         self.messages[name]['typeonly'] = typeonly
+        self.messages[name]['sizes'] = [total_size, sizes]
         return self.messages[name]
 
     def add_type(self, name, typedef):
-        return self.add_message('vl_api_' + name + '_t', typedef, typeonly=True)
+        return self.add_message('vl_api_' + name + '_t', typedef,
+                                typeonly=True)
 
     def make_function(self, name, i, msgdef, multipart, async):
         if (async):
             f = lambda **kwargs: (self._call_vpp_async(i, msgdef, **kwargs))
         else:
-            f = lambda **kwargs: (self._call_vpp(i, msgdef, multipart, **kwargs))
+            f = lambda **kwargs: (self._call_vpp(i, msgdef, multipart,
+                                                 **kwargs))
         args = self.messages[name]['args']
         argtypes = self.messages[name]['argtypes']
         f.__name__ = str(name)
-        f.__doc__ = ", ".join(["%s %s" % (argtypes[k], k) for k in args.keys()])
+        f.__doc__ = ", ".join(["%s %s" %
+                               (argtypes[k], k) for k in args.keys()])
         return f
 
     @property
@@ -375,11 +601,12 @@ class VPP():
         self.id_names = [None] * (self.vpp_dictionary_maxid + 1)
         self.id_msgdef = [None] * (self.vpp_dictionary_maxid + 1)
         self._api = Empty()
-        for name, msgdef in self.messages.iteritems():
-            if self.messages[name]['typeonly']: continue
+        for name, msgdef in vpp_iterator(self.messages):
+            if self.messages[name]['typeonly']:
+                continue
             crc = self.messages[name]['crc']
             n = name + '_' + crc[2:]
-            i = vpp_api.vac_get_msg_index(bytes(n))
+            i = vpp_api.vac_get_msg_index(n.encode())
             if i > 0:
                 self.id_msgdef[i] = msgdef
                 self.id_names[i] = name
@@ -394,28 +621,37 @@ class VPP():
                 setattr(self, name, f)
                 # old API stuff ends here
             else:
-                self.logger.debug('No such message type or failed CRC checksum: %s', n)
+                self.logger.debug(
+                    'No such message type or failed CRC checksum: %s', n)
 
-    def _write (self, buf):
+    def _write_new_cffi(self, buf):
+        """Send a binary-packed message to VPP."""
+        if not self.connected:
+            raise IOError(1, 'Not connected')
+        return vpp_api.vac_write(ffi.from_buffer(buf), len(buf))
+
+    def _write_legacy_cffi(self, buf):
         """Send a binary-packed message to VPP."""
         if not self.connected:
             raise IOError(1, 'Not connected')
         return vpp_api.vac_write(str(buf), len(buf))
 
-    def _read (self):
+    def _read(self):
         if not self.connected:
             raise IOError(1, 'Not connected')
         mem = ffi.new("char **")
         size = ffi.new("int *")
         rv = vpp_api.vac_read(mem, size, self.read_timeout)
         if rv:
-            raise IOError(rv, 'vac_read filed')
+            raise IOError(rv, 'vac_read failed')
         msg = bytes(ffi.buffer(mem[0], size[0]))
         vpp_api.vac_free(mem[0])
         return msg
 
-    def connect_internal(self, name, msg_handler, chroot_prefix, rx_qlen, async):
-	rv = vpp_api.vac_connect(name, chroot_prefix, msg_handler, rx_qlen)
+    def connect_internal(self, name, msg_handler, chroot_prefix, rx_qlen,
+                         async):
+        pfx = chroot_prefix.encode() if chroot_prefix else ffi.NULL
+        rv = vpp_api.vac_connect(name.encode(), pfx, msg_handler, rx_qlen)
         if rv != 0:
             raise IOError(2, 'Connect failed')
         self.connected = True
@@ -425,13 +661,12 @@ class VPP():
 
         # Initialise control ping
         crc = self.messages['control_ping']['crc']
-        self.control_ping_index = \
-                                  vpp_api.vac_get_msg_index(
-                                      bytes('control_ping' + '_' + crc[2:]))
+        self.control_ping_index = vpp_api.vac_get_msg_index(
+            ('control_ping' + '_' + crc[2:]).encode())
         self.control_ping_msgdef = self.messages['control_ping']
+        return rv
 
-    def connect(self, name, chroot_prefix = ffi.NULL,
-                async = False, rx_qlen = 32):
+    def connect(self, name, chroot_prefix=None, async=False, rx_qlen=32):
         """Attach to VPP.
 
         name - the name of the client.
@@ -440,12 +675,11 @@ class VPP():
         rx_qlen - the length of the VPP message receive queue between
         client and server.
         """
-        msg_handler = vac_callback_sync if not async \
-                      else vac_callback_async
+        msg_handler = vac_callback_sync if not async else vac_callback_async
         return self.connect_internal(name, msg_handler, chroot_prefix, rx_qlen,
                                      async)
 
-    def connect_sync (self, name, chroot_prefix = ffi.NULL, rx_qlen = 32):
+    def connect_sync(self, name, chroot_prefix=None, rx_qlen=32):
         """Attach to VPP in synchronous mode. Application must poll for events.
 
         name - the name of the client.
@@ -517,13 +751,13 @@ class VPP():
 
         msgname = type(r).__name__
 
-	if self.event_callback:
-	    self.event_callback(msgname, r)
+        if self.event_callback:
+            self.event_callback(msgname, r)
 
     def _control_ping(self, context):
         """Send a ping command."""
         self._call_vpp_async(self.control_ping_index,
-			     self.control_ping_msgdef,
+                             self.control_ping_msgdef,
                              context=context)
 
     def _call_vpp(self, i, msgdef, multipart, **kwargs):
@@ -542,7 +776,7 @@ class VPP():
         no response within the timeout window.
         """
 
-        if not 'context' in kwargs:
+        if 'context' not in kwargs:
             context = self.get_context()
             kwargs['context'] = context
         else:
@@ -563,12 +797,11 @@ class VPP():
         while (True):
             msg = self._read()
             if not msg:
-                print('PNEUM ERROR: OH MY GOD')
-                raise IOError(2, 'PNEUM read failed')
+                raise IOError(2, 'VPP API client: read failed')
 
             r = self.decode_incoming_msg(msg)
             msgname = type(r).__name__
-            if not context in r or r.context == 0 or context != r.context:
+            if context not in r or r.context == 0 or context != r.context:
                 self.message_queue.put_nowait(r)
                 continue
 
@@ -593,7 +826,7 @@ class VPP():
         supplied.
         The remainder of the kwargs are the arguments to the API call.
         """
-        if not 'context' in kwargs:
+        if 'context' not in kwargs:
             context = self.get_context()
             kwargs['context'] = context
         else:
@@ -631,5 +864,8 @@ class VPP():
         while True:
             r = self.message_queue.get()
             msgname = type(r).__name__
-	    if self.event_callback:
-	        self.event_callback(msgname, r)
+            if self.event_callback:
+                self.event_callback(msgname, r)
+
+
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4

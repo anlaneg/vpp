@@ -39,10 +39,10 @@ static u64
 bfd_calc_echo_checksum (u32 discriminator, u64 expire_time, u32 secret)
 {
   u64 checksum = 0;
-#if __SSE4_2__ && !defined (__i386__)
-  checksum = _mm_crc32_u64 (0, discriminator);
-  checksum = _mm_crc32_u64 (checksum, expire_time);
-  checksum = _mm_crc32_u64 (checksum, secret);
+#if defined(clib_crc32c_uses_intrinsics) && !defined (__i386__)
+  checksum = crc32_u64 (0, discriminator);
+  checksum = crc32_u64 (checksum, expire_time);
+  checksum = crc32_u64 (checksum, secret);
 #else
   checksum = clib_xxhash (discriminator ^ expire_time ^ secret);
 #endif
@@ -1768,7 +1768,7 @@ u8 *
 format_bfd_session (u8 * s, va_list * args)
 {
   const bfd_session_t *bs = va_arg (*args, bfd_session_t *);
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
   s = format (s, "bs_idx=%u local-state=%s remote-state=%s\n"
 	      "%Ulocal-discriminator=%u remote-discriminator=%u\n"
 	      "%Ulocal-diag=%s echo-active=%s\n"

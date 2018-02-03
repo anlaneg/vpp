@@ -24,8 +24,11 @@
 #include <vppinfra/error.h>
 #include <vppinfra/bitmap.h>
 #include <vppinfra/elog.h>
-#include "bihash_40_8.h"
+#include <vppinfra/bihash_48_8.h>
+#include <vppinfra/bihash_40_8.h>
+
 #include "fa_node.h"
+#include "hash_lookup_types.h"
 
 #define  ACL_PLUGIN_VERSION_MAJOR 1
 #define  ACL_PLUGIN_VERSION_MINOR 3
@@ -33,6 +36,12 @@
 #define UDP_SESSION_IDLE_TIMEOUT_SEC 600
 #define TCP_SESSION_IDLE_TIMEOUT_SEC (3600*24)
 #define TCP_SESSION_TRANSIENT_TIMEOUT_SEC 120
+
+#define ACL_FA_DEFAULT_HEAP_SIZE (2 << 29)
+
+#define ACL_PLUGIN_HASH_LOOKUP_HEAP_SIZE (2 << 25)
+#define ACL_PLUGIN_HASH_LOOKUP_HASH_BUCKETS 65536
+#define ACL_PLUGIN_HASH_LOOKUP_HASH_MEMORY (2 << 25)
 
 extern vlib_node_registration_t acl_in_node;
 extern vlib_node_registration_t acl_out_node;
@@ -109,16 +118,57 @@ typedef struct
   u32 l2_table_index;
 } macip_acl_list_t;
 
+/*
+ * An element describing a particular configuration fo the mask,
+ * and how many times it has been used.
+ */
+typedef struct
+{
+  fa_5tuple_t mask;
+  u32 refcount;
+} ace_mask_type_entry_t;
+
 typedef struct {
+  /* mheap to hold all the ACL module related allocations, other than hash */
+  void *acl_mheap;
+  u32 acl_mheap_size;
+
   /* API message ID base */
   u16 msg_id_base;
 
   acl_list_t *acls;	/* Pool of ACLs */
+  hash_acl_info_t *hash_acl_infos; /* corresponding hash matching housekeeping info */
+  clib_bihash_48_8_t acl_lookup_hash; /* ACL lookup hash table. */
+  u32 hash_lookup_hash_buckets;
+  u32 hash_lookup_hash_memory;
+
+  /* mheap to hold all the miscellaneous allocations related to hash-based lookups */
+  void *hash_lookup_mheap;
+  u32 hash_lookup_mheap_size;
+  int acl_lookup_hash_initialized;
+  applied_hash_ace_entry_t **input_hash_entry_vec_by_sw_if_index;
+  applied_hash_ace_entry_t **output_hash_entry_vec_by_sw_if_index;
+  applied_hash_acl_info_t *input_applied_hash_acl_info_by_sw_if_index;
+  applied_hash_acl_info_t *output_applied_hash_acl_info_by_sw_if_index;
+
   macip_acl_list_t *macip_acls;	/* Pool of MAC-IP ACLs */
 
   /* ACLs associated with interfaces */
   u32 **input_acl_vec_by_sw_if_index;
   u32 **output_acl_vec_by_sw_if_index;
+
+  /* interfaces on which given ACLs are applied */
+  u32 **input_sw_if_index_vec_by_acl;
+  u32 **output_sw_if_index_vec_by_acl;
+
+  /* Total count of interface+direction pairs enabled */
+  u32 fa_total_enabled_count;
+
+  /* Do we use hash-based ACL matching or linear */
+  int use_hash_acl_matching;
+
+  /* a pool of all mask types present in all ACEs */
+  ace_mask_type_entry_t *ace_mask_type_pool;
 
   /*
    * Classify tables used to grab the packets for the ACL check,
@@ -128,6 +178,11 @@ typedef struct {
   u32 *acl_ip6_input_classify_table_by_sw_if_index;
   u32 *acl_ip4_output_classify_table_by_sw_if_index;
   u32 *acl_ip6_output_classify_table_by_sw_if_index;
+
+  u32 *acl_dot1q_input_classify_table_by_sw_if_index;
+  u32 *acl_dot1ad_input_classify_table_by_sw_if_index;
+  u32 *acl_dot1q_output_classify_table_by_sw_if_index;
+  u32 *acl_dot1ad_output_classify_table_by_sw_if_index;
 
   /* MACIP (input) ACLs associated with the interfaces */
   u32 *macip_acl_by_sw_if_index;
@@ -142,9 +197,6 @@ typedef struct {
   u32 fa_cleaner_node_index;
   /* FA session timeouts, in seconds */
   u32 session_timeout_sec[ACL_N_TIMEOUTS];
-  /* session add/delete counters */
-  u64 *fa_session_adds_by_sw_if_index;
-  u64 *fa_session_dels_by_sw_if_index;
   /* total session adds/dels */
   u64 fa_session_total_adds;
   u64 fa_session_total_dels;
@@ -193,6 +245,8 @@ typedef struct {
   f64 fa_cleaner_wait_time_increment;
 
   u64 fa_current_cleaner_timer_wait_interval;
+
+  int fa_interrupt_generation;
 
   /* per-worker data related t conn management */
   acl_fa_per_worker_data_t *per_worker_data;

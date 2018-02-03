@@ -19,7 +19,8 @@ AUTOMAKE_OPTIONS = foreign subdir-objects
 ACLOCAL_AMFLAGS = -I m4
 AM_LIBTOOLFLAGS = --quiet
 
-AM_CFLAGS = -Wall
+AM_CFLAGS = @CPU_FLAGS@ -Wall
+AM_CXXFLAGS = -Wall -std=gnu++11
 
 SUBDIRS = .
 SUFFIXES = .api.h .api .api.json
@@ -67,9 +68,10 @@ include vlib-api.am
 include vnet.am
 include vpp.am
 include vpp-api-test.am
-include uri.am
+include vcl.am
 
 SUBDIRS += plugins
+SUBDIRS += vpp-api/vapi
 
 if ENABLE_PAPI
 include vpp-api.am
@@ -78,6 +80,10 @@ endif
 
 if ENABLE_JAPI
 SUBDIRS += vpp-api/java
+endif
+
+if ENABLE_VOM
+SUBDIRS += vpp-api/vom
 endif
 
 ###############################################################################

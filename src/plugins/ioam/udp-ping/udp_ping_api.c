@@ -25,7 +25,7 @@
 
 #include <vlibapi/api.h>
 #include <vlibmemory/api.h>
-#include <vlibsocket/api.h>
+
 
 /* define message IDs */
 #include <ioam/udp-ping/udp_ping_msg_enum.h>
@@ -56,11 +56,11 @@
 
 /* List of message types that this module understands */
 #define foreach_udp_ping_api_msg                                      \
-    _(UDP_PING_ADD_DEL_REQ, udp_ping_add_del_req)                                     \
-    _(UDP_PING_EXPORT_REQ, udp_ping_export_req)                                     \
+    _(UDP_PING_ADD_DEL, udp_ping_add_del)                                     \
+    _(UDP_PING_EXPORT, udp_ping_export)                                     \
 
-static void vl_api_udp_ping_add_del_req_t_handler
-  (vl_api_udp_ping_add_del_req_t * mp)
+static void
+vl_api_udp_ping_add_del_t_handler (vl_api_udp_ping_add_del_t * mp)
 {
   ip46_address_t dst, src;
   int rv = 0;
@@ -90,8 +90,8 @@ ERROROUT:
   REPLY_MACRO (VL_API_UDP_PING_ADD_DEL_REPLY);
 }
 
-static void vl_api_udp_ping_export_req_t_handler
-  (vl_api_udp_ping_export_req_t * mp)
+static void
+vl_api_udp_ping_export_t_handler (vl_api_udp_ping_export_t * mp)
 {
   udp_ping_main_t *sm = &udp_ping_main;
   int rv = 0;

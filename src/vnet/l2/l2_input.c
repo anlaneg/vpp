@@ -23,6 +23,8 @@
 #include <vnet/ip/ip_packet.h>
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/ip6_packet.h>
+#include <vnet/fib/fib_node.h>
+#include <vnet/ethernet/arp_packet.h>
 #include <vlib/cli.h>
 #include <vnet/l2/l2_input.h>
 #include <vnet/l2/l2_output.h>
@@ -60,6 +62,29 @@ l2input_get_feat_names (void)
   return l2input_feat_names;
 }
 
+u8 *
+format_l2_input_features (u8 * s, va_list * args)
+{
+  static char *display_names[] = {
+#define _(sym,name) #sym,
+    foreach_l2input_feat
+#undef _
+  };
+  u32 feature_bitmap = va_arg (*args, u32);
+
+  if (feature_bitmap == 0)
+    {
+      s = format (s, "  none configured");
+      return s;
+    }
+
+  feature_bitmap &= ~L2INPUT_FEAT_DROP;	/* Not a feature */
+  int i;
+  for (i = L2INPUT_N_FEAT; i >= 0; i--)
+    if (feature_bitmap & (1 << i))
+      s = format (s, "%10s (%s)\n", display_names[i], l2input_feat_names[i]);
+  return s;
+}
 
 typedef struct
 {
@@ -115,10 +140,7 @@ typedef enum
 
 
 static_always_inline void
-classify_and_dispatch (vlib_main_t * vm,
-		       vlib_node_runtime_t * node,
-		       u32 thread_index,
-		       l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
+classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
 {
   /*
    * Load L2 input feature struct
@@ -173,12 +195,37 @@ classify_and_dispatch (vlib_main_t * vm,
       if (ethertype != ETHERNET_TYPE_ARP &&
 	  (ethertype != ETHERNET_TYPE_IP6 || protocol != IP_PROTOCOL_ICMP6))
 	feat_mask &= ~(L2INPUT_FEAT_ARP_TERM);
+
+      /*
+       * For packet from BVI - set SHG of ARP request or ICMPv6 neighbor
+       * solicitation packet from BVI to 0 so it can also flood to VXLAN
+       * tunnels or other ports with the same SHG as that of the BVI.
+       */
+      else if (PREDICT_FALSE (vnet_buffer (b0)->sw_if_index[VLIB_TX] ==
+			      L2INPUT_BVI))
+	{
+	  if (ethertype == ETHERNET_TYPE_ARP)
+	    {
+	      ethernet_arp_header_t *arp0 = (ethernet_arp_header_t *) l3h0;
+	      if (arp0->opcode ==
+		  clib_host_to_net_u16 (ETHERNET_ARP_OPCODE_request))
+		vnet_buffer (b0)->l2.shg = 0;
+	    }
+	  else			/* must be ICMPv6 */
+	    {
+	      ip6_header_t *iph0 = (ip6_header_t *) l3h0;
+	      icmp6_neighbor_solicitation_or_advertisement_header_t *ndh0;
+	      ndh0 = ip6_next_header (iph0);
+	      if (ndh0->icmp.type == ICMP6_neighbor_solicitation)
+		vnet_buffer (b0)->l2.shg = 0;
+	    }
+	}
     }
   else
     {
       /*
-       * Check for from-BVI processing - set SHG of unicast packets from BVI
-       * to 0 so it is not dropped for VXLAN tunnels or other ports with the
+       * For packet from BVI - set SHG of unicast packet from BVI to 0 so it
+       * is not dropped on output to VXLAN tunnels or other ports with the
        * same SHG as that of the BVI.
        */
       if (PREDICT_FALSE (vnet_buffer (b0)->sw_if_index[VLIB_TX] ==
@@ -187,12 +234,7 @@ classify_and_dispatch (vlib_main_t * vm,
     }
 
 
-  if (config->xconnect)
-    {
-      /* Set the output interface */
-      vnet_buffer (b0)->sw_if_index[VLIB_TX] = config->output_sw_if_index;
-    }
-  else
+  if (config->bridge)
     {
       /* Do bridge-domain processing */
       bd_index0 = config->bd_index;
@@ -205,11 +247,12 @@ classify_and_dispatch (vlib_main_t * vm,
       /* Save bridge domain and interface seq_num */
       /* *INDENT-OFF* */
       l2fib_seq_num_t sn = {
-        .swif = config->seq_num,
+        .swif = *l2fib_swif_seq_num(sw_if_index0),
 	.bd = bd_config->seq_num,
       };
       /* *INDENT-ON* */
       vnet_buffer (b0)->l2.l2fib_sn = sn.as_u16;;
+      vnet_buffer (b0)->l2.bd_age = bd_config->mac_age;
 
       /*
        * Process bridge domain feature enables.
@@ -220,6 +263,13 @@ classify_and_dispatch (vlib_main_t * vm,
        */
       feat_mask = feat_mask & bd_config->feature_bitmap;
     }
+  else if (config->xconnect)
+    {
+      /* Set the output interface */
+      vnet_buffer (b0)->sw_if_index[VLIB_TX] = config->output_sw_if_index;
+    }
+  else
+    feat_mask = L2INPUT_FEAT_DROP;
 
   /* mask out features from bitmap using packet type and bd config */
   feature_bitmap = config->feature_bitmap & feat_mask;
@@ -240,7 +290,6 @@ l2input_node_inline (vlib_main_t * vm,
   u32 n_left_from, *from, *to_next;
   l2input_next_t next_index;
   l2input_main_t *msm = &l2input_main;
-  u32 thread_index = vlib_get_thread_index ();
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;	/* number of packets to process */
@@ -353,10 +402,10 @@ l2input_node_inline (vlib_main_t * vm,
 	  vlib_node_increment_counter (vm, l2input_node.index,
 				       L2INPUT_ERROR_L2INPUT, 4);
 
-	  classify_and_dispatch (vm, node, thread_index, msm, b0, &next0);
-	  classify_and_dispatch (vm, node, thread_index, msm, b1, &next1);
-	  classify_and_dispatch (vm, node, thread_index, msm, b2, &next2);
-	  classify_and_dispatch (vm, node, thread_index, msm, b3, &next3);
+	  classify_and_dispatch (msm, b0, &next0);
+	  classify_and_dispatch (msm, b1, &next1);
+	  classify_and_dispatch (msm, b2, &next2);
+	  classify_and_dispatch (msm, b3, &next3);
 
 	  /* verify speculative enqueues, maybe switch current next frame */
 	  /* if next0==next1==next_index then nothing special needs to be done */
@@ -396,7 +445,7 @@ l2input_node_inline (vlib_main_t * vm,
 	  vlib_node_increment_counter (vm, l2input_node.index,
 				       L2INPUT_ERROR_L2INPUT, 1);
 
-	  classify_and_dispatch (vm, node, thread_index, msm, b0, &next0);
+	  classify_and_dispatch (msm, b0, &next0);
 
 	  /* verify speculative enqueue, maybe switch current next frame */
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
@@ -528,7 +577,6 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
   l2_output_config_t *out_config;
   l2_input_config_t *config;
   l2_bridge_domain_t *bd_config;
-  u64 mac;
   i32 l2_if_adjust = 0;
   u32 slot;
 
@@ -550,8 +598,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  config->bvi = 0;
 
 	  /* delete the l2fib entry for the bvi interface */
-	  mac = *((u64 *) hi->hw_address);
-	  l2fib_del_entry (mac, config->bd_index);
+	  l2fib_del_entry (hi->hw_address, config->bd_index);
 
 	  /* Make loop output node send packet back to ethernet-input node */
 	  slot =
@@ -573,13 +620,9 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
       l2_if_adjust--;
     }
 
-  /*
-   * Directs the l2 output path to work out the interface
-   * output next-arc itself. Needed when recycling a sw_if_index.
-   */
-  vec_validate_init_empty (l2om->next_nodes.output_node_index_vec,
-			   sw_if_index, ~0);
-  l2om->next_nodes.output_node_index_vec[sw_if_index] = ~0;
+  /* Make sure vector is big enough */
+  vec_validate_init_empty (l2om->output_node_index_vec, sw_if_index,
+			   L2OUTPUT_NEXT_DROP);
 
   /* Initialize the l2-input configuration for the interface */
   if (mode == MODE_L3)
@@ -598,29 +641,13 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
       /* Make sure any L2-output packet to this interface now in L3 mode is
        * dropped. This may happen if L2 FIB MAC entry is stale */
-      l2om->next_nodes.output_node_index_vec[sw_if_index] =
-	L2OUTPUT_NEXT_BAD_INTF;
-    }
-  else if (mode == MODE_L2_CLASSIFY)
-    {
-      config->xconnect = 1;
-      config->bridge = 0;
-      config->output_sw_if_index = xc_sw_if_index;
-
-      /* Make sure last-chance drop is configured */
-      config->feature_bitmap |=
-	L2INPUT_FEAT_DROP | L2INPUT_FEAT_INPUT_CLASSIFY;
-
-      /* Make sure bridging features are disabled */
-      config->feature_bitmap &=
-	~(L2INPUT_FEAT_LEARN | L2INPUT_FEAT_FWD | L2INPUT_FEAT_FLOOD);
-      shg = 0;			/* not used in xconnect */
-
-      /* Insure all packets go to ethernet-input */
-      ethernet_set_rx_redirect (vnet_main, hi, 1);
+      l2om->output_node_index_vec[sw_if_index] = L2OUTPUT_NEXT_BAD_INTF;
     }
   else
     {
+      /* Add or update l2-output node next-arc and output_node_index_vec table
+       * for the interface */
+      l2output_create_output_node_mapping (vm, vnet_main, sw_if_index);
 
       if (mode == MODE_L2_BRIDGE)
 	{
@@ -637,7 +664,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  config->xconnect = 0;
 	  config->bridge = 1;
 	  config->bd_index = bd_index;
-	  config->seq_num += 1;
+	  *l2fib_valid_swif_seq_num (sw_if_index) += 1;
 
 	  /*
 	   * Enable forwarding, flooding, learning and ARP termination by default
@@ -670,8 +697,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	      config->bvi = 1;
 
 	      /* create the l2fib entry for the bvi interface */
-	      mac = *((u64 *) hi->hw_address);
-	      l2fib_add_entry (mac, bd_index, sw_if_index, 1, 0, 1);	/* static + bvi */
+	      l2fib_add_fwd_entry (hi->hw_address, bd_index, sw_if_index, 1, 1);	/* static + bvi */
 
 	      /* Disable learning by default. no use since l2fib entry is static. */
 	      config->feature_bitmap &= ~L2INPUT_FEAT_LEARN;
@@ -693,7 +719,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  bd_add_member (bd_config, &member);
 
 	}
-      else
+      else if (mode == MODE_L2_XC)
 	{
 	  config->xconnect = 1;
 	  config->bridge = 0;
@@ -708,6 +734,24 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
 	  config->feature_bitmap |= L2INPUT_FEAT_XCONNECT;
 	  shg = 0;		/* not used in xconnect */
+	}
+      else if (mode == MODE_L2_CLASSIFY)
+	{
+	  config->xconnect = 1;
+	  config->bridge = 0;
+	  config->output_sw_if_index = xc_sw_if_index;
+
+	  /* Make sure last-chance drop is configured */
+	  config->feature_bitmap |=
+	    L2INPUT_FEAT_DROP | L2INPUT_FEAT_INPUT_CLASSIFY;
+
+	  /* Make sure bridging features are disabled */
+	  config->feature_bitmap &=
+	    ~(L2INPUT_FEAT_LEARN | L2INPUT_FEAT_FWD | L2INPUT_FEAT_FLOOD);
+	  shg = 0;		/* not used in xconnect */
+
+	  /* Insure all packets go to ethernet-input */
+	  ethernet_set_rx_redirect (vnet_main, hi, 1);
 	}
 
       /* set up split-horizon group and set output feature bit */

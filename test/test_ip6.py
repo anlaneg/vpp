@@ -8,15 +8,16 @@ from vpp_sub_interface import VppSubInterface, VppDot1QSubint
 from vpp_pg_interface import is_ipv6_misc
 from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
-    VppMplsRoute
+    VppMplsRoute, DpoProto, VppMplsTable
 from vpp_neighbor import find_nbr, VppNeighbor
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, Dot1Q
-from scapy.layers.inet6 import IPv6, UDP, ICMPv6ND_NS, ICMPv6ND_RS, \
+from scapy.layers.inet6 import IPv6, UDP, TCP, ICMPv6ND_NS, ICMPv6ND_RS, \
     ICMPv6ND_RA, ICMPv6NDOptSrcLLAddr, getmacbyip6, ICMPv6MRD_Solicitation, \
     ICMPv6NDOptMTU, ICMPv6NDOptSrcLLAddr, ICMPv6NDOptPrefixInfo, \
-    ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types
+    ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types, \
+    ICMPv6TimeExceeded
 
 from util import ppp
 from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
@@ -134,14 +135,6 @@ class TestIPv6ND(VppTestCase):
         self.assertEqual(len(rx), 1)
         rx = rx[0]
         self.validate_ns(rx_intf, rx, tgt_ip)
-
-    def send_and_assert_no_replies(self, intf, pkts, remark):
-        intf.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        for i in self.pg_interfaces:
-            i.get_capture(0)
-            i.assert_nothing_captured(remark=remark)
 
     def verify_ip(self, rx, smac, dmac, sip, dip):
         ether = rx[Ether]
@@ -490,7 +483,7 @@ class TestIPv6(TestIPv6ND):
                                     inet=AF_INET6))
 
     def test_ns_duplicates(self):
-        """ ARP Duplicates"""
+        """ ND Duplicates"""
 
         #
         # Generate some hosts on the LAN
@@ -537,7 +530,7 @@ class TestIPv6(TestIPv6ND):
 
         #
         # remove the duplicate on pg1
-        # packet stream shoud generate ARPs out of pg1
+        # packet stream shoud generate NSs out of pg1
         #
         ns_pg1.remove_vpp_config()
 
@@ -1178,14 +1171,6 @@ class TestIPDisabled(VppTestCase):
             i.unconfig_ip4()
             i.admin_down()
 
-    def send_and_assert_no_replies(self, intf, pkts, remark):
-        intf.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        for i in self.pg_interfaces:
-            i.get_capture(0)
-            i.assert_nothing_captured(remark=remark)
-
     def test_ip_disabled(self):
         """ IP Disabled """
 
@@ -1260,6 +1245,9 @@ class TestIP6LoadBalance(VppTestCase):
 
         self.create_pg_interfaces(range(5))
 
+        mpls_tbl = VppMplsTable(self, 0)
+        mpls_tbl.add_vpp_config()
+
         for i in self.pg_interfaces:
             i.admin_up()
             i.config_ip6()
@@ -1267,13 +1255,14 @@ class TestIP6LoadBalance(VppTestCase):
             i.enable_mpls()
 
     def tearDown(self):
-        super(TestIP6LoadBalance, self).tearDown()
         for i in self.pg_interfaces:
             i.unconfig_ip6()
             i.admin_down()
             i.disable_mpls()
+        super(TestIP6LoadBalance, self).tearDown()
 
     def send_and_expect_load_balancing(self, input, pkts, outputs):
+        self.vapi.cli("clear trace")
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
@@ -1282,6 +1271,7 @@ class TestIP6LoadBalance(VppTestCase):
             self.assertNotEqual(0, len(rx))
 
     def send_and_expect_one_itf(self, input, pkts, itf):
+        self.vapi.cli("clear trace")
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
@@ -1347,10 +1337,10 @@ class TestIP6LoadBalance(VppTestCase):
         route_3000_1 = VppIpRoute(self, "3000::1", 128,
                                   [VppRoutePath(self.pg1.remote_ip6,
                                                 self.pg1.sw_if_index,
-                                                is_ip6=1),
+                                                proto=DpoProto.DPO_PROTO_IP6),
                                    VppRoutePath(self.pg2.remote_ip6,
                                                 self.pg2.sw_if_index,
-                                                is_ip6=1)],
+                                                proto=DpoProto.DPO_PROTO_IP6)],
                                   is_ip6=1)
         route_3000_1.add_vpp_config()
 
@@ -1367,11 +1357,11 @@ class TestIP6LoadBalance(VppTestCase):
                                 [VppRoutePath(self.pg1.remote_ip6,
                                               self.pg1.sw_if_index,
                                               labels=[67],
-                                              is_ip6=1),
+                                              proto=DpoProto.DPO_PROTO_IP6),
                                  VppRoutePath(self.pg2.remote_ip6,
                                               self.pg2.sw_if_index,
                                               labels=[67],
-                                              is_ip6=1)])
+                                              proto=DpoProto.DPO_PROTO_IP6)])
         route_67.add_vpp_config()
 
         #
@@ -1441,20 +1431,20 @@ class TestIP6LoadBalance(VppTestCase):
         route_3000_2 = VppIpRoute(self, "3000::2", 128,
                                   [VppRoutePath(self.pg3.remote_ip6,
                                                 self.pg3.sw_if_index,
-                                                is_ip6=1),
+                                                proto=DpoProto.DPO_PROTO_IP6),
                                    VppRoutePath(self.pg4.remote_ip6,
                                                 self.pg4.sw_if_index,
-                                                is_ip6=1)],
+                                                proto=DpoProto.DPO_PROTO_IP6)],
                                   is_ip6=1)
         route_3000_2.add_vpp_config()
 
         route_4000_1 = VppIpRoute(self, "4000::1", 128,
                                   [VppRoutePath("3000::1",
                                                 0xffffffff,
-                                                is_ip6=1),
+                                                proto=DpoProto.DPO_PROTO_IP6),
                                    VppRoutePath("3000::2",
                                                 0xffffffff,
-                                                is_ip6=1)],
+                                                proto=DpoProto.DPO_PROTO_IP6)],
                                   is_ip6=1)
         route_4000_1.add_vpp_config()
 
@@ -1468,6 +1458,191 @@ class TestIP6LoadBalance(VppTestCase):
         self.send_and_expect_load_balancing(self.pg0, src_pkts,
                                             [self.pg1, self.pg2,
                                              self.pg3, self.pg4])
+
+        #
+        # Recursive prefixes
+        #  - testing that 2 stages of load-balancing no choices
+        #
+        port_pkts = []
+
+        for ii in range(257):
+            port_pkts.append((Ether(src=self.pg0.remote_mac,
+                                    dst=self.pg0.local_mac) /
+                              IPv6(dst="6000::1", src="6000:1::1") /
+                              UDP(sport=1234, dport=1234 + ii) /
+                              Raw('\xa5' * 100)))
+
+        route_5000_2 = VppIpRoute(self, "5000::2", 128,
+                                  [VppRoutePath(self.pg3.remote_ip6,
+                                                self.pg3.sw_if_index,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1)
+        route_5000_2.add_vpp_config()
+
+        route_6000_1 = VppIpRoute(self, "6000::1", 128,
+                                  [VppRoutePath("5000::2",
+                                                0xffffffff,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1)
+        route_6000_1.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across all 4 paths
+        #
+        self.vapi.cli("clear trace")
+        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg3)
+
+
+class TestIP6Punt(VppTestCase):
+    """ IPv6 Punt Police/Redirect """
+
+    def setUp(self):
+        super(TestIP6Punt, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_ndp()
+
+    def tearDown(self):
+        super(TestIP6Punt, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip6()
+            i.admin_down()
+
+    def test_ip_punt(self):
+        """ IP6 punt police and redirect """
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+             TCP(sport=1234, dport=1234) /
+             Raw('\xa5' * 100))
+
+        pkts = p * 1025
+
+        #
+        # Configure a punt redirect via pg1.
+        #
+        nh_addr = inet_pton(AF_INET6,
+                            self.pg1.remote_ip6)
+        self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_ip6=1)
+
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # add a policer
+        #
+        policer = self.vapi.policer_add_del("ip6-punt", 400, 0, 10, 0,
+                                            rate_type=1)
+        self.vapi.ip_punt_police(policer.policer_index, is_ip6=1)
+
+        self.vapi.cli("clear trace")
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        #
+        # the number of packet recieved should be greater than 0,
+        # but not equal to the number sent, since some were policed
+        #
+        rx = self.pg1._get_capture(1)
+        self.assertTrue(len(rx) > 0)
+        self.assertTrue(len(rx) < len(pkts))
+
+        #
+        # remove the poilcer. back to full rx
+        #
+        self.vapi.ip_punt_police(policer.policer_index, is_add=0, is_ip6=1)
+        self.vapi.policer_add_del("ip6-punt", 400, 0, 10, 0,
+                                  rate_type=1, is_add=0)
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # remove the redirect. expect full drop.
+        #
+        self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_add=0,
+                                   is_ip6=1)
+        self.send_and_assert_no_replies(self.pg0, pkts,
+                                        "IP no punt config")
+
+        #
+        # Add a redirect that is not input port selective
+        #
+        self.vapi.ip_punt_redirect(0xffffffff,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_ip6=1)
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        self.vapi.ip_punt_redirect(0xffffffff,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_add=0,
+                                   is_ip6=1)
+
+
+class TestIP6Input(VppTestCase):
+    """ IPv6 Input Exceptions """
+
+    def setUp(self):
+        super(TestIP6Input, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_ndp()
+
+    def tearDown(self):
+        super(TestIP6Input, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip6()
+            i.admin_down()
+
+    def test_ip_input(self):
+        """ IP6 Input Exceptions """
+
+        #
+        # bad version - this is dropped
+        #
+        p_version = (Ether(src=self.pg0.remote_mac,
+                           dst=self.pg0.local_mac) /
+                     IPv6(src=self.pg0.remote_ip6,
+                          dst=self.pg1.remote_ip6,
+                          version=3) /
+                     UDP(sport=1234, dport=1234) /
+                     Raw('\xa5' * 100))
+
+        self.send_and_assert_no_replies(self.pg0, p_version * 65,
+                                        "funky version")
+
+        #
+        # hop limit - IMCP replies
+        #
+        p_version = (Ether(src=self.pg0.remote_mac,
+                           dst=self.pg0.local_mac) /
+                     IPv6(src=self.pg0.remote_ip6,
+                          dst=self.pg1.remote_ip6,
+                          hlim=1) /
+                     UDP(sport=1234, dport=1234) /
+                     Raw('\xa5' * 100))
+
+        rx = self.send_and_expect(self.pg0, p_version * 65, self.pg0)
+        rx = rx[0]
+        icmp = rx[ICMPv6TimeExceeded]
+        self.assertEqual(icmp.type, 3)
+        # 0: "hop limit exceeded in transit",
+        self.assertEqual(icmp.code, 0)
 
 
 if __name__ == '__main__':

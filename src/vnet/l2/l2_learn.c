@@ -29,6 +29,8 @@
 #include <vppinfra/error.h>
 #include <vppinfra/hash.h>
 
+l2learn_main_t l2learn_main;
+
 /**
  * @file
  * @brief Ethernet Bridge Learning.
@@ -78,7 +80,7 @@ _(MISS,              "L2 learn misses")			\
 _(MAC_MOVE,          "L2 mac moves")			\
 _(MAC_MOVE_VIOLATE,  "L2 mac move violations")		\
 _(LIMIT,             "L2 not learned due to limit")	\
-_(HIT,               "L2 learn hits")			\
+_(HIT_UPDATE,        "L2 learn hit updates")		\
 _(FILTER_DROP,       "L2 filter mac drops")
 
 typedef enum
@@ -113,78 +115,75 @@ l2learn_process (vlib_node_runtime_t * node,
 		 u32 sw_if_index0,
 		 l2fib_entry_key_t * key0,
 		 l2fib_entry_key_t * cached_key,
-		 u32 * bucket0,
+		 u32 * count,
 		 l2fib_entry_result_t * result0, u32 * next0, u8 timestamp)
 {
-  u32 feature_bitmap;
-
   /* Set up the default next node (typically L2FWD) */
-
-  /* Remove ourself from the feature bitmap */
-  feature_bitmap = vnet_buffer (b0)->l2.feature_bitmap & ~L2INPUT_FEAT_LEARN;
-
-  /* Save for next feature graph nodes */
-  vnet_buffer (b0)->l2.feature_bitmap = feature_bitmap;
-
-  /* Determine the next node */
-  *next0 = feat_bitmap_get_next_node_index (msm->feat_next_node_index,
-					    feature_bitmap);
+  *next0 = vnet_l2_feature_next (b0, msm->feat_next_node_index,
+				 L2INPUT_FEAT_LEARN);
 
   /* Check mac table lookup result */
-
   if (PREDICT_TRUE (result0->fields.sw_if_index == sw_if_index0))
     {
-      /*
-       * The entry was in the table, and the sw_if_index matched, the normal case
-       */
-      counter_base[L2LEARN_ERROR_HIT] += 1;
-      if (PREDICT_FALSE (result0->fields.timestamp != timestamp))
-	result0->fields.timestamp = timestamp;
-      if (PREDICT_FALSE
-	  (result0->fields.sn.as_u16 != vnet_buffer (b0)->l2.l2fib_sn))
-	result0->fields.sn.as_u16 = vnet_buffer (b0)->l2.l2fib_sn;
+      /* Entry in L2FIB with matching sw_if_index matched - normal fast path */
+      u32 dtime = timestamp - result0->fields.timestamp;
+      u32 dsn = result0->fields.sn.as_u16 - vnet_buffer (b0)->l2.l2fib_sn;
+      u32 check = (dtime && vnet_buffer (b0)->l2.bd_age) || dsn;
+
+      if (PREDICT_TRUE (check == 0))
+	return;			/* MAC entry up to date */
+      if (result0->fields.age_not)
+	return;			/* Static MAC always age_not */
+      if (msm->global_learn_count > msm->global_learn_limit)
+	return;			/* Above learn limit - do not update */
+
+      /* Limit updates per l2-learn node call to avoid prolonged update burst
+       * as dtime advance over 1 minute mark, unless more than 1 min behind
+       * or SN obsolete */
+      if ((*count > 2) && (dtime == 1) && (dsn == 0))
+	return;
+
+      counter_base[L2LEARN_ERROR_HIT_UPDATE] += 1;
+      *count += 1;
     }
   else if (result0->raw == ~0)
     {
-
-      /* The entry was not in table, so add it  */
-
+      /* Entry not in L2FIB - add it  */
       counter_base[L2LEARN_ERROR_MISS] += 1;
 
-      if (msm->global_learn_count == msm->global_learn_limit)
+      if (msm->global_learn_count >= msm->global_learn_limit)
 	{
 	  /*
 	   * Global limit reached. Do not learn the mac but forward the packet.
 	   * In the future, limits could also be per-interface or bridge-domain.
 	   */
 	  counter_base[L2LEARN_ERROR_LIMIT] += 1;
-	  goto done;
-
-	}
-      else
-	{
-	  BVT (clib_bihash_kv) kv;
-	  /* It is ok to learn */
-
-	  result0->raw = 0;	/* clear all fields */
-	  result0->fields.sw_if_index = sw_if_index0;
-	  result0->fields.timestamp = timestamp;
-	  result0->fields.sn.as_u16 = vnet_buffer (b0)->l2.l2fib_sn;
-	  kv.key = key0->raw;
-	  kv.value = result0->raw;
-
-	  BV (clib_bihash_add_del) (msm->mac_table, &kv, 1 /* is_add */ );
-
-	  cached_key->raw = ~0;	/* invalidate the cache */
-	  msm->global_learn_count++;
+	  return;
 	}
 
+      /* Do not learn if mac is 0 */
+      l2fib_entry_key_t key = *key0;
+      key.fields.bd_index = 0;
+      if (key.raw == 0)
+	return;
+
+      /* It is ok to learn */
+      msm->global_learn_count++;
+      result0->raw = 0;		/* clear all fields */
+      result0->fields.sw_if_index = sw_if_index0;
+      result0->fields.lrn_evt = (msm->client_pid != 0);
     }
   else
     {
-
-      /* The entry was in the table, but with the wrong sw_if_index mapping (mac move) */
-      counter_base[L2LEARN_ERROR_MAC_MOVE] += 1;
+      /* Entry in L2FIB with different sw_if_index - mac move or filter */
+      if (result0->fields.filter)
+	{
+	  ASSERT (result0->fields.sw_if_index == ~0);
+	  /* drop packet because lookup matched a filter mac entry */
+	  b0->error = node->errors[L2LEARN_ERROR_FILTER_DROP];
+	  *next0 = L2LEARN_NEXT_DROP;
+	  return;
+	}
 
       if (result0->fields.static_mac)
 	{
@@ -194,44 +193,34 @@ l2learn_process (vlib_node_runtime_t * node,
 	   */
 	  b0->error = node->errors[L2LEARN_ERROR_MAC_MOVE_VIOLATE];
 	  *next0 = L2LEARN_NEXT_DROP;
+	  return;
 	}
-      else
+
+      /*
+       * TODO: may want to rate limit mac moves
+       * TODO: check global/bridge domain/interface learn limits
+       */
+      result0->fields.sw_if_index = sw_if_index0;
+      if (result0->fields.age_not)	/* The mac was provisioned */
 	{
-	  /*
-	   * Update the entry
-	   * TODO: may want to rate limit mac moves
-	   * TODO: check global/bridge domain/interface learn limits
-	   */
-	  BVT (clib_bihash_kv) kv;
-
-	  result0->raw = 0;	/* clear all fields */
-	  result0->fields.sw_if_index = sw_if_index0;
-	  result0->fields.timestamp = timestamp;
-	  result0->fields.sn.as_u16 = vnet_buffer (b0)->l2.l2fib_sn;
-
-	  kv.key = key0->raw;
-	  kv.value = result0->raw;
-
-	  cached_key->raw = ~0;	/* invalidate the cache */
-
-	  BV (clib_bihash_add_del) (msm->mac_table, &kv, 1 /* is_add */ );
+	  msm->global_learn_count++;
+	  result0->fields.age_not = 0;
 	}
+      result0->fields.lrn_evt = (msm->client_pid != 0);
+      counter_base[L2LEARN_ERROR_MAC_MOVE] += 1;
     }
 
-  if (result0->fields.filter)
-    {
-      /* drop packet because lookup matched a filter mac entry */
+  /* Update the entry */
+  result0->fields.timestamp = timestamp;
+  result0->fields.sn.as_u16 = vnet_buffer (b0)->l2.l2fib_sn;
 
-      if (*next0 != L2LEARN_NEXT_DROP)
-	{
-	  /* if we're not already dropping the packet, do it now */
-	  b0->error = node->errors[L2LEARN_ERROR_FILTER_DROP];
-	  *next0 = L2LEARN_NEXT_DROP;
-	}
-    }
+  BVT (clib_bihash_kv) kv;
+  kv.key = key0->raw;
+  kv.value = result0->raw;
+  BV (clib_bihash_add_del) (msm->mac_table, &kv, 1 /* is_add */ );
 
-done:
-  return;
+  /* Invalidate the cache */
+  cached_key->raw = ~0;
 }
 
 
@@ -248,6 +237,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   l2fib_entry_key_t cached_key;
   l2fib_entry_result_t cached_result;
   u8 timestamp = (u8) (vlib_time_now (vm) / 60);
+  u32 count = 0;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;	/* number of packets to process */
@@ -383,19 +373,19 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  l2learn_process (node, msm, &em->counters[node_counter_base_index],
 			   b0, sw_if_index0, &key0, &cached_key,
-			   &bucket0, &result0, &next0, timestamp);
+			   &count, &result0, &next0, timestamp);
 
 	  l2learn_process (node, msm, &em->counters[node_counter_base_index],
 			   b1, sw_if_index1, &key1, &cached_key,
-			   &bucket1, &result1, &next1, timestamp);
+			   &count, &result1, &next1, timestamp);
 
 	  l2learn_process (node, msm, &em->counters[node_counter_base_index],
 			   b2, sw_if_index2, &key2, &cached_key,
-			   &bucket2, &result2, &next2, timestamp);
+			   &count, &result2, &next2, timestamp);
 
 	  l2learn_process (node, msm, &em->counters[node_counter_base_index],
 			   b3, sw_if_index3, &key3, &cached_key,
-			   &bucket3, &result3, &next3, timestamp);
+			   &count, &result3, &next3, timestamp);
 
 	  /* verify speculative enqueues, maybe switch current next frame */
 	  /* if next0==next1==next_index then nothing special needs to be done */
@@ -450,7 +440,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  l2learn_process (node, msm, &em->counters[node_counter_base_index],
 			   b0, sw_if_index0, &key0, &cached_key,
-			   &bucket0, &result0, &next0, timestamp);
+			   &count, &result0, &next0, timestamp);
 
 	  /* verify speculative enqueue, maybe switch current next frame */
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
@@ -516,7 +506,7 @@ VLIB_NODE_FUNCTION_MULTIARCH (l2learn_node, l2learn_node_fn)
    * Set the default number of dynamically learned macs to the number
    * of buckets.
    */
-  mp->global_learn_limit = L2FIB_NUM_BUCKETS * 16;
+  mp->global_learn_limit = L2LEARN_DEFAULT_LIMIT;
 
   return 0;
 }

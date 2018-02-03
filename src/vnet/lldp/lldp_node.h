@@ -43,6 +43,17 @@ typedef struct lldp_intf
   lldp_port_id_subtype_t port_id_subtype;
   lldp_chassis_id_subtype_t chassis_id_subtype;
 
+  /* Local info */
+  u8 *port_desc;
+
+  /* management ipv4 address */
+  u8 *mgmt_ip4;
+
+  /* management ipv6 address */
+  u8 *mgmt_ip6;
+
+  /* management object identifier */
+  u8 *mgmt_oid;
 } lldp_intf_t;
 
 typedef struct

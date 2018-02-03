@@ -6,11 +6,12 @@ import unittest
 from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppIpMRoute, \
-    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind
+    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
+    VppMplsTable, VppIpTable
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, Dot1Q, ARP
-from scapy.layers.inet import IP, UDP, ICMP, icmptypes, icmpcodes
+from scapy.layers.inet import IP, UDP, TCP, ICMP, icmptypes, icmpcodes
 from util import ppp
 from scapy.contrib.mpls import MPLS
 
@@ -571,14 +572,6 @@ class TestIPDisabled(VppTestCase):
             i.unconfig_ip4()
             i.admin_down()
 
-    def send_and_assert_no_replies(self, intf, pkts, remark):
-        intf.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        for i in self.pg_interfaces:
-            i.get_capture(0)
-            i.assert_nothing_captured(remark=remark)
-
     def test_ip_disabled(self):
         """ IP Disabled """
 
@@ -665,14 +658,6 @@ class TestIPSubNets(VppTestCase):
         super(TestIPSubNets, self).tearDown()
         for i in self.pg_interfaces:
             i.admin_down()
-
-    def send_and_assert_no_replies(self, intf, pkts, remark):
-        intf.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        for i in self.pg_interfaces:
-            i.get_capture(0)
-            i.assert_nothing_captured(remark=remark)
 
     def test_ip_sub_nets(self):
         """ IP Sub Nets """
@@ -774,6 +759,8 @@ class TestIPLoadBalance(VppTestCase):
         super(TestIPLoadBalance, self).setUp()
 
         self.create_pg_interfaces(range(5))
+        mpls_tbl = VppMplsTable(self, 0)
+        mpls_tbl.add_vpp_config()
 
         for i in self.pg_interfaces:
             i.admin_up()
@@ -782,11 +769,11 @@ class TestIPLoadBalance(VppTestCase):
             i.enable_mpls()
 
     def tearDown(self):
-        super(TestIPLoadBalance, self).tearDown()
         for i in self.pg_interfaces:
             i.disable_mpls()
             i.unconfig_ip4()
             i.admin_down()
+        super(TestIPLoadBalance, self).tearDown()
 
     def send_and_expect_load_balancing(self, input, pkts, outputs):
         input.add_stream(pkts)
@@ -795,6 +782,12 @@ class TestIPLoadBalance(VppTestCase):
         for oo in outputs:
             rx = oo._get_capture(1)
             self.assertNotEqual(0, len(rx))
+
+    def send_and_expect_one_itf(self, input, pkts, itf):
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = itf.get_capture(len(pkts))
 
     def test_ip_load_balance(self):
         """ IP Load-Balancing """
@@ -874,11 +867,7 @@ class TestIPLoadBalance(VppTestCase):
         self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
                                             [self.pg1, self.pg2])
 
-        self.pg0.add_stream(port_ip_pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-
-        rx = self.pg2.get_capture(len(port_ip_pkts))
+        self.send_and_expect_one_itf(self.pg0, port_ip_pkts, self.pg2)
 
         #
         # change the flow hash config back to defaults
@@ -928,6 +917,34 @@ class TestIPLoadBalance(VppTestCase):
                                             [self.pg1, self.pg2,
                                              self.pg3, self.pg4])
 
+        #
+        # Recursive prefixes
+        #  - testing that 2 stages of load-balancing, no choices
+        #
+        port_pkts = []
+
+        for ii in range(257):
+            port_pkts.append((Ether(src=self.pg0.remote_mac,
+                                    dst=self.pg0.local_mac) /
+                              IP(dst="1.1.1.2", src="20.0.0.2") /
+                              UDP(sport=1234, dport=1234 + ii) /
+                              Raw('\xa5' * 100)))
+
+        route_10_0_0_3 = VppIpRoute(self, "10.0.0.3", 32,
+                                    [VppRoutePath(self.pg3.remote_ip4,
+                                                  self.pg3.sw_if_index)])
+        route_10_0_0_3.add_vpp_config()
+
+        route_1_1_1_2 = VppIpRoute(self, "1.1.1.2", 32,
+                                   [VppRoutePath("10.0.0.3", 0xffffffff)])
+        route_1_1_1_2.add_vpp_config()
+
+        #
+        # inject the packet on pg0 - expect load-balancing across all 4 paths
+        #
+        self.vapi.cli("clear trace")
+        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg3)
+
 
 class TestIPVlan0(VppTestCase):
     """ IPv4 VLAN-0 """
@@ -936,6 +953,8 @@ class TestIPVlan0(VppTestCase):
         super(TestIPVlan0, self).setUp()
 
         self.create_pg_interfaces(range(2))
+        mpls_tbl = VppMplsTable(self, 0)
+        mpls_tbl.add_vpp_config()
 
         for i in self.pg_interfaces:
             i.admin_up()
@@ -944,17 +963,11 @@ class TestIPVlan0(VppTestCase):
             i.enable_mpls()
 
     def tearDown(self):
-        super(TestIPVlan0, self).tearDown()
         for i in self.pg_interfaces:
             i.disable_mpls()
             i.unconfig_ip4()
             i.admin_down()
-
-    def send_and_expect(self, input, pkts, output):
-        input.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        rx = output.get_capture(len(pkts))
+        super(TestIPVlan0, self).tearDown()
 
     def test_ip_vlan_0(self):
         """ IP VLAN-0 """
@@ -972,6 +985,307 @@ class TestIPVlan0(VppTestCase):
         # main interface.
         #
         self.send_and_expect(self.pg0, pkts, self.pg1)
+
+
+class TestIPPunt(VppTestCase):
+    """ IPv4 Punt Police/Redirect """
+
+    def setUp(self):
+        super(TestIPPunt, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip4()
+            i.resolve_arp()
+
+    def tearDown(self):
+        super(TestIPPunt, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip4()
+            i.admin_down()
+
+    def test_ip_punt(self):
+        """ IP punt police and redirect """
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IP(src=self.pg0.remote_ip4, dst=self.pg0.local_ip4) /
+             TCP(sport=1234, dport=1234) /
+             Raw('\xa5' * 100))
+
+        pkts = p * 1025
+
+        #
+        # Configure a punt redirect via pg1.
+        #
+        nh_addr = socket.inet_pton(socket.AF_INET,
+                                   self.pg1.remote_ip4)
+        self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
+                                   self.pg1.sw_if_index,
+                                   nh_addr)
+
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # add a policer
+        #
+        policer = self.vapi.policer_add_del("ip4-punt", 400, 0, 10, 0,
+                                            rate_type=1)
+        self.vapi.ip_punt_police(policer.policer_index)
+
+        self.vapi.cli("clear trace")
+        self.pg0.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        #
+        # the number of packet recieved should be greater than 0,
+        # but not equal to the number sent, since some were policed
+        #
+        rx = self.pg1._get_capture(1)
+        self.assertTrue(len(rx) > 0)
+        self.assertTrue(len(rx) < len(pkts))
+
+        #
+        # remove the poilcer. back to full rx
+        #
+        self.vapi.ip_punt_police(policer.policer_index, is_add=0)
+        self.vapi.policer_add_del("ip4-punt", 400, 0, 10, 0,
+                                  rate_type=1, is_add=0)
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # remove the redirect. expect full drop.
+        #
+        self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_add=0)
+        self.send_and_assert_no_replies(self.pg0, pkts,
+                                        "IP no punt config")
+
+        #
+        # Add a redirect that is not input port selective
+        #
+        self.vapi.ip_punt_redirect(0xffffffff,
+                                   self.pg1.sw_if_index,
+                                   nh_addr)
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        self.vapi.ip_punt_redirect(0xffffffff,
+                                   self.pg1.sw_if_index,
+                                   nh_addr,
+                                   is_add=0)
+
+
+class TestIPDeag(VppTestCase):
+    """ IPv4 Deaggregate Routes """
+
+    def setUp(self):
+        super(TestIPDeag, self).setUp()
+
+        self.create_pg_interfaces(range(3))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip4()
+            i.resolve_arp()
+
+    def tearDown(self):
+        super(TestIPDeag, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip4()
+            i.admin_down()
+
+    def test_ip_deag(self):
+        """ IP Deag Routes """
+
+        #
+        # Create a table to be used for:
+        #  1 - another destination address lookup
+        #  2 - a source address lookup
+        #
+        table_dst = VppIpTable(self, 1)
+        table_src = VppIpTable(self, 2)
+        table_dst.add_vpp_config()
+        table_src.add_vpp_config()
+
+        #
+        # Add a route in the default table to point to a deag/
+        # second lookup in each of these tables
+        #
+        route_to_dst = VppIpRoute(self, "1.1.1.1", 32,
+                                  [VppRoutePath("0.0.0.0",
+                                                0xffffffff,
+                                                nh_table_id=1)])
+        route_to_src = VppIpRoute(self, "1.1.1.2", 32,
+                                  [VppRoutePath("0.0.0.0",
+                                                0xffffffff,
+                                                nh_table_id=2,
+                                                is_source_lookup=1)])
+        route_to_dst.add_vpp_config()
+        route_to_src.add_vpp_config()
+
+        #
+        # packets to these destination are dropped, since they'll
+        # hit the respective default routes in the second table
+        #
+        p_dst = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IP(src="5.5.5.5", dst="1.1.1.1") /
+                 TCP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+        p_src = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IP(src="2.2.2.2", dst="1.1.1.2") /
+                 TCP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+        pkts_dst = p_dst * 257
+        pkts_src = p_src * 257
+
+        self.send_and_assert_no_replies(self.pg0, pkts_dst,
+                                        "IP in dst table")
+        self.send_and_assert_no_replies(self.pg0, pkts_src,
+                                        "IP in src table")
+
+        #
+        # add a route in the dst table to forward via pg1
+        #
+        route_in_dst = VppIpRoute(self, "1.1.1.1", 32,
+                                  [VppRoutePath(self.pg1.remote_ip4,
+                                                self.pg1.sw_if_index)],
+                                  table_id=1)
+        route_in_dst.add_vpp_config()
+        self.send_and_expect(self.pg0, pkts_dst, self.pg1)
+
+        #
+        # add a route in the src table to forward via pg2
+        #
+        route_in_src = VppIpRoute(self, "2.2.2.2", 32,
+                                  [VppRoutePath(self.pg2.remote_ip4,
+                                                self.pg2.sw_if_index)],
+                                  table_id=2)
+        route_in_src.add_vpp_config()
+        self.send_and_expect(self.pg0, pkts_src, self.pg2)
+
+
+class TestIPInput(VppTestCase):
+    """ IPv4 Input Exceptions """
+
+    def setUp(self):
+        super(TestIPInput, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip4()
+            i.resolve_arp()
+
+    def tearDown(self):
+        super(TestIPInput, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip4()
+            i.admin_down()
+
+    def test_ip_input(self):
+        """ IP Input Exceptions """
+
+        # i can't find a way in scapy to construct an IP packet
+        # with a length less than the IP header length
+
+        #
+        # Packet too short - this is forwarded
+        #
+        p_short = (Ether(src=self.pg0.remote_mac,
+                         dst=self.pg0.local_mac) /
+                   IP(src=self.pg0.remote_ip4,
+                      dst=self.pg1.remote_ip4,
+                      len=40) /
+                   UDP(sport=1234, dport=1234) /
+                   Raw('\xa5' * 100))
+
+        rx = self.send_and_expect(self.pg0, p_short * 65, self.pg1)
+
+        #
+        # Packet too long - this is dropped
+        #
+        p_long = (Ether(src=self.pg0.remote_mac,
+                        dst=self.pg0.local_mac) /
+                  IP(src=self.pg0.remote_ip4,
+                     dst=self.pg1.remote_ip4,
+                     len=400) /
+                  UDP(sport=1234, dport=1234) /
+                  Raw('\xa5' * 100))
+
+        rx = self.send_and_assert_no_replies(self.pg0, p_long * 65,
+                                             "too long")
+
+        #
+        # bad chksum - this is dropped
+        #
+        p_chksum = (Ether(src=self.pg0.remote_mac,
+                          dst=self.pg0.local_mac) /
+                    IP(src=self.pg0.remote_ip4,
+                       dst=self.pg1.remote_ip4,
+                       chksum=400) /
+                    UDP(sport=1234, dport=1234) /
+                    Raw('\xa5' * 100))
+
+        rx = self.send_and_assert_no_replies(self.pg0, p_chksum * 65,
+                                             "bad checksum")
+
+        #
+        # bad version - this is dropped
+        #
+        p_ver = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IP(src=self.pg0.remote_ip4,
+                    dst=self.pg1.remote_ip4,
+                    version=3) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+
+        rx = self.send_and_assert_no_replies(self.pg0, p_ver * 65,
+                                             "funky version")
+
+        #
+        # fragment offset 1 - this is dropped
+        #
+        p_frag = (Ether(src=self.pg0.remote_mac,
+                        dst=self.pg0.local_mac) /
+                  IP(src=self.pg0.remote_ip4,
+                     dst=self.pg1.remote_ip4,
+                     frag=1) /
+                  UDP(sport=1234, dport=1234) /
+                  Raw('\xa5' * 100))
+
+        rx = self.send_and_assert_no_replies(self.pg0, p_frag * 65,
+                                             "frag offset")
+
+        #
+        # TTL expired packet
+        #
+        p_ttl = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IP(src=self.pg0.remote_ip4,
+                    dst=self.pg1.remote_ip4,
+                    ttl=1) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+
+        rx = self.send_and_expect(self.pg0, p_ttl * 65, self.pg0)
+
+        rx = rx[0]
+        icmp = rx[ICMP]
+
+        self.assertEqual(icmptypes[icmp.type], "time-exceeded")
+        self.assertEqual(icmpcodes[icmp.type][icmp.code],
+                         "ttl-zero-during-transit")
+        self.assertEqual(icmp.src, self.pg0.remote_ip4)
+        self.assertEqual(icmp.dst, self.pg1.remote_ip4)
 
 
 if __name__ == '__main__':

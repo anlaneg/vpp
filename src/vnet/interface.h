@@ -54,6 +54,7 @@ typedef enum
   VNET_HW_INTERFACE_RX_MODE_POLLING,
   VNET_HW_INTERFACE_RX_MODE_INTERRUPT,
   VNET_HW_INTERFACE_RX_MODE_ADAPTIVE,
+  VNET_HW_INTERFACE_RX_MODE_DEFAULT,
   VNET_HW_INTERFACE_NUM_RX_MODES,
 } vnet_hw_interface_rx_mode;
 
@@ -196,9 +197,6 @@ typedef struct _vnet_device_class
 
   /* Link-list of all device classes set up by constructors created below */
   struct _vnet_device_class *next_class_registration;
-
-  /* Splice vnet_interface_output_node into TX path */
-  u8 flatten_output_chains;
 
   /* Function to set mac address. */
   vnet_interface_set_mac_address_function_t *mac_addr_change_function;
@@ -418,12 +416,11 @@ typedef struct vnet_hw_interface_t
    VNET_HW_INTERFACE_FLAG_SPEED_40G |		\
    VNET_HW_INTERFACE_FLAG_SPEED_100G)
 
-  /* l2output node flags */
-#define VNET_HW_INTERFACE_FLAG_L2OUTPUT_SHIFT	9
-#define VNET_HW_INTERFACE_FLAG_L2OUTPUT_MAPPED	(1 << 9)
-
   /* rx mode flags */
 #define VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE (1 << 10)
+
+  /* tx checksum offload */
+#define VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD (1 << 11)
 
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
@@ -446,6 +443,10 @@ typedef struct vnet_hw_interface_t
 
   /* Software index for this hardware interface. */
   u32 sw_if_index;
+
+  /* Next index in interface-output node for this interface
+     used by node function vnet_per_buffer_interface_output() */
+  u32 output_node_next_index;
 
   /* Maximum transmit rate for this interface in bits/sec. */
   f64 max_rate_bits_per_sec;
@@ -492,6 +493,7 @@ typedef struct vnet_hw_interface_t
 
   /* vnet_hw_interface_rx_mode by queue */
   u8 *rx_mode_by_queue;
+  vnet_hw_interface_rx_mode default_rx_mode;
 
   /* device input device_and_queue runtime index */
   uword *dq_runtime_index_by_queue;
@@ -507,6 +509,7 @@ typedef enum
 
   /* A sub-interface. */
   VNET_SW_INTERFACE_TYPE_SUB,
+  VNET_SW_INTERFACE_TYPE_P2P,
 } vnet_sw_interface_type_t;
 
 typedef struct
@@ -540,6 +543,17 @@ typedef struct
   } eth;
 } vnet_sub_interface_t;
 
+typedef struct
+{
+  /*
+   * Subinterface ID. A number 0-N to uniquely identify
+   * this subinterface under the main interface
+   */
+  u32 id;
+  u32 pool_index;
+  u8 client_mac[6];
+} vnet_p2p_sub_interface_t;
+
 typedef enum
 {
   /* Always flood */
@@ -570,10 +584,10 @@ typedef struct
 
 #define VNET_SW_INTERFACE_FLAG_BOND_SLAVE (1 << 4)
 
-/* Interface does not appear in CLI/API */
+  /* Interface does not appear in CLI/API */
 #define VNET_SW_INTERFACE_FLAG_HIDDEN (1 << 5)
 
-/* Interface in ERROR state */
+  /* Interface in ERROR state */
 #define VNET_SW_INTERFACE_FLAG_ERROR (1 << 6)
 
   /* Index for this interface. */
@@ -596,6 +610,9 @@ typedef struct
 
     /* VNET_SW_INTERFACE_TYPE_SUB. */
     vnet_sub_interface_t sub;
+
+    /* VNET_SW_INTERFACE_TYPE_P2P. */
+    vnet_p2p_sub_interface_t p2p;
   };
 
   vnet_flood_class_t flood_class;

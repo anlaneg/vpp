@@ -1,5 +1,7 @@
 .PHONY: verify-python-path
 
+VPP_TEST_FAILED_DIR=/tmp/vpp-failed-unittests/
+
 verify-python-path:
 ifndef VPP_PYTHON_PREFIX
 	$(error VPP_PYTHON_PREFIX is not set)
@@ -11,6 +13,16 @@ ifdef VPP_ZOMBIE_NOCHECK
 VPP_PIDS=
 else
 VPP_PIDS=$(shell pgrep -d, -x vpp_main)
+endif
+
+ifeq ($(DEBUG),gdb)
+FORCE_FOREGROUND=1
+else ifeq ($(DEBUG),gdbserver)
+FORCE_FOREGROUND=1
+else ifeq ($(DEBUG),core)
+FORCE_FOREGROUND=1
+else
+FORCE_FOREGROUND=0
 endif
 
 verify-no-running-vpp:
@@ -35,7 +47,7 @@ UNITTEST_EXTRA_OPTS=$(UNITTEST_FAILFAST_OPTS) -d $(EXTERN_TESTS)
 endif
 
 PYTHON_VENV_PATH=$(VPP_PYTHON_PREFIX)/virtualenv
-PYTHON_DEPENDS=faulthandler six scapy==2.3.3 pexpect subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup
+PYTHON_DEPENDS=faulthandler six scapy==2.3.3 pexpect pycrypto subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup
 SCAPY_SOURCE=$(shell find $(PYTHON_VENV_PATH) -name site-packages)
 BUILD_COV_DIR=$(BR)/test-cov
 
@@ -76,13 +88,23 @@ $(PAPI_INSTALL_DONE): $(PIP_PATCH_DONE)
 	@touch $@
 
 define retest-func
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS)"
+@env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(PYTHON_VENV_PATH)/bin/activate python run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
 endef
 
 .PHONY: sanity
 
+ifeq ($(SANITY),no)
+SANITY_IMPORT_VPP_PAPI_CMD=true
+SANITY_RUN_VPP_CMD=true
+else
+SANITY_IMPORT_VPP_PAPI_CMD=source $(PYTHON_VENV_PATH)/bin/activate && python sanity_import_vpp_papi.py
+SANITY_RUN_VPP_CMD=source $(PYTHON_VENV_PATH)/bin/activate && python sanity_run_vpp.py
+endif
+
 sanity: verify-no-running-vpp
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python sanity_import_vpp_papi.py ||\
+	@sys_req/dev_shm_size.sh
+	@sys_req/set_system_parameters.sh sys_req/system_parameters
+	@bash -c "$(SANITY_IMPORT_VPP_PAPI_CMD) ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Sanity check failed, cannot import vpp_papi\" &&\
 		 echo \"* to debug: \" &&\
@@ -90,13 +112,17 @@ sanity: verify-no-running-vpp
 		 echo \"* 2. execute debugger:   gdb python -ex 'run sanity_import_vpp_papi.py'\" &&\
 	         echo \"*******************************************************************\" &&\
 		 false)"
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python sanity_run_vpp.py ||\
+	@bash -c "$(SANITY_RUN_VPP_CMD) ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Sanity check failed, cannot run vpp\" &&\
 	         echo \"*******************************************************************\" &&\
 		 false)"
 
-test: verify-python-path $(PAPI_INSTALL_DONE) sanity reset 
+.PHONY: ext
+ext:
+	make -C ext
+
+test: verify-python-path $(PAPI_INSTALL_DONE) ext sanity reset
 	$(call retest-func)
 
 retest: verify-python-path sanity reset
@@ -121,8 +147,11 @@ shell: verify-python-path $(PAPI_INSTALL_DONE)
 reset:
 	@rm -f /dev/shm/vpp-unittest-*
 	@rm -rf /tmp/vpp-unittest-*
+	@rm -rf $(VPP_TEST_FAILED_DIR)
+	@mkdir $(VPP_TEST_FAILED_DIR)
 
 wipe: reset
+	@make -C ext clean
 	@rm -rf $(PYTHON_VENV_PATH)
 	@rm -f $(PAPI_INSTALL_FLAGS)
 
@@ -183,7 +212,10 @@ help:
 	@echo ""
 	@echo "Arguments controlling test runs:"
 	@echo " V=[0|1|2]            - set test verbosity level"
+	@echo " CACHE_OUTPUT=[0|1]   - cache VPP stdout/stderr and log as one block after test finishes (default: 1)"
 	@echo " FAILFAST=[0|1]       - fail fast if 1, complete all tests if 0"
+	@echo " TIMEOUT=<timeout>    - fail test suite if any single test takes longer than <timeout> to finish"
+	@echo " RETRIES=<n>          - retry failed tests <n> times"
 	@echo " DEBUG=<type>         - set VPP debugging kind"
 	@echo "    DEBUG=core        - detect coredump and load it in gdb on crash"
 	@echo "    DEBUG=gdb         - allow easy debugging by printing VPP PID "
@@ -192,6 +224,7 @@ help:
 	@echo "    DEBUG=gdbserver   - run gdb inside a gdb server, otherwise "
 	@echo "                        same as above"
 	@echo " STEP=[yes|no]        - ease debugging by stepping through a testcase "
+	@echo " SANITY=[yes|no]      - perform sanity import of vpp-api/sanity vpp run before running tests (default: yes)"
 	@echo " TEST=<filter>        - filter the set of tests:"
 	@echo "    by file-name      - only run tests from specified file, e.g. TEST=test_bfd selects all tests from test_bfd.py"
 	@echo "    by file-suffix    - same as file-name, but 'test_' is omitted e.g. TEST=bfd selects all tests from test_bfd.py"

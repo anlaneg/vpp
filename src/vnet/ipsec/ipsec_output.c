@@ -100,7 +100,9 @@ ipsec_output_policy_match (ipsec_spd_t * spd, u8 pr, u32 la, u32 ra, u16 lp,
     if (ra > clib_net_to_host_u32 (p->raddr.stop.ip4.as_u32))
       continue;
 
-    if (PREDICT_FALSE ((pr != IP_PROTOCOL_TCP) && (pr != IP_PROTOCOL_UDP)))
+    if (PREDICT_FALSE
+	((pr != IP_PROTOCOL_TCP) && (pr != IP_PROTOCOL_UDP)
+	 && (pr != IP_PROTOCOL_SCTP)))
       return p;
 
     if (lp < p->lport.start)
@@ -153,7 +155,9 @@ ipsec_output_ip6_policy_match (ipsec_spd_t * spd,
     if (!ip6_addr_match_range (la, &p->laddr.start.ip6, &p->laddr.stop.ip6))
       continue;
 
-    if (PREDICT_FALSE ((pr != IP_PROTOCOL_TCP) && (pr != IP_PROTOCOL_UDP)))
+    if (PREDICT_FALSE
+	((pr != IP_PROTOCOL_TCP) && (pr != IP_PROTOCOL_UDP)
+	 && (pr != IP_PROTOCOL_SCTP)))
       return p;
 
     if (lp < p->lport.start)
@@ -270,8 +274,15 @@ ipsec_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	{
 	  if (p0->policy == IPSEC_POLICY_ACTION_PROTECT)
 	    {
+	      u32 sa_index = 0;
+	      ipsec_sa_t *sa = 0;
 	      nc_protect++;
-	      next_node_index = im->esp_encrypt_node_index;
+	      sa_index = ipsec_get_sa_index_by_sa_id (p0->sa_id);
+	      sa = pool_elt_at_index (im->sad, sa_index);
+	      if (sa->protocol == IPSEC_PROTOCOL_ESP)
+		next_node_index = im->esp_encrypt_node_index;
+	      else
+		next_node_index = im->ah_encrypt_node_index;
 	      vnet_buffer (b0)->ipsec.sad_index = p0->sa_index;
 	      vlib_buffer_advance (b0, iph_offset);
 	      p0->counter.packets++;

@@ -53,7 +53,7 @@ lisp_gpe_sub_interface_db_find (const ip_address_t * lrloc, u32 vni)
 
   memset (&key, 0, sizeof (key));
   ip_address_copy (&key.local_rloc, lrloc);
-  key.vni = clib_host_to_net_u32 (vni);
+  key.vni = vni;
   p = hash_get_mem (lisp_gpe_sub_interfaces, &key);
 
   if (NULL == p)
@@ -89,13 +89,15 @@ lisp_gpe_sub_interface_set_table (u32 sw_if_index, u32 table_id)
 {
   fib_node_index_t fib_index;
 
-  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, table_id);
+  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, table_id,
+						 FIB_SOURCE_LISP);
   ASSERT (FIB_NODE_INDEX_INVALID != fib_index);
 
   vec_validate (ip4_main.fib_index_by_sw_if_index, sw_if_index);
   ip4_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
 
-  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP6, table_id);
+  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP6, table_id,
+						 FIB_SOURCE_LISP);
   ASSERT (FIB_NODE_INDEX_INVALID != fib_index);
 
   vec_validate (ip6_main.fib_index_by_sw_if_index, sw_if_index);
@@ -105,9 +107,13 @@ lisp_gpe_sub_interface_set_table (u32 sw_if_index, u32 table_id)
 static void
 lisp_gpe_sub_interface_unset_table (u32 sw_if_index, u32 table_id)
 {
+  fib_table_unlock (ip4_main.fib_index_by_sw_if_index[sw_if_index],
+		    FIB_PROTOCOL_IP4, FIB_SOURCE_LISP);
   ip4_main.fib_index_by_sw_if_index[sw_if_index] = 0;
   ip4_sw_interface_enable_disable (sw_if_index, 0);
 
+  fib_table_unlock (ip6_main.fib_index_by_sw_if_index[sw_if_index],
+		    FIB_PROTOCOL_IP6, FIB_SOURCE_LISP);
   ip6_main.fib_index_by_sw_if_index[sw_if_index] = 0;
   ip6_sw_interface_enable_disable (sw_if_index, 0);
 }
@@ -119,7 +125,7 @@ lisp_gpe_sub_interface_find_or_create_and_lock (const ip_address_t * lrloc,
   lisp_gpe_sub_interface_t *l3s;
   index_t l3si;
 
-  l3si = lisp_gpe_sub_interface_db_find (lrloc, clib_host_to_net_u32 (vni));
+  l3si = lisp_gpe_sub_interface_db_find (lrloc, vni);
 
   if (INDEX_INVALID == l3si)
     {
@@ -129,7 +135,8 @@ lisp_gpe_sub_interface_find_or_create_and_lock (const ip_address_t * lrloc,
        * find the main interface from the VNI
        */
       main_sw_if_index =
-	lisp_gpe_tenant_l3_iface_add_or_lock (vni, overlay_table_id);
+	lisp_gpe_tenant_l3_iface_add_or_lock (vni, overlay_table_id,
+					      1 /* with_default_route */ );
 
       vnet_sw_interface_t sub_itf_template = {
 	.type = VNET_SW_INTERFACE_TYPE_SUB,
@@ -148,8 +155,8 @@ lisp_gpe_sub_interface_find_or_create_and_lock (const ip_address_t * lrloc,
       l3s->key = clib_mem_alloc (sizeof (*l3s->key));
       memset (l3s->key, 0, sizeof (*l3s->key));
 
-      l3s->key->local_rloc = *lrloc;
-      l3s->key->vni = clib_host_to_net_u32 (vni);
+      ip_address_copy (&l3s->key->local_rloc, lrloc);
+      l3s->key->vni = vni;
       l3s->main_sw_if_index = main_sw_if_index;
       l3s->sw_if_index = sub_sw_if_index;
       l3s->eid_table_id = overlay_table_id;
@@ -185,6 +192,7 @@ lisp_gpe_sub_interface_unlock (index_t l3si)
 
   l3s = lisp_gpe_sub_interface_get_i (l3si);
 
+  ASSERT (0 != l3s->locks);
   l3s->locks--;
 
   if (0 == l3s->locks)
@@ -192,7 +200,7 @@ lisp_gpe_sub_interface_unlock (index_t l3si)
       lisp_gpe_sub_interface_unset_table (l3s->sw_if_index,
 					  l3s->eid_table_id);
 
-      lisp_gpe_tenant_l3_iface_unlock (clib_net_to_host_u32 (l3s->key->vni));
+      lisp_gpe_tenant_l3_iface_unlock (l3s->key->vni);
       vnet_sw_interface_set_flags (vnet_get_main (), l3s->sw_if_index, 0);
       vnet_delete_sub_interface (l3s->sw_if_index);
 
@@ -210,16 +218,16 @@ lisp_gpe_sub_interface_get (index_t l3si)
 }
 
 u8 *
-format_lisp_gpe_sub_interface (u8 * s, va_list ap)
+format_lisp_gpe_sub_interface (u8 * s, va_list * ap)
 {
-  lisp_gpe_sub_interface_t *l3s = va_arg (ap, lisp_gpe_sub_interface_t *);
+  lisp_gpe_sub_interface_t *l3s = va_arg (*ap, lisp_gpe_sub_interface_t *);
   vnet_main_t *vnm = vnet_get_main ();
 
-  s = format (s, "%=16U",
+  s = format (s, "%-16U",
 	      format_vnet_sw_interface_name,
 	      vnm, vnet_get_sw_interface (vnm, l3s->sw_if_index));
-  s = format (s, "%=10d", clib_net_to_host_u32 (l3s->key->vni));
-  s = format (s, "%=12d", l3s->sw_if_index);
+  s = format (s, "%=8d", l3s->key->vni);
+  s = format (s, "%=15d", l3s->sw_if_index);
   s = format (s, "%U", format_ip_address, &l3s->key->local_rloc);
 
   return (s);
@@ -233,7 +241,7 @@ lisp_gpe_sub_interface_show (vlib_main_t * vm,
 {
   lisp_gpe_sub_interface_t *l3s;
 
-  vlib_cli_output (vm, "%=16s%=10s%=12s%s", "Name", "VNI", "SW IF Index",
+  vlib_cli_output (vm, "%-16s%=8s%=15s%s", "Name", "VNI", "sw_if_index",
 		   "local RLOC");
 
   /* *INDENT-OFF* */

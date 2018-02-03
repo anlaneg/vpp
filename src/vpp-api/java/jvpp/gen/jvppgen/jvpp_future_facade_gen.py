@@ -30,11 +30,12 @@ package $plugin_package.$future_package;
 public final class FutureJVpp${plugin_name}FacadeCallback implements $plugin_package.$callback_package.JVpp${plugin_name}GlobalCallback {
 
     private final java.util.Map<java.lang.Integer, java.util.concurrent.CompletableFuture<? extends $base_package.$dto_package.JVppReply<?>>> requests;
-    private final $plugin_package.$notification_package.Global${plugin_name}NotificationCallback notificationCallback;
+    private final $plugin_package.$notification_package.Global${plugin_name}EventCallback notificationCallback;
+    private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(FutureJVpp${plugin_name}FacadeCallback.class.getName());
 
     public FutureJVpp${plugin_name}FacadeCallback(
         final java.util.Map<java.lang.Integer, java.util.concurrent.CompletableFuture<? extends $base_package.$dto_package.JVppReply<?>>> requestMap,
-        final $plugin_package.$notification_package.Global${plugin_name}NotificationCallback notificationCallback) {
+        final $plugin_package.$notification_package.Global${plugin_name}EventCallback notificationCallback) {
         this.requests = requestMap;
         this.notificationCallback = notificationCallback;
     }
@@ -59,27 +60,29 @@ public final class FutureJVpp${plugin_name}FacadeCallback implements $plugin_pac
 
     @Override
     @SuppressWarnings("unchecked")
-    public void onControlPingReply($base_package.$dto_package.ControlPingReply reply) {
-        final java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>> completableFuture;
+    public void onControlPingReply(final $base_package.$dto_package.ControlPingReply reply) {
+        java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>> completableFuture;
 
+        final int replyId = reply.context;
         synchronized(requests) {
-            completableFuture = (java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>>) requests.get(reply.context);
-        }
+            completableFuture = (java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>>) requests.get(replyId);
 
-        if(completableFuture != null) {
-            // Finish dump call
-            if (completableFuture instanceof $base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture) {
-                completableFuture.complete((($base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture) completableFuture).getReplyDump());
-                // Remove future mapped to dump call context id
-                synchronized(requests) {
+            if(completableFuture != null) {
+                // Finish dump call
+                if (completableFuture instanceof $base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture) {
+                    completableFuture.complete((($base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture) completableFuture).getReplyDump());
+                    // Remove future mapped to dump call context id
                     requests.remove((($base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture) completableFuture).getContextId());
+                } else {
+                    // reply to regular control ping, complete the future
+                    completableFuture.complete(reply);
                 }
+                requests.remove(replyId);
             } else {
+                // future not yet created by writer, create new future, complete it and put to map under ping id
+                completableFuture = new java.util.concurrent.CompletableFuture<>();
                 completableFuture.complete(reply);
-            }
-
-            synchronized(requests) {
-                requests.remove(reply.context);
+                requests.put(replyId, completableFuture);
             }
         }
     }
@@ -91,18 +94,27 @@ $methods
 jvpp_facade_callback_method_template = Template("""
     @Override
     @SuppressWarnings("unchecked")
-    public void on$callback_dto($plugin_package.$dto_package.$callback_dto reply) {
-        final java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>> completableFuture;
-
-        synchronized(requests) {
-            completableFuture = (java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<?>>) requests.get(reply.context);
+    public void on$callback_dto(final $plugin_package.$dto_package.$callback_dto reply) {
+        java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<$plugin_package.$dto_package.$request_dto>> completableFuture;
+        final int replyId = reply.context;
+        if (LOG.isLoggable(java.util.logging.Level.FINE)) {
+            LOG.fine(String.format("Received $callback_dto event message: %s", reply));
         }
+        synchronized(requests) {
+            completableFuture =
+            (java.util.concurrent.CompletableFuture<$base_package.$dto_package.JVppReply<$plugin_package.$dto_package.$request_dto>>) requests.get(replyId);
 
-        if(completableFuture != null) {
-            completableFuture.complete(reply);
-
-            synchronized(requests) {
-                requests.remove(reply.context);
+            if(completableFuture != null) {
+                // received reply on request, complete future created by sender and remove it from map
+                completableFuture.complete(reply);
+                requests.remove(replyId);
+            } else {
+                // reply received before writer created future,
+                // create new future, complete it and put into map to
+                // notify sender that reply is already received
+                completableFuture = new  java.util.concurrent.CompletableFuture<>();
+                completableFuture.complete(reply);
+                requests.put(replyId, completableFuture);
             }
         }
     }
@@ -111,6 +123,9 @@ jvpp_facade_callback_method_template = Template("""
 jvpp_facade_callback_notification_method_template = Template("""
     @Override
     public void on$callback_dto($plugin_package.$dto_package.$callback_dto notification) {
+        if (LOG.isLoggable(java.util.logging.Level.FINE)) {
+            LOG.fine(String.format("Received $callback_dto event message: %s", notification));
+        }
         notificationCallback.on$callback_dto(notification);
     }
 """)
@@ -118,105 +133,83 @@ jvpp_facade_callback_notification_method_template = Template("""
 jvpp_facade_details_callback_method_template = Template("""
     @Override
     @SuppressWarnings("unchecked")
-    public void on$callback_dto($plugin_package.$dto_package.$callback_dto reply) {
-        final $base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture<$plugin_package.$dto_package.$callback_dto_reply_dump> completableFuture;
-
-        synchronized(requests) {
-            completableFuture = ($base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture<$plugin_package.$dto_package.$callback_dto_reply_dump>) requests.get(reply.context);
+    public void on$callback_dto(final $plugin_package.$dto_package.$callback_dto reply) {
+        $base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture<$plugin_package.$dto_package.$callback_dto_reply_dump> completableFuture;
+        final int replyId = reply.context;
+        if (LOG.isLoggable(java.util.logging.Level.FINE)) {
+            LOG.fine(String.format("Received $callback_dto event message: %s", reply));
         }
+        synchronized(requests) {
+            completableFuture = ($base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture<$plugin_package.$dto_package.$callback_dto_reply_dump>) requests.get(replyId);
 
-        if(completableFuture != null) {
+            if(completableFuture == null) {
+                // reply received before writer created future,
+                // create new future, and put into map to notify sender that reply is already received,
+                // following details replies will add information to this future
+                completableFuture = new $base_package.$future_package.AbstractFutureJVppInvoker.CompletableDumpFuture<>(replyId,
+                    new $plugin_package.$dto_package.$callback_dto_reply_dump());
+                requests.put(replyId, completableFuture);
+            }
             completableFuture.getReplyDump().$callback_dto_field.add(reply);
         }
     }
 """)
 
 
-def generate_jvpp(func_list, base_package, plugin_package, plugin_name, dto_package, callback_package, notification_package, future_facade_package, inputfile):
+def generate_jvpp(func_list, base_package, plugin_package, plugin_name, dto_package, callback_package,
+                  notification_package, future_facade_package, inputfile, logger):
     """ Generates JVpp interface and JNI implementation """
-    print "Generating JVpp future facade"
+    logger.debug("Generating JVpp future facade for %s" % inputfile)
 
     if not os.path.exists(future_facade_package):
         os.mkdir(future_facade_package)
 
     methods = []
     methods_impl = []
-    callbacks = []
+
+    # Generate methods for sending messages.
     for func in func_list:
         camel_case_name_with_suffix = util.underscore_to_camelcase_upper(func['name'])
 
-        if util.is_ignored(func['name']) or util.is_control_ping(camel_case_name_with_suffix):
+        if util.is_control_ping(camel_case_name_with_suffix):
+            # Skip control ping managed by jvpp registry.
             continue
 
-        if not util.is_reply(camel_case_name_with_suffix) and not util.is_notification(func['name']):
+        # Process replies instead of requests (optimization).
+        if not util.is_reply(camel_case_name_with_suffix):
+            # Do not generate send methods for messages that do not have replies.
             continue
 
-        camel_case_method_name = util.underscore_to_camelcase(func['name'])
-
-        if not util.is_notification(func["name"]):
-            camel_case_request_method_name = util.remove_reply_suffix(util.underscore_to_camelcase(func['name']))
-            if util.is_details(camel_case_name_with_suffix):
-                camel_case_reply_name = get_standard_dump_reply_name(util.underscore_to_camelcase_upper(func['name']),
-                                                                     func['name'])
-                callbacks.append(jvpp_facade_details_callback_method_template.substitute(base_package=base_package,
-                                                                                         plugin_package=plugin_package,
-                                                                                         dto_package=dto_package,
-                                                                                         callback_dto=camel_case_name_with_suffix,
-                                                                                         callback_dto_field=camel_case_method_name,
-                                                                                         callback_dto_reply_dump=camel_case_reply_name + dto_gen.dump_dto_suffix,
-                                                                                         future_package=future_facade_package))
-
-                methods.append(future_jvpp_method_template.substitute(plugin_package=plugin_package,
-                                                                      dto_package=dto_package,
-                                                                      method_name=camel_case_request_method_name +
-                                                                                  util.underscore_to_camelcase_upper(util.dump_suffix),
-                                                                      reply_name=camel_case_reply_name + dto_gen.dump_dto_suffix,
-                                                                      request_name=util.remove_reply_suffix(camel_case_reply_name) +
-                                                                                   util.underscore_to_camelcase_upper(util.dump_suffix)))
-                methods_impl.append(future_jvpp_dump_method_impl_template.substitute(plugin_package=plugin_package,
-                                                                                     dto_package=dto_package,
-                                                                                     method_name=camel_case_request_method_name +
-                                                                                                 util.underscore_to_camelcase_upper(util.dump_suffix),
-                                                                                     reply_name=camel_case_reply_name + dto_gen.dump_dto_suffix,
-                                                                                     request_name=util.remove_reply_suffix(camel_case_reply_name) +
-                                                                                                  util.underscore_to_camelcase_upper(util.dump_suffix)))
-            else:
-                request_name = util.underscore_to_camelcase_upper(util.unconventional_naming_rep_req[func['name']]) \
-                    if func['name'] in util.unconventional_naming_rep_req else util.remove_reply_suffix(camel_case_name_with_suffix)
-
-                methods.append(future_jvpp_method_template.substitute(plugin_package=plugin_package,
-                                                                      dto_package=dto_package,
-                                                                      method_name=camel_case_request_method_name,
-                                                                      reply_name=camel_case_name_with_suffix,
-                                                                      request_name=request_name))
-                methods_impl.append(future_jvpp_method_impl_template.substitute(plugin_package=plugin_package,
-                                                                                dto_package=dto_package,
-                                                                                method_name=camel_case_request_method_name,
-                                                                                reply_name=camel_case_name_with_suffix,
-                                                                                request_name=request_name))
-
-                callbacks.append(jvpp_facade_callback_method_template.substitute(base_package=base_package,
-                                                                                 plugin_package=plugin_package,
+        camel_case_request_method_name = util.remove_reply_suffix(util.underscore_to_camelcase(func['name']))
+        if util.is_details(camel_case_name_with_suffix):
+            camel_case_reply_name = util.underscore_to_camelcase_upper(func['name'])
+            methods.append(future_jvpp_method_template.substitute(plugin_package=plugin_package,
+                                                                  dto_package=dto_package,
+                                                                  method_name=camel_case_request_method_name +
+                                                                              util.underscore_to_camelcase_upper(util.dump_suffix),
+                                                                  reply_name=camel_case_reply_name + dto_gen.dump_dto_suffix,
+                                                                  request_name=util.remove_reply_suffix(camel_case_reply_name) +
+                                                                               util.underscore_to_camelcase_upper(util.dump_suffix)))
+            methods_impl.append(future_jvpp_dump_method_impl_template.substitute(plugin_package=plugin_package,
                                                                                  dto_package=dto_package,
-                                                                                 callback_dto=camel_case_name_with_suffix))
+                                                                                 method_name=camel_case_request_method_name +
+                                                                                             util.underscore_to_camelcase_upper(util.dump_suffix),
+                                                                                 reply_name=camel_case_reply_name + dto_gen.dump_dto_suffix,
+                                                                                 request_name=util.remove_reply_suffix(camel_case_reply_name) +
+                                                                                              util.underscore_to_camelcase_upper(util.dump_suffix)))
+        else:
+            request_name = util.remove_reply_suffix(camel_case_name_with_suffix)
 
-        if util.is_notification(func["name"]):
-            callbacks.append(jvpp_facade_callback_notification_method_template.substitute(plugin_package=plugin_package,
-                                                                                          dto_package=dto_package,
-                                                                                          callback_dto=util.add_notification_suffix(camel_case_name_with_suffix)))
-
-    jvpp_file = open(os.path.join(future_facade_package, "FutureJVpp%sFacadeCallback.java" % plugin_name), 'w')
-    jvpp_file.write(jvpp_facade_callback_template.substitute(inputfile=inputfile,
-                                                             base_package=base_package,
-                                                             plugin_package=plugin_package,
-                                                             plugin_name=plugin_name,
-                                                             dto_package=dto_package,
-                                                             notification_package=notification_package,
-                                                             callback_package=callback_package,
-                                                             methods="".join(callbacks),
-                                                             future_package=future_facade_package))
-    jvpp_file.flush()
-    jvpp_file.close()
+            methods.append(future_jvpp_method_template.substitute(plugin_package=plugin_package,
+                                                                  dto_package=dto_package,
+                                                                  method_name=camel_case_request_method_name,
+                                                                  reply_name=camel_case_name_with_suffix,
+                                                                  request_name=request_name))
+            methods_impl.append(future_jvpp_method_impl_template.substitute(plugin_package=plugin_package,
+                                                                            dto_package=dto_package,
+                                                                            method_name=camel_case_request_method_name,
+                                                                            reply_name=camel_case_name_with_suffix,
+                                                                            request_name=request_name))
 
     jvpp_file = open(os.path.join(future_facade_package, "FutureJVpp%s.java" % plugin_name), 'w')
     jvpp_file.write(future_jvpp_template.substitute(inputfile=inputfile,
@@ -241,6 +234,8 @@ def generate_jvpp(func_list, base_package, plugin_package, plugin_name, dto_pack
     jvpp_file.flush()
     jvpp_file.close()
 
+    generate_callback(func_list, base_package, plugin_package, plugin_name, dto_package, callback_package, notification_package, future_facade_package, inputfile)
+
 
 future_jvpp_template = Template('''
 package $plugin_package.$future_package;
@@ -254,7 +249,7 @@ public interface FutureJVpp${plugin_name} extends $base_package.$future_package.
 $methods
 
     @Override
-    public $plugin_package.$notification_package.${plugin_name}NotificationRegistry getNotificationRegistry();
+    public $plugin_package.$notification_package.${plugin_name}EventRegistry getEventRegistry();
 
 }
 ''')
@@ -274,7 +269,7 @@ package $plugin_package.$future_package;
  */
 public class FutureJVpp${plugin_name}Facade extends $base_package.$future_package.AbstractFutureJVppInvoker implements FutureJVpp${plugin_name} {
 
-    private final $plugin_package.$notification_package.${plugin_name}NotificationRegistryImpl notificationRegistry = new $plugin_package.$notification_package.${plugin_name}NotificationRegistryImpl();
+    private final $plugin_package.$notification_package.${plugin_name}EventRegistryImpl eventRegistry = new $plugin_package.$notification_package.${plugin_name}EventRegistryImpl();
 
     /**
      * <p>Create FutureJVpp${plugin_name}Facade object for provided JVpp instance.
@@ -288,12 +283,12 @@ public class FutureJVpp${plugin_name}Facade extends $base_package.$future_packag
     public FutureJVpp${plugin_name}Facade(final $base_package.JVppRegistry registry, final $base_package.JVpp jvpp) throws java.io.IOException {
         super(jvpp, registry, new java.util.HashMap<>());
         java.util.Objects.requireNonNull(registry, "JVppRegistry should not be null");
-        registry.register(jvpp, new FutureJVpp${plugin_name}FacadeCallback(getRequests(), notificationRegistry));
+        registry.register(jvpp, new FutureJVpp${plugin_name}FacadeCallback(getRequests(), eventRegistry));
     }
 
     @Override
-    public $plugin_package.$notification_package.${plugin_name}NotificationRegistry getNotificationRegistry() {
-        return notificationRegistry;
+    public $plugin_package.$notification_package.${plugin_name}EventRegistry getEventRegistry() {
+        return eventRegistry;
     }
 
 $methods
@@ -315,17 +310,50 @@ future_jvpp_dump_method_impl_template = Template('''
 ''')
 
 
-# Returns request name or special one from unconventional_naming_rep_req map
-def get_standard_dump_reply_name(camel_case_dto_name, func_name):
-    # FIXME this is a hotfix for sub-details callbacks
-    # FIXME also for L2FibTableEntry
-    # It's all because unclear mapping between
-    #  request -> reply,
-    #  dump -> reply, details,
-    #  notification_start -> reply, notifications
+def generate_callback(func_list, base_package, plugin_package, plugin_name, dto_package, callback_package, notification_package, future_facade_package, inputfile):
+    callbacks = []
+    for func in func_list:
+        camel_case_name_with_suffix = util.underscore_to_camelcase_upper(func['name'])
 
-    # vpe.api needs to be "standardized" so we can parse the information and create maps before generating java code
-    suffix = func_name.split("_")[-1]
-    return util.underscore_to_camelcase_upper(
-        util.unconventional_naming_rep_req[func_name]) + util.underscore_to_camelcase_upper(suffix) if func_name in util.unconventional_naming_rep_req \
-        else camel_case_dto_name
+        if util.is_control_ping(camel_case_name_with_suffix):
+            # Skip control ping managed by jvpp registry.
+            continue
+        if util.is_dump(func['name']) or util.is_request(func['name'], func_list):
+            continue
+
+        # Generate callbacks for all messages except for dumps and requests (handled by vpp, not client).
+        if util.is_details(camel_case_name_with_suffix):
+            # Callbacks for detail messages that append replies to a list.
+            camel_case_method_name = util.underscore_to_camelcase(func['name'])
+            camel_case_reply_name = util.underscore_to_camelcase_upper(func['name'])
+            callbacks.append(jvpp_facade_details_callback_method_template.substitute(base_package=base_package,
+                                                                                     plugin_package=plugin_package,
+                                                                                     dto_package=dto_package,
+                                                                                     callback_dto=camel_case_name_with_suffix,
+                                                                                     callback_dto_field=camel_case_method_name,
+                                                                                     callback_dto_reply_dump=camel_case_reply_name + dto_gen.dump_dto_suffix,
+                                                                                     future_package=future_facade_package))
+        elif util.is_reply(camel_case_name_with_suffix):
+            request_dto = util.remove_reply_suffix(util.underscore_to_camelcase_upper(func['name']))
+            callbacks.append(jvpp_facade_callback_method_template.substitute(base_package=base_package,
+                                                                             plugin_package=plugin_package,
+                                                                             dto_package=dto_package,
+                                                                             callback_dto=camel_case_name_with_suffix,
+                                                                             request_dto=request_dto))
+        else:
+            callbacks.append(jvpp_facade_callback_notification_method_template.substitute(plugin_package=plugin_package,
+                                                                                          dto_package=dto_package,
+                                                                                          callback_dto=camel_case_name_with_suffix))
+
+    jvpp_file = open(os.path.join(future_facade_package, "FutureJVpp%sFacadeCallback.java" % plugin_name), 'w')
+    jvpp_file.write(jvpp_facade_callback_template.substitute(inputfile=inputfile,
+                                                             base_package=base_package,
+                                                             plugin_package=plugin_package,
+                                                             plugin_name=plugin_name,
+                                                             dto_package=dto_package,
+                                                             notification_package=notification_package,
+                                                             callback_package=callback_package,
+                                                             methods="".join(callbacks),
+                                                             future_package=future_facade_package))
+    jvpp_file.flush()
+    jvpp_file.close()

@@ -17,8 +17,6 @@ import os
 import util
 from string import Template
 
-from util import remove_suffix
-
 callback_suffix = "Callback"
 
 callback_template = Template("""
@@ -51,33 +49,28 @@ public interface JVpp${plugin_name}GlobalCallback extends $base_package.$callbac
 """)
 
 
-def generate_callbacks(func_list, base_package, plugin_package, plugin_name, callback_package, dto_package, inputfile):
+def generate_callbacks(func_list, base_package, plugin_package, plugin_name, callback_package, dto_package, inputfile,
+                       logger):
     """ Generates callback interfaces """
-    print "Generating Callback interfaces"
+    logger.debug("Generating Callback interfaces for %s" % inputfile)
 
     if not os.path.exists(callback_package):
         os.mkdir(callback_package)
 
     callbacks = []
     for func in func_list:
-
         camel_case_name_with_suffix = util.underscore_to_camelcase_upper(func['name'])
 
-        if util.is_ignored(func['name']) or util.is_control_ping(camel_case_name_with_suffix):
+        if util.is_control_ping(camel_case_name_with_suffix):
+            # Skip control_ping managed by jvpp registry.
             continue
-        if not util.is_reply(camel_case_name_with_suffix) and not util.is_notification(func['name']):
+        if util.is_dump(func['name']) or util.is_request(func['name'], func_list):
             continue
 
-        if util.is_reply(camel_case_name_with_suffix):
-            camel_case_name = util.remove_reply_suffix(camel_case_name_with_suffix)
-            callback_type = "JVppCallback"
-        else:
-            camel_case_name_with_suffix = util.add_notification_suffix(camel_case_name_with_suffix)
-            camel_case_name = camel_case_name_with_suffix
-            callback_type = "JVppNotificationCallback"
-
-        callbacks.append("{0}.{1}.{2}".format(plugin_package, callback_package, camel_case_name + callback_suffix))
-        callback_path = os.path.join(callback_package, camel_case_name + callback_suffix + ".java")
+        # Generate callbacks for all messages except for dumps and requests (handled by vpp, not client).
+        callback_type = "JVppCallback"
+        callbacks.append("{0}.{1}.{2}".format(plugin_package, callback_package, camel_case_name_with_suffix + callback_suffix))
+        callback_path = os.path.join(callback_package, camel_case_name_with_suffix + callback_suffix + ".java")
         callback_file = open(callback_path, 'w')
 
         reply_type = "%s.%s.%s" % (plugin_package, dto_package, camel_case_name_with_suffix)
@@ -85,7 +78,7 @@ def generate_callbacks(func_list, base_package, plugin_package, plugin_name, cal
         callback_file.write(
             callback_template.substitute(inputfile=inputfile,
                                          docs=util.api_message_to_javadoc(func),
-                                         cls_name=camel_case_name + callback_suffix,
+                                         cls_name=camel_case_name_with_suffix + callback_suffix,
                                          callback_method=method,
                                          base_package=base_package,
                                          plugin_package=plugin_package,

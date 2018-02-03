@@ -70,10 +70,11 @@ static void vl_api_vxlan_add_del_tunnel_t_handler
 {
   vl_api_vxlan_add_del_tunnel_reply_t *rmp;
   int rv = 0;
-  ip4_main_t *im = &ip4_main;
+  u32 fib_index;
 
-  uword *p = hash_get (im->fib_index_by_table_id, ntohl (mp->encap_vrf_id));
-  if (!p)
+  fib_index = fib_table_find (fib_ip_proto (mp->is_ipv6),
+			      ntohl (mp->encap_vrf_id));
+  if (fib_index == ~0)
     {
       rv = VNET_API_ERROR_NO_SUCH_FIB;
       goto out;
@@ -83,7 +84,7 @@ static void vl_api_vxlan_add_del_tunnel_t_handler
     .is_add = mp->is_add,
     .is_ip6 = mp->is_ipv6,
     .mcast_sw_if_index = ntohl (mp->mcast_sw_if_index),
-    .encap_fib_index = p[0],
+    .encap_fib_index = fib_index,
     .decap_next_index = ntohl (mp->decap_next_index),
     .vni = ntohl (mp->vni),
     .dst = to_ip46 (mp->is_ipv6, mp->dst_address),
@@ -116,7 +117,7 @@ out:
 }
 
 static void send_vxlan_tunnel_details
-  (vxlan_tunnel_t * t, unix_shared_memory_queue_t * q, u32 context)
+  (vxlan_tunnel_t * t, vl_api_registration_t * reg, u32 context)
 {
   vl_api_vxlan_tunnel_details_t *rmp;
   ip4_main_t *im4 = &ip4_main;
@@ -145,22 +146,20 @@ static void send_vxlan_tunnel_details
   rmp->is_ipv6 = is_ipv6;
   rmp->context = context;
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void vl_api_vxlan_tunnel_dump_t_handler
   (vl_api_vxlan_tunnel_dump_t * mp)
 {
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   vxlan_main_t *vxm = &vxlan_main;
   vxlan_tunnel_t *t;
   u32 sw_if_index;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
-    {
-      return;
-    }
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
 
   sw_if_index = ntohl (mp->sw_if_index);
 
@@ -169,7 +168,7 @@ static void vl_api_vxlan_tunnel_dump_t_handler
       /* *INDENT-OFF* */
       pool_foreach (t, vxm->tunnels,
       ({
-        send_vxlan_tunnel_details(t, q, mp->context);
+        send_vxlan_tunnel_details(t, reg, mp->context);
       }));
       /* *INDENT-ON* */
     }
@@ -181,7 +180,7 @@ static void vl_api_vxlan_tunnel_dump_t_handler
 	  return;
 	}
       t = &vxm->tunnels[vxm->tunnel_index_by_sw_if_index[sw_if_index]];
-      send_vxlan_tunnel_details (t, q, mp->context);
+      send_vxlan_tunnel_details (t, reg, mp->context);
     }
 }
 

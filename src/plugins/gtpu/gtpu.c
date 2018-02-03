@@ -34,6 +34,20 @@
 
 gtpu_main_t gtpu_main;
 
+/* *INDENT-OFF* */
+VNET_FEATURE_INIT (ip4_gtpu_bypass, static) = {
+  .arc_name = "ip4-unicast",
+  .node_name = "ip4-gtpu-bypass",
+  .runs_before = VNET_FEATURES ("ip4-lookup"),
+};
+
+VNET_FEATURE_INIT (ip6_gtpu_bypass, static) = {
+  .arc_name = "ip6-unicast",
+  .node_name = "ip6-gtpu-bypass",
+  .runs_before = VNET_FEATURES ("ip6-lookup"),
+};
+/* *INDENT-on* */
+
 static u8 *
 format_decap_next (u8 * s, va_list * args)
 {
@@ -61,18 +75,18 @@ format_gtpu_tunnel (u8 * s, va_list * args)
   gtpu_tunnel_t *t = va_arg (*args, gtpu_tunnel_t *);
   gtpu_main_t *ngm = &gtpu_main;
 
-  s = format (s, "[%d] src %U dst %U teid %d sw_if_index %d ",
+  s = format (s, "[%d] src %U dst %U teid %d fib-idx %d sw-if-idx %d ",
 	      t - ngm->tunnels,
 	      format_ip46_address, &t->src, IP46_TYPE_ANY,
 	      format_ip46_address, &t->dst, IP46_TYPE_ANY,
-	      t->teid, t->sw_if_index);
+	      t->teid,  t->encap_fib_index, t->sw_if_index);
 
-  if (ip46_address_is_multicast (&t->dst))
-    s = format (s, "mcast_sw_if_index %d ", t->mcast_sw_if_index);
+  s = format (s, "encap-dpo-idx %d ", t->next_dpo.dpoi_index);
+  s = format (s, "decap-next-%U ", format_decap_next, t->decap_next_index);
 
-  s = format (s, "encap_fib_index %d fib_entry_index %d decap_next %U\n",
-	      t->encap_fib_index, t->fib_entry_index,
-	      format_decap_next, t->decap_next_index);
+  if (PREDICT_FALSE (ip46_address_is_multicast (&t->dst)))
+    s = format (s, "mcast-sw-if-idx %d ", t->mcast_sw_if_index);
+
   return s;
 }
 
@@ -81,14 +95,6 @@ format_gtpu_name (u8 * s, va_list * args)
 {
   u32 dev_instance = va_arg (*args, u32);
   return format (s, "gtpu_tunnel%d", dev_instance);
-}
-
-static uword
-dummy_interface_tx (vlib_main_t * vm,
-		    vlib_node_runtime_t * node, vlib_frame_t * frame)
-{
-  clib_warning ("you shouldn't be here, leaking buffers...");
-  return frame->n_vectors;
 }
 
 static clib_error_t *
@@ -106,7 +112,6 @@ VNET_DEVICE_CLASS (gtpu_device_class,static) = {
   .name = "GTPU",
   .format_device_name = format_gtpu_name,
   .format_tx_trace = format_gtpu_encap_trace,
-  .tx_function = dummy_interface_tx,
   .admin_up_down_function = gtpu_interface_admin_up_down,
 };
 /* *INDENT-ON* */
@@ -125,6 +130,7 @@ VNET_HW_INTERFACE_CLASS (gtpu_hw_class) =
   .name = "GTPU",
   .format_header = format_gtpu_header_with_length,
   .build_rewrite = default_build_rewrite,
+  .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
 };
 /* *INDENT-ON* */
 
@@ -279,25 +285,6 @@ gtpu_decap_next_is_valid (gtpu_main_t * gtm, u32 is_ip6, u32 decap_next_index)
   return decap_next_index < r->n_next_nodes;
 }
 
-static void
-hash_set_key_copy (uword ** h, void *key, uword v)
-{
-  size_t ksz = hash_header (*h)->user;
-  void *copy = clib_mem_alloc (ksz);
-  clib_memcpy (copy, key, ksz);
-  hash_set_mem (*h, copy, v);
-}
-
-static void
-hash_unset_key_free (uword ** h, void *key)
-{
-  hash_pair_t *hp = hash_get_pair_mem (*h, key);
-  ASSERT (hp);
-  key = uword_to_pointer (hp->key, void *);
-  hash_unset_mem (*h, key);
-  clib_mem_free (key);
-}
-
 static uword
 vtep_addr_ref (ip46_address_t * ip)
 {
@@ -308,7 +295,7 @@ vtep_addr_ref (ip46_address_t * ip)
     return ++(*vtep);
   ip46_address_is_ip4 (ip) ?
     hash_set (gtpu_main.vtep4, ip->ip4.as_u32, 1) :
-    hash_set_key_copy (&gtpu_main.vtep6, &ip->ip6, 1);
+    hash_set_mem_alloc (&gtpu_main.vtep6, &ip->ip6, 1);
   return 1;
 }
 
@@ -323,7 +310,7 @@ vtep_addr_unref (ip46_address_t * ip)
     return *vtep;
   ip46_address_is_ip4 (ip) ?
     hash_unset (gtpu_main.vtep4, ip->ip4.as_u32) :
-    hash_unset_key_free (&gtpu_main.vtep6, &ip->ip6);
+    hash_unset_mem_free (&gtpu_main.vtep6, &ip->ip6);
   return 0;
 }
 
@@ -355,7 +342,7 @@ mcast_shared_add (ip46_address_t * dst, fib_node_index_t mfei, adj_index_t ai)
     .mfib_entry_index = mfei,
   };
 
-  hash_set_key_copy (&gtpu_main.mcast_shared, dst, new_ep.as_u64);
+  hash_set_mem_alloc (&gtpu_main.mcast_shared, dst, new_ep.as_u64);
 }
 
 static inline void
@@ -366,13 +353,7 @@ mcast_shared_remove (ip46_address_t * dst)
   adj_unlock (ep.mcast_adj_index);
   mfib_table_entry_delete_index (ep.mfib_entry_index, MFIB_SOURCE_GTPU);
 
-  hash_unset_key_free (&gtpu_main.mcast_shared, dst);
-}
-
-static inline fib_protocol_t
-fib_ip_proto (bool is_ip6)
-{
-  return (is_ip6) ? FIB_PROTOCOL_IP6 : FIB_PROTOCOL_IP4;
+  hash_unset_mem_free (&gtpu_main.mcast_shared, dst);
 }
 
 int vnet_gtpu_add_del_tunnel
@@ -427,8 +408,8 @@ int vnet_gtpu_add_del_tunnel
 
       /* copy the key */
       if (is_ip6)
-	hash_set_key_copy (&gtm->gtpu6_tunnel_by_key, &key6,
-			   t - gtm->tunnels);
+	hash_set_mem_alloc (&gtm->gtpu6_tunnel_by_key, &key6,
+			    t - gtm->tunnels);
       else
 	hash_set (gtm->gtpu4_tunnel_by_key, key4.as_u64, t - gtm->tunnels);
 
@@ -466,6 +447,11 @@ int vnet_gtpu_add_del_tunnel
 	  hi = vnet_get_hw_interface (vnm, hw_if_index);
 	}
 
+      /* Set gtpu tunnel output node */
+      u32 encap_index = !is_ip6 ?
+	gtpu4_encap_node.index : gtpu6_encap_node.index;
+      vnet_set_interface_output_node (vnm, hw_if_index, encap_index);
+
       t->hw_if_index = hw_if_index;
       t->sw_if_index = sw_if_index = hi->sw_if_index;
 
@@ -485,8 +471,6 @@ int vnet_gtpu_add_del_tunnel
 
       fib_node_init (&t->node, gtm->fib_node_type);
       fib_prefix_t tun_dst_pfx;
-      u32 encap_index = !is_ip6 ?
-	gtpu4_encap_node.index : gtpu6_encap_node.index;
       vnet_flood_class_t flood_class = VNET_FLOOD_CLASS_TUNNEL_NORMAL;
 
       fib_prefix_from_ip46_addr (&t->dst, &tun_dst_pfx);
@@ -520,7 +504,7 @@ int vnet_gtpu_add_del_tunnel
 	      fib_node_index_t mfei;
 	      adj_index_t ai;
 	      fib_route_path_t path = {
-		.frp_proto = fp,
+		.frp_proto = fib_proto_to_dpo (fp),
 		.frp_addr = zero_addr,
 		.frp_sw_if_index = 0xffffffff,
 		.frp_fib_index = ~0,
@@ -577,9 +561,6 @@ int vnet_gtpu_add_del_tunnel
 	  flood_class = VNET_FLOOD_CLASS_TUNNEL_MASTER;
 	}
 
-      /* Set gtpu tunnel output node */
-      hi->output_node_index = encap_index;
-
       vnet_get_sw_interface (vnet_get_main (), sw_if_index)->flood_class =
 	flood_class;
     }
@@ -606,7 +587,7 @@ int vnet_gtpu_add_del_tunnel
       if (!is_ip6)
 	hash_unset (gtm->gtpu4_tunnel_by_key, key4.as_u64);
       else
-	hash_unset_key_free (&gtm->gtpu6_tunnel_by_key, &key6);
+	hash_unset_mem_free (&gtm->gtpu6_tunnel_by_key, &key6);
 
       if (!ip46_address_is_multicast (&t->dst))
 	{

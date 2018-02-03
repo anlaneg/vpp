@@ -40,6 +40,7 @@
 #include <vlib/vlib.h>
 #include <vnet/pg/pg.h>
 #include <vnet/ethernet/ethernet.h>
+#include <vnet/ethernet/p2p_ethernet.h>
 #include <vppinfra/sparse_vec.h>
 #include <vnet/l2/l2_bvi.h>
 
@@ -101,7 +102,8 @@ parse_header (ethernet_input_variant_t variant,
 
       e0 = (void *) (b0->data + b0->current_data);
 
-      vnet_buffer (b0)->ethernet.start_of_ethernet_header = b0->current_data;
+      vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
+      b0->flags |= VNET_BUFFER_F_L2_HDR_OFFSET_VALID;
 
       vlib_buffer_advance (b0, sizeof (e0[0]));
 
@@ -205,9 +207,7 @@ identify_subint (vnet_hw_interface_t * hi,
       if (!(*is_l2))
 	{
 	  ethernet_header_t *e0;
-	  e0 =
-	    (void *) (b0->data +
-		      vnet_buffer (b0)->ethernet.start_of_ethernet_header);
+	  e0 = (void *) (b0->data + vnet_buffer (b0)->l2_hdr_offset);
 
 	  if (!(ethernet_address_cast (e0->dst_address)))
 	    {
@@ -229,6 +229,8 @@ determine_next_node (ethernet_main_t * em,
 		     u32 is_l20,
 		     u32 type0, vlib_buffer_t * b0, u8 * error0, u8 * next0)
 {
+  u32 eth_start = vnet_buffer (b0)->l2_hdr_offset;
+  vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
   if (PREDICT_FALSE (*error0 != ETHERNET_ERROR_NONE))
     {
       // some error occurred
@@ -238,8 +240,6 @@ determine_next_node (ethernet_main_t * em,
     {
       *next0 = em->l2_next;
       // record the L2 len and reset the buffer so the L2 header is preserved
-      u32 eth_start = vnet_buffer (b0)->ethernet.start_of_ethernet_header;
-      vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
       ASSERT (vnet_buffer (b0)->l2.l2_len ==
 	      ethernet_buffer_header_size (b0));
       vlib_buffer_advance (b0, -ethernet_buffer_header_size (b0));
@@ -283,6 +283,29 @@ determine_next_node (ethernet_main_t * em,
 	  *next0 = ETHERNET_INPUT_NEXT_LLC;
 	}
     }
+}
+
+static_always_inline int
+ethernet_frame_is_any_tagged (u16 type0, u16 type1)
+{
+#if __SSE4_2__
+  const __m128i ethertype_mask = _mm_set_epi16 (ETHERNET_TYPE_VLAN,
+						ETHERNET_TYPE_DOT1AD,
+						ETHERNET_TYPE_VLAN_9100,
+						ETHERNET_TYPE_VLAN_9200,
+						/* duplicate for type1 */
+						ETHERNET_TYPE_VLAN,
+						ETHERNET_TYPE_DOT1AD,
+						ETHERNET_TYPE_VLAN_9100,
+						ETHERNET_TYPE_VLAN_9200);
+
+  __m128i r =
+    _mm_set_epi16 (type0, type0, type0, type0, type1, type1, type1, type1);
+  r = _mm_cmpeq_epi16 (ethertype_mask, r);
+  return !_mm_test_all_zeros (r, r);
+#else
+  return ethernet_frame_is_tagged (type0) || ethernet_frame_is_tagged (type1);
+#endif
 }
 
 static_always_inline uword
@@ -377,8 +400,7 @@ ethernet_input_inline (vlib_main_t * vm,
 
 	  /* Speed-path for the untagged case */
 	  if (PREDICT_TRUE (variant == ETHERNET_INPUT_VARIANT_ETHERNET
-			    && !ethernet_frame_is_tagged (type0)
-			    && !ethernet_frame_is_tagged (type1)))
+			    && !ethernet_frame_is_any_tagged (type0, type1)))
 	    {
 	      main_intf_t *intf0;
 	      subint_config_t *subint0;
@@ -402,10 +424,16 @@ ethernet_input_inline (vlib_main_t * vm,
 		  cached_is_l2 = is_l20 = subint0->flags & SUBINT_CONFIG_L2;
 		}
 
-	      vnet_buffer (b0)->ethernet.start_of_ethernet_header =
-		b0->current_data;
-	      vnet_buffer (b1)->ethernet.start_of_ethernet_header =
-		b1->current_data;
+	      vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
+	      vnet_buffer (b1)->l2_hdr_offset = b1->current_data;
+	      vnet_buffer (b0)->l3_hdr_offset =
+		vnet_buffer (b0)->l2_hdr_offset + sizeof (ethernet_header_t);
+	      vnet_buffer (b1)->l3_hdr_offset =
+		vnet_buffer (b1)->l2_hdr_offset + sizeof (ethernet_header_t);
+	      b0->flags |= VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+		VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	      b1->flags |= VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+		VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	      if (PREDICT_TRUE (is_l20 != 0))
 		{
@@ -497,9 +525,9 @@ ethernet_input_inline (vlib_main_t * vm,
 	    {
 
 	      len0 = vlib_buffer_length_in_chain (vm, b0) + b0->current_data
-		- vnet_buffer (b0)->ethernet.start_of_ethernet_header;
+		- vnet_buffer (b0)->l2_hdr_offset;
 	      len1 = vlib_buffer_length_in_chain (vm, b1) + b1->current_data
-		- vnet_buffer (b1)->ethernet.start_of_ethernet_header;
+		- vnet_buffer (b1)->l2_hdr_offset;
 
 	      stats_n_packets += 2;
 	      stats_n_bytes += len0 + len1;
@@ -554,6 +582,12 @@ ethernet_input_inline (vlib_main_t * vm,
 			       &next0);
 	  determine_next_node (em, variant, is_l21, type1, b1, &error1,
 			       &next1);
+	  vnet_buffer (b0)->l3_hdr_offset = vnet_buffer (b0)->l2_hdr_offset +
+	    vnet_buffer (b0)->l2.l2_len;
+	  vnet_buffer (b1)->l3_hdr_offset = vnet_buffer (b1)->l2_hdr_offset +
+	    vnet_buffer (b1)->l2.l2_len;
+	  b0->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	  b1->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	ship_it01:
 	  b0->error = error_node->errors[error0];
@@ -624,8 +658,11 @@ ethernet_input_inline (vlib_main_t * vm,
 		  cached_is_l2 = is_l20 = subint0->flags & SUBINT_CONFIG_L2;
 		}
 
-	      vnet_buffer (b0)->ethernet.start_of_ethernet_header =
-		b0->current_data;
+	      vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
+	      vnet_buffer (b0)->l3_hdr_offset =
+		vnet_buffer (b0)->l2_hdr_offset + sizeof (ethernet_header_t);
+	      b0->flags |= VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+		VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	      if (PREDICT_TRUE (is_l20 != 0))
 		{
@@ -688,7 +725,7 @@ ethernet_input_inline (vlib_main_t * vm,
 	    {
 
 	      len0 = vlib_buffer_length_in_chain (vm, b0) + b0->current_data
-		- vnet_buffer (b0)->ethernet.start_of_ethernet_header;
+		- vnet_buffer (b0)->l2_hdr_offset;
 
 	      stats_n_packets += 1;
 	      stats_n_bytes += len0;
@@ -723,6 +760,9 @@ ethernet_input_inline (vlib_main_t * vm,
 
 	  determine_next_node (em, variant, is_l20, type0, b0, &error0,
 			       &next0);
+	  vnet_buffer (b0)->l3_hdr_offset = vnet_buffer (b0)->l2_hdr_offset +
+	    vnet_buffer (b0)->l2.l2_len;
+	  b0->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	ship_it0:
 	  b0->error = error_node->errors[error0];
@@ -806,7 +846,21 @@ ethernet_sw_interface_get_config (vnet_main_t * vnm,
   // Locate the subint for the given ethernet config
   si = vnet_get_sw_interface (vnm, sw_if_index);
 
-  if (si->sub.eth.flags.default_sub)
+  if (si->type == VNET_SW_INTERFACE_TYPE_P2P)
+    {
+      p2p_ethernet_main_t *p2pm = &p2p_main;
+      u32 p2pe_sw_if_index =
+	p2p_ethernet_lookup (hi->hw_if_index, si->p2p.client_mac);
+      if (p2pe_sw_if_index == ~0)
+	{
+	  pool_get (p2pm->p2p_subif_pool, subint);
+	  si->p2p.pool_index = subint - p2pm->p2p_subif_pool;
+	}
+      else
+	subint = vec_elt_at_index (p2pm->p2p_subif_pool, si->p2p.pool_index);
+      *flags = SUBINT_CONFIG_P2P;
+    }
+  else if (si->sub.eth.flags.default_sub)
     {
       subint = &main_intf->default_subint;
       *flags = SUBINT_CONFIG_MATCH_0_TAG |

@@ -65,7 +65,7 @@ validate_buffer_data2 (vlib_buffer_t * b, pg_stream_t * s,
   if (i >= n_bytes)
     return 1;
 
-  clib_warning ("buffer %U", format_vlib_buffer, b);
+  clib_warning ("buffer %U", format_vnet_buffer, b);
   clib_warning ("differ at index %d", i);
   clib_warning ("is     %U", format_hex_bytes, bd, n_bytes);
   clib_warning ("mask   %U", format_hex_bytes, pm, n_bytes);
@@ -1214,7 +1214,7 @@ pg_stream_fill_helper (pg_main_t * pg,
    * Historically, the pg maintained its own free lists and
    * device drivers tx paths would return pkts.
    */
-  if (vm->buffer_main->extern_buffer_mgmt == 0 &&
+  if (vm->buffer_main->callbacks_registered == 0 &&
       !(s->flags & PG_STREAM_FLAGS_DISABLE_BUFFER_RECYCLE))
     f->buffer_init_function = pg_buffer_init;
   f->buffer_init_function_opaque =
@@ -1238,7 +1238,7 @@ pg_stream_fill_helper (pg_main_t * pg,
   n_alloc = n_allocated;
 
   /* Reinitialize buffers */
-  if (vm->buffer_main->extern_buffer_mgmt == 0 || CLIB_DEBUG > 0
+  if (vm->buffer_main->callbacks_registered == 0 || CLIB_DEBUG > 0
       || (s->flags & PG_STREAM_FLAGS_DISABLE_BUFFER_RECYCLE))
     init_buffers_inline
       (vm, s,
@@ -1246,7 +1246,7 @@ pg_stream_fill_helper (pg_main_t * pg,
        n_alloc, (bi - s->buffer_indices) * s->buffer_bytes /* data offset */ ,
        s->buffer_bytes,
        /* set_data */
-       vm->buffer_main->extern_buffer_mgmt != 0
+       vm->buffer_main->callbacks_registered != 0
        || (s->flags & PG_STREAM_FLAGS_DISABLE_BUFFER_RECYCLE) != 0);
 
   if (next_buffers)
@@ -1388,7 +1388,7 @@ format_pg_input_trace (u8 * s, va_list * va)
   pg_main_t *pg = &pg_main;
   pg_stream_t *stream;
   vlib_node_t *n;
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   stream = 0;
   if (!pool_is_free_index (pg->streams, t->stream_index))
@@ -1403,7 +1403,7 @@ format_pg_input_trace (u8 * s, va_list * va)
   s = format (s, ", %d sw_if_index", t->sw_if_index);
 
   s = format (s, "\n%U%U",
-	      format_white_space, indent, format_vlib_buffer, &t->buffer);
+	      format_white_space, indent, format_vnet_buffer, &t->buffer);
 
   s = format (s, "\n%U", format_white_space, indent);
 

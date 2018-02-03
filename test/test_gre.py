@@ -6,7 +6,7 @@ from logging import *
 from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppDot1QSubint
 from vpp_gre_interface import VppGreInterface, VppGre6Interface
-from vpp_ip_route import VppIpRoute, VppRoutePath
+from vpp_ip_route import VppIpRoute, VppRoutePath, DpoProto, VppIpTable
 from vpp_papi_provider import L2_VTR_OP
 
 from scapy.packet import Raw
@@ -30,6 +30,9 @@ class TestGRE(VppTestCase):
 
         # create 3 pg interfaces - set one in a non-default table.
         self.create_pg_interfaces(range(3))
+
+        self.tbl = VppIpTable(self, 1)
+        self.tbl.add_vpp_config()
         self.pg1.set_table_ip4(1)
 
         for i in self.pg_interfaces:
@@ -43,11 +46,12 @@ class TestGRE(VppTestCase):
         self.pg2.resolve_ndp()
 
     def tearDown(self):
-        super(TestGRE, self).tearDown()
         for i in self.pg_interfaces:
             i.unconfig_ip4()
             i.unconfig_ip6()
             i.admin_down()
+        self.pg1.set_table_ip4(0)
+        super(TestGRE, self).tearDown()
 
     def create_stream_ip4(self, src_if, src_ip, dst_ip):
         pkts = []
@@ -503,6 +507,9 @@ class TestGRE(VppTestCase):
     def test_gre6(self):
         """ GRE IPv6 tunnel Tests """
 
+        self.pg1.config_ip6()
+        self.pg1.resolve_ndp()
+
         #
         # Create an L3 GRE tunnel.
         #  - set it admin up
@@ -516,11 +523,12 @@ class TestGRE(VppTestCase):
         gre_if.admin_up()
         gre_if.config_ip6()
 
-        route_via_tun = VppIpRoute(self, "4004::1", 128,
-                                   [VppRoutePath("0::0",
-                                                 gre_if.sw_if_index,
-                                                 is_ip6=1)],
-                                   is_ip6=1)
+        route_via_tun = VppIpRoute(
+            self, "4004::1", 128,
+            [VppRoutePath("0::0",
+                          gre_if.sw_if_index,
+                          proto=DpoProto.DPO_PROTO_IP6)],
+            is_ip6=1)
 
         route_via_tun.add_vpp_config()
 
@@ -542,11 +550,12 @@ class TestGRE(VppTestCase):
         #
         # Add a route that resolves the tunnel's destination
         #
-        route_tun_dst = VppIpRoute(self, "1002::1", 128,
-                                   [VppRoutePath(self.pg2.remote_ip6,
-                                                 self.pg2.sw_if_index,
-                                                 is_ip6=1)],
-                                   is_ip6=1)
+        route_tun_dst = VppIpRoute(
+            self, "1002::1", 128,
+            [VppRoutePath(self.pg2.remote_ip6,
+                          self.pg2.sw_if_index,
+                          proto=DpoProto.DPO_PROTO_IP6)],
+            is_ip6=1)
         route_tun_dst.add_vpp_config()
 
         #
@@ -565,6 +574,27 @@ class TestGRE(VppTestCase):
                                  self.pg2.local_ip6, "1002::1")
 
         #
+        # Test decap. decapped packets go out pg1
+        #
+        tx = self.create_tunnel_stream_6o6(self.pg2,
+                                           "1002::1",
+                                           self.pg2.local_ip6,
+                                           "2001::1",
+                                           self.pg1.remote_ip6)
+        self.vapi.cli("clear trace")
+        self.pg2.add_stream(tx)
+
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(len(tx))
+
+        #
+        # RX'd packet is UDP over IPv6, test the GRE header is gone.
+        #
+        self.assertFalse(rx[0].haslayer(GRE))
+        self.assertEqual(rx[0][IPv6].dst, self.pg1.remote_ip6)
+
+        #
         # test case cleanup
         #
         route_tun_dst.remove_vpp_config()
@@ -572,6 +602,7 @@ class TestGRE(VppTestCase):
         gre_if.remove_vpp_config()
 
         self.pg2.unconfig_ip6()
+        self.pg1.unconfig_ip6()
 
     def test_gre_vrf(self):
         """ GRE tunnel VRF Tests """
@@ -641,6 +672,25 @@ class TestGRE(VppTestCase):
 
         rx = self.pg0.get_capture(len(tx))
         self.verify_decapped_4o4(self.pg0, rx, tx)
+
+        #
+        # Send tunneled packets that match the created tunnel and
+        # but arrive on an interface that is not in the tunnel's
+        # encap VRF, these are dropped
+        #
+        self.vapi.cli("clear trace")
+        tx = self.create_tunnel_stream_4o4(self.pg2,
+                                           "2.2.2.2",
+                                           self.pg1.local_ip4,
+                                           self.pg0.local_ip4,
+                                           self.pg0.remote_ip4)
+        self.pg1.add_stream(tx)
+
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        self.pg0.assert_nothing_captured(
+            remark="GRE decap packets in wrong VRF")
 
         #
         # test case cleanup

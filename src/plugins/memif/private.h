@@ -17,17 +17,12 @@
 
 #include <vppinfra/lock.h>
 
-#define MEMIF_DEFAULT_SOCKET_DIR "/run/vpp"
 #define MEMIF_DEFAULT_SOCKET_FILENAME  "memif.sock"
 #define MEMIF_DEFAULT_RING_SIZE 1024
 #define MEMIF_DEFAULT_RX_QUEUES 1
 #define MEMIF_DEFAULT_TX_QUEUES 1
 #define MEMIF_DEFAULT_BUFFER_SIZE 2048
 
-#define MEMIF_VERSION_MAJOR		0
-#define MEMIF_VERSION_MINOR		1
-#define MEMIF_VERSION			((MEMIF_VERSION_MAJOR << 8) | MEMIF_VERSION_MINOR)
-#define MEMIF_COOKIE			0xdeadbeef
 #define MEMIF_MAX_M2S_RING		(vec_len (vlib_mains) - 1)
 #define MEMIF_MAX_S2M_RING		(vec_len (vlib_mains) - 1)
 #define MEMIF_MAX_REGION		255
@@ -45,36 +40,34 @@
 
 #if MEMIF_DEBUG == 1
 #define memif_file_add(a, b) do {					\
-  ASSERT (*a == ~0);							\
-  *a = unix_file_add (&unix_main, b);					\
-  clib_warning ("unix_file_add fd %d private_data %u idx %u",		\
+  *a = clib_file_add (&file_main, b);					\
+  clib_warning ("clib_file_add fd %d private_data %u idx %u",		\
 		(b)->file_descriptor, (b)->private_data, *a);		\
 } while (0)
 
 #define memif_file_del(a) do {						\
-  clib_warning ("unix_file_del idx %u",a - unix_main.file_pool);	\
-  unix_file_del (&unix_main, a);					\
+  clib_warning ("clib_file_del idx %u",a - file_main.file_pool);	\
+  clib_file_del (&file_main, a);					\
 } while (0)
 
 #define memif_file_del_by_index(a) do {					\
-  clib_warning ("unix_file_del idx %u", a);				\
-  unix_file_del_by_index (&unix_main, a);				\
+  clib_warning ("clib_file_del idx %u", a);				\
+  clib_file_del_by_index (&file_main, a);				\
 } while (0)
 #else
 #define memif_file_add(a, b) do {					\
-  ASSERT (*a == ~0);							\
-  *a = unix_file_add (&unix_main, b);					\
+  *a = clib_file_add (&file_main, b);					\
 } while (0)
-#define memif_file_del(a) unix_file_del(&unix_main, a)
-#define memif_file_del_by_index(a) unix_file_del_by_index(&unix_main, a)
+#define memif_file_del(a) clib_file_del(&file_main, a)
+#define memif_file_del_by_index(a) clib_file_del_by_index(&file_main, a)
 #endif
 
 typedef struct
 {
   u8 *filename;
-  int fd;
-  uword unix_file_index;
-  uword *pending_file_indices;
+  u32 socket_id;
+  clib_socket_t *sock;
+  clib_socket_t **pending_clients;
   int ref_cnt;
   int is_listener;
 
@@ -88,7 +81,7 @@ typedef struct
 typedef struct
 {
   void *shm;
-  u32 region_size;
+  memif_region_size_t region_size;
   int fd;
 } memif_region_t;
 
@@ -102,16 +95,16 @@ typedef struct
 {
   /* ring data */
   memif_ring_t *ring;
-  u8 log2_ring_size;
-  u8 region;
-  u32 offset;
+  memif_log2_ring_size_t log2_ring_size;
+  memif_region_index_t region;
+  memif_region_offset_t offset;
 
   u16 last_head;
   u16 last_tail;
 
   /* interrupts */
   int int_fd;
-  uword int_unix_file_index;
+  uword int_clib_file_index;
   u64 int_count;
 } memif_queue_t;
 
@@ -143,9 +136,8 @@ typedef struct
   u32 per_interface_next_index;
 
   /* socket connection */
+  clib_socket_t *sock;
   uword socket_file_index;
-  int conn_fd;
-  uword conn_unix_file_index;
   memif_msg_fifo_elt_t *msg_queue;
   u8 *secret;
 
@@ -155,15 +147,12 @@ typedef struct
   memif_queue_t *tx_queues;
 
   /* remote info */
-  pid_t remote_pid;
-  uid_t remote_uid;
-  gid_t remote_gid;
   u8 *remote_name;
   u8 *remote_if_name;
 
   struct
   {
-    u8 log2_ring_size;
+    memif_log2_ring_size_t log2_ring_size;
     u8 num_s2m_rings;
     u8 num_m2s_rings;
     u16 buffer_size;
@@ -171,7 +160,7 @@ typedef struct
 
   struct
   {
-    u8 log2_ring_size;
+    memif_log2_ring_size_t log2_ring_size;
     u8 num_s2m_rings;
     u8 num_m2s_rings;
     u16 buffer_size;
@@ -194,7 +183,7 @@ typedef struct
 
   /* pool of all unix socket files */
   memif_socket_file_t *socket_files;
-  mhash_t socket_file_index_by_filename;
+  uword *socket_file_index_by_sock_id;	/* map user socket id to pool idx */
 
   /* rx buffer cache */
   u32 **rx_buffers;
@@ -214,11 +203,11 @@ enum
 typedef struct
 {
   memif_interface_id_t id;
-  u8 *socket_filename;
+  u32 socket_id;
   u8 *secret;
   u8 is_master;
   memif_interface_mode_t mode:8;
-  u8 log2_ring_size;
+  memif_log2_ring_size_t log2_ring_size;
   u16 buffer_size;
   u8 hw_addr_set;
   u8 hw_addr[6];
@@ -229,27 +218,11 @@ typedef struct
   u32 sw_if_index;
 } memif_create_if_args_t;
 
+int memif_socket_filename_add_del (u8 is_add, u32 sock_id,
+				   u8 * sock_filename);
 int memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args);
 int memif_delete_if (vlib_main_t * vm, memif_if_t * mif);
 clib_error_t *memif_plugin_api_hookup (vlib_main_t * vm);
-
-#ifndef __NR_memfd_create
-#if defined __x86_64__
-#define __NR_memfd_create 319
-#elif defined __arm__
-#define __NR_memfd_create 385
-#elif defined __aarch64__
-#define __NR_memfd_create 279
-#else
-#error "__NR_memfd_create unknown for this architecture"
-#endif
-#endif
-
-static inline int
-memfd_create (const char *name, unsigned int flags)
-{
-  return syscall (__NR_memfd_create, name, flags);
-}
 
 static_always_inline void *
 memif_get_buffer (memif_if_t * mif, memif_ring_t * ring, u16 slot)
@@ -258,31 +231,20 @@ memif_get_buffer (memif_if_t * mif, memif_ring_t * ring, u16 slot)
   return mif->regions[region].shm + ring->desc[slot].offset;
 }
 
-#ifndef F_LINUX_SPECIFIC_BASE
-#define F_LINUX_SPECIFIC_BASE 1024
-#endif
-#define MFD_ALLOW_SEALING       0x0002U
-#define F_ADD_SEALS (F_LINUX_SPECIFIC_BASE + 9)
-#define F_GET_SEALS (F_LINUX_SPECIFIC_BASE + 10)
-
-#define F_SEAL_SEAL     0x0001	/* prevent further seals from being set */
-#define F_SEAL_SHRINK   0x0002	/* prevent file from shrinking */
-#define F_SEAL_GROW     0x0004	/* prevent file from growing */
-#define F_SEAL_WRITE    0x0008	/* prevent writes */
-
 /* memif.c */
 clib_error_t *memif_init_regions_and_queues (memif_if_t * mif);
 clib_error_t *memif_connect (memif_if_t * mif);
 void memif_disconnect (memif_if_t * mif, clib_error_t * err);
 
 /* socket.c */
-clib_error_t *memif_conn_fd_accept_ready (unix_file_t * uf);
-clib_error_t *memif_master_conn_fd_read_ready (unix_file_t * uf);
-clib_error_t *memif_slave_conn_fd_read_ready (unix_file_t * uf);
-clib_error_t *memif_master_conn_fd_write_ready (unix_file_t * uf);
-clib_error_t *memif_slave_conn_fd_write_ready (unix_file_t * uf);
-clib_error_t *memif_master_conn_fd_error (unix_file_t * uf);
-clib_error_t *memif_slave_conn_fd_error (unix_file_t * uf);
+void memif_socket_close (clib_socket_t ** sock);
+clib_error_t *memif_conn_fd_accept_ready (clib_file_t * uf);
+clib_error_t *memif_master_conn_fd_read_ready (clib_file_t * uf);
+clib_error_t *memif_slave_conn_fd_read_ready (clib_file_t * uf);
+clib_error_t *memif_master_conn_fd_write_ready (clib_file_t * uf);
+clib_error_t *memif_slave_conn_fd_write_ready (clib_file_t * uf);
+clib_error_t *memif_master_conn_fd_error (clib_file_t * uf);
+clib_error_t *memif_slave_conn_fd_error (clib_file_t * uf);
 clib_error_t *memif_msg_send_disconnect (memif_if_t * mif,
 					 clib_error_t * err);
 u8 *format_memif_device_name (u8 * s, va_list * args);

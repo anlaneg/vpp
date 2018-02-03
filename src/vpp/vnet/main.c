@@ -42,6 +42,11 @@ vpe_main_init (vlib_main_t * vm)
 }
 
 /*
+ * Default path for runtime data
+ */
+char *vlib_default_runtime_dir = "vpp";
+
+/*
  * Load plugins from /usr/lib/vpp_plugins by default
  */
 char *vlib_plugin_path = "/usr/lib/vpp_plugins";
@@ -288,6 +293,14 @@ os_exit (int code)
     }
   exit (code);
 }
+
+#ifdef BARRIER_TRACING
+void
+vl_msg_api_barrier_trace_context (const char *context)
+{
+  vlib_worker_threads[0].barrier_context = context;
+}
+#endif
 
 void
 vl_msg_api_barrier_sync (void)

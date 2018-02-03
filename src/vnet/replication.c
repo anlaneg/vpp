@@ -43,12 +43,13 @@ replication_prep (vlib_main_t * vm,
   ctx_id = ctx - rm->contexts[thread_index];
 
   /* Save state from vlib buffer */
-  ctx->saved_free_list_index = b0->free_list_index;
+  ctx->saved_free_list_index = vlib_buffer_get_free_list_index (b0);
   ctx->current_data = b0->current_data;
+  ctx->flags = b0->flags & VNET_BUFFER_FLAGS_VLAN_BITS;
 
   /* Set up vlib buffer hooks */
   b0->recycle_count = ctx_id;
-  b0->free_list_index = rm->recycle_list_index;
+  vlib_buffer_set_free_list_index (b0, rm->recycle_list_index);
   b0->flags |= VLIB_BUFFER_RECYCLE;
 
   /* Save feature state */
@@ -104,6 +105,10 @@ replication_recycle (vlib_main_t * vm, vlib_buffer_t * b0, u32 is_last)
   clib_memcpy (vnet_buffer (b0), ctx->vnet_buffer,
 	       sizeof (vnet_buffer_opaque_t));
 
+  /* Restore the vlan flags */
+  b0->flags &= ~VNET_BUFFER_FLAGS_VLAN_BITS;
+  b0->flags |= ctx->flags;
+
   /* Restore the packet start (current_data) and length */
   vlib_buffer_advance (b0, ctx->current_data - b0->current_data);
 
@@ -129,7 +134,7 @@ replication_recycle (vlib_main_t * vm, vlib_buffer_t * b0, u32 is_last)
        * This is the last replication in the list.
        * Restore original buffer free functionality.
        */
-      b0->free_list_index = ctx->saved_free_list_index;
+      vlib_buffer_set_free_list_index (b0, ctx->saved_free_list_index);
       b0->flags &= ~VLIB_BUFFER_RECYCLE;
 
       /* Free context back to its pool */
@@ -214,9 +219,8 @@ replication_recycle_callback (vlib_main_t * vm, vlib_buffer_free_list_t * fl)
 	  b0->flags |= VLIB_BUFFER_IS_RECYCLED;
 
 #if (CLIB_DEBUG > 0)
-	  if (vm->buffer_main->extern_buffer_mgmt == 0)
-	    vlib_buffer_set_known_state (vm, bi0,
-					 VLIB_BUFFER_KNOWN_ALLOCATED);
+	  if (vm->buffer_main->callbacks_registered == 0)
+	    vlib_buffer_set_known_state (bi0, VLIB_BUFFER_KNOWN_ALLOCATED);
 #endif
 
 	  /* If buffer is traced, mark frame as traced */

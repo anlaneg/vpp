@@ -56,7 +56,8 @@ static void
   vlib_main_t *vm = vlib_get_main ();
 
   rv = span_add_delete_entry (vm, ntohl (mp->sw_if_index_from),
-			      ntohl (mp->sw_if_index_to), mp->state);
+			      ntohl (mp->sw_if_index_to), mp->state,
+			      mp->is_l2 ? SPAN_FEAT_L2 : SPAN_FEAT_DEVICE);
 
   REPLY_MACRO (VL_API_SW_INTERFACE_SPAN_ENABLE_DISABLE_REPLY);
 }
@@ -65,22 +66,26 @@ static void
 vl_api_sw_interface_span_dump_t_handler (vl_api_sw_interface_span_dump_t * mp)
 {
 
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   span_interface_t *si;
   vl_api_sw_interface_span_details_t *rmp;
   span_main_t *sm = &span_main;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (!q)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
+  span_feat_t sf = mp->is_l2 ? SPAN_FEAT_L2 : SPAN_FEAT_DEVICE;
   /* *INDENT-OFF* */
   vec_foreach (si, sm->interfaces)
-    if (si->num_rx_mirror_ports || si->num_tx_mirror_ports)
+  {
+    span_mirror_t * rxm = &si->mirror_rxtx[sf][VLIB_RX];
+    span_mirror_t * txm = &si->mirror_rxtx[sf][VLIB_TX];
+    if (rxm->num_mirror_ports || txm->num_mirror_ports)
     {
       clib_bitmap_t *b;
       u32 i;
-      b = clib_bitmap_dup_or (si->rx_mirror_ports, si->tx_mirror_ports);
+      b = clib_bitmap_dup_or (rxm->mirror_ports, txm->mirror_ports);
       clib_bitmap_foreach (i, b, (
         {
           rmp = vl_msg_api_alloc (sizeof (*rmp));
@@ -90,12 +95,13 @@ vl_api_sw_interface_span_dump_t_handler (vl_api_sw_interface_span_dump_t * mp)
 
           rmp->sw_if_index_from = htonl (si - sm->interfaces);
           rmp->sw_if_index_to = htonl (i);
-          rmp->state = (u8) (clib_bitmap_get (si->rx_mirror_ports, i) +
-                             clib_bitmap_get (si->tx_mirror_ports, i) * 2);
+          rmp->state = (u8) (clib_bitmap_get (rxm->mirror_ports, i) +
+                             clib_bitmap_get (txm->mirror_ports, i) * 2);
 
-          vl_msg_api_send_shmem (q, (u8 *) & rmp);
+          vl_api_send_msg (reg, (u8 *) rmp);
         }));
       clib_bitmap_free (b);
+    }
     }
   /* *INDENT-ON* */
 }

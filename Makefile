@@ -17,8 +17,27 @@ CCACHE_DIR?=$(BR)/.ccache
 GDB?=gdb
 PLATFORM?=vpp
 SAMPLE_PLUGIN?=no
+MACHINE=$(shell uname -m)
 
-MINIMAL_STARTUP_CONF="unix { interactive }"
+,:=,
+define disable_plugins
+$(if $(1), \
+  "plugins {" \
+  $(patsubst %,"plugin %_plugin.so { disable }",$(subst $(,), ,$(1))) \
+  " }" \
+  ,)
+endef
+
+MINIMAL_STARTUP_CONF="							\
+unix { 									\
+	interactive 							\
+	cli-listen /run/vpp/cli.sock					\
+	gid $(shell id -g)						\
+	$(if $(wildcard startup.vpp),"exec startup.vpp",)		\
+}									\
+$(if $(DPDK_CONFIG), "dpdk { $(DPDK_CONFIG) }",)			\
+$(call disable_plugins,$(DISABLED_PLUGINS))				\
+"
 
 GDB_ARGS= -ex "handle SIGUSR1 noprint nostop"
 
@@ -39,45 +58,82 @@ else ifeq ($(filter rhel centos fedora opensuse,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
+# +libganglia1-dev if building the gmond plugin
+
 #定义deb包依赖及rpm包依赖信息
-DEB_DEPENDS  = curl build-essential autoconf automake bison libssl-dev ccache
-DEB_DEPENDS += debhelper dkms git libtool libganglia1-dev libapr1-dev dh-systemd
+DEB_DEPENDS  = curl build-essential autoconf automake ccache
+DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
-DEB_DEPENDS += lcov chrpath autoconf nasm indent
-DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6
+DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
+DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6 check
+DEB_DEPENDS += libboost-all-dev libffi-dev python-ply
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
+	DEB_DEPENDS += libssl-dev
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
 	DEB_DEPENDS += openjdk-8-jdk-headless
+	DEB_DEPENDS += libssl-dev
 	APT_ARGS = -t jessie-backports
-else
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-9)
 	DEB_DEPENDS += default-jdk-headless
+	DEB_DEPENDS += libssl1.0-dev
+else 
+	DEB_DEPENDS += default-jdk-headless
+	DEB_DEPENDS += libssl-dev
 endif
 
 RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel yum-utils
-RPM_DEPENDS += openssl-devel https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm apr-devel
-RPM_DEPENDS += python-devel
+RPM_DEPENDS += apr-devel
+RPM_DEPENDS += numactl-devel
+RPM_DEPENDS += check check-devel
+RPM_DEPENDS += boost boost-devel
+RPM_DEPENDS += subunit subunit-devel
+RPM_DEPENDS += selinux-policy selinux-policy-devel
+
 ifeq ($(OS_ID)-$(OS_VERSION_ID),fedora-25)
+	RPM_DEPENDS += openssl-devel
+	RPM_DEPENDS += python-devel python2-ply
+	RPM_DEPENDS += python2-virtualenv
+	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
+else ifeq ($(shell if [ "$(OS_ID)" = "fedora" ]; then test $(OS_VERSION_ID) -gt 25; echo $$?; fi),0)
+	RPM_DEPENDS += compat-openssl10-devel
+	RPM_DEPENDS += python2-devel python2-ply
 	RPM_DEPENDS += python2-virtualenv
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else
+	RPM_DEPENDS += openssl-devel
+	RPM_DEPENDS += python-devel python-ply
 	RPM_DEPENDS += python-virtualenv
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 endif
-RPM_DEPENDS += chrpath libffi-devel rpm-build
-RPM_DEPENDS += https://kojipkgs.fedoraproject.org//packages/nasm/2.12.02/2.fc26/x86_64/nasm-2.12.02-2.fc26.x86_64.rpm
 
-#EPEL依赖信息(OS_ID不是rhel centos)
-EPEL_DEPENDS = libconfuse-devel ganglia-devel epel-rpm-macros
-ifeq ($(filter rhel centos,$(OS_ID)),$(OS_ID))
-	EPEL_DEPENDS += lcov
+# +ganglia-devel if building the ganglia plugin
+
+RPM_DEPENDS += chrpath libffi-devel rpm-build
+
+SUSE_NAME= $(shell grep '^NAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
+RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
+RPM_SUSE_BUILDTOOLS_DEPS += clang indent libtool make python-ply
+
+RPM_SUSE_DEVEL_DEPS = glibc-devel-static java-1_8_0-openjdk-devel libnuma-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel
+
+RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
+RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
+
+RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
+
+ifeq ($(OS_ID),opensuse)
+ifneq ($(SUSE_NAME),Tumbleweed)
+	RPM_SUSE_DEVEL_DEPS += boost_1_61-devel gcc6
+	RPM_SUSE_PYTHON_DEPS += python-virtualenv
 else
-	RPM_DEPENDS += lcov
+	RPM_SUSE_DEVEL_DEPS = libboost_headers-devel libboost_thread-devel gcc
+	RPM_SUSE_PYTHON_DEPS += python2-virtualenv
+endif
 endif
 
-RPM_SUSE_DEPENDS = autoconf automake bison ccache chrpath distribution-release gcc6 glibc-devel-static
-RPM_SUSE_DEPENDS += java-1_8_0-openjdk-devel libopenssl-devel libtool lsb-release make openssl-devel
-RPM_SUSE_DEPENDS += python-devel python-pip python-rpm-macros shadow
+RPM_SUSE_DEPENDS += $(RPM_SUSE_BUILDTOOLS_DEPS) $(RPM_SUSE_DEVEL_DEPS) $(RPM_SUSE_PYTHON_DEPS) $(RPM_SUSE_PLATFORM_DEPS)
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -146,16 +202,21 @@ help:
 	@echo " test-checkstyle     - check PEP8 compliance for test framework"
 	@echo ""
 	@echo "Make Arguments:"
-	@echo " V=[0|1]             - set build verbosity level"
-	@echo " STARTUP_CONF=<path> - startup configuration file"
-	@echo "                       (e.g. /etc/vpp/startup.conf)"
-	@echo " STARTUP_DIR=<path>  - startup drectory (e.g. /etc/vpp)"
-	@echo "                       It also sets STARTUP_CONF if"
-	@echo "                       startup.conf file is present"
-	@echo " GDB=<path>          - gdb binary to use for debugging"
-	@echo " PLATFORM=<name>     - target platform. default is vpp"
-	@echo " TEST=<filter>       - apply filter to test set, see test-help"
-	@echo " SAMPLE_PLUGIN=yes   - in addition build/run/debug sample plugin"
+	@echo " V=[0|1]                  - set build verbosity level"
+	@echo " STARTUP_CONF=<path>      - startup configuration file"
+	@echo "                            (e.g. /etc/vpp/startup.conf)"
+	@echo " STARTUP_DIR=<path>       - startup drectory (e.g. /etc/vpp)"
+	@echo "                            It also sets STARTUP_CONF if"
+	@echo "                            startup.conf file is present"
+	@echo " GDB=<path>               - gdb binary to use for debugging"
+	@echo " PLATFORM=<name>          - target platform. default is vpp"
+	@echo " TEST=<filter>            - apply filter to test set, see test-help"
+	@echo " DPDK_CONFIG=<conf>       - add specified dpdk config commands to"
+	@echo "                            autogenerated startup.conf"
+	@echo "                            (e.g. \"no-pci\" )"
+	@echo " SAMPLE_PLUGIN=yes        - in addition build/run/debug sample plugin"
+	@echo " DISABLED_PLUGINS=<list>  - comma separated list of plugins which"
+	@echo "                            should not be loaded"
 	@echo ""
 	@echo "Current Argument Values:"
 	@echo " V                 = $(V)"
@@ -164,7 +225,9 @@ help:
 	@echo " GDB               = $(GDB)"
 	@echo " PLATFORM          = $(PLATFORM)"
 	@echo " DPDK_VERSION      = $(DPDK_VERSION)"
+	@echo " DPDK_CONFIG       = $(DPDK_CONFIG)"
 	@echo " SAMPLE_PLUGIN     = $(SAMPLE_PLUGIN)"
+	@echo " DISABLED_PLUGINS  = $(DISABLED_PLUGINS)"
 
 $(BR)/.bootstrap.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
@@ -181,13 +244,9 @@ ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 	fi ; \
 	exit 0
 else ifneq ("$(wildcard /etc/redhat-release)","")
-	@for i in $(RPM_DEPENDS) $(EPEL_DEPENDS) ; do \
+	@for i in $(RPM_DEPENDS) ; do \
 	    RPM=$$(basename -s .rpm "$${i##*/}" | cut -d- -f1,2,3)  ;	\
-	    if [[ "$$RPM" =~ "epel-release-latest" ]] ; then		\
-	        MISSING+=$$(rpm -q epel-release | grep "^package") ;	\
-	    else							\
-		MISSING+=$$(rpm -q $$RPM | grep "^package")	   ;    \
-	    fi							   ;    \
+	    MISSING+=$$(rpm -q $$RPM | grep "^package")	   ;    \
 	done							   ;	\
 	if [ -n "$$MISSING" ] ; then \
 	  echo "Please install missing RPMs: \n$$MISSING\n" ; \
@@ -234,12 +293,12 @@ endif
 else ifneq ("$(wildcard /etc/redhat-release)","")
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
-	@sudo -E yum install $(CONFIRM) --enablerepo=epel $(EPEL_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
 else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
-	@sudo -E zypper -n install -y $(RPM_SUSE_DEPENDS)
+	@sudo -E zypper refresh
+	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else
-	$(error "This option currently works only on Ubuntu, Debian or Centos systems")
+	$(error "This option currently works only on Ubuntu, Debian, Centos or openSUSE systems")
 endif
 
 #定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TAG=argv1
@@ -258,12 +317,17 @@ DIST_FILE = $(BR)/vpp-$(shell src/scripts/version).tar
 DIST_SUBDIR = vpp-$(shell src/scripts/version|cut -f1 -d-)
 
 dist:
-	@git archive \
-	  --prefix=$(DIST_SUBDIR)/ \
-	  --format=tar \
-	  -o $(DIST_FILE) \
-	  HEAD
-	@git describe > $(BR)/.version
+	@if git rev-parse 2> /dev/null ; then \
+	    git archive \
+	      --prefix=$(DIST_SUBDIR)/ \
+	      --format=tar \
+	      -o $(DIST_FILE) \
+	    HEAD ; \
+	    git describe > $(BR)/.version ; \
+	else \
+	    (cd .. ; tar -cf $(DIST_FILE) $(DIST_SUBDIR) --exclude=*.tar) ; \
+	    src/scripts/version > $(BR)/.version ; \
+	fi
 	@tar --append \
 	  --file $(DIST_FILE) \
 	  --transform='s,.*/.version,$(DIST_SUBDIR)/src/scripts/.version,' \
@@ -279,7 +343,7 @@ build: $(BR)/.bootstrap.ok
 wipedist:
 	@$(RM) $(BR)/*.tar.xz
 
-wipe: wipedist $(BR)/.bootstrap.ok
+wipe: wipedist test-wipe $(BR)/.bootstrap.ok
 	$(call make,$(PLATFORM)_debug,$(addsuffix -wipe,$(TARGETS)))
 
 rebuild: wipe build
@@ -287,7 +351,7 @@ rebuild: wipe build
 build-release: $(BR)/.bootstrap.ok
 	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
 
-wipe-release: $(BR)/.bootstrap.ok
+wipe-release: test-wipe $(BR)/.bootstrap.ok
 	$(call make,$(PLATFORM),$(addsuffix -wipe,$(TARGETS)))
 
 rebuild-release: wipe-release build-release
@@ -308,6 +372,8 @@ define test
 	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
+	  OS_ID=$(OS_ID) \
+	  CACHE_OUTPUT=$(CACHE_OUTPUT) \
 	  $(3)
 endef
 
@@ -411,6 +477,9 @@ pkg-deb:
 pkg-rpm: dist
 	make -C extras/rpm
 
+pkg-srpm: dist
+	make -C extras/rpm srpm
+
 dpdk-install-dev:
 	make -C dpdk install-$(PKG)
 
@@ -474,7 +543,7 @@ endif
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
 ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-16.04)
-	@make test
+	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
 endif
 
 

@@ -246,7 +246,7 @@ bfd_add_udp4_transport (vlib_main_t * vm, u32 bi, const bfd_session_t * bs,
   const bfd_udp_key_t *key = &bus->key;
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
 
-  b->flags |= VNET_BUFFER_LOCALLY_ORIGINATED;
+  b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
   vnet_buffer (b)->ip.adj_index[VLIB_RX] = bus->adj_index;
   vnet_buffer (b)->ip.adj_index[VLIB_TX] = bus->adj_index;
   vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
@@ -301,7 +301,7 @@ bfd_add_udp6_transport (vlib_main_t * vm, u32 bi, const bfd_session_t * bs,
   const bfd_udp_key_t *key = &bus->key;
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
 
-  b->flags |= VNET_BUFFER_LOCALLY_ORIGINATED;
+  b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
   vnet_buffer (b)->ip.adj_index[VLIB_RX] = bus->adj_index;
   vnet_buffer (b)->ip.adj_index[VLIB_TX] = bus->adj_index;
   vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
@@ -843,7 +843,7 @@ bfd_udp4_find_headers (vlib_buffer_t * b, ip4_header_t ** ip4,
 		       udp_header_t ** udp)
 {
   /* sanity check first */
-  const i32 start = vnet_buffer (b)->ip.start_of_ip_header;
+  const i32 start = vnet_buffer (b)->l3_hdr_offset;
   if (start < 0 && start < sizeof (b->pre_data))
     {
       BFD_ERR ("Start of ip header is before pre_data, ignoring");
@@ -1000,7 +1000,7 @@ bfd_udp6_find_headers (vlib_buffer_t * b, ip6_header_t ** ip6,
 		       udp_header_t ** udp)
 {
   /* sanity check first */
-  const i32 start = vnet_buffer (b)->ip.start_of_ip_header;
+  const i32 start = vnet_buffer (b)->l3_hdr_offset;
   if (start < 0 && start < sizeof (b->pre_data))
     {
       BFD_ERR ("Start of ip header is before pre_data, ignoring");

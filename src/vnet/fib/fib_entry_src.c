@@ -29,12 +29,6 @@
  */
 static fib_entry_src_vft_t fib_entry_src_vft[FIB_SOURCE_MAX];
 
-static fib_protocol_t
-fib_entry_get_proto (const fib_entry_t * fib_entry)
-{
-    return (fib_entry->fe_prefix.fp_proto);
-}
-
 void
 fib_entry_src_register (fib_source_t source,
 			const fib_entry_src_vft_t *vft)
@@ -114,8 +108,7 @@ fib_entry_is_sourced (fib_node_index_t fib_entry_index,
 
 static fib_entry_src_t *
 fib_entry_src_find_or_create (fib_entry_t *fib_entry,
-			      fib_source_t source,
-			      u32 *index)
+			      fib_source_t source)
 {
     fib_entry_src_t *esrc;
 
@@ -193,6 +186,7 @@ typedef struct fib_entry_src_collect_forwarding_ctx_t_
     const fib_entry_src_t *esrc;
     fib_forward_chain_type_t fct;
     int n_recursive_constrained;
+    u16 preference;
 } fib_entry_src_collect_forwarding_ctx_t;
 
 /**
@@ -264,6 +258,23 @@ fib_entry_chain_type_fixup (const fib_entry_t *entry,
     return (dfct);
 }
 
+static dpo_proto_t
+fib_prefix_get_payload_proto (const fib_prefix_t *pfx)
+{
+    switch (pfx->fp_proto)
+    {
+    case FIB_PROTOCOL_IP4:
+        return (DPO_PROTO_IP4);
+    case FIB_PROTOCOL_IP6:
+        return (DPO_PROTO_IP6);
+    case FIB_PROTOCOL_MPLS:
+        return (pfx->fp_payload_proto);
+    }
+
+    ASSERT(0);
+    return (DPO_PROTO_IP4);
+}
+
 static void
 fib_entry_src_get_path_forwarding (fib_node_index_t path_index,
                                    fib_entry_src_collect_forwarding_ctx_t *ctx)
@@ -280,6 +291,7 @@ fib_entry_src_get_path_forwarding (fib_node_index_t path_index,
     case FIB_FORW_CHAIN_TYPE_UNICAST_IP6:
     case FIB_FORW_CHAIN_TYPE_MCAST_IP4:
     case FIB_FORW_CHAIN_TYPE_MCAST_IP6:
+    case FIB_FORW_CHAIN_TYPE_BIER:
         /*
          * EOS traffic with no label to stack, we need the IP Adj
          */
@@ -317,7 +329,7 @@ fib_entry_src_get_path_forwarding (fib_node_index_t path_index,
                                                                       ctx->fct),
                                            &nh->path_dpo);
             fib_path_stack_mpls_disp(path_index,
-                                     ctx->fib_entry->fe_prefix.fp_payload_proto,
+                                     fib_prefix_get_payload_proto(&ctx->fib_entry->fe_prefix),
                                      &nh->path_dpo);
 
             break;
@@ -350,6 +362,22 @@ fib_entry_src_collect_forwarding (fib_node_index_t pl_index,
     if (fib_path_is_recursive_constrained(path_index))
     {
         ctx->n_recursive_constrained += 1;
+    }
+    if (0xffff == ctx->preference)
+    {
+        /*
+         * not set a preference yet, so the first path we encounter
+         * sets the preference we are collecting.
+         */
+        ctx->preference = fib_path_get_preference(path_index);
+    }
+    else if (ctx->preference != fib_path_get_preference(path_index))
+    {
+        /*
+         * this path does not belong to the same preference as the
+         * previous paths encountered. we are done now.
+         */
+        return (FIB_PATH_LIST_WALK_STOP);
     }
 
     /*
@@ -422,6 +450,7 @@ fib_entry_src_mk_lb (fib_entry_t *fib_entry,
         .next_hops = NULL,
         .n_recursive_constrained = 0,
         .fct = fct,
+        .preference = 0xffff,
     };
 
     /*
@@ -468,8 +497,8 @@ fib_entry_src_mk_lb (fib_entry_t *fib_entry,
         }
         else
         {
+            fib_protocol_t flow_hash_proto;
             flow_hash_config_t fhc;
-            fib_protocol_t fp;
 
             /*
              * if the protocol for the LB we are building does not match that
@@ -477,16 +506,17 @@ fib_entry_src_mk_lb (fib_entry_t *fib_entry,
              * then the fib_index is not an index that relates to the table
              * type we need. So get the default flow-hash config instead.
              */
-            fp = dpo_proto_to_fib(lb_proto);
-
-            if (fib_entry->fe_prefix.fp_proto != fp)
+            flow_hash_proto = dpo_proto_to_fib(lb_proto);
+            if (fib_entry->fe_prefix.fp_proto != flow_hash_proto)
             {
-                fhc = fib_table_get_default_flow_hash_config(fp);
+                fhc = fib_table_get_default_flow_hash_config(flow_hash_proto);
             }
             else
             {
-                fhc = fib_table_get_flow_hash_config(fib_entry->fe_fib_index, fp);
+                fhc = fib_table_get_flow_hash_config(fib_entry->fe_fib_index,
+                                                     flow_hash_proto);
             }
+
             dpo_set(dpo_lb,
                     DPO_LOAD_BALANCE,
                     lb_proto,
@@ -623,6 +653,249 @@ fib_entry_recursive_loop_detect_i (fib_node_index_t path_list_index)
     vec_free(entries);
 }
 
+/*
+ * fib_entry_src_action_copy
+ *
+ * copy a source data from another entry to this one
+ */
+fib_entry_t *
+fib_entry_src_action_copy (fib_entry_t *fib_entry,
+                           const fib_entry_src_t *orig_src)
+{
+    fib_entry_src_t *esrc;
+
+    esrc = fib_entry_src_find_or_create(fib_entry, orig_src->fes_src);
+
+    *esrc = *orig_src;
+    esrc->fes_ref_count = 1;
+    esrc->fes_flags |= FIB_ENTRY_SRC_FLAG_INHERITED;
+    esrc->fes_flags &= ~FIB_ENTRY_SRC_FLAG_ACTIVE;
+    esrc->fes_entry_flags &= ~FIB_ENTRY_FLAG_COVERED_INHERIT;
+
+    /*
+     * the source owns a lock on the entry
+     */
+    fib_path_list_lock(esrc->fes_pl);
+    fib_entry_lock(fib_entry_get_index(fib_entry));
+
+    return (fib_entry);
+}
+
+/*
+ * fib_entry_src_action_update
+ *
+ * copy a source data from another entry to this one
+ */
+static fib_entry_src_t *
+fib_entry_src_action_update_from_cover (fib_entry_t *fib_entry,
+                                        const fib_entry_src_t *orig_src)
+{
+    fib_entry_src_t *esrc;
+
+    esrc = fib_entry_src_find_or_create(fib_entry, orig_src->fes_src);
+
+    /*
+     * the source owns a lock on the entry
+     */
+    fib_path_list_unlock(esrc->fes_pl);
+    esrc->fes_pl = orig_src->fes_pl;
+    fib_path_list_lock(esrc->fes_pl);
+
+    return (esrc);
+}
+
+static fib_table_walk_rc_t
+fib_entry_src_covered_inherit_add_i (fib_entry_t *fib_entry,
+                                     const fib_entry_src_t *cover_src)
+{
+    fib_entry_src_t *esrc;
+
+    esrc = fib_entry_src_find(fib_entry, cover_src->fes_src, NULL);
+
+    if (cover_src == esrc)
+    {
+        return (FIB_TABLE_WALK_CONTINUE);
+    }
+
+    if (NULL != esrc)
+    {
+        /*
+         * the covered entry already has this source.
+         */
+        if (esrc->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT)
+        {
+            /*
+             * the covered source is itself a COVERED_INHERIT, i.e.
+             * it also pushes this source down the sub-tree.
+             * We consider this more specfic covered to be the owner
+             * of the sub-tree from this point down.
+             */
+            return (FIB_TABLE_WALK_SUB_TREE_STOP);
+        }
+        if (esrc->fes_flags & FIB_ENTRY_SRC_FLAG_INHERITED)
+        {
+            /*
+             * The covered's source data has been inherited, presumably
+             * from this cover, i.e. this is a modify.
+             */
+            esrc = fib_entry_src_action_update_from_cover(fib_entry, cover_src);
+            fib_entry_source_change(fib_entry, esrc->fes_src, esrc->fes_src);
+        }
+        else
+        {
+            /*
+             * The covered's source was not inherited and it is also
+             * not inherting. Nevertheless, it still owns the sub-tree from 
+             * this point down.
+             */
+            return (FIB_TABLE_WALK_SUB_TREE_STOP);
+        }
+    }
+    else
+    {
+        /*
+         * The covered does not have this source - add it.
+         */
+        fib_source_t best_source;
+
+        best_source = fib_entry_get_best_source(
+            fib_entry_get_index(fib_entry));
+
+        fib_entry_src_action_copy(fib_entry, cover_src);
+        fib_entry_source_change(fib_entry, best_source, cover_src->fes_src);
+
+    }
+    return (FIB_TABLE_WALK_CONTINUE);
+}
+
+static fib_table_walk_rc_t
+fib_entry_src_covered_inherit_walk_add (fib_node_index_t fei,
+                                        void *ctx)
+{
+    return (fib_entry_src_covered_inherit_add_i(fib_entry_get(fei), ctx));
+}
+
+static fib_table_walk_rc_t
+fib_entry_src_covered_inherit_walk_remove (fib_node_index_t fei,
+                                           void *ctx)
+{
+    fib_entry_src_t *cover_src, *esrc;
+    fib_entry_t *fib_entry;
+
+    fib_entry = fib_entry_get(fei);
+
+    cover_src = ctx;
+    esrc = fib_entry_src_find(fib_entry, cover_src->fes_src, NULL);
+
+    if (cover_src == esrc)
+    {
+        return (FIB_TABLE_WALK_CONTINUE);
+    }
+
+    if (NULL != esrc)
+    {
+        /*
+         * the covered entry already has this source.
+         */
+        if (esrc->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT)
+        {
+            /*
+             * the covered source is itself a COVERED_INHERIT, i.e.
+             * it also pushes this source down the sub-tree.
+             * We consider this more specfic covered to be the owner
+             * of the sub-tree from this point down.
+             */
+            return (FIB_TABLE_WALK_SUB_TREE_STOP);
+        }
+        if (esrc->fes_flags & FIB_ENTRY_SRC_FLAG_INHERITED)
+        {
+            /*
+             * The covered's source data has been inherited, presumably
+             * from this cover
+             */
+            fib_entry_src_flag_t remaining;
+
+            remaining = fib_entry_special_remove(fei, cover_src->fes_src);
+
+            ASSERT(FIB_ENTRY_SRC_FLAG_ADDED == remaining);
+        }
+        else
+        {
+            /*
+             * The covered's source was not inherited and it is also
+             * not inherting. Nevertheless, it still owns the sub-tree from 
+             * this point down.
+             */
+            return (FIB_TABLE_WALK_SUB_TREE_STOP);
+        }
+    }
+    else
+    {
+        /*
+         * The covered does not have this source - that's an error,
+         * since it should have inherited, but there is nothing we can do
+         * about it now.
+         */
+    }
+    return (FIB_TABLE_WALK_CONTINUE);
+}
+
+void
+fib_entry_src_inherit (const fib_entry_t *cover,
+                       fib_entry_t *covered)
+{
+    CLIB_UNUSED(fib_source_t source);
+    const fib_entry_src_t *src;
+
+    FOR_EACH_SRC_ADDED(cover, src, source,
+    ({
+        if ((src->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT) ||
+            (src->fes_flags & FIB_ENTRY_SRC_FLAG_INHERITED))
+        {
+            fib_entry_src_covered_inherit_add_i(covered, src);
+        }
+    }))
+}
+
+static void
+fib_entry_src_covered_inherit_add (fib_entry_t *fib_entry,
+                                   fib_source_t source)
+
+{
+    fib_entry_src_t *esrc;
+
+    esrc = fib_entry_src_find(fib_entry, source, NULL);
+
+    ASSERT(esrc->fes_flags & FIB_ENTRY_SRC_FLAG_ACTIVE);
+
+    if ((esrc->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT) ||
+        (esrc->fes_flags & FIB_ENTRY_SRC_FLAG_INHERITED))
+    {
+        fib_table_sub_tree_walk(fib_entry->fe_fib_index,
+                                fib_entry->fe_prefix.fp_proto,
+                                &fib_entry->fe_prefix,
+                                fib_entry_src_covered_inherit_walk_add,
+                                esrc);
+    }
+}
+
+static void
+fib_entry_src_covered_inherit_remove (fib_entry_t *fib_entry,
+                                      fib_entry_src_t *esrc)
+
+{
+    ASSERT(!(esrc->fes_flags & FIB_ENTRY_SRC_FLAG_ACTIVE));
+
+    if (esrc->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT)
+    {
+        fib_table_sub_tree_walk(fib_entry->fe_fib_index,
+                                fib_entry->fe_prefix.fp_proto,
+                                &fib_entry->fe_prefix,
+                                fib_entry_src_covered_inherit_walk_remove,
+                                esrc);
+    }
+}
+
 void
 fib_entry_src_action_activate (fib_entry_t *fib_entry,
 			       fib_source_t source)
@@ -667,6 +940,11 @@ fib_entry_src_action_activate (fib_entry_t *fib_entry,
     FIB_ENTRY_DBG(fib_entry, "activate: %d",
 		  fib_entry->fe_parent);
 
+    /*
+     * If this source should push its state to covered prefixs, do that now.
+     */
+    fib_entry_src_covered_inherit_add(fib_entry, source);
+
     if (0 != houston_we_are_go_for_install)
     {
 	fib_entry_src_action_install(fib_entry, source);
@@ -697,6 +975,14 @@ fib_entry_src_action_deactivate (fib_entry_t *fib_entry,
     esrc->fes_flags &= ~FIB_ENTRY_SRC_FLAG_ACTIVE;
 
     FIB_ENTRY_DBG(fib_entry, "deactivate: %d", fib_entry->fe_parent);
+
+    /*
+     * If this source should pull its state from covered prefixs, do that now.
+     * If this source also has the INHERITED flag set then it has a cover
+     * that wants to push down forwarding. We only want the covereds to see
+     * one update.
+     */
+    fib_entry_src_covered_inherit_remove(fib_entry, esrc);
 
     /*
      * un-link from an old path-list. Check for any loops this will clear
@@ -747,6 +1033,8 @@ fib_entry_src_action_reactivate (fib_entry_t *fib_entry,
 
     if (fib_entry->fe_parent != esrc->fes_pl)
     {
+        int remain_installed;
+
 	/*
 	 * un-link from an old path-list. Check for any loops this will clear
 	 */
@@ -780,6 +1068,30 @@ fib_entry_src_action_reactivate (fib_entry_t *fib_entry,
 
 	fib_entry_recursive_loop_detect_i(fib_entry->fe_parent);
 	fib_path_list_unlock(path_list_index);
+
+        /*
+         * call the source to reactive and get the go/no-go to remain installed
+         */
+        if (NULL != fib_entry_src_vft[source].fesv_reactivate)
+        {
+            remain_installed =
+                fib_entry_src_vft[source].fesv_reactivate(esrc, fib_entry);
+        }
+        else
+        {
+            remain_installed = 1;
+        }
+
+        /*
+         * If this source should push its state to covered prefixs, do that now.
+         */
+        fib_entry_src_covered_inherit_add(fib_entry, source);
+
+        if (!remain_installed)
+        {
+            fib_entry_src_action_uninstall(fib_entry);
+            return;
+        }
     }
     fib_entry_src_action_install(fib_entry, source);
     fib_entry_src_action_fwd_update(fib_entry, source);
@@ -819,7 +1131,7 @@ fib_entry_src_action_add (fib_entry_t *fib_entry,
     fib_node_index_t fib_entry_index;
     fib_entry_src_t *esrc;
 
-    esrc = fib_entry_src_find_or_create(fib_entry, source, NULL);
+    esrc = fib_entry_src_find_or_create(fib_entry, source);
 
     esrc->fes_ref_count++;
 
@@ -843,7 +1155,7 @@ fib_entry_src_action_add (fib_entry_t *fib_entry,
 	fib_entry_src_vft[source].fesv_add(esrc,
 					   fib_entry,
 					   flags,
-					   fib_entry_get_proto(fib_entry),
+                                           fib_entry_get_dpo_proto(fib_entry),
 					   dpo);
     }
 
@@ -878,10 +1190,12 @@ fib_entry_src_action_update (fib_entry_t *fib_entry,
     fib_node_index_t fib_entry_index, old_path_list_index;
     fib_entry_src_t *esrc;
 
-    esrc = fib_entry_src_find_or_create(fib_entry, source, NULL);
+    esrc = fib_entry_src_find_or_create(fib_entry, source);
 
     if (NULL == esrc)
+    {
 	return (fib_entry_src_action_add(fib_entry, source, flags, dpo));
+    }
 
     old_path_list_index = esrc->fes_pl;
     esrc->fes_entry_flags = flags;
@@ -896,7 +1210,7 @@ fib_entry_src_action_update (fib_entry_t *fib_entry,
 	fib_entry_src_vft[source].fesv_add(esrc,
 					   fib_entry,
 					   flags,
-					   fib_entry_get_proto(fib_entry),
+					   fib_entry_get_dpo_proto(fib_entry),
 					   dpo);
     }
 
@@ -910,6 +1224,60 @@ fib_entry_src_action_update (fib_entry_t *fib_entry,
     return (fib_entry);
 }
 
+fib_entry_src_flag_t
+fib_entry_src_action_remove_or_update_inherit (fib_entry_t *fib_entry,
+                                               fib_source_t source)
+{
+    fib_entry_src_t *esrc;
+
+    esrc = fib_entry_src_find(fib_entry, source, NULL);
+
+    if (NULL == esrc)
+        return (FIB_ENTRY_SRC_FLAG_ACTIVE);
+
+    if ((esrc->fes_entry_flags & FIB_ENTRY_FLAG_COVERED_INHERIT) &&
+        (esrc->fes_flags & FIB_ENTRY_SRC_FLAG_INHERITED))
+    {
+        fib_entry_src_t *cover_src;
+        fib_node_index_t coveri;
+        fib_entry_t *cover;
+
+        /*
+         * this source was pushing inherited state, but so is its
+         * cover. Now that this source is going away, we need to
+         * pull the covers forwarding and use it to update the covereds.
+         * Go grab the path-list from the cover, rather than start a walk from
+         * the cover, so we don't recursively update this entry.
+         */
+        coveri = fib_table_get_less_specific(fib_entry->fe_fib_index,
+                                             &fib_entry->fe_prefix);
+
+        /*
+         * only the default route has itself as its own cover, but the
+         * default route cannot have inherited from something else.
+         */
+        ASSERT(coveri != fib_entry_get_index(fib_entry));
+
+        cover = fib_entry_get(coveri);
+        cover_src = fib_entry_src_find(cover, source, NULL);
+
+        ASSERT(NULL != cover_src);
+
+        esrc = fib_entry_src_action_update_from_cover(fib_entry, cover_src);
+        esrc->fes_entry_flags &= ~FIB_ENTRY_FLAG_COVERED_INHERIT;
+
+        /*
+         * Now push the new state from the cover down to the covereds
+         */
+        fib_entry_src_covered_inherit_add(fib_entry, source);
+
+        return (esrc->fes_flags);
+    }
+    else
+    {
+        return (fib_entry_src_action_remove(fib_entry, source));
+    }
+}
 
 fib_entry_src_flag_t
 fib_entry_src_action_remove (fib_entry_t *fib_entry,
@@ -938,7 +1306,7 @@ fib_entry_src_action_remove (fib_entry_t *fib_entry,
 
     if (esrc->fes_flags & FIB_ENTRY_SRC_FLAG_ACTIVE)
     {
-	fib_entry_src_action_deactivate(fib_entry, source);
+        fib_entry_src_action_deactivate(fib_entry, source);
     }
 
     old_path_list = esrc->fes_pl;
@@ -1046,6 +1414,10 @@ fib_entry_flags_update (const fib_entry_t *fib_entry,
 	{
 	    esrc->fes_entry_flags &= ~FIB_ENTRY_FLAG_ATTACHED;
 	}
+	if (rpath->frp_flags & FIB_ROUTE_PATH_DEAG)
+	{
+	    esrc->fes_entry_flags |= FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT;
+	}
     }
     if (fib_route_attached_cross_table(fib_entry, rpath))
     {
@@ -1088,8 +1460,7 @@ fib_entry_src_action_path_add (fib_entry_t *fib_entry,
                                      source,
                                      flags,
                                      drop_dpo_get(
-                                         fib_proto_to_dpo(
-                                             fib_entry_get_proto(fib_entry))));
+                                         fib_entry_get_dpo_proto(fib_entry)));
 	esrc = fib_entry_src_find(fib_entry, source, NULL);
     }
 
@@ -1148,9 +1519,12 @@ fib_entry_src_action_path_swap (fib_entry_t *fib_entry,
 					     source,
 					     flags,
                                              drop_dpo_get(
-                                                 fib_proto_to_dpo(
-                                                     fib_entry_get_proto(fib_entry))));
+                                                 fib_entry_get_dpo_proto(fib_entry)));
 	esrc = fib_entry_src_find(fib_entry, source, NULL);
+    }
+    else
+    {
+        esrc->fes_entry_flags = flags;
     }
 
     /*
@@ -1225,7 +1599,7 @@ fib_entry_src_action_path_remove (fib_entry_t *fib_entry,
 	/*
 	 * no more paths left from this source
 	 */
-	fib_entry_src_action_remove(fib_entry, source);
+	fib_entry_src_action_remove_or_update_inherit(fib_entry, source);
 	return (FIB_ENTRY_SRC_FLAG_NONE);
     }
 }
@@ -1292,6 +1666,7 @@ fib_entry_get_dpo_for_source (fib_node_index_t fib_entry_index,
 	    fib_path_list_contribute_forwarding(
 		esrc->fes_pl,
 		fib_entry_get_default_chain_type(fib_entry),
+                FIB_PATH_LIST_FWD_FLAG_NONE,
 		dpo);
 
 	    return (dpo_id_is_valid(dpo));

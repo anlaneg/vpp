@@ -85,7 +85,7 @@ format_vnet_hw_interface (u8 * s, va_list * args)
   vnet_hw_interface_class_t *hw_class;
   vnet_device_class_t *dev_class;
   int verbose = va_arg (*args, int);
-  uword indent;
+  u32 indent;
 
   if (!hi)
     return format (s, "%=32s%=6s%=8s%s", "Name", "Idx", "Link", "Hardware");
@@ -165,16 +165,22 @@ format_vnet_sw_if_index_name (u8 * s, va_list * args)
 {
   vnet_main_t *vnm = va_arg (*args, vnet_main_t *);
   u32 sw_if_index = va_arg (*args, u32);
-  return format (s, "%U",
-		 format_vnet_sw_interface_name, vnm,
-		 vnet_get_sw_interface (vnm, sw_if_index));
+  vnet_sw_interface_t *si;
+
+  si = vnet_get_sw_interface_safe (vnm, sw_if_index);
+
+  if (NULL == si)
+    {
+      return format (s, "DELETED");
+    }
+  return format (s, "%U", format_vnet_sw_interface_name, vnm, si);
 }
 
 u8 *
 format_vnet_sw_interface_cntrs (u8 * s, vnet_interface_main_t * im,
 				vnet_sw_interface_t * si)
 {
-  uword indent, n_printed;
+  u32 indent, n_printed;
   int i, j, n_counters;
   static vnet_main_t **my_vnet_mains;
 

@@ -35,7 +35,7 @@ static void
 fib_entry_src_interface_add (fib_entry_src_t *src,
                              const fib_entry_t *entry,
                              fib_entry_flag_t flags,
-                             fib_protocol_t proto,
+                             dpo_proto_t proto,
                              const dpo_id_t *dpo)
 {
     src->fes_pl = fib_path_list_create_special(
@@ -190,7 +190,7 @@ static u8*
 fib_entry_src_interface_format (fib_entry_src_t *src,
 				u8* s)
 {
-    return (format(s, "cover:%d", src->interface.fesi_cover));
+    return (format(s, " cover:%d", src->interface.fesi_cover));
 }
 
 const static fib_entry_src_vft_t interface_src_vft = {

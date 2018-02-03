@@ -40,6 +40,7 @@
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
 #include <signal.h>
+#include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
 /* FIXME autoconf */
 #define HAVE_LINUX_EPOLL
@@ -61,9 +62,9 @@ typedef struct
 static linux_epoll_main_t linux_epoll_main;
 
 static void
-linux_epoll_file_update (unix_file_t * f, unix_file_update_type_t update_type)
+linux_epoll_file_update (clib_file_t * f, clib_file_update_type_t update_type)
 {
-  unix_main_t *um = &unix_main;
+  clib_file_main_t *fm = &file_main;
   linux_epoll_main_t *em = &linux_epoll_main;
   struct epoll_event e;
   int op;
@@ -75,7 +76,7 @@ linux_epoll_file_update (unix_file_t * f, unix_file_update_type_t update_type)
     e.events |= EPOLLOUT;
   if (f->flags & UNIX_FILE_EVENT_EDGE_TRIGGERED)
     e.events |= EPOLLET;
-  e.data.u32 = f - um->file_pool;
+  e.data.u32 = f - fm->file_pool;
 
   op = -1;
 
@@ -107,62 +108,51 @@ linux_epoll_input (vlib_main_t * vm,
 		   vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
   unix_main_t *um = &unix_main;
+  clib_file_main_t *fm = &file_main;
   linux_epoll_main_t *em = &linux_epoll_main;
   struct epoll_event *e;
   int n_fds_ready;
 
   {
     vlib_node_main_t *nm = &vm->node_main;
-    u64 t = nm->cpu_time_next_process_ready;
+    u32 ticks_until_expiration;
     f64 timeout;
-    int timeout_ms, max_timeout_ms = 10;
+    int timeout_ms = 0, max_timeout_ms = 10;
     f64 vector_rate = vlib_last_vectors_per_main_loop (vm);
 
-    if (t == ~0ULL)
+    /* If we're not working very hard, decide how long to sleep */
+    if (vector_rate < 2 && vm->api_queue_nonempty == 0
+	&& nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] == 0)
       {
-	timeout = 10e-3;
-	timeout_ms = max_timeout_ms;
-      }
-    else
-      {
-	timeout =
-	  (((i64) t - (i64) clib_cpu_time_now ())
-	   * vm->clib_time.seconds_per_clock)
-	  /* subtract off some slop time */  - 50e-6;
+	ticks_until_expiration = TW (tw_timer_first_expires_in_ticks)
+	  ((TWT (tw_timer_wheel) *) nm->timing_wheel);
 
-	if (timeout < 1e-3)
+	/* Nothing on the fast wheel, sleep 10ms */
+	if (ticks_until_expiration == TW_SLOTS_PER_RING)
 	  {
-	    /* We have event happenning in less than 1 ms so
-	       don't allow epoll to wait */
-	    timeout_ms = 0;
+	    timeout = 10e-3;
+	    timeout_ms = max_timeout_ms;
 	  }
 	else
 	  {
-	    timeout_ms = timeout * 1e3;
-
-	    /* Must be between 1 and 10 ms. */
-	    timeout_ms = clib_max (1, timeout_ms);
-	    timeout_ms = clib_min (max_timeout_ms, timeout_ms);
+	    timeout = (f64) ticks_until_expiration *1e-5;
+	    if (timeout < 1e-3)
+	      timeout_ms = 0;
+	    else
+	      {
+		timeout_ms = timeout * 1e3;
+		/* Must be between 1 and 10 ms. */
+		timeout_ms = clib_max (1, timeout_ms);
+		timeout_ms = clib_min (max_timeout_ms, timeout_ms);
+	      }
 	  }
+	node->input_main_loops_per_call = 0;
       }
-
-    /* If we still have input nodes polling (e.g. vnet packet generator)
-       don't sleep. */
-    if (nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] > 0)
-      timeout_ms = 0;
-
-    /*
-     * When busy: don't wait & only epoll for input
-     * every 1024 times through main loop.
-     */
-    if (vector_rate > 1 || vm->api_queue_nonempty)
+    else			/* busy */
       {
-	timeout_ms = 0;
+	/* Don't come back for a respectable number of dispatch cycles */
 	node->input_main_loops_per_call = 1024;
       }
-    else
-      /* We're not busy; go to sleep for a while. */
-      node->input_main_loops_per_call = 0;
 
     /* Allow any signal to wakeup our sleep. */
     {
@@ -197,7 +187,7 @@ linux_epoll_input (vlib_main_t * vm,
   for (e = em->epoll_events; e < em->epoll_events + n_fds_ready; e++)
     {
       u32 i = e->data.u32;
-      unix_file_t *f = pool_elt_at_index (um->file_pool, i);
+      clib_file_t *f = pool_elt_at_index (fm->file_pool, i);
       clib_error_t *errors[4];
       int n_errors = 0;
 
@@ -247,7 +237,7 @@ clib_error_t *
 linux_epoll_input_init (vlib_main_t * vm)
 {
   linux_epoll_main_t *em = &linux_epoll_main;
-  unix_main_t *um = &unix_main;
+  clib_file_main_t *fm = &file_main;
 
   /* Allocate some events. */
   vec_resize (em->epoll_events, VLIB_FRAME_SIZE);
@@ -256,7 +246,7 @@ linux_epoll_input_init (vlib_main_t * vm)
   if (em->epoll_fd < 0)
     return clib_error_return_unix (0, "epoll_create");
 
-  um->file_update = linux_epoll_file_update;
+  fm->file_update = linux_epoll_file_update;
 
   return 0;
 }

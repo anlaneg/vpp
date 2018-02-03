@@ -18,6 +18,7 @@ bin_vpp_SOURCES =				\
   vpp/app/vpe_cli.c				\
   vpp/app/version.c				\
   vpp/oam/oam.c					\
+  vpp/oam/oam_api.c				\
   vpp/stats/stats.c
 
 bin_vpp_SOURCES +=				\
@@ -33,18 +34,23 @@ if WITH_APICLI
   vpp/api/plugin.h
 endif
 
-# comment out to disable stats upload to gmond
+# uncomment to enable stats upload to gmond
+# bin_vpp_SOURCES +=				\
+#  vpp/api/gmon.c
 
 bin_vpp_CFLAGS = @APICLI@
-bin_vpp_SOURCES +=				\
-  vpp/api/gmon.c
 
 nobase_include_HEADERS +=			\
   vpp/api/vpe_all_api_h.h			\
   vpp/api/vpe_msg_enum.h			\
+  vpp/stats/stats.api.h 			\
+  vpp/oam/oam.api.h 				\
   vpp/api/vpe.api.h
 
-API_FILES += vpp/api/vpe.api
+API_FILES += 					\
+  vpp/api/vpe.api				\
+  vpp/stats/stats.api				\
+  vpp/oam/oam.api
 
 BUILT_SOURCES += .version
 
@@ -85,6 +91,10 @@ bin_vpp_LDADD = \
 
 bin_vpp_LDFLAGS = -Wl,--export-dynamic
 
+bin_PROGRAMS += bin/vppctl
+bin_vppctl_SOURCES = vpp/app/vppctl.c
+bin_vppctl_LDADD = libvppinfra.la
+
 if ENABLE_TESTS
 noinst_PROGRAMS += bin/test_client
 
@@ -112,13 +122,13 @@ endif
 noinst_PROGRAMS += bin/summary_stats_client
 
 bin_summary_stats_client_SOURCES = \
-  vpp/api/summary_stats_client.c
+   vpp/api/summary_stats_client.c
 
 bin_summary_stats_client_LDADD = \
-  libvlibmemoryclient.la \
-  libsvm.la \
-  libvppinfra.la \
-  -lpthread -lm -lrt
+   libvlibmemoryclient.la \
+   libsvm.la \
+   libvppinfra.la \
+   -lpthread -lm -lrt
 
 bin_PROGRAMS += bin/vpp_get_metrics
 

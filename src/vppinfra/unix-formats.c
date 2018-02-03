@@ -49,6 +49,7 @@
 
 #include <unistd.h>
 #include <signal.h>
+#include <grp.h>
 
 #include <time.h>
 #include <sys/socket.h>
@@ -230,6 +231,7 @@ u8 * format_sockaddr (u8 * s, va_list * args)
 {
   void * v = va_arg (*args, void *);
   struct sockaddr * sa = v;
+  static u32 local_counter;
 
   switch (sa->sa_family)
     {
@@ -239,6 +241,17 @@ u8 * format_sockaddr (u8 * s, va_list * args)
 	s = format (s, "%U:%U",
 		    format_network_address, AF_INET, &i->sin_addr.s_addr,
 		    format_network_port, IPPROTO_TCP, ntohs (i->sin_port));
+      }
+      break;
+
+    case AF_LOCAL:
+      {
+        /* 
+         * There isn't anything useful to print.
+         * The unix cli world uses the output to make a node name,
+         * so we need to return a unique name. 
+         */
+        s = format (s, "local:%u", local_counter++);
       }
       break;
 
@@ -699,7 +712,7 @@ u8 * format_ethernet_packet (u8 * s, va_list * args)
   struct ethhdr * h = va_arg (*args, struct ethhdr *);
   uword proto = h->h_proto;
   u8 * payload = (void *) (h + 1);
-  uword indent;
+  u32 indent;
 
   /* Check for 802.2/802.3 encapsulation. */
   if (proto < ETH_DATA_LEN)
@@ -913,6 +926,31 @@ u8 * format_ucontext_pc (u8 * s, va_list * args)
     return format (s, "unsupported");
   else
     return format (s, "%p", regs[reg_no]);
+}
+
+uword
+unformat_unix_gid (unformat_input_t * input, va_list * args)
+{
+  gid_t *gid = va_arg (*args, gid_t *);
+  struct group *grp = 0;
+  int r;
+  u8 *s;
+
+  if (unformat (input, "%d", &r))
+    {
+      grp = getgrgid (r);
+    }
+  else if (unformat (input, "%s", &s))
+    {
+      grp = getgrnam ((char *) s);
+      vec_free (s);
+    }
+  if (grp)
+    {
+      *gid = grp->gr_gid;
+      return 1;
+    }
+  return 0;
 }
 
 #endif /* __KERNEL__ */

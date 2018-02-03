@@ -115,6 +115,16 @@ clib_cpu_time_now (void)
   return (u64) lo + ((u64) hi2 << (u64) 32);
 }
 
+#elif defined (__aarch64__)
+always_inline u64
+clib_cpu_time_now (void)
+{
+  u64 vct;
+  /* User access to cntvct_el0 is enabled in Linux kernel since 3.12. */
+  asm volatile ("mrs %0, cntvct_el0":"=r" (vct));
+  return vct;
+}
+
 #elif defined (__arm__)
 #if defined(__ARM_ARCH_8A__)
 always_inline u64
@@ -163,18 +173,6 @@ clib_cpu_time_now (void)
 		" mvc .s2 TSCH,%1\n" " rint\n":"=b" (l), "=b" (h));
 
   return ((u64) h << 32) | l;
-}
-
-#elif defined (__aarch64__)
-always_inline u64
-clib_cpu_time_now (void)
-{
-  u64 tsc;
-
-  /* Works on Cavium ThunderX. Other platforms: YMMV */
-  asm volatile ("mrs %0, cntvct_el0":"=r" (tsc));
-
-  return tsc;
 }
 
 #else
@@ -243,6 +241,15 @@ unix_time_now_nsec (void)
   return 1e9 * ts.tv_sec + ts.tv_nsec;
 }
 
+always_inline void
+unix_time_now_nsec_fraction (u32 * sec, u32 * nsec)
+{
+  struct timespec ts;
+  syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
+  *sec = ts.tv_sec;
+  *nsec = ts.tv_nsec;
+}
+
 always_inline f64
 unix_usage_now (void)
 {
@@ -255,10 +262,12 @@ unix_usage_now (void)
 always_inline void
 unix_sleep (f64 dt)
 {
-  struct timespec t;
-  t.tv_sec = dt;
-  t.tv_nsec = 1e9 * dt;
-  nanosleep (&t, 0);
+  struct timespec ts, tsrem;
+  ts.tv_sec = dt;
+  ts.tv_nsec = 1e9 * (dt - (f64) ts.tv_sec);
+
+  while (nanosleep (&ts, &tsrem) < 0)
+    ts = tsrem;
 }
 
 #else /* ! CLIB_UNIX */
@@ -273,6 +282,11 @@ always_inline u64
 unix_time_now_nsec (void)
 {
   return 0;
+}
+
+always_inline void
+unix_time_now_nsec_fraction (u32 * sec, u32 * nsec)
+{
 }
 
 always_inline f64

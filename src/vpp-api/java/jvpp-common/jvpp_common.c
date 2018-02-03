@@ -14,6 +14,7 @@
  */
 #define _GNU_SOURCE /* for strcasestr(3) */
 
+#include <vnet/api_errno.h>
 #include "jvpp_common.h"
 
 #ifndef JVPP_DEBUG
@@ -25,6 +26,16 @@
 #else
 #define DEBUG_LOG(...)
 #endif
+
+#define _(error,errorCode,msg)  \
+if (errorCode == code)          \
+    message = msg;              \
+else
+
+#define get_error_message(errno)    \
+int code = errno;                   \
+foreach_vnet_api_error              \
+    message = "Reason unknown";
 
 /* shared jvpp main structure */
 jvpp_main_t jvpp_main __attribute__((aligned (64)));
@@ -40,7 +51,7 @@ void call_on_error(const char* callName, int contextId, int retval,
         return;
     }
     jmethodID excConstructor = (*env)->GetMethodID(env, callbackExceptionClass,
-            "<init>", "(Ljava/lang/String;II)V");
+            "<init>", "(Ljava/lang/String;Ljava/lang/String;II)V");
     if (!excConstructor) {
         DEBUG_LOG("CallOnError : excConstructor is null!\n");
         return;
@@ -52,8 +63,11 @@ void call_on_error(const char* callName, int contextId, int retval,
         return;
     }
 
+    char *message;
+    get_error_message(clib_net_to_host_u32(retval));
     jobject excObject = (*env)->NewObject(env, callbackExceptionClass,
             excConstructor, (*env)->NewStringUTF(env, callName),
+            (*env)->NewStringUTF(env, message),
             clib_net_to_host_u32(contextId), clib_net_to_host_u32(retval));
     if (!excObject) {
         DEBUG_LOG("CallOnError : excObject is null!\n");
@@ -63,16 +77,20 @@ void call_on_error(const char* callName, int contextId, int retval,
     (*env)->CallVoidMethod(env, callbackObject, callbackExcMethod, excObject);
     DEBUG_LOG("CallOnError : Response sent\n");
 }
+#undef _
 
 u32 get_message_id(JNIEnv *env, const char *key) {
     uword *p = hash_get(jvpp_main.messages_hash, key);
     if (!p) {
         jclass exClass = (*env)->FindClass(env, "java/lang/IllegalStateException");
-        char *msgBuf  = clib_mem_alloc(strlen(key) + 40);
+        char *msgBuf  = clib_mem_alloc(strlen(key) + 70);
         strcpy(msgBuf, "API mismatch detected: ");
         strcat(msgBuf, key);
-        strcat(msgBuf, " is missing");
-        DEBUG_LOG("get_message_id : %s\n", msgBuf);
+        strcat(msgBuf, " is missing in global name_crc hash table.");
+        DEBUG_LOG("%s", msgBuf);
+        DEBUG_LOG("Possible reasons:");
+        DEBUG_LOG("1) incompatible VPP version used");
+        DEBUG_LOG("2) message present in JSON file but not in global name_crc table");
         (*env)->ThrowNew(env, exClass, msgBuf);
         clib_mem_free(msgBuf);
         return 0;

@@ -168,6 +168,7 @@ lisp_add_del_local_eid_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	;
       else if (unformat (line_input, "locator-set %_%v%_", &locator_set_name))
 	{
+	  vec_terminate_c_string (locator_set_name);
 	  p = hash_get_mem (lcm->locator_set_index_by_name, locator_set_name);
 	  if (!p)
 	    {
@@ -277,6 +278,70 @@ VLIB_CLI_COMMAND (one_eid_table_map_command) = {
 /* *INDENT-ON* */
 
 static clib_error_t *
+lisp_add_del_ndp_entry_command_fn (vlib_main_t * vm,
+				   unformat_input_t * input,
+				   vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = NULL;
+  int rc = 0;
+  u8 hw_addr[6], bd = 0;
+  ip6_address_t ip6;
+  u32 hw_addr_set = 0, ip_set = 0, is_add = 1;
+  gid_address_t _g, *g = &_g;
+
+  memset (&ip6, 0, sizeof (ip6));
+  memset (hw_addr, 0, sizeof (hw_addr));
+  memset (g, 0, sizeof (*g));
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "mac %U", unformat_mac_address, hw_addr))
+	hw_addr_set = 1;
+      else if (unformat (line_input, "ip %U", unformat_ip6_address, &ip6))
+	ip_set = 1;
+      else if (unformat (line_input, "del"))
+	is_add = 0;
+      else if (unformat (line_input, "bd %d", &bd))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error");
+	  goto done;
+	}
+    }
+
+  if (!ip_set || (!hw_addr_set && is_add))
+    {
+      vlib_cli_output (vm, "expected IP and MAC addresses!");
+      return 0;
+    }
+
+  /* build GID address */
+  ip_address_set (&gid_address_arp_ndp_ip (g), &ip6, IP6);
+  gid_address_ndp_bd (g) = bd;
+  gid_address_type (g) = GID_ADDR_NDP;
+  rc = vnet_lisp_add_del_l2_arp_ndp_entry (g, hw_addr, is_add);
+  if (rc)
+    clib_warning ("Failed to %s ndp entry!", is_add ? "add" : "delete");
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_add_del_ndp_entry_command) = {
+    .path = "one ndp",
+    .short_help = "one ndp [del] bd <bd> mac <mac> ip <ipv6>",
+    .function = lisp_add_del_ndp_entry_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
 lisp_add_del_l2_arp_entry_command_fn (vlib_main_t * vm,
 				      unformat_input_t * input,
 				      vlib_cli_command_t * cmd)
@@ -323,7 +388,7 @@ lisp_add_del_l2_arp_entry_command_fn (vlib_main_t * vm,
   gid_address_arp_ip4 (arp) = ip4;
   gid_address_arp_bd (arp) = bd;
   gid_address_type (arp) = GID_ADDR_ARP;
-  rc = vnet_lisp_add_del_l2_arp_entry (arp, hw_addr, is_add);
+  rc = vnet_lisp_add_del_l2_arp_ndp_entry (arp, hw_addr, is_add);
   if (rc)
     clib_warning ("Failed to %s l2 arp entry!", is_add ? "add" : "delete");
 
@@ -373,6 +438,42 @@ VLIB_CLI_COMMAND (one_show_l2_arp_entries_command) = {
     .path = "show one l2 arp entries",
     .short_help = "Show ONE L2 ARP entries",
     .function = lisp_show_l2_arp_entries_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+lisp_show_ndp_entries_command_fn (vlib_main_t * vm,
+				  unformat_input_t * input,
+				  vlib_cli_command_t * cmd)
+{
+  u32 *ht = vnet_lisp_ndp_bds_get ();
+  lisp_api_ndp_entry_t *entries, *e;
+  hash_pair_t *p;
+
+  /* *INDENT-OFF* */
+  hash_foreach_pair (p, ht,
+  ({
+    entries = vnet_lisp_ndp_entries_get_by_bd (p->key);
+    vlib_cli_output (vm, "Table: %d", p->key);
+
+    vec_foreach (e, entries)
+      {
+        vlib_cli_output (vm, "\t%U -> %U", format_ip6_address, &e->ip6,
+                         format_mac_address, e->mac);
+      }
+    vec_free (entries);
+  }));
+  /* *INDENT-ON* */
+
+  hash_free (ht);
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_show_ndp_entries_command) = {
+    .path = "show one ndp entries",
+    .short_help = "Show ONE NDP entries",
+    .function = lisp_show_ndp_entries_command_fn,
 };
 /* *INDENT-ON* */
 
@@ -487,8 +588,19 @@ lisp_add_del_remote_mapping_command_fn (vlib_main_t * vm,
 
   /* add as static remote mapping, i.e., not authoritative and infinite
    * ttl */
-  rv = vnet_lisp_add_del_mapping (&eid, rlocs, action, 0, ~0, is_add,
-				  1 /* is_static */ , 0);
+  if (is_add)
+    {
+      vnet_lisp_add_del_mapping_args_t _map_args, *map_args = &_map_args;
+      memset (map_args, 0, sizeof (map_args[0]));
+      gid_address_copy (&map_args->eid, &eid);
+      map_args->action = action;
+      map_args->is_static = 1;
+      map_args->authoritative = 0;
+      map_args->ttl = ~0;
+      rv = vnet_lisp_add_mapping (map_args, rlocs, NULL, NULL);
+    }
+  else
+    rv = vnet_lisp_del_mapping (&eid, NULL);
 
   if (rv)
     clib_warning ("failed to %s remote mapping!", is_add ? "add" : "delete");
@@ -756,6 +868,7 @@ lisp_nsh_set_locator_set_command_fn (vlib_main_t * vm,
       goto done;
     }
 
+  vec_terminate_c_string (locator_set_name);
   rv = vnet_lisp_nsh_set_locator_set (locator_set_name, is_add);
   if (0 != rv)
     {
@@ -777,6 +890,70 @@ VLIB_CLI_COMMAND (one_nsh_set_locator_set_command) = {
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+lisp_map_register_fallback_threshold_show_command_fn (vlib_main_t * vm,
+						      unformat_input_t *
+						      input,
+						      vlib_cli_command_t *
+						      cmd)
+{
+  u32 val = vnet_lisp_map_register_fallback_threshold_get ();
+  vlib_cli_output (vm, "map register fallback treshold value: %d", val);
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_map_register_fallback_threshold_show_command) = {
+    .path = "show one map-register fallback-threshold",
+    .short_help = "show one map-register fallback-threshold",
+    .function = lisp_map_register_fallback_threshold_show_command_fn,
+};
+
+/* *INDENT-ON* */
+
+static clib_error_t *
+lisp_map_register_fallback_threshold_command_fn (vlib_main_t * vm,
+						 unformat_input_t * input,
+						 vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = 0;
+  u32 val = 0;
+  int rv = 0;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%d", &val))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error");
+	  goto done;
+	}
+    }
+
+  rv = vnet_lisp_map_register_fallback_threshold_set (val);
+  if (rv)
+    {
+      error = clib_error_return (0, "setting fallback threshold failed!");
+    }
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_map_register_fallback_threshold_command) = {
+    .path = "one map-register fallback-threshold",
+    .short_help = "one map-register fallback-threshold <count>",
+    .function = lisp_map_register_fallback_threshold_command_fn,
+};
+/* *INDENT-ON* */
 
 static clib_error_t *
 lisp_pitr_set_locator_set_command_fn (vlib_main_t * vm,
@@ -812,6 +989,7 @@ lisp_pitr_set_locator_set_command_fn (vlib_main_t * vm,
       clib_warning ("No locator set specified!");
       goto done;
     }
+  vec_terminate_c_string (locator_set_name);
   rv = vnet_lisp_pitr_set_locator_set (locator_set_name, is_add);
   if (0 != rv)
     {
@@ -842,11 +1020,11 @@ lisp_show_pitr_command_fn (vlib_main_t * vm,
   mapping_t *m;
   locator_set_t *ls;
   u8 *tmp_str = 0;
+  u8 status = lcm->flags & LISP_FLAG_PITR_MODE;
 
-  vlib_cli_output (vm, "%=20s%=16s",
-		   "pitr", lcm->lisp_pitr ? "locator-set" : "");
+  vlib_cli_output (vm, "%=20s%=16s", "pitr", status ? "locator-set" : "");
 
-  if (!lcm->lisp_pitr)
+  if (!status)
     {
       vlib_cli_output (vm, "%=20s", "disable");
       return 0;
@@ -1028,6 +1206,165 @@ VLIB_CLI_COMMAND (one_cp_show_eid_table_command) = {
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+lisp_enable_disable_pitr_mode_command_fn (vlib_main_t * vm,
+					  unformat_input_t * input,
+					  vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  u8 is_enabled = 0;
+  u8 is_set = 0;
+  clib_error_t *error = NULL;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable"))
+	{
+	  is_set = 1;
+	  is_enabled = 1;
+	}
+      else if (unformat (line_input, "disable"))
+	is_set = 1;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  if (!is_set)
+    {
+      error = clib_error_return (0, "state not set");
+      goto done;
+    }
+
+  vnet_lisp_enable_disable_pitr_mode (is_enabled);
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_cp_enable_disable_pitr_mode_command) = {
+    .path = "one pitr mode",
+    .short_help = "one pitr mode [enable|disable]",
+    .function = lisp_enable_disable_pitr_mode_command_fn,
+};
+/* *INDENT-ON* */
+
+
+static clib_error_t *
+lisp_enable_disable_petr_mode_command_fn (vlib_main_t * vm,
+					  unformat_input_t * input,
+					  vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  u8 is_enabled = 0;
+  u8 is_set = 0;
+  clib_error_t *error = NULL;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable"))
+	{
+	  is_set = 1;
+	  is_enabled = 1;
+	}
+      else if (unformat (line_input, "disable"))
+	is_set = 1;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  if (!is_set)
+    {
+      error = clib_error_return (0, "state not set");
+      goto done;
+    }
+
+  vnet_lisp_enable_disable_petr_mode (is_enabled);
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_cp_enable_disable_petr_mode_command) = {
+    .path = "one petr mode",
+    .short_help = "one petr mode [enable|disable]",
+    .function = lisp_enable_disable_petr_mode_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+lisp_enable_disable_xtr_mode_command_fn (vlib_main_t * vm,
+					 unformat_input_t * input,
+					 vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  u8 is_enabled = 0;
+  u8 is_set = 0;
+  clib_error_t *error = NULL;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable"))
+	{
+	  is_set = 1;
+	  is_enabled = 1;
+	}
+      else if (unformat (line_input, "disable"))
+	is_set = 1;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  if (!is_set)
+    {
+      error = clib_error_return (0, "state not set");
+      goto done;
+    }
+
+  vnet_lisp_enable_disable_xtr_mode (is_enabled);
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_cp_enable_disable_xtr_mode_command) = {
+    .path = "one xtr mode",
+    .short_help = "one xtr mode [enable|disable]",
+    .function = lisp_enable_disable_xtr_mode_command_fn,
+};
+/* *INDENT-ON* */
 
 static clib_error_t *
 lisp_enable_disable_command_fn (vlib_main_t * vm, unformat_input_t * input,
@@ -1040,7 +1377,7 @@ lisp_enable_disable_command_fn (vlib_main_t * vm, unformat_input_t * input,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    return clib_error_return (0, "expected enable | disable");
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1082,6 +1419,73 @@ VLIB_CLI_COMMAND (one_cp_enable_disable_command) = {
 /* *INDENT-ON* */
 
 static clib_error_t *
+lisp_map_register_set_ttl_command_fn (vlib_main_t * vm,
+				      unformat_input_t * input,
+				      vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  u32 ttl = 0;
+  u8 is_set = 0;
+  clib_error_t *error = NULL;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%u", &ttl))
+	is_set = 1;
+      else
+	{
+	  vlib_cli_output (vm, "parse error: '%U'", format_unformat_error,
+			   line_input);
+	  goto done;
+	}
+    }
+
+  if (!is_set)
+    {
+      vlib_cli_output (vm, "expected integer value for TTL!");
+      goto done;
+    }
+
+  vnet_lisp_map_register_set_ttl (ttl);
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_map_register_set_ttl_command) = {
+    .path = "one map-register ttl",
+    .short_help = "one map-register ttl",
+    .function = lisp_map_register_set_ttl_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+lisp_map_register_show_ttl_command_fn (vlib_main_t * vm,
+				       unformat_input_t * input,
+				       vlib_cli_command_t * cmd)
+{
+  u32 ttl = vnet_lisp_map_register_get_ttl ();
+
+  vlib_cli_output (vm, "map-register TTL: %u", ttl);
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_map_register_show_ttl_command) = {
+    .path = "show one map-register ttl",
+    .short_help = "show one map-register ttl",
+    .function = lisp_map_register_show_ttl_command_fn,
+};
+
+/* *INDENT-ON* */
+
+static clib_error_t *
 lisp_map_register_enable_disable_command_fn (vlib_main_t * vm,
 					     unformat_input_t * input,
 					     vlib_cli_command_t * cmd)
@@ -1093,7 +1497,7 @@ lisp_map_register_enable_disable_command_fn (vlib_main_t * vm,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    return clib_error_return (0, "expected enable | disable");
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1146,7 +1550,7 @@ lisp_rloc_probe_enable_disable_command_fn (vlib_main_t * vm,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    return clib_error_return (0, "expected enable | disable");
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1324,6 +1728,7 @@ lisp_add_del_locator_set_command_fn (vlib_main_t * vm,
 	}
     }
 
+  vec_terminate_c_string (locator_set_name);
   a->name = locator_set_name;
   a->locators = locators;
   a->is_add = is_add;
@@ -1405,6 +1810,7 @@ lisp_add_del_locator_in_set_command_fn (vlib_main_t * vm,
       goto done;
     }
 
+  vec_terminate_c_string (locator_set_name);
   a->name = locator_set_name;
   a->locators = locators;
   a->is_add = is_add;
@@ -1448,7 +1854,7 @@ lisp_cp_show_locator_sets_command_fn (vlib_main_t * vm,
     int next_line = 0;
     if (lsit->local)
       {
-        msg = format (msg, "%v", lsit->name);
+        msg = format (msg, "%s", lsit->name);
       }
     else
       {
@@ -1575,6 +1981,7 @@ lisp_add_del_mreq_itr_rlocs_command_fn (vlib_main_t * vm,
 	}
     }
 
+  vec_terminate_c_string (locator_set_name);
   a->is_add = is_add;
   a->locator_set_name = locator_set_name;
   rv = vnet_lisp_add_del_mreq_itr_rlocs (a);
@@ -1862,7 +2269,7 @@ lisp_stats_enable_disable_command_fn (vlib_main_t * vm,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    return clib_error_return (0, "expected enable | disable");
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1904,6 +2311,30 @@ VLIB_CLI_COMMAND (one_stats_flush_command) = {
     .path = "one statistics flush",
     .short_help = "Flush ONE statistics",
     .function = lisp_stats_flush_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+lisp_show_one_modes_command_fn (vlib_main_t * vm,
+				unformat_input_t * input,
+				vlib_cli_command_t * cmd)
+{
+  u8 pitr_mode = vnet_lisp_get_pitr_mode ();
+  u8 petr_mode = vnet_lisp_get_petr_mode ();
+  u8 xtr_mode = vnet_lisp_get_xtr_mode ();
+
+  vlib_cli_output (vm, "xTR: %s\n", xtr_mode ? "enabled" : "disabled");
+  vlib_cli_output (vm, "P-ITR: %s\n", pitr_mode ? "enabled" : "disabled");
+  vlib_cli_output (vm, "P-ETR: %s\n", petr_mode ? "enabled" : "disabled");
+
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (one_cp_show_one_modes_modes_command) = {
+    .path = "show one modes",
+    .short_help = "show one modes",
+    .function = lisp_show_one_modes_command_fn,
 };
 /* *INDENT-ON* */
 

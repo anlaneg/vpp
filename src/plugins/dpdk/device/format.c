@@ -79,18 +79,24 @@
   _(DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM, "outer-ipv4-cksum") \
   _(DEV_TX_OFFLOAD_QINQ_INSERT, "qinq-insert")
 
+#if RTE_VERSION < RTE_VERSION_NUM(17, 11, 0, 0)
+#define PKT_RX_VLAN PKT_RX_VLAN_PKT
+#endif
+
 #define foreach_dpdk_pkt_rx_offload_flag                                \
-  _ (PKT_RX_VLAN_PKT, "RX packet is a 802.1q VLAN packet")              \
+  _ (PKT_RX_VLAN, "RX packet is a 802.1q VLAN packet")                  \
   _ (PKT_RX_RSS_HASH, "RX packet with RSS hash result")                 \
   _ (PKT_RX_FDIR, "RX packet with FDIR infos")                          \
   _ (PKT_RX_L4_CKSUM_BAD, "L4 cksum of RX pkt. is not OK")              \
   _ (PKT_RX_IP_CKSUM_BAD, "IP cksum of RX pkt. is not OK")              \
+  _ (PKT_RX_EIP_CKSUM_BAD, "External IP header checksum error")         \
   _ (PKT_RX_VLAN_STRIPPED, "RX packet VLAN tag stripped")               \
   _ (PKT_RX_IP_CKSUM_GOOD, "IP cksum of RX pkt. is valid")              \
   _ (PKT_RX_L4_CKSUM_GOOD, "L4 cksum of RX pkt. is valid")              \
   _ (PKT_RX_IEEE1588_PTP, "RX IEEE1588 L2 Ethernet PT Packet")          \
   _ (PKT_RX_IEEE1588_TMST, "RX IEEE1588 L2/L4 timestamped packet")      \
-  _ (PKT_RX_QINQ_STRIPPED, "RX packet QinQ tags stripped")
+  _ (PKT_RX_QINQ_STRIPPED, "RX packet QinQ tags stripped") \
+  _ (PKT_RX_TIMESTAMP, "Timestamp field is valid")
 
 #define foreach_dpdk_pkt_type                                           \
   _ (L2, ETHER, "Ethernet packet")                                      \
@@ -186,6 +192,10 @@ format_dpdk_device_name (u8 * s, va_list * args)
       device_name = "FortyGigabitEthernet";
       break;
 
+    case VNET_DPDK_PORT_TYPE_ETH_50G:
+      device_name = "FiftyGigabitEthernet";
+      break;
+
     case VNET_DPDK_PORT_TYPE_ETH_100G:
       device_name = "HundredGigabitEthernet";
       break;
@@ -207,6 +217,10 @@ format_dpdk_device_name (u8 * s, va_list * args)
 
     case VNET_DPDK_PORT_TYPE_VIRTIO_USER:
       device_name = "VirtioUser";
+      break;
+
+    case VNET_DPDK_PORT_TYPE_VHOST_ETHER:
+      device_name = "VhostEthernet";
       break;
 
     default:
@@ -310,6 +324,18 @@ format_dpdk_device_type (u8 * s, va_list * args)
       dev_type = "Virtio User";
       break;
 
+    case VNET_DPDK_PMD_THUNDERX:
+      dev_type = "Cavium ThunderX";
+      break;
+
+    case VNET_DPDK_PMD_VHOST_ETHER:
+      dev_type = "VhostEthernet";
+      break;
+
+    case VNET_DPDK_PMD_ENA:
+      dev_type = "AWS ENA VF";
+      break;
+
     default:
     case VNET_DPDK_PMD_UNKNOWN:
       dev_type = "### UNKNOWN ###";
@@ -358,7 +384,7 @@ format_dpdk_rss_hf_name (u8 * s, va_list * args)
 {
   u64 bitmap = va_arg (*args, u64);
   int next_split = _line_len;
-  int indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   if (!bitmap)
     return format (s, "none");
@@ -371,7 +397,7 @@ format_dpdk_rx_offload_caps (u8 * s, va_list * args)
 {
   u32 bitmap = va_arg (*args, u32);
   int next_split = _line_len;
-  int indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   if (!bitmap)
     return format (s, "none");
@@ -384,7 +410,7 @@ format_dpdk_tx_offload_caps (u8 * s, va_list * args)
 {
   u32 bitmap = va_arg (*args, u32);
   int next_split = _line_len;
-  int indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
   if (!bitmap)
     return format (s, "none");
 
@@ -399,7 +425,7 @@ format_dpdk_device_errors (u8 * s, va_list * args)
 {
   dpdk_device_t *xd = va_arg (*args, dpdk_device_t *);
   clib_error_t *e;
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
 
   vec_foreach (e, xd->errors)
   {
@@ -415,7 +441,7 @@ format_dpdk_device (u8 * s, va_list * args)
   int verbose = va_arg (*args, int);
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, dev_instance);
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
   f64 now = vlib_time_now (dm->vlib_main);
   struct rte_eth_dev_info di;
 
@@ -561,7 +587,7 @@ format_dpdk_tx_dma_trace (u8 * s, va_list * va)
   dpdk_tx_dma_trace_t *t = va_arg (*va, dpdk_tx_dma_trace_t *);
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, t->device_index);
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
   vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->vlib_sw_if_index);
 
   s = format (s, "%U tx queue %d",
@@ -569,7 +595,11 @@ format_dpdk_tx_dma_trace (u8 * s, va_list * va)
 
   s = format (s, "\n%Ubuffer 0x%x: %U",
 	      format_white_space, indent,
-	      t->buffer_index, format_vlib_buffer, &t->buffer);
+	      t->buffer_index, format_vnet_buffer, &t->buffer);
+
+  s = format (s, "\n%U%U",
+	      format_white_space, indent,
+	      format_dpdk_rte_mbuf, &t->mb, &t->data);
 
   s = format (s, "\n%U%U", format_white_space, indent,
 	      format_ethernet_header_with_length, t->buffer.pre_data,
@@ -588,7 +618,7 @@ format_dpdk_rx_dma_trace (u8 * s, va_list * va)
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, t->device_index);
   format_function_t *f;
-  uword indent = format_get_indent (s);
+  u32 indent = format_get_indent (s);
   vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->vlib_sw_if_index);
 
   s = format (s, "%U rx queue %d",
@@ -596,7 +626,7 @@ format_dpdk_rx_dma_trace (u8 * s, va_list * va)
 
   s = format (s, "\n%Ubuffer 0x%x: %U",
 	      format_white_space, indent,
-	      t->buffer_index, format_vlib_buffer, &t->buffer);
+	      t->buffer_index, format_vnet_buffer, &t->buffer);
 
   s = format (s, "\n%U%U",
 	      format_white_space, indent,
@@ -625,7 +655,7 @@ static inline u8 *
 format_dpdk_pkt_types (u8 * s, va_list * va)
 {
   u32 *pkt_types = va_arg (*va, u32 *);
-  uword indent __attribute__ ((unused)) = format_get_indent (s) + 2;
+  u32 indent __attribute__ ((unused)) = format_get_indent (s) + 2;
 
   if (!*pkt_types)
     return s;
@@ -648,7 +678,7 @@ static inline u8 *
 format_dpdk_pkt_offload_flags (u8 * s, va_list * va)
 {
   u64 *ol_flags = va_arg (*va, u64 *);
-  uword indent = format_get_indent (s) + 2;
+  u32 indent = format_get_indent (s) + 2;
 
   if (!*ol_flags)
     return s;
@@ -693,21 +723,22 @@ format_dpdk_rte_mbuf (u8 * s, va_list * va)
 {
   struct rte_mbuf *mb = va_arg (*va, struct rte_mbuf *);
   ethernet_header_t *eth_hdr = va_arg (*va, ethernet_header_t *);
-  uword indent = format_get_indent (s) + 2;
+  u32 indent = format_get_indent (s) + 2;
 
   s = format (s, "PKT MBUF: port %d, nb_segs %d, pkt_len %d"
-	      "\n%Ubuf_len %d, data_len %d, ol_flags 0x%x, data_off %d, phys_addr 0x%x"
-	      "\n%Upacket_type 0x%x",
+	      "\n%Ubuf_len %d, data_len %d, ol_flags 0x%lx, data_off %d, phys_addr 0x%x"
+	      "\n%Upacket_type 0x%x l2_len %u l3_len %u outer_l2_len %u outer_l3_len %u",
 	      mb->port, mb->nb_segs, mb->pkt_len,
 	      format_white_space, indent,
 	      mb->buf_len, mb->data_len, mb->ol_flags, mb->data_off,
-	      mb->buf_physaddr, format_white_space, indent, mb->packet_type);
+	      mb->buf_physaddr, format_white_space, indent, mb->packet_type,
+	      mb->l2_len, mb->l3_len, mb->outer_l2_len, mb->outer_l3_len);
 
   if (mb->ol_flags)
     s = format (s, "\n%U%U", format_white_space, indent,
 		format_dpdk_pkt_offload_flags, &mb->ol_flags);
 
-  if ((mb->ol_flags & PKT_RX_VLAN_PKT) &&
+  if ((mb->ol_flags & PKT_RX_VLAN) &&
       ((mb->ol_flags & (PKT_RX_VLAN_STRIPPED | PKT_RX_QINQ_STRIPPED)) == 0))
     {
       ethernet_vlan_header_tv_t *vlan_hdr =

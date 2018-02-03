@@ -97,14 +97,14 @@ _(BFD_NOTSUPP, -104, "BFD feature not supported")                       \
 _(ADDRESS_IN_USE, -105, "Address in use")				\
 _(ADDRESS_NOT_IN_USE, -106, "Address not in use")			\
 _(QUEUE_FULL, -107, "Queue full")                                       \
-_(UNKNOWN_URI_TYPE, -108, "Unknown URI type")				\
+_(APP_UNSUPPORTED_CFG, -108, "Unsupported application config")		\
 _(URI_FIFO_CREATE_FAILED, -109, "URI FIFO segment create failed")       \
 _(LISP_RLOC_LOCAL, -110, "RLOC address is local")                       \
 _(BFD_EAGAIN, -111, "BFD object cannot be manipulated at this time")	\
 _(INVALID_GPE_MODE, -112, "Invalid GPE mode")                           \
 _(LISP_GPE_ENTRIES_PRESENT, -113, "LISP GPE entries are present")       \
 _(ADDRESS_FOUND_FOR_INTERFACE, -114, "Address found for interface")	\
-_(SESSION_CONNECT_FAIL, -115, "Session failed to connect")              \
+_(SESSION_CONNECT, -115, "Session failed to connect")              	\
 _(ENTRY_ALREADY_EXISTS, -116, "Entry already exists")			\
 _(SVM_SEGMENT_CREATE_FAIL, -117, "svm segment create fail")		\
 _(APPLICATION_NOT_ATTACHED, -118, "application not attached")           \
@@ -112,7 +112,29 @@ _(BD_ALREADY_EXISTS, -119, "Bridge domain already exists")              \
 _(BD_IN_USE, -120, "Bridge domain has member interfaces")		\
 _(BD_NOT_MODIFIABLE, -121, "Bridge domain 0 can't be deleted/modified") \
 _(BD_ID_EXCEED_MAX, -122, "Bridge domain ID exceed 16M limit")		\
-_(UNSUPPORTED, -123, "Unsupported")
+_(SUBIF_DOESNT_EXIST, -123, "Subinterface doesn't exist")               \
+_(L2_MACS_EVENT_CLINET_PRESENT, -124, "Client already exist for L2 MACs events") \
+_(INVALID_QUEUE, -125, "Invalid queue")                 		\
+_(UNSUPPORTED, -126, "Unsupported")					\
+_(DUPLICATE_IF_ADDRESS, -127, "Address already present on another interface")	\
+_(APP_INVALID_NS, -128, "Invalid application namespace")			\
+_(APP_WRONG_NS_SECRET, -129, "Wrong app namespace secret")		\
+_(APP_CONNECT_SCOPE, -130, "Connect scope")				\
+_(APP_ALREADY_ATTACHED, -131, "App already attached")			\
+_(SESSION_REDIRECT, -132, "Redirect failed")				\
+_(ILLEGAL_NAME, -133, "Illegal name")					\
+_(NO_NAME_SERVERS, -134, "No name servers configured")			\
+_(NAME_SERVER_NOT_FOUND, -135, "Name server not found")			\
+_(NAME_RESOLUTION_NOT_ENABLED, -136, "Name resolution not enabled")	\
+_(NAME_SERVER_FORMAT_ERROR, -137, "Server format error (bug!)")		\
+_(NAME_SERVER_NO_SUCH_NAME, -138, "No such name")                       \
+_(NAME_SERVER_NO_ADDRESSES, -139, "No addresses available")		\
+_(NAME_SERVER_NEXT_SERVER, -140, "Retry with new server")		\
+_(APP_CONNECT_FILTERED, -141, "Connect was filtered")			\
+_(ACL_IN_USE_INBOUND, -142, "Inbound ACL in use")			\
+_(ACL_IN_USE_OUTBOUND, -143, "Outbound ACL in use")			\
+_(INIT_FAILED, -144, "Initialization Failed")				\
+_(NETLINK_ERROR, -145, "netlink error")
 
 typedef enum
 {

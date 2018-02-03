@@ -255,6 +255,7 @@ icmp6_to_icmp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
   icmp46_header_t *icmp;
   ip_csum_t csum;
   int rv;
+  ip6_address_t old_src, old_dst;
 
   ip6 = vlib_buffer_get_current (p);
   ip6_pay_len = clib_net_to_host_u16 (ip6->payload_length);
@@ -314,13 +315,9 @@ icmp6_to_icmp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
       else if (inner_protocol == IP_PROTOCOL_ICMP6)
 	{
 	  icmp46_header_t *inner_icmp = (icmp46_header_t *) inner_l4;
-	  csum = inner_icmp->checksum;
-	  csum = ip_csum_sub_even (csum, *((u16 *) inner_icmp));
 	  //It cannot be of a different type as ip6_icmp_to_icmp6_in_place succeeded
 	  inner_icmp->type = (inner_icmp->type == ICMP6_echo_request) ?
 	    ICMP4_echo_request : ICMP4_echo_reply;
-	  csum = ip_csum_add_even (csum, *((u16 *) inner_icmp));
-	  inner_icmp->checksum = ip_csum_fold (csum);
 	  inner_protocol = IP_PROTOCOL_ICMP;	//Will be copied to ip6 later
 	  inner_L4_checksum = &inner_icmp->checksum;
 	}
@@ -329,11 +326,10 @@ icmp6_to_icmp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
 	  return -1;
 	}
 
-      csum = *inner_L4_checksum;
-      csum = ip_csum_sub_even (csum, inner_ip6->src_address.as_u64[0]);
-      csum = ip_csum_sub_even (csum, inner_ip6->src_address.as_u64[1]);
-      csum = ip_csum_sub_even (csum, inner_ip6->dst_address.as_u64[0]);
-      csum = ip_csum_sub_even (csum, inner_ip6->dst_address.as_u64[1]);
+      old_src.as_u64[0] = inner_ip6->src_address.as_u64[0];
+      old_src.as_u64[1] = inner_ip6->src_address.as_u64[1];
+      old_dst.as_u64[0] = inner_ip6->dst_address.as_u64[0];
+      old_dst.as_u64[1] = inner_ip6->dst_address.as_u64[1];
 
       if ((rv = inner_fn (inner_ip6, inner_ip4, inner_ctx)) != 0)
 	return rv;
@@ -353,19 +349,27 @@ icmp6_to_icmp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
 
       if (inner_ip4->protocol == IP_PROTOCOL_ICMP)
 	{
-	  //Remove remainings of the pseudo-header in the csum
+	  //Recompute ICMP checksum
+	  icmp46_header_t *inner_icmp = (icmp46_header_t *) inner_l4;
+	  inner_icmp->checksum = 0;
 	  csum =
-	    ip_csum_sub_even (csum, clib_host_to_net_u16 (IP_PROTOCOL_ICMP6));
-	  csum =
-	    ip_csum_sub_even (csum, inner_ip4->length - sizeof (*inner_ip4));
+	    ip_incremental_checksum (0, inner_icmp,
+				     clib_net_to_host_u16 (inner_ip4->length)
+				     - sizeof (*inner_ip4));
+	  inner_icmp->checksum = ~ip_csum_fold (csum);
 	}
       else
 	{
 	  //Update to new pseudo-header
+	  csum = *inner_L4_checksum;
+	  csum = ip_csum_sub_even (csum, old_src.as_u64[0]);
+	  csum = ip_csum_sub_even (csum, old_src.as_u64[1]);
+	  csum = ip_csum_sub_even (csum, old_dst.as_u64[0]);
+	  csum = ip_csum_sub_even (csum, old_dst.as_u64[1]);
 	  csum = ip_csum_add_even (csum, inner_ip4->src_address.as_u32);
 	  csum = ip_csum_add_even (csum, inner_ip4->dst_address.as_u32);
+	  *inner_L4_checksum = ip_csum_fold (csum);
 	}
-      *inner_L4_checksum = ip_csum_fold (csum);
 
       //Move up icmp header
       ip4 = (ip4_header_t *) u8_ptr_add (inner_l4, -2 * sizeof (*ip4) - 8);
@@ -487,6 +491,7 @@ ip6_to_ip4_tcp_udp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
   u8 l4_protocol;
   u16 l4_offset;
   int rv;
+  ip6_address_t old_src, old_dst;
 
   ip6 = vlib_buffer_get_current (p);
 
@@ -503,17 +508,13 @@ ip6_to_ip4_tcp_udp (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx,
     {
       udp_header_t *udp = ip6_next_header (ip6);
       checksum = &udp->checksum;
-      //UDP checksum is optional over IPv4
-      if (!udp_checksum)
-	goto no_csum;
     }
 
-  csum = ip_csum_sub_even (*checksum, ip6->src_address.as_u64[0]);
-  csum = ip_csum_sub_even (csum, ip6->src_address.as_u64[1]);
-  csum = ip_csum_sub_even (csum, ip6->dst_address.as_u64[0]);
-  csum = ip_csum_sub_even (csum, ip6->dst_address.as_u64[1]);
+  old_src.as_u64[0] = ip6->src_address.as_u64[0];
+  old_src.as_u64[1] = ip6->src_address.as_u64[1];
+  old_dst.as_u64[0] = ip6->dst_address.as_u64[0];
+  old_dst.as_u64[1] = ip6->dst_address.as_u64[1];
 
-no_csum:
   ip4 = (ip4_header_t *) u8_ptr_add (ip6, l4_offset - sizeof (*ip4));
 
   vlib_buffer_advance (p, l4_offset - sizeof (*ip4));
@@ -552,10 +553,75 @@ no_csum:
     }
   else
     {
+      csum = ip_csum_sub_even (*checksum, old_src.as_u64[0]);
+      csum = ip_csum_sub_even (csum, old_src.as_u64[1]);
+      csum = ip_csum_sub_even (csum, old_dst.as_u64[0]);
+      csum = ip_csum_sub_even (csum, old_dst.as_u64[1]);
       csum = ip_csum_add_even (csum, ip4->dst_address.as_u32);
       csum = ip_csum_add_even (csum, ip4->src_address.as_u32);
       *checksum = ip_csum_fold (csum);
     }
+
+  return 0;
+}
+
+/**
+ * @brief Translate IPv6 packet to IPv4 (IP header only).
+ *
+ * @param p   Buffer to translate.
+ * @param fn  The function to translate header.
+ * @param ctx A context passed in the header translate function.
+ *
+ * @returns 0 on success, non-zero value otherwise.
+ */
+always_inline int
+ip6_to_ip4 (vlib_buffer_t * p, ip6_to_ip4_set_fn_t fn, void *ctx)
+{
+  ip6_header_t *ip6;
+  ip4_header_t *ip4;
+  u16 fragment_id;
+  u16 flags;
+  u16 frag_offset;
+  u8 l4_protocol;
+  u16 l4_offset;
+  int rv;
+
+  ip6 = vlib_buffer_get_current (p);
+
+  if (ip6_parse
+      (ip6, p->current_length, &l4_protocol, &l4_offset, &frag_offset))
+    return -1;
+
+  ip4 = (ip4_header_t *) u8_ptr_add (ip6, l4_offset - sizeof (*ip4));
+
+  vlib_buffer_advance (p, l4_offset - sizeof (*ip4));
+
+  if (PREDICT_FALSE (frag_offset))
+    {
+      //Only the first fragment
+      ip6_frag_hdr_t *hdr = (ip6_frag_hdr_t *) u8_ptr_add (ip6, frag_offset);
+      fragment_id = frag_id_6to4 (hdr->identification);
+      flags = clib_host_to_net_u16 (IP4_HEADER_FLAG_MORE_FRAGMENTS);
+    }
+  else
+    {
+      fragment_id = 0;
+      flags = 0;
+    }
+
+  if ((rv = fn (ip6, ip4, ctx)) != 0)
+    return rv;
+
+  ip4->ip_version_and_header_length =
+    IP4_VERSION_AND_HEADER_LENGTH_NO_OPTIONS;
+  ip4->tos = ip6_translate_tos (ip6);
+  ip4->length = u16_net_add (ip6->payload_length,
+			     sizeof (*ip4) + sizeof (*ip6) - l4_offset);
+  ip4->fragment_id = fragment_id;
+  ip4->flags_and_fragment_offset = flags;
+  ip4->ttl = ip6->hop_limit;
+  ip4->protocol = l4_protocol;
+  ip4->checksum = ip4_header_checksum (ip4);
 
   return 0;
 }

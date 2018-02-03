@@ -28,78 +28,32 @@
 
 #include <dpdk/device/dpdk_priv.h>
 
+#ifndef CLIB_MULTIARCH_VARIANT
 static char *dpdk_error_strings[] = {
 #define _(n,s) s,
   foreach_dpdk_error
 #undef _
 };
-
-always_inline int
-vlib_buffer_is_ip4 (vlib_buffer_t * b)
-{
-  ethernet_header_t *h = (ethernet_header_t *) vlib_buffer_get_current (b);
-  return (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_IP4));
-}
-
-always_inline int
-vlib_buffer_is_ip6 (vlib_buffer_t * b)
-{
-  ethernet_header_t *h = (ethernet_header_t *) vlib_buffer_get_current (b);
-  return (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_IP6));
-}
-
-always_inline int
-vlib_buffer_is_mpls (vlib_buffer_t * b)
-{
-  ethernet_header_t *h = (ethernet_header_t *) vlib_buffer_get_current (b);
-  return (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_MPLS));
-}
+#endif
 
 always_inline u32
-dpdk_rx_next_from_etype (struct rte_mbuf * mb, vlib_buffer_t * b0)
+dpdk_rx_next_from_etype (struct rte_mbuf *mb)
 {
-  if (PREDICT_TRUE (vlib_buffer_is_ip4 (b0)))
+  ethernet_header_t *h = rte_pktmbuf_mtod (mb, ethernet_header_t *);
+  if (PREDICT_TRUE (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_IP4)))
     {
       if (PREDICT_TRUE ((mb->ol_flags & PKT_RX_IP_CKSUM_GOOD) != 0))
 	return VNET_DEVICE_INPUT_NEXT_IP4_NCS_INPUT;
       else
 	return VNET_DEVICE_INPUT_NEXT_IP4_INPUT;
     }
-  else if (PREDICT_TRUE (vlib_buffer_is_ip6 (b0)))
+  else if (PREDICT_TRUE (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_IP6)))
     return VNET_DEVICE_INPUT_NEXT_IP6_INPUT;
-  else if (PREDICT_TRUE (vlib_buffer_is_mpls (b0)))
+  else
+    if (PREDICT_TRUE (h->type == clib_host_to_net_u16 (ETHERNET_TYPE_MPLS)))
     return VNET_DEVICE_INPUT_NEXT_MPLS_INPUT;
   else
     return VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
-}
-
-always_inline u32
-dpdk_rx_next_from_packet_start (struct rte_mbuf * mb, vlib_buffer_t * b0)
-{
-  word start_delta;
-  int rv;
-
-  start_delta = b0->current_data -
-    ((mb->buf_addr + mb->data_off) - (void *) b0->data);
-
-  vlib_buffer_advance (b0, -start_delta);
-
-  if (PREDICT_TRUE (vlib_buffer_is_ip4 (b0)))
-    {
-      if (PREDICT_TRUE ((mb->ol_flags & PKT_RX_IP_CKSUM_GOOD) != 0))
-	rv = VNET_DEVICE_INPUT_NEXT_IP4_NCS_INPUT;
-      else
-	rv = VNET_DEVICE_INPUT_NEXT_IP4_INPUT;
-    }
-  else if (PREDICT_TRUE (vlib_buffer_is_ip6 (b0)))
-    rv = VNET_DEVICE_INPUT_NEXT_IP6_INPUT;
-  else if (PREDICT_TRUE (vlib_buffer_is_mpls (b0)))
-    rv = VNET_DEVICE_INPUT_NEXT_MPLS_INPUT;
-  else
-    rv = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
-
-  vlib_buffer_advance (b0, start_delta);
-  return rv;
 }
 
 always_inline void
@@ -144,7 +98,7 @@ dpdk_rx_trace (dpdk_main_t * dm,
       if (PREDICT_FALSE (xd->per_interface_next_index != ~0))
 	next0 = xd->per_interface_next_index;
       else
-	next0 = dpdk_rx_next_from_packet_start (mb, b0);
+	next0 = dpdk_rx_next_from_etype (mb);
 
       dpdk_rx_error_from_mb (mb, &next0, &error0);
 
@@ -210,7 +164,13 @@ dpdk_process_subseq_segs (vlib_main_t * vm, vlib_buffer_t * b,
   mb_seg = mb->next;
   b_chain = b;
 
-  while ((mb->nb_segs > 1) && (nb_seg < mb->nb_segs))
+  if (mb->nb_segs < 2)
+    return;
+
+  b->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
+  b->total_length_not_including_first_buffer = 0;
+
+  while (nb_seg < mb->nb_segs)
     {
       ASSERT (mb_seg != 0);
 
@@ -253,43 +213,6 @@ dpdk_prefetch_ethertype (struct rte_mbuf *mb)
   CLIB_PREFETCH (mb->buf_addr + mb->data_off +
 		 STRUCT_OFFSET_OF (ethernet_header_t, type),
 		 CLIB_CACHE_LINE_BYTES, LOAD);
-}
-
-
-/*
-   This function should fill 1st cacheline of vlib_buffer_t metadata with data
-   from buffer template. Instead of filling field by field, we construct
-   template and then use 128/256 bit vector instruction to copy data.
-   This code first loads whole cacheline into 4 128-bit registers (xmm)
-   or two 256 bit registers (ymm) and then stores data into all 4 buffers
-   efectively saving on register load operations.
-*/
-
-static_always_inline void
-dpdk_buffer_init_from_template (void *d0, void *d1, void *d2, void *d3,
-				void *s)
-{
-#if defined(CLIB_HAVE_VEC128)
-  int i;
-  for (i = 0; i < 2; i++)
-    {
-      *(u8x32 *) (((u8 *) d0) + i * 32) =
-	*(u8x32 *) (((u8 *) d1) + i * 32) =
-	*(u8x32 *) (((u8 *) d2) + i * 32) =
-	*(u8x32 *) (((u8 *) d3) + i * 32) = *(u8x32 *) (((u8 *) s) + i * 32);
-    }
-#elif defined(CLIB_HAVE_VEC64)
-  int i;
-  for (i = 0; i < 4; i++)
-    {
-      *(u8x16 *) (((u8 *) d0) + i * 16) =
-	*(u8x16 *) (((u8 *) d1) + i * 16) =
-	*(u8x16 *) (((u8 *) d2) + i * 16) =
-	*(u8x16 *) (((u8 *) d3) + i * 16) = *(u8x16 *) (((u8 *) s) + i * 16);
-    }
-#else
-#error "Either CLIB_HAVE_VEC128 or CLIB_HAVE_VEC64 has to be defined"
-#endif
 }
 
 /*
@@ -344,6 +267,9 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
   /* Update buffer template */
   vnet_buffer (bt)->sw_if_index[VLIB_RX] = xd->vlib_sw_if_index;
   bt->error = node->errors[DPDK_ERROR_NONE];
+  /* as DPDK is allocating empty buffers from mempool provided before interface
+     start for each queue, it is safe to store this in the template */
+  bt->buffer_pool_index = xd->buffer_pool_for_queue[queue_id];
 
   mb_index = 0;
 
@@ -355,6 +281,7 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
       u32 bi2, next2;
       u32 bi3, next3;
       u8 error0, error1, error2, error3;
+      i16 offset0, offset1, offset2, offset3;
       u64 or_ol_flags;
 
       vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
@@ -395,24 +322,13 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
 	  b2 = vlib_buffer_from_rte_mbuf (mb2);
 	  b3 = vlib_buffer_from_rte_mbuf (mb3);
 
-	  dpdk_buffer_init_from_template (b0, b1, b2, b3, bt);
-
 	  dpdk_prefetch_buffer (xd->rx_vectors[queue_id][mb_index + 9]);
 	  dpdk_prefetch_ethertype (xd->rx_vectors[queue_id][mb_index + 5]);
 
-	  /* current_data must be set to -RTE_PKTMBUF_HEADROOM in template */
-	  b0->current_data += mb0->data_off;
-	  b1->current_data += mb1->data_off;
-	  b2->current_data += mb2->data_off;
-	  b3->current_data += mb3->data_off;
-
-	  b0->current_length = mb0->data_len;
-	  b1->current_length = mb1->data_len;
-	  b2->current_length = mb2->data_len;
-	  b3->current_length = mb3->data_len;
+	  clib_memcpy64_x4 (b0, b1, b2, b3, bt);
 
 	  dpdk_prefetch_buffer (xd->rx_vectors[queue_id][mb_index + 10]);
-	  dpdk_prefetch_ethertype (xd->rx_vectors[queue_id][mb_index + 7]);
+	  dpdk_prefetch_ethertype (xd->rx_vectors[queue_id][mb_index + 6]);
 
 	  bi0 = vlib_get_buffer_index (vm, b0);
 	  bi1 = vlib_get_buffer_index (vm, b1);
@@ -432,14 +348,14 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
 	    }
 	  else
 	    {
-	      next0 = dpdk_rx_next_from_etype (mb0, b0);
-	      next1 = dpdk_rx_next_from_etype (mb1, b1);
-	      next2 = dpdk_rx_next_from_etype (mb2, b2);
-	      next3 = dpdk_rx_next_from_etype (mb3, b3);
+	      next0 = dpdk_rx_next_from_etype (mb0);
+	      next1 = dpdk_rx_next_from_etype (mb1);
+	      next2 = dpdk_rx_next_from_etype (mb2);
+	      next3 = dpdk_rx_next_from_etype (mb3);
 	    }
 
 	  dpdk_prefetch_buffer (xd->rx_vectors[queue_id][mb_index + 11]);
-	  dpdk_prefetch_ethertype (xd->rx_vectors[queue_id][mb_index + 6]);
+	  dpdk_prefetch_ethertype (xd->rx_vectors[queue_id][mb_index + 7]);
 
 	  or_ol_flags = (mb0->ol_flags | mb1->ol_flags |
 			 mb2->ol_flags | mb3->ol_flags);
@@ -455,15 +371,42 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
 	      b3->error = node->errors[error3];
 	    }
 
-	  vlib_buffer_advance (b0, device_input_next_node_advance[next0]);
-	  vlib_buffer_advance (b1, device_input_next_node_advance[next1]);
-	  vlib_buffer_advance (b2, device_input_next_node_advance[next2]);
-	  vlib_buffer_advance (b3, device_input_next_node_advance[next3]);
-
+	  offset0 = device_input_next_node_advance[next0];
+	  b0->current_data = mb0->data_off + offset0 - RTE_PKTMBUF_HEADROOM;
+	  b0->flags |= device_input_next_node_flags[next0];
+	  vnet_buffer (b0)->l3_hdr_offset = b0->current_data;
+	  vnet_buffer (b0)->l2_hdr_offset =
+	    mb0->data_off - RTE_PKTMBUF_HEADROOM;
+	  b0->current_length = mb0->data_len - offset0;
 	  n_rx_bytes += mb0->pkt_len;
+
+	  offset1 = device_input_next_node_advance[next1];
+	  b1->current_data = mb1->data_off + offset1 - RTE_PKTMBUF_HEADROOM;
+	  b1->flags |= device_input_next_node_flags[next1];
+	  vnet_buffer (b1)->l3_hdr_offset = b1->current_data;
+	  vnet_buffer (b1)->l2_hdr_offset =
+	    mb1->data_off - RTE_PKTMBUF_HEADROOM;
+	  b1->current_length = mb1->data_len - offset1;
 	  n_rx_bytes += mb1->pkt_len;
+
+	  offset2 = device_input_next_node_advance[next2];
+	  b2->current_data = mb2->data_off + offset2 - RTE_PKTMBUF_HEADROOM;
+	  b2->flags |= device_input_next_node_flags[next2];
+	  vnet_buffer (b2)->l3_hdr_offset = b2->current_data;
+	  vnet_buffer (b2)->l2_hdr_offset =
+	    mb2->data_off - RTE_PKTMBUF_HEADROOM;
+	  b2->current_length = mb2->data_len - offset2;
 	  n_rx_bytes += mb2->pkt_len;
+
+	  offset3 = device_input_next_node_advance[next3];
+	  b3->current_data = mb3->data_off + offset3 - RTE_PKTMBUF_HEADROOM;
+	  b3->flags |= device_input_next_node_flags[next3];
+	  vnet_buffer (b3)->l3_hdr_offset = b3->current_data;
+	  vnet_buffer (b3)->l2_hdr_offset =
+	    mb3->data_off - RTE_PKTMBUF_HEADROOM;
+	  b3->current_length = mb3->data_len - offset3;
 	  n_rx_bytes += mb3->pkt_len;
+
 
 	  /* Process subsequent segments of multi-segment packets */
 	  if (maybe_multiseg)
@@ -517,10 +460,6 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
 
 	  clib_memcpy (b0, bt, CLIB_CACHE_LINE_BYTES);
 
-	  ASSERT (b0->current_data == -RTE_PKTMBUF_HEADROOM);
-	  b0->current_data += mb0->data_off;
-	  b0->current_length = mb0->data_len;
-
 	  bi0 = vlib_get_buffer_index (vm, b0);
 
 	  to_next[0] = bi0;
@@ -530,13 +469,18 @@ dpdk_device_input (dpdk_main_t * dm, dpdk_device_t * xd,
 	  if (PREDICT_FALSE (xd->per_interface_next_index != ~0))
 	    next0 = xd->per_interface_next_index;
 	  else
-	    next0 = dpdk_rx_next_from_etype (mb0, b0);
+	    next0 = dpdk_rx_next_from_etype (mb0);
 
 	  dpdk_rx_error_from_mb (mb0, &next0, &error0);
 	  b0->error = node->errors[error0];
 
-	  vlib_buffer_advance (b0, device_input_next_node_advance[next0]);
-
+	  offset0 = device_input_next_node_advance[next0];
+	  b0->current_data = mb0->data_off + offset0 - RTE_PKTMBUF_HEADROOM;
+	  b0->flags |= device_input_next_node_flags[next0];
+	  vnet_buffer (b0)->l3_hdr_offset = b0->current_data;
+	  vnet_buffer (b0)->l2_hdr_offset =
+	    mb0->data_off - RTE_PKTMBUF_HEADROOM;
+	  b0->current_length = mb0->data_len - offset0;
 	  n_rx_bytes += mb0->pkt_len;
 
 	  /* Process subsequent segments of multi-segment packets */
@@ -641,8 +585,9 @@ poll_rate_limit (dpdk_main_t * dm)
       <code>xd->per_interface_next_index</code>
 */
 
-static uword
-dpdk_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * f)
+uword
+CLIB_MULTIARCH_FN (dpdk_input) (vlib_main_t * vm, vlib_node_runtime_t * node,
+				vlib_frame_t * f)
 {
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd;
@@ -658,6 +603,8 @@ dpdk_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * f)
   foreach_device_and_queue (dq, rt->devices_and_queues)
     {
       xd = vec_elt_at_index(dm->devices, dq->dev_instance);
+      if (PREDICT_FALSE (xd->flags & DPDK_DEVICE_FLAG_BOND_SLAVE))
+	continue; 	/* Do not poll slave to a bonded interface */
       if (xd->flags & DPDK_DEVICE_FLAG_MAYBE_MULTISEG)
         n_rx_packets += dpdk_device_input (dm, xd, node, thread_index, dq->queue_id, /* maybe_multiseg */ 1);
       else
@@ -670,6 +617,7 @@ dpdk_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * f)
   return n_rx_packets;
 }
 
+#ifndef CLIB_MULTIARCH_VARIANT
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (dpdk_input_node) = {
   .function = dpdk_input,
@@ -686,9 +634,22 @@ VLIB_REGISTER_NODE (dpdk_input_node) = {
   .n_errors = DPDK_N_ERROR,
   .error_strings = dpdk_error_strings,
 };
-
-VLIB_NODE_FUNCTION_MULTIARCH (dpdk_input_node, dpdk_input);
 /* *INDENT-ON* */
+
+vlib_node_function_t __clib_weak dpdk_input_avx512;
+vlib_node_function_t __clib_weak dpdk_input_avx2;
+
+#if __x86_64__
+static void __clib_constructor
+dpdk_input_multiarch_select (void)
+{
+  if (dpdk_input_avx512 && clib_cpu_supports_avx512f ())
+    dpdk_input_node.function = dpdk_input_avx512;
+  else if (dpdk_input_avx2 && clib_cpu_supports_avx2 ())
+    dpdk_input_node.function = dpdk_input_avx2;
+}
+#endif
+#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

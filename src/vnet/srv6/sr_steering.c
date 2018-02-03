@@ -159,13 +159,15 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 	  /* If no more SR policies or steering policies */
 	  if (!pool_elts (sm->sr_policies) && !pool_elts (sm->steer_policies))
 	    {
-	      fib_table_unlock (sm->fib_table_ip6, FIB_PROTOCOL_IP6);
-	      fib_table_unlock (sm->fib_table_ip4, FIB_PROTOCOL_IP6);
+	      fib_table_unlock (sm->fib_table_ip6,
+				FIB_PROTOCOL_IP6, FIB_SOURCE_SR);
+	      fib_table_unlock (sm->fib_table_ip4,
+				FIB_PROTOCOL_IP6, FIB_SOURCE_SR);
 	      sm->fib_table_ip6 = (u32) ~ 0;
 	      sm->fib_table_ip4 = (u32) ~ 0;
 	    }
 
-	  return 1;
+	  return 0;
 	}
       else			/* It means user requested to update an existing SR steering policy */
 	{
@@ -310,7 +312,7 @@ update_fib:
 						 table_id : 0)),
 				&pfx, FIB_SOURCE_SR,
 				FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT,
-				FIB_PROTOCOL_IP6,
+				DPO_PROTO_IP6,
 				(ip46_address_t *) & sr_policy->bsid, ~0,
 				sm->fib_table_ip6, 1, NULL,
 				FIB_ROUTE_PATH_FLAG_NONE);
@@ -327,7 +329,7 @@ update_fib:
 						 table_id : 0)),
 				&pfx, FIB_SOURCE_SR,
 				FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT,
-				FIB_PROTOCOL_IP6,
+				DPO_PROTO_IP6,
 				(ip46_address_t *) & sr_policy->bsid, ~0,
 				sm->fib_table_ip4, 1, NULL,
 				FIB_ROUTE_PATH_FLAG_NONE);

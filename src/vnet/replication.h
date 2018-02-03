@@ -27,8 +27,8 @@
 typedef struct
 {
   /* The entire vnet buffer header restored for each replica */
-  u8 vnet_buffer[32];		/* 16B aligned to allow vector unit copy */
-  u8 reserved[32];		/* space for future expansion of vnet buffer header */
+  u8 vnet_buffer[40];		/* 16B aligned to allow vector unit copy */
+  u8 reserved[24];		/* space for future expansion of vnet buffer header */
 
   /* feature state used during this replication */
   u64 feature_replicas;		/* feature's id for its set of replicas */
@@ -43,12 +43,13 @@ typedef struct
 
   /* data saved from the original packet and restored for each replica */
   u64 l2_header[3];		/*  24B (must be at least 22B for l2 packets) */
+  u32 flags;			/* vnet buffer flags */
   u16 ip_tos;			/* v4 and v6 */
   u16 ip4_checksum;		/* needed for v4 only */
 
   /* data saved from the vlib buffer header and restored for each replica */
   i16 current_data;		/* offset of first byte of packet in packet data */
-  u8 pad[6];			/* to 64B */
+  u8 pad[2];			/* to 64B */
   u8 l2_packet;			/* flag for l2 vs l3 packet data */
 
 } replication_context_t;	/* 128B */

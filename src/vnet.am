@@ -31,8 +31,10 @@ endif
 # Generic stuff
 ########################################
 libvnet_la_SOURCES +=				\
+  vnet/buffer.c					\
   vnet/config.c					\
   vnet/devices/devices.c			\
+  vnet/devices/netlink.c			\
   vnet/handoff.c				\
   vnet/interface.c				\
   vnet/interface_api.c				\
@@ -47,6 +49,7 @@ nobase_include_HEADERS +=			\
   vnet/buffer.h					\
   vnet/config.h					\
   vnet/devices/devices.h			\
+  vnet/devices/netlink.h			\
   vnet/global_funcs.h				\
   vnet/handoff.h				\
   vnet/interface.h				\
@@ -60,7 +63,8 @@ nobase_include_HEADERS +=			\
   vnet/vnet.h					\
   vnet/vnet_all_api_h.h				\
   vnet/vnet_msg_enum.h				\
-  vnet/util/radix.h
+  vnet/util/radix.h                 \
+  vnet/util/refcount.h
 
 API_FILES += vnet/interface.api
 
@@ -115,6 +119,7 @@ libvnet_la_SOURCES +=				\
  vnet/ethernet/pg.c				\
  vnet/ethernet/sfp.c				\
  vnet/ethernet/p2p_ethernet.c			\
+ vnet/ethernet/p2p_ethernet_input.c		\
  vnet/ethernet/p2p_ethernet_api.c
 
 nobase_include_HEADERS +=			\
@@ -252,6 +257,23 @@ nobase_include_HEADERS +=			\
 API_FILES += vnet/vxlan/vxlan.api
 
 ########################################
+# Layer 2 / Geneve
+########################################
+libvnet_la_SOURCES +=				\
+  vnet/geneve/geneve.c				\
+  vnet/geneve/encap.c				\
+  vnet/geneve/decap.c				\
+  vnet/geneve/geneve_api.c
+
+nobase_include_HEADERS +=			\
+  vnet/geneve/geneve.h				\
+  vnet/geneve/geneve_packet.h			\
+  vnet/geneve/geneve_error.def			\
+  vnet/geneve/geneve.api.h
+
+API_FILES += vnet/geneve/geneve.api
+
+########################################
 # Layer 2 / CDP
 ########################################
 libvnet_la_SOURCES +=				\
@@ -269,10 +291,15 @@ libvnet_la_SOURCES +=				\
   vnet/lldp/lldp_input.c			\
   vnet/lldp/lldp_node.c				\
   vnet/lldp/lldp_output.c			\
-  vnet/lldp/lldp_cli.c
+  vnet/lldp/lldp_cli.c                          \
+  vnet/lldp/lldp_api.c
 
 nobase_include_HEADERS +=			\
-  vnet/lldp/lldp_protocol.h
+  vnet/lldp/lldp_protocol.h                     \
+  vnet/lldp/lldp.h                              \
+  vnet/lldp/lldp.api.h
+
+API_FILES += vnet/lldp/lldp.api
 
 ########################################
 # Layer 2/3 "classify"
@@ -310,25 +337,30 @@ libvnet_la_SOURCES +=				\
  vnet/ip/ip46_cli.c				\
  vnet/ip/ip4_format.c				\
  vnet/ip/ip4_forward.c				\
+ vnet/ip/ip4_punt_drop.c			\
  vnet/ip/ip4_input.c				\
  vnet/ip/ip4_mtrie.c				\
  vnet/ip/ip4_pg.c				\
  vnet/ip/ip4_source_and_port_range_check.c	\
  vnet/ip/ip4_source_check.c			\
+ vnet/ip/ip4_reassembly.c                       \
  vnet/ip/ip6_format.c				\
  vnet/ip/ip6_forward.c				\
+ vnet/ip/ip6_punt_drop.c			\
  vnet/ip/ip6_hop_by_hop.c			\
  vnet/ip/ip6_input.c				\
  vnet/ip/ip6_neighbor.c				\
  vnet/ip/ip6_pg.c				\
+ vnet/ip/ip6_reassembly.c                       \
  vnet/ip/ip_api.c				\
  vnet/ip/ip_checksum.c				\
  vnet/ip/ip_frag.c				\
- vnet/ip/ip.h					\
+ vnet/ip/ip.c					\
  vnet/ip/ip_init.c				\
  vnet/ip/ip_input_acl.c				\
  vnet/ip/lookup.c				\
  vnet/ip/ping.c					\
+ vnet/ip/punt_api.c				\
  vnet/ip/punt.c
 
 nobase_include_HEADERS +=			\
@@ -355,9 +387,12 @@ nobase_include_HEADERS +=			\
  vnet/ip/ports.def				\
  vnet/ip/protocols.def				\
  vnet/ip/punt_error.def				\
+ vnet/ip/punt.api.h				\
  vnet/ip/punt.h
 
-API_FILES += vnet/ip/ip.api
+API_FILES += 					\
+ vnet/ip/ip.api 				\
+ vnet/ip/punt.api
 
 ########################################
 # Bidirectional Forwarding Detection
@@ -392,8 +427,11 @@ libvnet_la_SOURCES +=				\
  vnet/ipsec/ipsec_if.c				\
  vnet/ipsec/ipsec_if_in.c			\
  vnet/ipsec/ipsec_if_out.c			\
+ vnet/ipsec/esp_format.c			\
  vnet/ipsec/esp_encrypt.c			\
  vnet/ipsec/esp_decrypt.c			\
+ vnet/ipsec/ah_decrypt.c			\
+ vnet/ipsec/ah_encrypt.c			\
  vnet/ipsec/ikev2.c				\
  vnet/ipsec/ikev2_crypto.c			\
  vnet/ipsec/ikev2_cli.c				\
@@ -410,6 +448,7 @@ libvnet_la_SOURCES +=				\
 nobase_include_HEADERS +=			\
  vnet/ipsec/ipsec.h				\
  vnet/ipsec/esp.h				\
+ vnet/ipsec/ah.h				\
  vnet/ipsec/ikev2.h				\
  vnet/ipsec/ikev2_priv.h			\
  vnet/ipsec/ipsec.api.h
@@ -460,15 +499,13 @@ endif
 # Layer 4 protocol: tcp
 ########################################
 libvnet_la_SOURCES +=				\
+ vnet/tcp/tcp_api.c				\
  vnet/tcp/tcp_format.c				\
  vnet/tcp/tcp_pg.c				\
  vnet/tcp/tcp_syn_filter4.c			\
  vnet/tcp/tcp_output.c				\
  vnet/tcp/tcp_input.c				\
  vnet/tcp/tcp_newreno.c				\
- vnet/tcp/builtin_client.c			\
- vnet/tcp/builtin_server.c			\
- vnet/tcp/builtin_http_server.c			\
  vnet/tcp/tcp_test.c				\
  vnet/tcp/tcp.c
 
@@ -476,7 +513,10 @@ nobase_include_HEADERS +=			\
  vnet/tcp/tcp_packet.h				\
  vnet/tcp/tcp_timer.h				\
  vnet/tcp/tcp_debug.h				\
- vnet/tcp/tcp.h
+ vnet/tcp/tcp.h					\
+ vnet/tcp/tcp.api.h
+
+API_FILES += vnet/tcp/tcp.api
 
 ########################################
 # Layer 4 protocol: udp
@@ -484,15 +524,36 @@ nobase_include_HEADERS +=			\
 libvnet_la_SOURCES +=				\
  vnet/udp/udp.c					\
  vnet/udp/udp_input.c				\
- vnet/udp/builtin_server.c			\
  vnet/udp/udp_format.c				\
  vnet/udp/udp_local.c				\
- vnet/udp/udp_pg.c
+ vnet/udp/udp_pg.c				\
+ vnet/udp/udp_encap_node.c			\
+ vnet/udp/udp_encap.c				\
+ vnet/udp/udp_api.c
 
 nobase_include_HEADERS +=			\
   vnet/udp/udp_error.def                       	\
   vnet/udp/udp.h                               	\
-  vnet/udp/udp_packet.h
+  vnet/udp/udp_packet.h				\
+  vnet/udp/udp.api.h
+
+API_FILES += vnet/udp/udp.api
+
+########################################
+# Layer 4 protocol: sctp
+########################################
+libvnet_la_SOURCES +=				\
+  vnet/sctp/sctp.c				\
+  vnet/sctp/sctp_pg.c				\
+  vnet/sctp/sctp_input.c			\
+  vnet/sctp/sctp_output.c			\
+  vnet/sctp/sctp_format.c
+
+nobase_include_HEADERS +=			\
+  vnet/sctp/sctp_error.def                    	\
+  vnet/sctp/sctp_packet.h			\
+  vnet/sctp/sctp_timer.h			\
+  vnet/sctp/sctp.h
 
 ########################################
 # Tunnel protocol: gre
@@ -676,7 +737,7 @@ API_FILES += vnet/lisp-gpe/lisp_gpe.api
 ########################################
 libvnet_la_SOURCES +=				\
  vnet/dhcp/client.c				\
- vnet/dhcp/client.h				\
+ vnet/dhcp/dhcp_client_detect.c			\
  vnet/dhcp/dhcp_api.c
 
 nobase_include_HEADERS +=			\
@@ -724,11 +785,15 @@ API_FILES += vnet/srv6/sr.api
 
 libvnet_la_SOURCES +=				\
  vnet/srmpls/sr_mpls_policy.c		\
- vnet/srmpls/sr_mpls_steering.c
+ vnet/srmpls/sr_mpls_steering.c   \
+ vnet/srmpls/sr_mpls_api.c
 
 
 nobase_include_HEADERS +=			\
- vnet/srmpls/sr.h
+ vnet/srmpls/sr_mpls.h      \
+ vnet/srmpls/sr_mpls.api.h
+
+API_FILES += vnet/srmpls/sr_mpls.api
 
 ########################################
 # IPFIX / netflow v10
@@ -782,6 +847,23 @@ nobase_include_HEADERS += 			\
 API_FILES += vnet/span/span.api
 
 ########################################
+# DNS proxy, API
+########################################
+libvnet_la_SOURCES +=				\
+ vnet/dns/dns.c					\
+ vnet/dns/dns.h					\
+ vnet/dns/dns_packet.h				\
+ vnet/dns/reply_node.c				\
+ vnet/dns/request_node.c			\
+ vnet/dns/resolver_process.c
+
+nobase_include_HEADERS +=			\
+ vnet/dns/dns.api.h				\
+ vnet/dns/dns.h
+
+API_FILES += vnet/dns/dns.api
+
+########################################
 # Packet generator
 ########################################
 
@@ -791,35 +873,49 @@ libvnet_la_SOURCES +=				\
   vnet/pg/init.c				\
   vnet/pg/input.c				\
   vnet/pg/output.c				\
-  vnet/pg/stream.c
+  vnet/pg/stream.c				\
+  vnet/pg/pg_api.c
 
 nobase_include_HEADERS +=			\
   vnet/pg/pg.h					\
-  vnet/pg/edit.h
+  vnet/pg/edit.h				\
+  vnet/pg/pg.api.h
+
+API_FILES += vnet/pg/pg.api
 
 ########################################
 # virtio
 ########################################
 
-libvnet_la_SOURCES +=       \
-  vnet/devices/virtio/vhost-user.c	\
-  vnet/devices/virtio/vhost_user_api.c
+libvnet_la_SOURCES +=				\
+  vnet/devices/virtio/device.c			\
+  vnet/devices/virtio/node.c			\
+  vnet/devices/virtio/vhost-user.c		\
+  vnet/devices/virtio/vhost_user_api.c		\
+  vnet/devices/virtio/virtio.c
 
-nobase_include_HEADERS +=     \
-  vnet/devices/virtio/vhost-user.h	\
+
+nobase_include_HEADERS +=			\
+  vnet/devices/virtio/virtio.h			\
+  vnet/devices/virtio/vhost-user.h		\
   vnet/devices/virtio/vhost_user.api.h
 
 API_FILES += vnet/devices/virtio/vhost_user.api
 
 ########################################
-# ssvm ethernet
+# tap interface (with virtio backend)
 ########################################
-libvnet_la_SOURCES +=				\
-  vnet/devices/ssvm/ssvm_eth.c			\
-  vnet/devices/ssvm/node.c
 
-nobase_include_HEADERS +=			\
-  vnet/devices/ssvm/ssvm_eth.h
+libvnet_la_SOURCES += 				\
+  vnet/devices/tap/cli.c			\
+  vnet/devices/tap/tap.c			\
+  vnet/devices/tap/tapv2_api.c
+
+nobase_include_HEADERS += 			\
+  vnet/devices/tap/tap.h			\
+  vnet/devices/tap/tapv2.api.h
+
+API_FILES += vnet/devices/tap/tapv2.api
 
 ########################################
 # session managmeent
@@ -827,25 +923,53 @@ nobase_include_HEADERS +=			\
 
 libvnet_la_SOURCES +=				\
   vnet/session/session.c			\
-  vnet/session/node.c				\
+  vnet/session/session_table.c			\
+  vnet/session/session_rules_table.c		\
+  vnet/session/session_lookup.c			\
+  vnet/session/session_node.c			\
   vnet/session/transport.c			\
   vnet/session/application.c			\
   vnet/session/session_cli.c			\
-  vnet/session/hashes.c				\
   vnet/session/application_interface.c		\
+  vnet/session/application_namespace.c		\
   vnet/session/segment_manager.c		\
+  vnet/session/session_test.c			\
   vnet/session/session_api.c
 
 nobase_include_HEADERS +=			\
   vnet/session/session.h			\
+  vnet/session/session_table.h			\
+  vnet/session/session_rules_table.h		\
+  vnet/session/stream_session.h			\
+  vnet/session/session_lookup.h			\
   vnet/session/application.h			\
   vnet/session/transport.h			\
+  vnet/session/transport_interface.h		\
   vnet/session/application_interface.h		\
+  vnet/session/application_namespace.h		\
   vnet/session/session_debug.h			\
   vnet/session/segment_manager.h		\
+  vnet/session/mma_template.h			\
+  vnet/session/mma_template.c			\
+  vnet/session/mma_16.h				\
+  vnet/session/mma_40.h				\
   vnet/session/session.api.h
 
 API_FILES += vnet/session/session.api
+
+########################################
+# session layer applications
+########################################
+
+libvnet_la_SOURCES +=				\
+  vnet/session-apps/echo_client.c		\
+  vnet/session-apps/echo_server.c		\
+  vnet/session-apps/http_server.c		\
+  vnet/session-apps/proxy.c
+
+nobase_include_HEADERS +=			\
+  vnet/session-apps/echo_client.h		\
+  vnet/session-apps/proxy.h
 
 ########################################
 # Linux packet interface
@@ -887,10 +1011,14 @@ API_FILES += vnet/devices/netmap/netmap.api
 
 libvnet_la_SOURCES +=				\
   vnet/feature/feature.c			\
+  vnet/feature/feature_api.c			\
   vnet/feature/registration.c
 
 nobase_include_HEADERS +=			\
-  vnet/feature/feature.h
+  vnet/feature/feature.h			\
+  vnet/feature/feature.api.h
+
+API_FILES += vnet/feature/feature.api
 
 ########################################
 # Unix kernel related
@@ -998,9 +1126,12 @@ libvnet_la_SOURCES +=				\
   vnet/dpo/lookup_dpo.c   			\
   vnet/dpo/classify_dpo.c   			\
   vnet/dpo/replicate_dpo.c   			\
-  vnet/dpo/interface_dpo.c   			\
+  vnet/dpo/interface_rx_dpo.c  			\
+  vnet/dpo/interface_tx_dpo.c  			\
   vnet/dpo/mpls_disposition.c   		\
-  vnet/dpo/mpls_label_dpo.c
+  vnet/dpo/mpls_label_dpo.c			\
+  vnet/dpo/l3_proxy_dpo.c			\
+  vnet/dpo/dvr_dpo.c
 
 nobase_include_HEADERS +=			\
   vnet/dpo/load_balance.h			\
@@ -1010,6 +1141,7 @@ nobase_include_HEADERS +=			\
   vnet/dpo/classify_dpo.h			\
   vnet/dpo/receive_dpo.h			\
   vnet/dpo/ip_null_dpo.h			\
+  vnet/dpo/replicate_dpo.h   			\
   vnet/dpo/dpo.h
 
 ########################################
@@ -1037,7 +1169,59 @@ nobase_include_HEADERS +=			\
 ########################################
 
 libvnet_la_SOURCES +=                    \
-  vnet/util/radix.c
+  vnet/util/radix.c			     \
+  vnet/util/refcount.c			 \
+  vnet/util/trajectory.c
+
+########################################
+# BIER
+########################################
+
+libvnet_la_SOURCES +=                           \
+  vnet/bier/bier_bit_string.c                   \
+  vnet/bier/bier_entry.c                        \
+  vnet/bier/bier_fmask.c                        \
+  vnet/bier/bier_fmask_db.c                     \
+  vnet/bier/bier_input.c                   	\
+  vnet/bier/bier_lookup.c                  	\
+  vnet/bier/bier_output.c                  	\
+  vnet/bier/bier_table.c                        \
+  vnet/bier/bier_types.c                        \
+  vnet/bier/bier_test.c                         \
+  vnet/bier/bier_api.c                          \
+  vnet/bier/bier_drop.c                         \
+  vnet/bier/bier_update.c			\
+  vnet/bier/bier_imp_node.c			\
+  vnet/bier/bier_imp.c				\
+  vnet/bier/bier_disp_entry.c			\
+  vnet/bier/bier_disp_lookup_node.c		\
+  vnet/bier/bier_disp_dispatch_node.c		\
+  vnet/bier/bier_disp_table.c			\
+  vnet/bier/bier_bift_table.c
+
+nobase_include_HEADERS +=			\
+  vnet/bier/bier_types.h                        \
+  vnet/bier/bier_entry.h                        \
+  vnet/bier/bier_update.h                       \
+  vnet/bier/bier.api.h                          \
+  vnet/bier/bier_table.h
+
+API_FILES += vnet/bier/bier.api
+
+########################################
+# Test apps
+########################################
+
+noinst_PROGRAMS += tcp_echo udp_echo
+
+TEST_APPS_LDADD = libvlibmemoryclient.la libsvm.la libvppinfra.la
+TEST_APPS_LDADD += -lpthread -lm -lrt
+
+tcp_echo_SOURCES = tests/vnet/session/tcp_echo.c
+tcp_echo_LDADD = $(TEST_APPS_LDADD)
+
+udp_echo_SOURCES = tests/vnet/session/udp_echo.c
+udp_echo_LDADD = $(TEST_APPS_LDADD)
 
 ########################################
 # Plugin client library

@@ -15,6 +15,7 @@
 #define _GNU_SOURCE
 
 #include <vppinfra/format.h>
+#include <vppinfra/linux/sysfs.h>
 #include <vlib/vlib.h>
 
 #include <vlib/threads.h>
@@ -97,14 +98,14 @@ show_threads_fn (vlib_main_t * vm,
 	  u8 *p = 0;
 
 	  p = format (p, "%s%u/topology/core_id%c", sys_cpu_path, lcore, 0);
-	  vlib_sysfs_read ((char *) p, "%d", &core_id);
+	  clib_sysfs_read ((char *) p, "%d", &core_id);
 
 	  vec_reset_length (p);
 	  p =
 	    format (p,
 		    "%s%u/topology/physical_package_id%c",
 		    sys_cpu_path, lcore, 0);
-	  vlib_sysfs_read ((char *) p, "%d", &socket_id);
+	  clib_sysfs_read ((char *) p, "%d", &socket_id);
 	  vec_free (p);
 
 	  line = format (line, "%-7u%-7u%-7u%", lcore, core_id, socket_id);

@@ -181,8 +181,7 @@ fib_table_post_insert_actions (fib_table_t *fib_table,
 	return;
 
     /*
-     * find and inform the covering entry that a new more specific
-     * has been inserted beneath it
+     * find  the covering entry
      */
     fib_entry_cover_index = fib_table_get_less_specific_i(fib_table, prefix);
     /*
@@ -190,6 +189,16 @@ fib_table_post_insert_actions (fib_table_t *fib_table,
      */
     if (fib_entry_cover_index != fib_entry_index)
     {
+        /*
+         * push any inherting sources from the cover onto the covered
+         */
+        fib_entry_inherit(fib_entry_cover_index,
+                          fib_entry_index);
+
+        /*
+         * inform the covering entry that a new more specific
+         * has been inserted beneath it
+         */
 	fib_entry_cover_change_notify(fib_entry_cover_index,
 				      fib_entry_index);
     }
@@ -481,7 +490,8 @@ fib_table_route_path_fixup (const fib_prefix_t *prefix,
     }
     if (fib_prefix_is_host(prefix) &&
 	ip46_address_is_zero(&path->frp_addr) &&
-	path->frp_sw_if_index != ~0)
+	path->frp_sw_if_index != ~0 &&
+        path->frp_proto != DPO_PROTO_ETHERNET)
     {
 	path->frp_addr = prefix->fp_addr;
         path->frp_flags |= FIB_ROUTE_PATH_ATTACHED;
@@ -505,7 +515,7 @@ fib_table_entry_path_add (u32 fib_index,
 			  const fib_prefix_t *prefix,
 			  fib_source_t source,
 			  fib_entry_flag_t flags,
-			  fib_protocol_t next_hop_proto,
+			  dpo_proto_t next_hop_proto,
 			  const ip46_address_t *next_hop,
 			  u32 next_hop_sw_if_index,
 			  u32 next_hop_fib_index,
@@ -664,7 +674,7 @@ void
 fib_table_entry_path_remove (u32 fib_index,
 			     const fib_prefix_t *prefix,
 			     fib_source_t source,
-			     fib_protocol_t next_hop_proto,
+			     dpo_proto_t next_hop_proto,
 			     const ip46_address_t *next_hop,
 			     u32 next_hop_sw_if_index,
 			     u32 next_hop_fib_index,
@@ -755,7 +765,7 @@ fib_table_entry_update_one_path (u32 fib_index,
 				 const fib_prefix_t *prefix,
 				 fib_source_t source,
 				 fib_entry_flag_t flags,
-				 fib_protocol_t next_hop_proto,
+				 dpo_proto_t next_hop_proto,
 				 const ip46_address_t *next_hop,
 				 u32 next_hop_sw_if_index,
 				 u32 next_hop_fib_index,
@@ -846,7 +856,8 @@ fib_table_entry_delete (u32 fib_index,
 	 * removing an etry that does not exist.
 	 * i'll allow it, but i won't like it.
 	 */
-	clib_warning("%U not in FIB", format_fib_prefix, prefix);
+        if (0)
+            clib_warning("%U not in FIB", format_fib_prefix, prefix);
     }
     else
     {
@@ -951,6 +962,7 @@ fib_table_get_flow_hash_config (u32 fib_index,
 
     return (fib->ft_flow_hash_config);
 }
+
 flow_hash_config_t
 fib_table_get_default_flow_hash_config (fib_protocol_t proto)
 {
@@ -979,7 +991,7 @@ typedef struct fib_table_set_flow_hash_config_ctx_t_
     flow_hash_config_t hash_config;
 } fib_table_set_flow_hash_config_ctx_t;
 
-static int
+static fib_table_walk_rc_t
 fib_table_set_flow_hash_config_cb (fib_node_index_t fib_entry_index,
                                    void *arg)
 {
@@ -987,7 +999,7 @@ fib_table_set_flow_hash_config_cb (fib_node_index_t fib_entry_index,
 
     fib_entry_set_flow_hash_config(fib_entry_index, ctx->hash_config);
 
-    return (1);
+    return (FIB_TABLE_WALK_CONTINUE);
 }
 
 void
@@ -1037,9 +1049,11 @@ fib_table_find (fib_protocol_t proto,
     return (~0);
 }
 
-u32
-fib_table_find_or_create_and_lock (fib_protocol_t proto,
-				   u32 table_id)
+static u32
+fib_table_find_or_create_and_lock_i (fib_protocol_t proto,
+                                     u32 table_id,
+                                     fib_source_t src,
+                                     const u8 *name)
 {
     fib_table_t *fib_table;
     fib_node_index_t fi;
@@ -1047,13 +1061,13 @@ fib_table_find_or_create_and_lock (fib_protocol_t proto,
     switch (proto)
     {
     case FIB_PROTOCOL_IP4:
-	fi = ip4_fib_table_find_or_create_and_lock(table_id);
+	fi = ip4_fib_table_find_or_create_and_lock(table_id, src);
         break;
     case FIB_PROTOCOL_IP6:
-	fi = ip6_fib_table_find_or_create_and_lock(table_id);
+	fi = ip6_fib_table_find_or_create_and_lock(table_id, src);
         break;
     case FIB_PROTOCOL_MPLS:
-	fi = mpls_fib_table_find_or_create_and_lock(table_id);
+	fi = mpls_fib_table_find_or_create_and_lock(table_id, src);
         break;
     default:
         return (~0);        
@@ -1061,15 +1075,45 @@ fib_table_find_or_create_and_lock (fib_protocol_t proto,
 
     fib_table = fib_table_get(fi, proto);
 
-    fib_table->ft_desc = format(NULL, "%U-VRF:%d",
-                                format_fib_protocol, proto,
-                                table_id);
+    if (NULL == fib_table->ft_desc)
+    {
+        if (name && name[0])
+        {
+            fib_table->ft_desc = format(NULL, "%s", name);
+        }
+        else
+        {
+            fib_table->ft_desc = format(NULL, "%U-VRF:%d",
+                                        format_fib_protocol, proto,
+                                        table_id);
+        }
+    }
 
     return (fi);
 }
 
 u32
+fib_table_find_or_create_and_lock (fib_protocol_t proto,
+				   u32 table_id,
+                                   fib_source_t src)
+{
+    return (fib_table_find_or_create_and_lock_i(proto, table_id,
+                                                src, NULL));
+}
+
+u32
+fib_table_find_or_create_and_lock_w_name (fib_protocol_t proto,
+                                          u32 table_id,
+                                          fib_source_t src,
+                                          const u8 *name)
+{
+    return (fib_table_find_or_create_and_lock_i(proto, table_id,
+                                                src, name));
+}
+
+u32
 fib_table_create_and_lock (fib_protocol_t proto,
+                           fib_source_t src,
                            const char *const fmt,
                            ...)
 {
@@ -1082,13 +1126,13 @@ fib_table_create_and_lock (fib_protocol_t proto,
     switch (proto)
     {
     case FIB_PROTOCOL_IP4:
-	fi = ip4_fib_table_create_and_lock();
+	fi = ip4_fib_table_create_and_lock(src);
         break;
     case FIB_PROTOCOL_IP6:
-	fi = ip6_fib_table_create_and_lock();
+	fi = ip6_fib_table_create_and_lock(src);
         break;
      case FIB_PROTOCOL_MPLS:
-	fi = mpls_fib_table_create_and_lock();
+	fi = mpls_fib_table_create_and_lock(src);
         break;
    default:
         return (~0);        
@@ -1142,27 +1186,64 @@ fib_table_walk (u32 fib_index,
 }
 
 void
+fib_table_sub_tree_walk (u32 fib_index,
+                         fib_protocol_t proto,
+                         const fib_prefix_t *root,
+                         fib_table_walk_fn_t fn,
+                         void *ctx)
+{
+    switch (proto)
+    {
+    case FIB_PROTOCOL_IP4:
+	ip4_fib_table_sub_tree_walk(ip4_fib_get(fib_index), root, fn, ctx);
+	break;
+    case FIB_PROTOCOL_IP6:
+	ip6_fib_table_sub_tree_walk(fib_index, root, fn, ctx);
+	break;
+    case FIB_PROTOCOL_MPLS:
+	break;
+    }
+}
+
+void
 fib_table_unlock (u32 fib_index,
-		  fib_protocol_t proto)
+		  fib_protocol_t proto,
+                  fib_source_t source)
 {
     fib_table_t *fib_table;
 
     fib_table = fib_table_get(fib_index, proto);
-    fib_table->ft_locks--;
+    fib_table->ft_locks[source]--;
+    fib_table->ft_locks[FIB_TABLE_TOTAL_LOCKS]--;
 
-    if (0 == fib_table->ft_locks)
+    if (0 == fib_table->ft_locks[source])
     {
+        /*
+         * The source no longer needs the table. flush any routes
+         * from it just in case
+         */
+        fib_table_flush(fib_index, proto, source);
+    }
+
+    if (0 == fib_table->ft_locks[FIB_TABLE_TOTAL_LOCKS])
+    {
+        /*
+         * no more locak from any source - kill it
+         */
 	fib_table_destroy(fib_table);
     }
 }
+
 void
 fib_table_lock (u32 fib_index,
-		fib_protocol_t proto)
+		fib_protocol_t proto,
+                fib_source_t source)
 {
     fib_table_t *fib_table;
 
     fib_table = fib_table_get(fib_index, proto);
-    fib_table->ft_locks++;
+    fib_table->ft_locks[source]++;
+    fib_table->ft_locks[FIB_TABLE_TOTAL_LOCKS]++;
 }
 
 u32
@@ -1178,10 +1259,10 @@ fib_table_get_num_entries (u32 fib_index,
 }
 
 u8*
-format_fib_table_name (u8* s, va_list ap)
+format_fib_table_name (u8* s, va_list* ap)
 {
-    fib_node_index_t fib_index = va_arg(ap, fib_node_index_t);
-    fib_protocol_t proto = va_arg(ap, int); // int promotion
+    fib_node_index_t fib_index = va_arg(*ap, fib_node_index_t);
+    fib_protocol_t proto = va_arg(*ap, int); // int promotion
     fib_table_t *fib_table;
 
     fib_table = fib_table_get(fib_index, proto);
@@ -1208,7 +1289,7 @@ typedef struct fib_table_flush_ctx_t_
     fib_source_t ftf_source;
 } fib_table_flush_ctx_t;
 
-static int
+static fib_table_walk_rc_t
 fib_table_flush_cb (fib_node_index_t fib_entry_index,
                     void *arg)
 {
@@ -1218,7 +1299,7 @@ fib_table_flush_cb (fib_node_index_t fib_entry_index,
     {
         vec_add1(ctx->ftf_entries, fib_entry_index);
     }
-    return (1);
+    return (FIB_TABLE_WALK_CONTINUE);
 }
 
 
@@ -1243,4 +1324,14 @@ fib_table_flush (u32 fib_index,
     }
 
     vec_free(ctx.ftf_entries);
+}
+
+u8 *
+format_fib_table_memory (u8 *s, va_list *args)
+{
+    s = format(s, "%U", format_ip4_fib_table_memory);
+    s = format(s, "%U", format_ip6_fib_table_memory);
+    s = format(s, "%U", format_mpls_fib_table_memory);
+
+    return (s);
 }

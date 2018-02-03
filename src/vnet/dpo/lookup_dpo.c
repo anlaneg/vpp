@@ -135,11 +135,15 @@ lookup_dpo_add_or_lock_w_fib_index (fib_node_index_t fib_index,
     {
         if (LOOKUP_UNICAST == cast)
         {
-            fib_table_lock(fib_index, dpo_proto_to_fib(proto));
+            fib_table_lock(fib_index,
+                           dpo_proto_to_fib(proto),
+                           FIB_SOURCE_RR);
         }
         else
         {
-            mfib_table_lock(fib_index, dpo_proto_to_fib(proto));
+            mfib_table_lock(fib_index,
+                            dpo_proto_to_fib(proto),
+                            MFIB_SOURCE_RR);
         }
     }
     lookup_dpo_add_or_lock_i(fib_index, proto, cast, input, table_config, dpo);
@@ -161,13 +165,15 @@ lookup_dpo_add_or_lock_w_table_id (u32 table_id,
         {
             fib_index =
                 fib_table_find_or_create_and_lock(dpo_proto_to_fib(proto),
-                                                  table_id);
+                                                  table_id,
+                                                  FIB_SOURCE_RR);
         }
         else
         {
             fib_index =
                 mfib_table_find_or_create_and_lock(dpo_proto_to_fib(proto),
-                                                   table_id);
+                                                   table_id,
+                                                   MFIB_SOURCE_RR);
         }
     }
 
@@ -238,12 +244,14 @@ lookup_dpo_unlock (dpo_id_t *dpo)
             if (LOOKUP_UNICAST == lkd->lkd_cast)
             {
                 fib_table_unlock(lkd->lkd_fib_index,
-                                 dpo_proto_to_fib(lkd->lkd_proto));
+                                 dpo_proto_to_fib(lkd->lkd_proto),
+                                 FIB_SOURCE_RR);
             }
             else
             {
                 mfib_table_unlock(lkd->lkd_fib_index,
-                                  dpo_proto_to_fib(lkd->lkd_proto));
+                                  dpo_proto_to_fib(lkd->lkd_proto),
+                                  MFIB_SOURCE_RR);
             }
         }
         pool_put(lookup_dpo_pool, lkd);
@@ -587,7 +595,7 @@ format_lookup_trace (u8 * s, va_list * args)
     CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
     CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
     lookup_trace_t * t = va_arg (*args, lookup_trace_t *);
-    uword indent = format_get_indent (s);
+    u32 indent = format_get_indent (s);
     s = format (s, "%U fib-index:%d addr:%U load-balance:%d",
                 format_white_space, indent,
                 t->fib_index,
@@ -1105,7 +1113,7 @@ format_lookup_mpls_trace (u8 * s, va_list * args)
     CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
     CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
     lookup_trace_t * t = va_arg (*args, lookup_trace_t *);
-    uword indent = format_get_indent (s);
+    u32 indent = format_get_indent (s);
     mpls_unicast_header_t hdr;
 
     hdr.label_exp_s_ttl = clib_net_to_host_u32(t->hdr.label_exp_s_ttl);

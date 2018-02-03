@@ -52,6 +52,16 @@ device_input_next_node_advance[((VNET_DEVICE_INPUT_N_NEXT_NODES /
       [VNET_DEVICE_INPUT_NEXT_MPLS_INPUT] = sizeof (ethernet_header_t),
 };
 
+const u32 __attribute__((aligned (CLIB_CACHE_LINE_BYTES)))
+device_input_next_node_flags[((VNET_DEVICE_INPUT_N_NEXT_NODES /
+				CLIB_CACHE_LINE_BYTES) +1) * CLIB_CACHE_LINE_BYTES] =
+{
+      [VNET_DEVICE_INPUT_NEXT_IP4_INPUT] = VNET_BUFFER_F_L3_HDR_OFFSET_VALID,
+      [VNET_DEVICE_INPUT_NEXT_IP4_NCS_INPUT] = VNET_BUFFER_F_L3_HDR_OFFSET_VALID,
+      [VNET_DEVICE_INPUT_NEXT_IP6_INPUT] = VNET_BUFFER_F_L3_HDR_OFFSET_VALID,
+      [VNET_DEVICE_INPUT_NEXT_MPLS_INPUT] = VNET_BUFFER_F_L3_HDR_OFFSET_VALID,
+};
+
 VNET_FEATURE_ARC_INIT (device_input, static) =
 {
   .arc_name  = "device-input",
@@ -74,6 +84,12 @@ VNET_FEATURE_INIT (worker_handoff, static) = {
 VNET_FEATURE_INIT (span_input, static) = {
   .arc_name = "device-input",
   .node_name = "span-input",
+  .runs_before = VNET_FEATURES ("ethernet-input"),
+};
+
+VNET_FEATURE_INIT (p2p_ethernet_node, static) = {
+  .arc_name = "device-input",
+  .node_name = "p2p-ethernet-input",
   .runs_before = VNET_FEATURES ("ethernet-input"),
 };
 
@@ -245,6 +261,9 @@ vnet_hw_interface_set_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
   vnet_device_input_runtime_t *rt;
   int is_polling = 0;
 
+  if (mode == VNET_HW_INTERFACE_RX_MODE_DEFAULT)
+    mode = hw->default_rx_mode;
+
   if (hw->input_node_thread_index_by_queue == 0 || hw->rx_mode_by_queue == 0)
     return VNET_API_ERROR_INVALID_INTERFACE;
 
@@ -254,6 +273,10 @@ vnet_hw_interface_set_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
   if (mode != VNET_HW_INTERFACE_RX_MODE_POLLING &&
       (hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE) == 0)
     return VNET_API_ERROR_UNSUPPORTED;
+
+  if ((vec_len (hw->input_node_thread_index_by_queue) < queue_id + 1) ||
+      (vec_len (hw->rx_mode_by_queue) < queue_id + 1))
+    return VNET_API_ERROR_INVALID_QUEUE;
 
   hw->rx_mode_by_queue[queue_id] = mode;
   thread_index = hw->input_node_thread_index_by_queue[queue_id];
@@ -297,6 +320,10 @@ vnet_hw_interface_get_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
 
   if (hw->input_node_thread_index_by_queue == 0)
     return VNET_API_ERROR_INVALID_INTERFACE;
+
+  if ((vec_len (hw->input_node_thread_index_by_queue) < queue_id + 1) ||
+      (vec_len (hw->rx_mode_by_queue) < queue_id + 1))
+    return VNET_API_ERROR_INVALID_QUEUE;
 
   thread_index = hw->input_node_thread_index_by_queue[queue_id];
   vm = vlib_mains[thread_index];

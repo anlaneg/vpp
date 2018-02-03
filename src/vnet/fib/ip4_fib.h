@@ -99,6 +99,16 @@ extern void ip4_fib_table_walk(ip4_fib_t *fib,
                                void *ctx);
 
 /**
+ * @brief Walk all entries in a sub-tree of the FIB table
+ * N.B: This is NOT safe to deletes. If you need to delete walk the whole
+ * table and store elements in a vector, then delete the elements
+ */
+extern void ip4_fib_table_sub_tree_walk(ip4_fib_t *fib,
+                                        const fib_prefix_t *root,
+                                        fib_table_walk_fn_t fn,
+                                        void *ctx);
+
+/**
  * @brief Get the FIB at the given index
  */
 static inline ip4_fib_t *
@@ -127,9 +137,11 @@ ip4_fib_lookup (ip4_main_t * im, u32 sw_if_index, ip4_address_t * dst)
  * @returns A pointer to the retrieved or created fib.
  *
  */
-extern u32 ip4_fib_table_find_or_create_and_lock(u32 table_id);
-extern u32 ip4_fib_table_create_and_lock(void);
+extern u32 ip4_fib_table_find_or_create_and_lock(u32 table_id,
+                                                 fib_source_t src);
+extern u32 ip4_fib_table_create_and_lock(fib_source_t src);
 
+extern u8 *format_ip4_fib_table_memory(u8 * s, va_list * args);
 
 static inline 
 u32 ip4_fib_index_from_table_id (u32 table_id)

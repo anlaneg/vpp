@@ -239,6 +239,8 @@ l2_lisp_gpe_interface_tx (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   u32 n_left_from, next_index, *from, *to_next;
   lisp_gpe_main_t *lgm = &lisp_gpe_main;
+  u32 thread_index = vlib_get_thread_index ();
+  vlib_combined_counter_main_t *cm = &load_balance_main.lbm_to_counters;
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -274,7 +276,9 @@ l2_lisp_gpe_interface_tx (vlib_main_t * vm, vlib_node_runtime_t * node,
 				     e0->src_address, e0->dst_address);
 	  vnet_buffer (b0)->ip.adj_index[VLIB_TX] = lbi0;
 
-
+	  vlib_increment_combined_counter (cm, thread_index, lbi0, 1,
+					   vlib_buffer_length_in_chain (vm,
+									b0));
 	  if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
 	    {
 	      l2_lisp_gpe_tx_trace_t *tr = vlib_add_trace (vm, node, b0,
@@ -501,12 +505,14 @@ lisp_gpe_iface_set_table (u32 sw_if_index, u32 table_id)
 {
   fib_node_index_t fib_index;
 
-  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, table_id);
+  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, table_id,
+						 FIB_SOURCE_LISP);
   vec_validate (ip4_main.fib_index_by_sw_if_index, sw_if_index);
   ip4_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
   ip4_sw_interface_enable_disable (sw_if_index, 1);
 
-  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP6, table_id);
+  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP6, table_id,
+						 FIB_SOURCE_LISP);
   vec_validate (ip6_main.fib_index_by_sw_if_index, sw_if_index);
   ip6_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
   ip6_sw_interface_enable_disable (sw_if_index, 1);
@@ -526,7 +532,7 @@ lisp_gpe_tenant_del_default_routes (u32 table_id)
 
     fib_index = fib_table_find (prefix.fp_proto, table_id);
     fib_table_entry_special_remove (fib_index, &prefix, FIB_SOURCE_LISP);
-    fib_table_unlock (fib_index, prefix.fp_proto);
+    fib_table_unlock (fib_index, prefix.fp_proto, FIB_SOURCE_LISP);
   }
 }
 
@@ -545,7 +551,8 @@ lisp_gpe_tenant_add_default_routes (u32 table_id)
     /*
      * Add a deafult route that results in a control plane punt DPO
      */
-    fib_index = fib_table_find_or_create_and_lock (prefix.fp_proto, table_id);
+    fib_index = fib_table_find_or_create_and_lock (prefix.fp_proto, table_id,
+						   FIB_SOURCE_LISP);
     fib_table_entry_special_dpo_add (fib_index, &prefix, FIB_SOURCE_LISP,
 				     FIB_ENTRY_FLAG_EXCLUSIVE,
 				     lisp_cp_dpo_get (fib_proto_to_dpo
@@ -568,7 +575,8 @@ lisp_gpe_tenant_add_default_routes (u32 table_id)
  * @return number of vectors in frame.
  */
 u32
-lisp_gpe_add_l3_iface (lisp_gpe_main_t * lgm, u32 vni, u32 table_id)
+lisp_gpe_add_l3_iface (lisp_gpe_main_t * lgm, u32 vni, u32 table_id,
+		       u8 with_default_routes)
 {
   vnet_main_t *vnm = lgm->vnet_main;
   tunnel_lookup_t *l3_ifaces = &lgm->l3_ifaces;
@@ -596,7 +604,8 @@ lisp_gpe_add_l3_iface (lisp_gpe_main_t * lgm, u32 vni, u32 table_id)
 
   /* insert default routes that point to lisp-cp lookup */
   lisp_gpe_iface_set_table (hi->sw_if_index, table_id);
-  lisp_gpe_tenant_add_default_routes (table_id);
+  if (with_default_routes)
+    lisp_gpe_tenant_add_default_routes (table_id);
 
   /* enable interface */
   vnet_sw_interface_set_flags (vnm, hi->sw_if_index,
@@ -901,7 +910,9 @@ lisp_gpe_add_del_iface_command_fn (vlib_main_t * vm, unformat_input_t * input,
     {
       if (is_add)
 	{
-	  if (~0 == lisp_gpe_tenant_l3_iface_add_or_lock (vni, table_id))
+	  if (~0 == lisp_gpe_tenant_l3_iface_add_or_lock (vni, table_id, 1
+							  /* with_default_route */
+	      ))
 	    {
 	      error = clib_error_return (0, "L3 interface not created");
 	      goto done;

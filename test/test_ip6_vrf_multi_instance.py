@@ -187,9 +187,10 @@ class TestIP6VrfMultiInst(VppTestCase):
             pg_if = self.pg_if_by_vrf_id[vrf_id][0]
             dest_addr = pg_if.remote_hosts[0].ip6n
             dest_addr_len = 64
+            self.vapi.ip_table_add_del(vrf_id, is_add=1, is_ipv6=1)
             self.vapi.ip_add_del_route(
                 dest_addr, dest_addr_len, pg_if.local_ip6n, is_ipv6=1,
-                table_id=vrf_id, create_vrf_if_needed=1, is_multipath=1)
+                table_id=vrf_id, is_multipath=1)
             self.logger.info("IPv6 VRF ID %d created" % vrf_id)
             if vrf_id not in self.vrf_list:
                 self.vrf_list.append(vrf_id)
@@ -232,6 +233,7 @@ class TestIP6VrfMultiInst(VppTestCase):
         self.logger.info("IPv6 VRF ID %d reset" % vrf_id)
         self.logger.debug(self.vapi.ppcli("show ip6 fib"))
         self.logger.debug(self.vapi.ppcli("show ip6 neighbors"))
+        self.vapi.ip_table_add_del(vrf_id, is_add=0, is_ipv6=1)
 
     def create_stream(self, src_if, packet_sizes):
         """
@@ -314,10 +316,10 @@ class TestIP6VrfMultiInst(VppTestCase):
         vrf_exist = False
         vrf_count = 0
         for ip6_fib_details in ip6_fib_dump:
-            if ip6_fib_details[2] == vrf_id:
+            if ip6_fib_details.table_id == vrf_id:
                 if not vrf_exist:
                     vrf_exist = True
-                addr = inet_ntop(socket.AF_INET6, ip6_fib_details[4])
+                addr = inet_ntop(socket.AF_INET6, ip6_fib_details.address)
                 addrtype = in6_getAddrType(addr)
                 vrf_count += 1 if addrtype == IPV6_ADDR_UNICAST else 0
         if not vrf_exist and vrf_count == 0:

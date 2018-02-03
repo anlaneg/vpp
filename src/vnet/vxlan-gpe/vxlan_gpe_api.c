@@ -47,7 +47,7 @@
 #define foreach_vpe_api_msg                             \
 _(SW_INTERFACE_SET_VXLAN_GPE_BYPASS, sw_interface_set_vxlan_gpe_bypass)         \
 _(VXLAN_GPE_ADD_DEL_TUNNEL, vxlan_gpe_add_del_tunnel)                   \
-_(VXLAN_GPE_TUNNEL_DUMP, vxlan_gpe_tunnel_dump)                         \
+_(VXLAN_GPE_TUNNEL_DUMP, vxlan_gpe_tunnel_dump)
 
 static void
   vl_api_sw_interface_set_vxlan_gpe_bypass_t_handler
@@ -144,7 +144,7 @@ out:
 }
 
 static void send_vxlan_gpe_tunnel_details
-  (vxlan_gpe_tunnel_t * t, unix_shared_memory_queue_t * q, u32 context)
+  (vxlan_gpe_tunnel_t * t, vl_api_registration_t * reg, u32 context)
 {
   vl_api_vxlan_gpe_tunnel_details_t *rmp;
   ip4_main_t *im4 = &ip4_main;
@@ -156,15 +156,15 @@ static void send_vxlan_gpe_tunnel_details
   rmp->_vl_msg_id = ntohs (VL_API_VXLAN_GPE_TUNNEL_DETAILS);
   if (is_ipv6)
     {
-      memcpy (rmp->local, &(t->local.ip6), 16);
-      memcpy (rmp->remote, &(t->remote.ip6), 16);
+      memcpy (rmp->local, &(t->local.ip6.as_u8), 16);
+      memcpy (rmp->remote, &(t->remote.ip6.as_u8), 16);
       rmp->encap_vrf_id = htonl (im6->fibs[t->encap_fib_index].ft_table_id);
       rmp->decap_vrf_id = htonl (im6->fibs[t->decap_fib_index].ft_table_id);
     }
   else
     {
-      memcpy (rmp->local, &(t->local.ip4), 4);
-      memcpy (rmp->remote, &(t->remote.ip4), 4);
+      memcpy (rmp->local, &(t->local.ip4.as_u8), 4);
+      memcpy (rmp->remote, &(t->remote.ip4.as_u8), 4);
       rmp->encap_vrf_id = htonl (im4->fibs[t->encap_fib_index].ft_table_id);
       rmp->decap_vrf_id = htonl (im4->fibs[t->decap_fib_index].ft_table_id);
     }
@@ -175,22 +175,20 @@ static void send_vxlan_gpe_tunnel_details
   rmp->is_ipv6 = is_ipv6;
   rmp->context = context;
 
-  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void vl_api_vxlan_gpe_tunnel_dump_t_handler
   (vl_api_vxlan_gpe_tunnel_dump_t * mp)
 {
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   vxlan_gpe_main_t *vgm = &vxlan_gpe_main;
   vxlan_gpe_tunnel_t *t;
   u32 sw_if_index;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
-    {
-      return;
-    }
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
 
   sw_if_index = ntohl (mp->sw_if_index);
 
@@ -199,7 +197,7 @@ static void vl_api_vxlan_gpe_tunnel_dump_t_handler
       /* *INDENT-OFF* */
       pool_foreach (t, vgm->tunnels,
       ({
-        send_vxlan_gpe_tunnel_details(t, q, mp->context);
+        send_vxlan_gpe_tunnel_details(t, reg, mp->context);
       }));
       /* *INDENT-ON* */
     }
@@ -211,7 +209,7 @@ static void vl_api_vxlan_gpe_tunnel_dump_t_handler
 	  return;
 	}
       t = &vgm->tunnels[vgm->tunnel_index_by_sw_if_index[sw_if_index]];
-      send_vxlan_gpe_tunnel_details (t, q, mp->context);
+      send_vxlan_gpe_tunnel_details (t, reg, mp->context);
     }
 }
 
@@ -249,6 +247,9 @@ vxlan_gpe_api_hookup (vlib_main_t * vm)
                            sizeof(vl_api_##n##_t), 1);
   foreach_vpe_api_msg;
 #undef _
+
+  am->api_trace_cfg[VL_API_VXLAN_GPE_ADD_DEL_TUNNEL].size +=
+    17 * sizeof (u32);
 
   /*
    * Set up the (msg_name, crc, message-id) table

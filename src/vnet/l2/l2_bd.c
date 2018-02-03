@@ -108,6 +108,9 @@ bd_delete (bd_main_t * bdm, u32 bd_index)
   bd->bd_id = ~0;
   bd->feature_bitmap = 0;
 
+  /* free BD tag */
+  vec_free (bd->bd_tag);
+
   /* free memory used by BD */
   vec_free (bd->members);
   hash_free (bd->mac_by_ip4);
@@ -263,7 +266,7 @@ bd_set_flags (vlib_main_t * vm, u32 bd_index, u32 flags, u32 enable)
       bd_config->feature_bitmap &= ~feature_bitmap;
     }
 
-  return 0;
+  return bd_config->feature_bitmap;
 }
 
 /**
@@ -286,6 +289,32 @@ bd_set_mac_age (vlib_main_t * vm, u32 bd_index, u8 age)
   vlib_process_signal_event (vm, l2fib_mac_age_scanner_process_node.index,
 			     enable ? L2_MAC_AGE_PROCESS_EVENT_START :
 			     L2_MAC_AGE_PROCESS_EVENT_STOP, 0);
+}
+
+/**
+    Set the tag for the bridge domain.
+*/
+
+static void
+bd_set_bd_tag (vlib_main_t * vm, u32 bd_index, u8 * bd_tag)
+{
+  u8 *old;
+  l2_bridge_domain_t *bd_config;
+  vec_validate (l2input_main.bd_configs, bd_index);
+  bd_config = vec_elt_at_index (l2input_main.bd_configs, bd_index);
+
+  old = bd_config->bd_tag;
+
+  if (bd_tag[0])
+    {
+      bd_config->bd_tag = format (0, "%s%c", bd_tag, 0);
+    }
+  else
+    {
+      bd_config->bd_tag = NULL;
+    }
+
+  vec_free (old);
 }
 
 /**
@@ -328,12 +357,7 @@ bd_learn (vlib_main_t * vm,
     }
 
   /* set the bridge domain flag */
-  if (bd_set_flags (vm, bd_index, L2_LEARN, enable))
-    {
-      error =
-	clib_error_return (0, "bridge-domain id %d out of range", bd_index);
-      goto done;
-    }
+  bd_set_flags (vm, bd_index, L2_LEARN, enable);
 
 done:
   return error;
@@ -397,12 +421,7 @@ bd_fwd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
     }
 
   /* set the bridge domain flag */
-  if (bd_set_flags (vm, bd_index, L2_FWD, enable))
-    {
-      error =
-	clib_error_return (0, "bridge-domain id %d out of range", bd_index);
-      goto done;
-    }
+  bd_set_flags (vm, bd_index, L2_FWD, enable);
 
 done:
   return error;
@@ -468,12 +487,7 @@ bd_flood (vlib_main_t * vm,
     }
 
   /* set the bridge domain flag */
-  if (bd_set_flags (vm, bd_index, L2_FLOOD, enable))
-    {
-      error =
-	clib_error_return (0, "bridge-domain id %d out of range", bd_index);
-      goto done;
-    }
+  bd_set_flags (vm, bd_index, L2_FLOOD, enable);
 
 done:
   return error;
@@ -538,12 +552,7 @@ bd_uu_flood (vlib_main_t * vm,
     }
 
   /* set the bridge domain flag */
-  if (bd_set_flags (vm, bd_index, L2_UU_FLOOD, enable))
-    {
-      error =
-	clib_error_return (0, "bridge-domain id %d out of range", bd_index);
-      goto done;
-    }
+  bd_set_flags (vm, bd_index, L2_UU_FLOOD, enable);
 
 done:
   return error;
@@ -605,12 +614,7 @@ bd_arp_term (vlib_main_t * vm,
     enable = 0;
 
   /* set the bridge domain flag */
-  if (bd_set_flags (vm, bd_index, L2_ARP_TERM, enable))
-    {
-      error =
-	clib_error_return (0, "bridge-domain id %d out of range", bd_index);
-      goto done;
-    }
+  bd_set_flags (vm, bd_index, L2_ARP_TERM, enable);
 
 done:
   return error;
@@ -931,6 +935,7 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
   u32 detail = 0;
   u32 intf = 0;
   u32 arp = 0;
+  u32 bd_tag = 0;
   u32 bd_id = ~0;
   uword *p;
 
@@ -947,6 +952,8 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 	intf = 1;
       if (unformat (input, "arp"))
 	arp = 1;
+      if (unformat (input, "bd-tag"))
+	bd_tag = 1;
 
       if (bd_id == 0)
 	return clib_error_return (0,
@@ -1019,8 +1026,7 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 	      {
 		l2_flood_member_t *member =
 		  vec_elt_at_index (bd_config->members, i);
-		l2_input_config_t *int_config =
-		  l2input_intf_config (member->sw_if_index);
+		u8 swif_seq_num = *l2fib_swif_seq_num (member->sw_if_index);
 		u32 vtr_opr, dot1q, tag1, tag2;
 		if (i == 0)
 		  {
@@ -1033,7 +1039,7 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 		vlib_cli_output (vm, "%=30U%=7d%=5d%=5d%=5s%=9s%=30U",
 				 format_vnet_sw_if_index_name, vnm,
 				 member->sw_if_index, member->sw_if_index,
-				 int_config->seq_num, member->shg,
+				 swif_seq_num, member->shg,
 				 member->flags & L2_FLOOD_MEMBER_BVI ? "*" :
 				 "-", i < bd_config->flood_count ? "*" : "-",
 				 format_vtr, vtr_opr, dot1q, tag1, tag2);
@@ -1064,6 +1070,12 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 				 format_ethernet_address, &mac_addr);
               }));
               /* *INDENT-ON* */
+	    }
+
+	  if ((detail || bd_tag) && (bd_config->bd_tag))
+	    {
+	      vlib_cli_output (vm, "\n  BD-Tag: %s", bd_config->bd_tag);
+
 	    }
 	}
     }
@@ -1106,7 +1118,7 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (bd_show_cli, static) = {
   .path = "show bridge-domain",
-  .short_help = "show bridge-domain [bridge-domain-id [detail|int|arp]]",
+  .short_help = "show bridge-domain [bridge-domain-id [detail|int|arp|bd-tag]]",
   .function = bd_show,
 };
 /* *INDENT-ON* */
@@ -1160,6 +1172,10 @@ bd_add_del (l2_bridge_domain_add_del_args_t * a)
 	bd_set_flags (vm, bd_index, disable_flags, 0 /* disable */ );
 
       bd_set_mac_age (vm, bd_index, a->mac_age);
+
+      if (a->bd_tag)
+	bd_set_bd_tag (vm, bd_index, a->bd_tag);
+
     }
   else
     {
@@ -1178,8 +1194,8 @@ bd_add_del (l2_bridge_domain_add_del_args_t * a)
 /**
    Create or delete bridge-domain.
    The CLI format:
-   create bridge-domain <bd_index> [learn <0|1>] [forward <0|1>] [uu-flood <0|1>]
-                                   [flood <0|1>] [arp-term <0|1>] [mac-age <nn>] [del]
+   create bridge-domain <bd_index> [learn <0|1>] [forward <0|1>] [uu-flood <0|1>] [flood <0|1>]
+					[arp-term <0|1>] [mac-age <nn>] [bd-tag <tag>] [del]
 */
 
 static clib_error_t *
@@ -1192,6 +1208,7 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u32 bd_id = ~0;
   u32 flood = 1, forward = 1, learn = 1, uu_flood = 1, arp_term = 0;
   u32 mac_age = 0;
+  u8 *bd_tag = NULL;
   l2_bridge_domain_add_del_args_t _a, *a = &_a;
   int rv;
 
@@ -1214,6 +1231,8 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
       else if (unformat (line_input, "arp-term %d", &arp_term))
 	;
       else if (unformat (line_input, "mac-age %d", &mac_age))
+	;
+      else if (unformat (line_input, "bd-tag %s", &bd_tag))
 	;
       else if (unformat (line_input, "del"))
 	{
@@ -1241,6 +1260,11 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
       error = clib_error_return (0, "mac age must be less than 256");
       goto done;
     }
+  if ((bd_tag) && (strlen ((char *) bd_tag) > 63))
+    {
+      error = clib_error_return (0, "bd-tag cannot be longer than 63");
+      goto done;
+    }
 
   memset (a, 0, sizeof (*a));
   a->is_add = is_add;
@@ -1251,6 +1275,7 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
   a->learn = (u8) learn;
   a->arp_term = (u8) arp_term;
   a->mac_age = (u8) mac_age;
+  a->bd_tag = bd_tag;
 
   rv = bd_add_del (a);
 
@@ -1278,6 +1303,7 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
     }
 
 done:
+  vec_free (bd_tag);
   unformat_free (line_input);
 
   return error;
@@ -1317,7 +1343,7 @@ VLIB_CLI_COMMAND (bd_create_cli, static) = {
   .path = "create bridge-domain",
   .short_help = "create bridge-domain <bridge-domain-id>"
                 " [learn <0|1>] [forward <0|1>] [uu-flood <0|1>] [flood <0|1>] [arp-term <0|1>]"
-                " [mac-age <nn>] [del]",
+                " [mac-age <nn>] [bd-tag <tag>] [del]",
   .function = bd_add_del_command_fn,
 };
 /* *INDENT-ON* */

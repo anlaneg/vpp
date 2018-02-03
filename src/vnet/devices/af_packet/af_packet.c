@@ -24,12 +24,15 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
+#include <vppinfra/linux/sysfs.h>
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
 #include <vnet/ip/ip.h>
 #include <vnet/ethernet/ethernet.h>
 
 #include <vnet/devices/af_packet/af_packet.h>
+
+af_packet_main_t af_packet_main;
 
 #define AF_PACKET_DEBUG_SOCKET		0
 
@@ -74,7 +77,7 @@ af_packet_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi,
     {
       s = format (0, "/sys/class/net/%s/mtu%c", apif->host_if_name, 0);
 
-      error = vlib_sysfs_write ((char *) s, "%d", hi->max_packet_bytes);
+      error = clib_sysfs_write ((char *) s, "%d", hi->max_packet_bytes);
       vec_free (s);
 
       if (error)
@@ -88,7 +91,7 @@ af_packet_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi,
 }
 
 static clib_error_t *
-af_packet_fd_read_ready (unix_file_t * uf)
+af_packet_fd_read_ready (clib_file_t * uf)
 {
   af_packet_main_t *apm = &af_packet_main;
   vnet_main_t *vnm = vnet_get_main ();
@@ -169,7 +172,7 @@ create_packet_v2_sock (int host_if_index, tpacket_req_t * rx_req,
   if ((err =
        setsockopt (*fd, SOL_PACKET, PACKET_TX_RING, tx_req, req_sz)) < 0)
     {
-      DBG_SOCK ("Failed to set packet rx ring options");
+      DBG_SOCK ("Failed to set packet tx ring options");
       ret = VNET_API_ERROR_SYSCALL_ERROR_1;
       goto error;
     }
@@ -280,12 +283,12 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
     clib_spinlock_init (&apif->lockp);
 
   {
-    unix_file_t template = { 0 };
+    clib_file_t template = { 0 };
     template.read_function = af_packet_fd_read_ready;
     template.file_descriptor = fd;
     template.private_data = if_index;
     template.flags = UNIX_FILE_EVENT_EDGE_TRIGGERED;
-    apif->unix_file_index = unix_file_add (&unix_main, &template);
+    apif->clib_file_index = clib_file_add (&file_main, &template);
   }
 
   /*use configured or generate random MAC address */
@@ -370,10 +373,10 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
   vnet_hw_interface_unassign_rx_thread (vnm, apif->hw_if_index, 0);
 
   /* clean up */
-  if (apif->unix_file_index != ~0)
+  if (apif->clib_file_index != ~0)
     {
-      unix_file_del (&unix_main, unix_main.file_pool + apif->unix_file_index);
-      apif->unix_file_index = ~0;
+      clib_file_del (&file_main, file_main.file_pool + apif->clib_file_index);
+      apif->clib_file_index = ~0;
     }
   else
     close (apif->fd);
@@ -401,6 +404,25 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
   ethernet_delete_interface (vnm, apif->hw_if_index);
 
   pool_put (apm->interfaces, apif);
+
+  return 0;
+}
+
+int
+af_packet_set_l4_cksum_offload (vlib_main_t * vm, u32 sw_if_index, u8 set)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_hw_interface_t *hw;
+
+  hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
+
+  if (hw->dev_class_index != af_packet_device_class.index)
+    return VNET_API_ERROR_INVALID_INTERFACE;
+
+  if (set)
+    hw->flags &= ~VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
+  else
+    hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
 
   return 0;
 }

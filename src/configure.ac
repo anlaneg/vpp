@@ -1,12 +1,14 @@
-AC_INIT([vpp], [17.07], [vpp-dev@fd.io])
+AC_INIT([vpp], [18.04], [vpp-dev@fd.io])
 LT_INIT
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([subdir-objects])
 AM_SILENT_RULES([yes])
-AC_CONFIG_FILES([Makefile plugins/Makefile vpp-api/python/Makefile vpp-api/java/Makefile])
+AC_CONFIG_FILES([Makefile plugins/Makefile vpp-api/python/Makefile vpp-api/java/Makefile vpp-api/vapi/Makefile vpp-api/vom/Makefile])
 AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CC
+AC_PROG_CXX
+AC_PROG_CPP
 AM_PROG_AS
 AM_PROG_LIBTOOL
 AC_PROG_YACC
@@ -80,6 +82,39 @@ AC_DEFUN([PLUGIN_DISABLED],
 
 AC_DEFUN([PRINT_VAL], [ AC_MSG_RESULT(AC_HELP_STRING($1,$2)) ])
 
+AC_DEFUN([DPDK_IS_PMD_ENABLED],
+[
+  AC_MSG_CHECKING([for $1 in rte_config.h])
+  AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM(
+      [[#include <rte_config.h>]],
+      [[return RTE_$1;]],
+    )],
+    [with_$2=yes]
+    [AC_MSG_RESULT([yes])],
+    [with_$2=no]
+    [AC_MSG_RESULT([no])]
+  )
+  AM_CONDITIONAL(m4_toupper(WITH_$2), test "$with_$2" = "yes")
+  m4_append_uniq([list_of_with], [$2], [, ])
+])
+
+# Check if compiler supports specific flag
+AC_DEFUN([CC_CHECK_FLAG],
+[
+  AC_MSG_CHECKING([if $CC supports $1])
+  AC_LANG_PUSH([C])
+  ac_saved_cflags="$CFLAGS"
+  CFLAGS="-Werror $1"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([])],
+  [cc_flag_check=yes],
+  [cc_flag_check=no]
+)
+  AC_MSG_RESULT([$cc_flag_check])
+  CFLAGS="$ac_saved_cflags"
+  AC_LANG_POP([C])
+])
+
 ###############################################################################
 # configure arguments
 ###############################################################################
@@ -95,10 +130,9 @@ DISABLE_ARG(vlib,	[Disable vlib and dependant libs and binaries])
 DISABLE_ARG(svm,	[Disable svm and dependant libs and binaries])
 DISABLE_ARG(papi,	[Disable Python API bindings])
 DISABLE_ARG(japi,	[Disable Java API bindings])
+DISABLE_ARG(vom,	[Disable VPP object model bindings])
 
 # --with-X
-WITH_ARG(dpdk_crypto_sw,[Use DPDK cryptodev SW PMDs])
-WITH_ARG(dpdk_mlx5_pmd,	[Use DPDK with mlx5 PMD])
 
 # --without-X
 WITHOUT_ARG(libssl,	[Disable libssl])
@@ -123,6 +157,37 @@ AC_ARG_WITH(pre-data,
 	     esac], [with_pre_data=128])
 
 ###############################################################################
+# Target CPU flags
+###############################################################################
+
+# Check if compiler supports march=core-avx2
+CC_CHECK_FLAG("-march=core-avx2")
+AS_IF([test "$cc_flag_check" = yes],
+      [march_core_avx2=yes],
+      [march_core_avx2=no])
+AM_CONDITIONAL([CC_SUPPORTS_AVX2], [test "$march_core_avx2" = "yes"])
+
+# Check if compiler supports march=skylake-avx512
+CC_CHECK_FLAG("-march=skylake-avx512")
+AS_IF([test "$cc_flag_check" = yes],
+  [march_skylake_avx512=yes],
+  [march_skylake_avx512=no])
+AM_CONDITIONAL([CC_SUPPORTS_AVX512], [test "$march_skylake_avx512" = "yes"])
+
+AS_CASE([$build_cpu],
+	[x86_64], [CPU_FLAGS="-march=corei7 -mtune=corei7-avx"],
+	[aarch64], [CPU_FLAGS="-march=armv8-a+crc"],
+	[CPU_FLAGS=""],
+)
+AC_SUBST([CPU_FLAGS])
+
+AC_SUBST([CPU_AVX2_FLAGS],"-march=core-avx2 -mtune=core-avx2")
+AC_SUBST([CPU_AVX512_FLAGS],"-march=skylake-avx512 -mtune=skylake-avx512")
+
+AM_CONDITIONAL([CPU_X86_64], [test "$build_cpu" = "x86_64"])
+AM_CONDITIONAL([CPU_AARCH64], [test "$build_cpu" = "aarch64"])
+
+###############################################################################
 # Substitutions and defines
 ###############################################################################
 
@@ -130,7 +195,6 @@ AC_SUBST(PRE_DATA_SIZE,		[$with_pre_data])
 AC_SUBST(APICLI,		[-DVPP_API_TEST_BUILTIN=${n_with_apicli}])
 
 AC_DEFINE_UNQUOTED(DPDK_SHARED_LIB,	[${n_enable_dpdk_shared}])
-AC_DEFINE_UNQUOTED(DPDK_CRYPTO_SW,	[${n_with_dpdk_crypto_sw}])
 AC_DEFINE_UNQUOTED(WITH_LIBSSL,		[${n_with_libssl}])
 
 
@@ -151,10 +215,18 @@ PLUGIN_ENABLED(gtpu)
 PLUGIN_ENABLED(ila)
 PLUGIN_ENABLED(ioam)
 PLUGIN_ENABLED(ixge)
+PLUGIN_ENABLED(kubeproxy)
 PLUGIN_ENABLED(lb)
+PLUGIN_ENABLED(marvell)
 PLUGIN_ENABLED(memif)
+PLUGIN_ENABLED(pppoe)
 PLUGIN_ENABLED(sixrd)
-PLUGIN_ENABLED(snat)
+PLUGIN_ENABLED(srv6ad)
+PLUGIN_ENABLED(srv6am)
+PLUGIN_ENABLED(srv6as)
+PLUGIN_ENABLED(nat)
+PLUGIN_ENABLED(stn)
+PLUGIN_ENABLED(l2e)
 
 ###############################################################################
 # Dependency checks
@@ -170,24 +242,74 @@ AM_COND_IF([ENABLE_DPDK_SHARED],
     [AC_MSG_ERROR([DPDK shared library not found])],)
 ])
 
+with_aesni_mb_lib=no
+with_isa_l_crypto_lib=no
+
+DPDK_IS_PMD_ENABLED(LIBRTE_PMD_AESNI_MB, dpdk_aesni_mb_pmd)
+DPDK_IS_PMD_ENABLED(LIBRTE_PMD_AESNI_GCM, dpdk_aesni_gcm_pmd)
+
+AM_COND_IF([WITH_DPDK_AESNI_MB_PMD],
+[
+  AC_CHECK_LIB([IPSec_MB], [submit_job_sse],
+	       [with_aesni_mb_lib=yes],
+	       [AC_MSG_ERROR([IPSec_MB library not found])])
+])
+
+AM_COND_IF([WITH_DPDK_AESNI_GCM_PMD],
+[
+  AC_CHECK_LIB([IPSec_MB], [submit_job_sse],
+    [with_aesni_mb_lib=yes],
+    [AC_MSG_ERROR([IPSec_MB library not found])])
+])
+
+m4_append([list_of_with], [aesni_mb_lib], [, ])
+AM_CONDITIONAL(WITH_AESNI_MB_LIB, test "$with_aesni_mb_lib" = "yes")
+
+m4_append([list_of_with], [isa_l_crypto_lib], [, ])
+AM_CONDITIONAL(WITH_ISA_L_CRYPTO_LIB, test "$with_isa_l_crypto_lib" = "yes")
+
+
+with_ibverbs_lib=no
+DPDK_IS_PMD_ENABLED(LIBRTE_MLX4_PMD, dpdk_mlx4_pmd)
+AM_COND_IF([WITH_DPDK_MLX4_PMD],
+[
+  AC_CHECK_LIB([ibverbs], [ibv_fork_init],
+	       [with_ibverbs_lib=yes],
+	       [AC_MSG_ERROR([ibverbs library not found])])
+])
+
+DPDK_IS_PMD_ENABLED(LIBRTE_MLX5_PMD, dpdk_mlx5_pmd)
+AM_COND_IF([WITH_DPDK_MLX5_PMD],
+[
+  AC_CHECK_LIB([ibverbs], [ibv_fork_init],
+	       [with_ibverbs_lib=yes],
+	       [AC_MSG_ERROR([ibverbs library not found])])
+])
+
+m4_append([list_of_with], [ibverbs_lib], [, ])
+AM_CONDITIONAL(WITH_IBVERBS_LIB, test "$with_ibverbs_lib" = "yes")
+
+
 AM_COND_IF([ENABLE_G2],
 [
   PKG_CHECK_MODULES(g2, gtk+-2.0)
 ])
 
-# If cross-compiling, we need external vppapigen and we cannot continue without it
-# For native builds, we just set dependency on vpppaigen binary in top_builddir
-AM_COND_IF([CROSSCOMPILE],
+AM_COND_IF([ENABLE_MARVELL_PLUGIN],
 [
-  AC_PATH_PROG([VPPAPIGEN], [vppapigen], [no])
-  if test "$VPPAPIGEN" = "no"; then
-    AC_MSG_ERROR([Externaly built vppapigen is needed when cross-compiling...])
-  fi
-],[
-  VPPAPIGEN=\$\(top_builddir\)/vppapigen
+  AC_CHECK_LIB( [musdk], [pp2_init],
+    [],
+    [
+      AC_MSG_WARN([Marvell MUSDK library with PP2 support not found. Plugin disabled.])
+      enable_marvell_plugin=no
+      AM_CONDITIONAL(ENABLE_MARVELL_PLUGIN, false)
+    ])
 ])
-AC_SUBST([VPPAPIGEN])
 
+AC_PATH_PROG([VPPAPIGEN], [vppapigen], [no])
+if test "$VPPAPIGEN" = "no"; then
+   VPPAPIGEN=\$\(top_srcdir\)/tools/vppapigen/vppapigen
+fi
 
 ###############################################################################
 # JAVA

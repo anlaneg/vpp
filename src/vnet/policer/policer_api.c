@@ -58,15 +58,16 @@ vl_api_policer_add_del_t_handler (vl_api_policer_add_del_t * mp)
   u32 policer_index;
 
   name = format (0, "%s", mp->name);
+  vec_terminate_c_string (name);
 
   memset (&cfg, 0, sizeof (cfg));
   cfg.rfc = mp->type;
   cfg.rnd_type = mp->round_type;
   cfg.rate_type = mp->rate_type;
-  cfg.rb.kbps.cir_kbps = mp->cir;
-  cfg.rb.kbps.eir_kbps = mp->eir;
-  cfg.rb.kbps.cb_bytes = mp->cb;
-  cfg.rb.kbps.eb_bytes = mp->eb;
+  cfg.rb.kbps.cir_kbps = ntohl (mp->cir);
+  cfg.rb.kbps.eir_kbps = ntohl (mp->eir);
+  cfg.rb.kbps.cb_bytes = clib_net_to_host_u64 (mp->cb);
+  cfg.rb.kbps.eb_bytes = clib_net_to_host_u64 (mp->eb);
   cfg.conform_action.action_type = mp->conform_action_type;
   cfg.conform_action.dscp = mp->conform_dscp;
   cfg.exceed_action.action_type = mp->exceed_action_type;
@@ -95,7 +96,7 @@ static void
 send_policer_details (u8 * name,
 		      sse2_qos_pol_cfg_params_st * config,
 		      policer_read_response_type_st * templ,
-		      unix_shared_memory_queue_t * q, u32 context)
+		      vl_api_registration_t * reg, u32 context)
 {
   vl_api_policer_details_t *mp;
 
@@ -129,13 +130,13 @@ send_policer_details (u8 * name,
 
   strncpy ((char *) mp->name, (char *) name, ARRAY_LEN (mp->name) - 1);
 
-  vl_msg_api_send_shmem (q, (u8 *) & mp);
+  vl_api_send_msg (reg, (u8 *) mp);
 }
 
 static void
 vl_api_policer_dump_t_handler (vl_api_policer_dump_t * mp)
 {
-  unix_shared_memory_queue_t *q;
+  vl_api_registration_t *reg;
   vnet_policer_main_t *pm = &vnet_policer_main;
   hash_pair_t *hp;
   uword *p;
@@ -145,13 +146,14 @@ vl_api_policer_dump_t_handler (vl_api_policer_dump_t * mp)
   sse2_qos_pol_cfg_params_st *config;
   policer_read_response_type_st *templ;
 
-  q = vl_api_client_index_to_input_queue (mp->client_index);
-  if (q == 0)
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
     return;
 
   if (mp->match_name_valid)
     {
       match_name = format (0, "%s%c", mp->match_name, 0);
+      vec_terminate_c_string (match_name);
     }
 
   if (mp->match_name_valid)
@@ -162,7 +164,7 @@ vl_api_policer_dump_t_handler (vl_api_policer_dump_t * mp)
 	  pool_index = p[0];
 	  config = pool_elt_at_index (pm->configs, pool_index);
 	  templ = pool_elt_at_index (pm->policer_templates, pool_index);
-	  send_policer_details (match_name, config, templ, q, mp->context);
+	  send_policer_details (match_name, config, templ, reg, mp->context);
 	}
     }
   else
@@ -174,7 +176,7 @@ vl_api_policer_dump_t_handler (vl_api_policer_dump_t * mp)
         pool_index = hp->value[0];
         config = pool_elt_at_index (pm->configs, pool_index);
         templ = pool_elt_at_index (pm->policer_templates, pool_index);
-        send_policer_details(name, config, templ, q, mp->context);
+        send_policer_details(name, config, templ, reg, mp->context);
       }));
       /* *INDENT-ON* */
     }

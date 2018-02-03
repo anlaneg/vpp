@@ -195,6 +195,9 @@ typedef struct
   u32 limit_neighbor_cache_size;
   u32 neighbor_delete_rotor;
 
+  /* Wildcard nd report publisher */
+  uword wc_ip6_nd_publisher_node;
+  uword wc_ip6_nd_publisher_et;
 } ip6_neighbor_main_t;
 
 /* ipv6 neighbor discovery - timer/event types */
@@ -215,6 +218,50 @@ typedef union
 
 static ip6_neighbor_main_t ip6_neighbor_main;
 static ip6_address_t ip6a_zero;	/* ip6 address 0 */
+
+static void wc_nd_signal_report (wc_nd_report_t * r);
+
+/**
+ * @brief publish wildcard arp event
+ * @param sw_if_index The interface on which the ARP entires are acted
+ */
+static int
+vnet_nd_wc_publish (u32 sw_if_index, u8 * mac, ip6_address_t * ip6)
+{
+  wc_nd_report_t r = {
+    .sw_if_index = sw_if_index,
+    .ip6 = *ip6,
+  };
+  memcpy (r.mac, mac, sizeof r.mac);
+
+  void vl_api_rpc_call_main_thread (void *fp, u8 * data, u32 data_length);
+  vl_api_rpc_call_main_thread (wc_nd_signal_report, (u8 *) & r, sizeof r);
+  return 0;
+}
+
+static void
+wc_nd_signal_report (wc_nd_report_t * r)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  ip6_neighbor_main_t *nm = &ip6_neighbor_main;
+  uword ni = nm->wc_ip6_nd_publisher_node;
+  uword et = nm->wc_ip6_nd_publisher_et;
+
+  if (ni == (uword) ~ 0)
+    return;
+  wc_nd_report_t *q =
+    vlib_process_signal_event_data (vm, ni, et, 1, sizeof *q);
+
+  *q = *r;
+}
+
+void
+wc_nd_set_publisher_node (uword node_index, uword event_type)
+{
+  ip6_neighbor_main_t *nm = &ip6_neighbor_main;
+  nm->wc_ip6_nd_publisher_node = node_index;
+  nm->wc_ip6_nd_publisher_et = event_type;
+}
 
 static u8 *
 format_ip6_neighbor_ip6_entry (u8 * s, va_list * va)
@@ -250,6 +297,26 @@ format_ip6_neighbor_ip6_entry (u8 * s, va_list * va)
   return s;
 }
 
+static void
+ip6_neighbor_adj_fib_remove (ip6_neighbor_t * n, u32 fib_index)
+{
+  if (FIB_NODE_INDEX_INVALID != n->fib_entry_index)
+    {
+      fib_prefix_t pfx = {
+	.fp_len = 128,
+	.fp_proto = FIB_PROTOCOL_IP6,
+	.fp_addr.ip6 = n->key.ip6_address,
+      };
+      fib_table_entry_path_remove (fib_index,
+				   &pfx,
+				   FIB_SOURCE_ADJ,
+				   DPO_PROTO_IP6,
+				   &pfx.fp_addr,
+				   n->key.sw_if_index, ~0,
+				   1, FIB_ROUTE_PATH_FLAG_NONE);
+    }
+}
+
 static clib_error_t *
 ip6_neighbor_sw_interface_up_down (vnet_main_t * vnm,
 				   u32 sw_if_index, u32 flags)
@@ -273,22 +340,10 @@ ip6_neighbor_sw_interface_up_down (vnet_main_t * vnm,
 	{
 	  n = pool_elt_at_index (nm->neighbor_pool, to_delete[i]);
 	  mhash_unset (&nm->neighbor_index_by_key, &n->key, 0);
-	  if (FIB_NODE_INDEX_INVALID != n->fib_entry_index)
-	    {
-	      fib_prefix_t pfx = {
-		.fp_len = 128,
-		.fp_proto = FIB_PROTOCOL_IP6,
-		.fp_addr.ip6 = n->key.ip6_address,
-	      };
-	      fib_table_entry_path_remove
-		(ip6_fib_table_get_index_for_sw_if_index (n->key.sw_if_index),
-		 &pfx,
-		 FIB_SOURCE_ADJ,
-		 FIB_PROTOCOL_IP6,
-		 &pfx.fp_addr,
-		 n->key.sw_if_index, ~0, 1, FIB_ROUTE_PATH_FLAG_NONE);
-	      pool_put (nm->neighbor_pool, n);
-	    }
+	  ip6_neighbor_adj_fib_remove (n,
+				       ip6_fib_table_get_index_for_sw_if_index
+				       (n->key.sw_if_index));
+	  pool_put (nm->neighbor_pool, n);
 	}
       vec_free (to_delete);
     }
@@ -579,6 +634,24 @@ ip6_ethernet_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
     }
 }
 
+
+static void
+ip6_neighbor_adj_fib_add (ip6_neighbor_t * n, u32 fib_index)
+{
+  fib_prefix_t pfx = {
+    .fp_len = 128,
+    .fp_proto = FIB_PROTOCOL_IP6,
+    .fp_addr.ip6 = n->key.ip6_address,
+  };
+
+  n->fib_entry_index =
+    fib_table_entry_path_add (fib_index, &pfx, FIB_SOURCE_ADJ,
+			      FIB_ENTRY_FLAG_ATTACHED,
+			      DPO_PROTO_IP6, &pfx.fp_addr,
+			      n->key.sw_if_index, ~0, 1, NULL,
+			      FIB_ROUTE_PATH_FLAG_NONE);
+}
+
 int
 vnet_set_ip6_ethernet_neighbor (vlib_main_t * vm,
 				u32 sw_if_index,
@@ -633,21 +706,9 @@ vnet_set_ip6_ethernet_neighbor (vlib_main_t * vm,
        */
       if (!is_no_fib_entry)
 	{
-	  fib_prefix_t pfx = {
-	    .fp_len = 128,
-	    .fp_proto = FIB_PROTOCOL_IP6,
-	    .fp_addr.ip6 = k.ip6_address,
-	  };
-	  u32 fib_index;
-
-	  fib_index =
-	    ip6_fib_table_get_index_for_sw_if_index (n->key.sw_if_index);
-	  n->fib_entry_index =
-	    fib_table_entry_path_add (fib_index, &pfx, FIB_SOURCE_ADJ,
-				      FIB_ENTRY_FLAG_ATTACHED,
-				      FIB_PROTOCOL_IP6, &pfx.fp_addr,
-				      n->key.sw_if_index, ~0, 1, NULL,
-				      FIB_ROUTE_PATH_FLAG_NONE);
+	  ip6_neighbor_adj_fib_add (n,
+				    ip6_fib_table_get_index_for_sw_if_index
+				    (n->key.sw_if_index));
 	}
       else
 	{
@@ -662,7 +723,7 @@ vnet_set_ip6_ethernet_neighbor (vlib_main_t * vm,
        */
       if (0 == memcmp (n->link_layer_address,
 		       link_layer_address, n_bytes_link_layer_address))
-	return -1;
+	goto check_customers;
 
       clib_memcpy (n->link_layer_address,
 		   link_layer_address, n_bytes_link_layer_address);
@@ -678,6 +739,7 @@ vnet_set_ip6_ethernet_neighbor (vlib_main_t * vm,
   adj_nbr_walk_nh6 (sw_if_index,
 		    &n->key.ip6_address, ip6_nd_mk_complete_walk, n);
 
+check_customers:
   /* Customer(s) waiting for this address to be resolved? */
   p = mhash_get (&nm->pending_resolutions_by_address, a);
   if (p)
@@ -776,7 +838,7 @@ vnet_unset_ip6_ethernet_neighbor (vlib_main_t * vm,
 	(ip6_fib_table_get_index_for_sw_if_index (n->key.sw_if_index),
 	 &pfx,
 	 FIB_SOURCE_ADJ,
-	 FIB_PROTOCOL_IP6,
+	 DPO_PROTO_IP6,
 	 &pfx.fp_addr, n->key.sw_if_index, ~0, 1, FIB_ROUTE_PATH_FLAG_NONE);
     }
   pool_put (nm->neighbor_pool, n);
@@ -1479,9 +1541,8 @@ icmp6_router_solicitation (vlib_main_t * vm,
 			sizeof (icmp6_router_advertisement_header_t);
 
 		      vlib_buffer_add_data (vm,
-					    p0->free_list_index,
-					    bi0,
-					    (void *) &rh,
+					    vlib_buffer_get_free_list_index
+					    (p0), bi0, (void *) &rh,
 					    sizeof
 					    (icmp6_router_advertisement_header_t));
 
@@ -1499,9 +1560,8 @@ icmp6_router_solicitation (vlib_main_t * vm,
 				       eth_if0->address, 6);
 
 			  vlib_buffer_add_data (vm,
-						p0->free_list_index,
-						bi0,
-						(void *) &h,
+						vlib_buffer_get_free_list_index
+						(p0), bi0, (void *) &h,
 						sizeof
 						(icmp6_neighbor_discovery_ethernet_link_layer_address_option_t));
 
@@ -1525,9 +1585,8 @@ icmp6_router_solicitation (vlib_main_t * vm,
 			    sizeof (icmp6_neighbor_discovery_mtu_option_t);
 
 			  vlib_buffer_add_data (vm,
-						p0->free_list_index,
-						bi0,
-						(void *) &h,
+						vlib_buffer_get_free_list_index
+						(p0), bi0, (void *) &h,
 						sizeof
 						(icmp6_neighbor_discovery_mtu_option_t));
 			}
@@ -1579,7 +1638,7 @@ icmp6_router_solicitation (vlib_main_t * vm,
                             payload_length += sizeof( icmp6_neighbor_discovery_prefix_information_option_t);
 
                             vlib_buffer_add_data (vm,
-                                                  p0->free_list_index,
+					    vlib_buffer_get_free_list_index (p0),
                                                   bi0,
                                                   (void *)&h, sizeof(icmp6_neighbor_discovery_prefix_information_option_t));
 
@@ -1652,7 +1711,7 @@ icmp6_router_solicitation (vlib_main_t * vm,
 				adj_index0;
 			    }
 			}
-		      p0->flags |= VNET_BUFFER_LOCALLY_ORIGINATED;
+		      p0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
 		      radv_info->n_solicitations_dropped += is_dropped;
 		      radv_info->n_solicitations_rcvd += is_solicitation;
@@ -2081,7 +2140,7 @@ ip6_neighbor_add_mld_grp (ip6_radv_t * a,
  * @brief create and initialize router advertisement parameters with default
  * values for this intfc
  */
-static u32
+u32
 ip6_neighbor_sw_interface_add_del (vnet_main_t * vnm,
 				   u32 sw_if_index, u32 is_add)
 {
@@ -2326,7 +2385,7 @@ ip6_neighbor_send_mldpv2_report (u32 sw_if_index)
     num_addr_records++;
 
     vlib_buffer_add_data
-      (vm, b0->free_list_index, bo0,
+      (vm, vlib_buffer_get_free_list_index (b0), bo0,
        (void *)&rr, sizeof(icmp6_multicast_address_record_t));
 
     payload_length += sizeof( icmp6_multicast_address_record_t);
@@ -2351,7 +2410,7 @@ ip6_neighbor_send_mldpv2_report (u32 sw_if_index)
     vnet_main.local_interface_sw_if_index;
 
   vnet_buffer (b0)->ip.adj_index[VLIB_TX] = radv_info->mcast_adj_index;
-  b0->flags |= VNET_BUFFER_LOCALLY_ORIGINATED;
+  b0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
   vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "ip6-rewrite-mcast");
 
@@ -2376,7 +2435,7 @@ VLIB_REGISTER_NODE (ip6_icmp_router_solicitation_node,static) =
 
   .n_next_nodes = ICMP6_ROUTER_SOLICITATION_N_NEXT,
   .next_nodes = {
-    [ICMP6_ROUTER_SOLICITATION_NEXT_DROP] = "error-drop",
+    [ICMP6_ROUTER_SOLICITATION_NEXT_DROP] = "ip6-drop",
     [ICMP6_ROUTER_SOLICITATION_NEXT_REPLY_RW] = "ip6-rewrite-mcast",
     [ICMP6_ROUTER_SOLICITATION_NEXT_REPLY_TX] = "interface-output",
   },
@@ -2569,7 +2628,7 @@ VLIB_REGISTER_NODE (ip6_icmp_router_advertisement_node,static) =
 
   .n_next_nodes = 1,
   .next_nodes = {
-    [0] = "error-drop",
+    [0] = "ip6-drop",
   },
 };
 /* *INDENT-ON* */
@@ -2612,7 +2671,7 @@ VLIB_REGISTER_NODE (ip6_icmp_neighbor_solicitation_node,static) =
 
   .n_next_nodes = ICMP6_NEIGHBOR_SOLICITATION_N_NEXT,
   .next_nodes = {
-    [ICMP6_NEIGHBOR_SOLICITATION_NEXT_DROP] = "error-drop",
+    [ICMP6_NEIGHBOR_SOLICITATION_NEXT_DROP] = "ip6-drop",
     [ICMP6_NEIGHBOR_SOLICITATION_NEXT_REPLY] = "interface-output",
   },
 };
@@ -2630,7 +2689,7 @@ VLIB_REGISTER_NODE (ip6_icmp_neighbor_advertisement_node,static) =
 
   .n_next_nodes = 1,
   .next_nodes = {
-    [0] = "error-drop",
+    [0] = "ip6-drop",
   },
 };
 /* *INDENT-ON* */
@@ -3416,7 +3475,8 @@ enable_ip6_interface (vlib_main_t * vm, u32 sw_if_index)
 		    (&link_local_address, eth_if0->address);
 
 		  sw_if0 = vnet_get_sw_interface (vnm, sw_if_index);
-		  if (sw_if0->type == VNET_SW_INTERFACE_TYPE_SUB)
+		  if (sw_if0->type == VNET_SW_INTERFACE_TYPE_SUB ||
+		      sw_if0->type == VNET_SW_INTERFACE_TYPE_P2P)
 		    {
 		      /* make up  an interface id */
 		      md5_context_t m;
@@ -3845,6 +3905,33 @@ ip6_set_neighbor_limit (u32 neighbor_limit)
   return 0;
 }
 
+static void
+ip6_neighbor_table_bind (ip6_main_t * im,
+			 uword opaque,
+			 u32 sw_if_index,
+			 u32 new_fib_index, u32 old_fib_index)
+{
+  ip6_neighbor_main_t *nm = &ip6_neighbor_main;
+  ip6_neighbor_t *n = NULL;
+  u32 i, *to_re_add = 0;
+
+  /* *INDENT-OFF* */
+  pool_foreach (n, nm->neighbor_pool,
+  ({
+    if (n->key.sw_if_index == sw_if_index)
+      vec_add1 (to_re_add, n - nm->neighbor_pool);
+  }));
+  /* *INDENT-ON* */
+
+  for (i = 0; i < vec_len (to_re_add); i++)
+    {
+      n = pool_elt_at_index (nm->neighbor_pool, to_re_add[i]);
+      ip6_neighbor_adj_fib_remove (n, old_fib_index);
+      ip6_neighbor_adj_fib_add (n, new_fib_index);
+    }
+  vec_free (to_re_add);
+}
+
 static clib_error_t *
 ip6_neighbor_init (vlib_main_t * vm)
 {
@@ -3876,6 +3963,11 @@ ip6_neighbor_init (vlib_main_t * vm)
   cb.function_opaque = 0;
   vec_add1 (im->add_del_interface_address_callbacks, cb);
 
+  ip6_table_bind_callback_t cbt;
+  cbt.function = ip6_neighbor_table_bind;
+  cbt.function_opaque = 0;
+  vec_add1 (im->table_bind_callbacks, cbt);
+
   mhash_init (&nm->pending_resolutions_by_address,
 	      /* value size */ sizeof (uword),
 	      /* key size */ sizeof (ip6_address_t));
@@ -3886,6 +3978,8 @@ ip6_neighbor_init (vlib_main_t * vm)
 
   /* default, configurable */
   nm->limit_neighbor_cache_size = 50000;
+
+  nm->wc_ip6_nd_publisher_node = (uword) ~ 0;
 
 #if 0
   /* $$$$ Hack fix for today */
@@ -4003,7 +4097,6 @@ vnet_ip6_nd_term (vlib_main_t * vm,
 {
   ip6_neighbor_main_t *nm = &ip6_neighbor_main;
   icmp6_neighbor_solicitation_or_advertisement_header_t *ndh;
-  pending_resolution_t *mc;
 
   ndh = ip6_next_header (ip);
   if (ndh->icmp.type != ICMP6_neighbor_solicitation &&
@@ -4019,26 +4112,11 @@ vnet_ip6_nd_term (vlib_main_t * vm,
     }
 
   /* Check if anyone want ND events for L2 BDs */
-  uword *p = mhash_get (&nm->mac_changes_by_address, &ip6a_zero);
-  if (p && !ip6_address_is_link_local_unicast (&ip->src_address))
+  if (PREDICT_FALSE
+      (nm->wc_ip6_nd_publisher_node != (uword) ~ 0
+       && !ip6_address_is_link_local_unicast (&ip->src_address)))
     {
-      u32 next_index = p[0];
-      while (next_index != (u32) ~ 0)
-	{
-	  int (*fp) (u32, u8 *, u32, ip6_address_t *);
-	  int rv = 1;
-	  mc = pool_elt_at_index (nm->mac_changes, next_index);
-	  fp = mc->data_callback;
-	  /* Call the callback, return 1 to suppress dup events */
-	  if (fp)
-	    rv = (*fp) (mc->data,
-			eth->src_address, sw_if_index, &ip->src_address);
-	  /* Signal the resolver process */
-	  if (rv == 0)
-	    vlib_process_signal_event (vm, mc->node_index,
-				       mc->type_opaque, mc->data);
-	  next_index = mc->next_index;
-	}
+      vnet_nd_wc_publish (sw_if_index, eth->src_address, &ip->src_address);
     }
 
   /* Check if MAC entry exsist for solicited target IP */
@@ -4113,7 +4191,7 @@ ip6_neighbor_proxy_add_del (u32 sw_if_index, ip6_address_t * addr, u8 is_del)
       fib_table_entry_path_remove (fib_index,
 				   &pfx,
 				   FIB_SOURCE_IP6_ND_PROXY,
-				   FIB_PROTOCOL_IP6,
+				   DPO_PROTO_IP6,
 				   &nh,
 				   sw_if_index,
 				   ~0, 1, FIB_ROUTE_PATH_FLAG_NONE);
@@ -4127,7 +4205,7 @@ ip6_neighbor_proxy_add_del (u32 sw_if_index, ip6_address_t * addr, u8 is_del)
 				&pfx,
 				FIB_SOURCE_IP6_ND_PROXY,
 				FIB_ENTRY_FLAG_NONE,
-				FIB_PROTOCOL_IP6,
+				DPO_PROTO_IP6,
 				&nh,
 				sw_if_index,
 				~0, 1, NULL, FIB_ROUTE_PATH_FLAG_NONE);
@@ -4190,6 +4268,59 @@ ethernet_ndp_change_mac (u32 sw_if_index)
       }
   }));
   /* *INDENT-ON* */
+}
+
+void
+send_ip6_na (vlib_main_t * vm, vnet_hw_interface_t * hi)
+{
+  ip6_main_t *i6m = &ip6_main;
+  u32 sw_if_index = hi->sw_if_index;
+  ip6_address_t *ip6_addr = ip6_interface_first_address (i6m, sw_if_index);
+  if (ip6_addr)
+    {
+      clib_warning
+	("Sending unsolicitated NA IP6 address %U on sw_if_idex %d",
+	 format_ip6_address, ip6_addr, sw_if_index);
+
+      /* Form unsolicited neighbor advertisement packet from NS pkt template */
+      int bogus_length;
+      u32 bi = 0;
+      icmp6_neighbor_solicitation_header_t *h =
+	vlib_packet_template_get_packet (vm,
+					 &i6m->discover_neighbor_packet_template,
+					 &bi);
+      ip6_set_reserved_multicast_address (&h->ip.dst_address,
+					  IP6_MULTICAST_SCOPE_link_local,
+					  IP6_MULTICAST_GROUP_ID_all_hosts);
+      h->ip.src_address = ip6_addr[0];
+      h->neighbor.icmp.type = ICMP6_neighbor_advertisement;
+      h->neighbor.target_address = ip6_addr[0];
+      h->neighbor.advertisement_flags = clib_host_to_net_u32
+	(ICMP6_NEIGHBOR_ADVERTISEMENT_FLAG_OVERRIDE);
+      clib_memcpy (h->link_layer_option.ethernet_address,
+		   hi->hw_address, vec_len (hi->hw_address));
+      h->neighbor.icmp.checksum =
+	ip6_tcp_udp_icmp_compute_checksum (vm, 0, &h->ip, &bogus_length);
+      ASSERT (bogus_length == 0);
+
+      /* Setup MAC header with IP6 Etype and mcast DMAC */
+      vlib_buffer_t *b = vlib_get_buffer (vm, bi);
+      vlib_buffer_advance (b, -sizeof (ethernet_header_t));
+      ethernet_header_t *e = vlib_buffer_get_current (b);
+      e->type = clib_host_to_net_u16 (ETHERNET_TYPE_IP6);
+      clib_memcpy (e->src_address, hi->hw_address, sizeof (e->src_address));
+      ip6_multicast_ethernet_address (e->dst_address,
+				      IP6_MULTICAST_GROUP_ID_all_hosts);
+
+      /* Send unsolicited ND advertisement packet out the specified interface */
+      vnet_buffer (b)->sw_if_index[VLIB_RX] =
+	vnet_buffer (b)->sw_if_index[VLIB_TX] = sw_if_index;
+      vlib_frame_t *f = vlib_get_frame_to_node (vm, hi->output_node_index);
+      u32 *to_next = vlib_frame_vector_args (f);
+      to_next[0] = bi;
+      f->n_vectors = 1;
+      vlib_put_frame_to_node (vm, hi->output_node_index, f);
+    }
 }
 
 /*

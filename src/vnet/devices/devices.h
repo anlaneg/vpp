@@ -61,7 +61,7 @@ typedef struct
   u32 dev_instance;
   u16 queue_id;
   vnet_hw_interface_rx_mode mode;
-  uword interrupt_pending;
+  u32 interrupt_pending;
 } vnet_device_and_queue_t;
 
 typedef struct
@@ -73,6 +73,7 @@ typedef struct
 extern vnet_device_main_t vnet_device_main;
 extern vlib_node_registration_t device_input_node;
 extern const u32 device_input_next_node_advance[];
+extern const u32 device_input_next_node_flags[];
 
 static inline void
 vnet_hw_interface_set_input_node (vnet_main_t * vnm, u32 hw_if_index,

@@ -23,6 +23,9 @@
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ikev2.h>
 #include <vnet/ipsec/esp.h>
+#include <vnet/ipsec/ah.h>
+
+ipsec_main_t ipsec_main;
 
 u32
 ipsec_get_sa_index_by_sa_id (u32 sa_id)
@@ -377,7 +380,7 @@ ipsec_add_del_policy (vlib_main_t * vm, ipsec_policy_t * policy, int is_add)
   return 0;
 }
 
-static u8
+u8
 ipsec_is_sa_used (u32 sa_index)
 {
   ipsec_main_t *im = &ipsec_main;
@@ -414,6 +417,7 @@ ipsec_add_del_sa (vlib_main_t * vm, ipsec_sa_t * new_sa, int is_add)
   ipsec_sa_t *sa = 0;
   uword *p;
   u32 sa_index;
+  clib_error_t *err;
 
   clib_warning ("id %u spi %u", new_sa->id, new_sa->spi);
 
@@ -433,9 +437,12 @@ ipsec_add_del_sa (vlib_main_t * vm, ipsec_sa_t * new_sa, int is_add)
 	  return VNET_API_ERROR_SYSCALL_ERROR_1;	/* sa used in policy */
 	}
       hash_unset (im->sa_index_by_sa_id, sa->id);
-      if (im->cb.add_del_sa_sess_cb &&
-	  im->cb.add_del_sa_sess_cb (sa_index, is_add) < 0)
-	return VNET_API_ERROR_SYSCALL_ERROR_1;
+      if (im->cb.add_del_sa_sess_cb)
+	{
+	  err = im->cb.add_del_sa_sess_cb (sa_index, 0);
+	  if (err)
+	    return VNET_API_ERROR_SYSCALL_ERROR_1;
+	}
       pool_put (im->sad, sa);
     }
   else				/* create new SA */
@@ -444,9 +451,12 @@ ipsec_add_del_sa (vlib_main_t * vm, ipsec_sa_t * new_sa, int is_add)
       clib_memcpy (sa, new_sa, sizeof (*sa));
       sa_index = sa - im->sad;
       hash_set (im->sa_index_by_sa_id, sa->id, sa_index);
-      if (im->cb.add_del_sa_sess_cb &&
-	  im->cb.add_del_sa_sess_cb (sa_index, is_add) < 0)
-	return VNET_API_ERROR_SYSCALL_ERROR_1;
+      if (im->cb.add_del_sa_sess_cb)
+	{
+	  err = im->cb.add_del_sa_sess_cb (sa_index, 1);
+	  if (err)
+	    return VNET_API_ERROR_SYSCALL_ERROR_1;
+	}
     }
   return 0;
 }
@@ -458,6 +468,7 @@ ipsec_set_sa_key (vlib_main_t * vm, ipsec_sa_t * sa_update)
   uword *p;
   u32 sa_index;
   ipsec_sa_t *sa = 0;
+  clib_error_t *err;
 
   p = hash_get (im->sa_index_by_sa_id, sa_update->id);
   if (!p)
@@ -482,11 +493,14 @@ ipsec_set_sa_key (vlib_main_t * vm, ipsec_sa_t * sa_update)
       sa->integ_key_len = sa_update->integ_key_len;
     }
 
-  if (sa->crypto_key_len + sa->integ_key_len > 0)
+  if (0 < sa_update->crypto_key_len || 0 < sa_update->integ_key_len)
     {
-      if (im->cb.add_del_sa_sess_cb &&
-	  im->cb.add_del_sa_sess_cb (sa_index, 0) < 0)
-	return VNET_API_ERROR_SYSCALL_ERROR_1;
+      if (im->cb.add_del_sa_sess_cb)
+	{
+	  err = im->cb.add_del_sa_sess_cb (sa_index, 0);
+	  if (err)
+	    return VNET_API_ERROR_SYSCALL_ERROR_1;
+	}
     }
 
   return 0;
@@ -516,8 +530,6 @@ ipsec_check_support (ipsec_sa_t * sa)
     return clib_error_return (0, "unsupported aes-gcm-128 crypto-alg");
   if (sa->integ_alg == IPSEC_INTEG_ALG_NONE)
     return clib_error_return (0, "unsupported none integ-alg");
-  if (sa->integ_alg == IPSEC_INTEG_ALG_AES_GCM_128)
-    return clib_error_return (0, "unsupported aes-gcm-128 integ-alg");
 
   return 0;
 }
@@ -556,8 +568,18 @@ ipsec_init (vlib_main_t * vm)
   ASSERT (node);
   im->esp_decrypt_node_index = node->index;
 
+  node = vlib_get_node_by_name (vm, (u8 *) "ah-encrypt");
+  ASSERT (node);
+  im->ah_encrypt_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "ah-decrypt");
+  ASSERT (node);
+  im->ah_decrypt_node_index = node->index;
+
   im->esp_encrypt_next_index = IPSEC_OUTPUT_NEXT_ESP_ENCRYPT;
   im->esp_decrypt_next_index = IPSEC_INPUT_NEXT_ESP_DECRYPT;
+  im->ah_encrypt_next_index = IPSEC_OUTPUT_NEXT_AH_ENCRYPT;
+  im->ah_decrypt_next_index = IPSEC_INPUT_NEXT_AH_DECRYPT;
 
   im->cb.check_support_cb = ipsec_check_support;
 
@@ -567,7 +589,7 @@ ipsec_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, ipsec_tunnel_if_init)))
     return error;
 
-  esp_init ();
+  ipsec_proto_init ();
 
   if ((error = ikev2_init (vm)))
     return error;

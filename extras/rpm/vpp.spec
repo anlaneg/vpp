@@ -1,8 +1,10 @@
+%bcond_without aesni
+%{!?_topdir:%define _topdir %(pwd)}
 %define _vpp_build_dir   build-tool-native
 %define _unitdir         /lib/systemd/system
-%define _topdir          %(pwd)
 %define _builddir        %{_topdir}
-%define _mu_build_dir    %{_topdir}/%{name}-%{_version}/build-root
+%define _tmp_build_dir   %{name}-%{_version}.0
+%define _mu_build_dir    %{_topdir}/%{_tmp_build_dir}/build-root
 %define _vpp_tag	 %{getenv:TAG}
 %if "%{_vpp_tag}" == ""
 %define _vpp_tag	 vpp
@@ -22,16 +24,55 @@
 
 %{?systemd_requires}
 
+
+# SELinux Related definitions
+%global selinuxtype targeted
+%global moduletype  services
+%global modulenames vpp-custom
+
+# Usage: _format var format
+#   Expand 'modulenames' into various formats as needed
+#   Format must contain '$x' somewhere to do anything useful
+%global _format() export %1=""; for x in %{modulenames}; do %1+=%2; %1+=" "; done;
+
+# Relabel files
+%global relabel_files() \ # ADD files in *.fc file
+
+# Version of distribution SELinux policy package
+%global selinux_policyver 3.13.1-128.6.fc22
+
+
 Name: vpp
 Summary: Vector Packet Processing
-License: MIT
+License: ASL 2.0
 Version: %{_version}
 Release: %{_release}
-Requires: vpp-lib = %{_version}-%{_release}, net-tools, pciutils, python
+Requires: vpp-lib = %{_version}-%{_release}, vpp-selinux-policy = %{_version}-%{_release}, net-tools, pciutils, python
 BuildRequires: systemd, chrpath
+BuildRequires: check, check-devel
+BuildRequires: subunit, subunit-devel
+%if 0%{?fedora} >= 26
+BuildRequires: compat-openssl10-devel
+BuildRequires: python2-devel, python2-virtualenv
+%else
+%if 0%{?fedora} == 25
+BuildRequires: openssl-devel
+BuildRequires: python-devel, python2-virtualenv
+%else
+BuildREquires: openssl-devel
+BuildRequires: python-devel, python-virtualenv
+%endif
+%endif
+BuildRequires: libffi-devel
+BuildRequires: glibc-static, java-1.8.0-openjdk, java-1.8.0-openjdk-devel yum-utils, redhat-lsb
+BuildRequires: apr-devel
+BuildRequires: numactl-devel
+BuildRequires: autoconf automake libtool byacc bison flex
+BuildRequires: boost boost-devel
+BuildRequires: selinux-policy selinux-policy-devel
 
-# Source: %{name}-%{_version}-%{_release}.tar.xz
-Source: vpp-latest.tar.xz
+Source: %{name}-%{_version}-%{_release}.tar.xz
+# Source: vpp-latest.tar.xz
 
 %description
 This package provides VPP executables: vpp, vpp_api_test, vpp_json_test
@@ -42,6 +83,7 @@ vpp_json_test - vector packet engine JSON test tool
 %package lib
 Summary: VPP libraries
 Group: System Environment/Libraries
+Requires: vpp-selinux-policy = %{_version}-%{_release}
 
 %description lib
 This package contains the VPP shared libraries, including:
@@ -69,7 +111,7 @@ vppinfra
 %package plugins
 Summary: Vector Packet Processing--runtime plugins
 Group: System Environment/Libraries
-Requires: vpp = %{_version}-%{_release}
+Requires: vpp = %{_version}-%{_release} numactl-libs
 %description plugins
 This package contains VPP plugins
 
@@ -97,17 +139,38 @@ Requires: vpp = %{_version}-%{_release}, vpp-lib = %{_version}-%{_release}, pyth
 %description api-python
 This package contains the python bindings for the vpp api
 
+%package selinux-policy
+Summary: VPP Security-Enhanced Linux (SELinux) policy
+Group: System Environment/Base
+Requires(post): selinux-policy-base >= %{selinux_policyver}, selinux-policy-targeted >= %{selinux_policyver}, policycoreutils, policycoreutils-python libselinux-utils
+
+%description selinux-policy
+This package contains a tailored VPP SELinux policy
+
 %prep
-%setup -q -n %{name}-%{_version}
+# Unpack into dir with longer name as work around of debugedit bug in in rpm-build 4.13
+rm -rf %{name}-%{_version}
+rm -rf %{_tmp_build_dir}
+/usr/bin/xz -dc '%{_sourcedir}/%{name}-%{_version}-%{_release}.tar.xz' | /usr/bin/tar -xf -
+mv %{name}-%{_version} %{_tmp_build_dir}
+cd '%{_tmp_build_dir}'
+/usr/bin/chmod -Rf a+rX,u+w,g-w,o-w .
 
 %pre
 # Add the vpp group
 groupadd -f -r vpp
 
 %build
-make bootstrap
-make -C build-root PLATFORM=vpp TAG=%{_vpp_tag} install-packages
+cd '%{_tmp_build_dir}'
+%if %{with aesni}
+    make bootstrap
+    make -C build-root PLATFORM=vpp TAG=%{_vpp_tag} install-packages
+%else
+    make bootstrap AESNI=n
+    make -C build-root PLATFORM=vpp AESNI=n TAG=%{_vpp_tag} install-packages
+%endif
 cd %{_mu_build_dir}/../src/vpp-api/python && %py2_build
+cd %{_mu_build_dir}/../extras/selinux && make -f %{_datadir}/selinux/devel/Makefile
 
 %install
 #
@@ -125,7 +188,7 @@ mkdir -p -m755 %{buildroot}/usr/share/vpp/api
 #
 mkdir -p -m755 %{buildroot}/etc/vpp
 mkdir -p -m755 %{buildroot}/etc/sysctl.d
-install -p -m 644 %{_topdir}/vpp.service %{buildroot}%{_unitdir}
+install -p -m 644 %{_mu_build_dir}/../extras/rpm/vpp.service %{buildroot}%{_unitdir}
 install -p -m 644 %{_mu_build_dir}/../src/vpp/conf/startup.conf %{buildroot}/etc/vpp/startup.conf
 install -p -m 644 %{_mu_build_dir}/../src/vpp/conf/80-vpp.conf %{buildroot}/etc/sysctl.d
 #
@@ -156,10 +219,11 @@ install -p -m 644 %{_mu_build_dir}/../src/scripts/vppctl-cmd-list %{buildroot}/u
 # Lua bindings
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/lua/examples/cli
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/lua/examples/lute
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/vpp-api/lua && git ls-files .)
+# for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/vpp-api/lua && git ls-files .)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/vpp-api/lua && find . -type f -regex '.*/*.[luteamd]' -print | sed -e 's/^\.\///')
 do
-	install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/../../src/vpp-api/lua/$file \
-	   %{buildroot}/usr/share/doc/vpp/examples/lua/$file
+	( cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/vpp-api/lua && install -p -m 644 $file \
+	   %{buildroot}/usr/share/doc/vpp/examples/lua/$file )
 done
 
 # Java bindings
@@ -171,6 +235,19 @@ done
 
 # Python bindings
 cd %{_mu_build_dir}/../src/vpp-api/python && %py2_install
+
+# SELinux Policy
+# Install SELinux interfaces
+%_format INTERFACES %{_mu_build_dir}/../extras/selinux/$x.if
+install -d %{buildroot}%{_datadir}/selinux/devel/include/%{moduletype}
+install -p -m 644 $INTERFACES \
+    %{buildroot}%{_datadir}/selinux/devel/include/%{moduletype}
+
+# Install policy modules
+%_format MODULES %{_mu_build_dir}/../extras/selinux/$x.pp
+install -d %{buildroot}%{_datadir}/selinux/packages
+install -m 0644 $MODULES \
+    %{buildroot}%{_datadir}/selinux/packages
 
 #
 # devel
@@ -193,14 +270,22 @@ for i in $(ls %{_mu_build_dir}/../src/vpp-api/java/jvpp/gen/jvppgen/*.py); do
    install -p -m666 ${i} %{buildroot}%{python2_sitelib}/jvppgen
 done;
 
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/C.py %{buildroot}/usr/share/vpp
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/JSON.py %{buildroot}/usr/share/vpp
+
 # sample plugin
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/sample-plugin/sample
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/examples/sample-plugin && git ls-files .)
+#for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/examples/sample-plugin && git ls-files .)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/examples/sample-plugin && find . -type f -regex '.*/*.[acdhimp]' -print | sed -e 's/^\.\///')
 do
-	install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/../../src/examples/sample-plugin/$file \
-	   %{buildroot}/usr/share/doc/vpp/examples/sample-plugin/$file
+	( cd %{_mu_build_dir}/%{_vpp_install_dir}/../../src/examples/sample-plugin && install -p -m 644 $file \
+	   %{buildroot}/usr/share/doc/vpp/examples/sample-plugin/$file )
 done
 
+# vppctl sockfile directory
+mkdir -p -m755 %{buildroot}%{_localstatedir}/run/vpp
+# vpp.log directory
+mkdir -p -m755 %{buildroot}%{_localstatedir}/log/vpp
 
 #
 # vpp-plugins
@@ -230,31 +315,55 @@ done
 %{_mu_build_dir}/scripts/remove-rpath %{buildroot}
 
 %post
-sysctl --system
+if [ $1 -eq 1 ] ; then
+    sysctl --system
+fi
 %systemd_post vpp.service
 
 %preun
 %systemd_preun vpp.service
 
+%post selinux-policy
+%_format MODULES %{_datadir}/selinux/packages/$x.pp
+%{_sbindir}/semodule -n -X 400 -s %{selinuxtype} -i $MODULES
+if %{_sbindir}/selinuxenabled ; then
+    %{_sbindir}/load_policy
+    %relabel_files
+fi
+
+
 %postun
 %systemd_postun
-
-# Unbind user-mode PCI drivers
-removed=
-pci_dirs=`find /sys/bus/pci/drivers -type d -name igb_uio -o -name uio_pci_generic -o -name vfio-pci`
-for d in $pci_dirs; do
-    for f in ${d}/*; do
-        [ -e "${f}/config" ] || continue
-        echo ${f##*/} > ${d}/unbind
-        basename `dirname ${f}` | xargs echo -n "Removing driver"; echo " for PCI ID" `basename ${f}`
-        removed=y
+if [ $1 -eq 0 ] ; then
+    echo "Uninstalling, unbind user-mode PCI drivers"
+    # Unbind user-mode PCI drivers
+    removed=
+    pci_dirs=`find /sys/bus/pci/drivers -type d -name igb_uio -o -name uio_pci_generic -o -name vfio-pci`
+    for d in $pci_dirs; do
+        for f in ${d}/*; do
+            [ -e "${f}/config" ] || continue
+            echo ${f##*/} > ${d}/unbind
+            basename `dirname ${f}` | xargs echo -n "Removing driver"; echo " for PCI ID" `basename ${f}`
+            removed=y
+        done
     done
-done
-if [ -n "${removed}" ]; then
-    echo "There are changes in PCI drivers, rescaning"
-    echo 1 > /sys/bus/pci/rescan
+    if [ -n "${removed}" ]; then
+        echo "There are changes in PCI drivers, rescaning"
+        echo 1 > /sys/bus/pci/rescan
+    else
+        echo "There weren't PCI devices binded"
+    fi
 else
-    echo "There weren't PCI devices binded"
+    echo "Upgrading package, dont' unbind interfaces"
+fi
+
+%postun selinux-policy
+if [ $1 -eq 0 ]; then
+    %{_sbindir}/semodule -n -r %{modulenames}
+    if %{_sbindir}/selinuxenabled ; then
+        %{_sbindir}/load_policy
+        %relabel_files
+    fi
 fi
 
 %files
@@ -263,9 +372,15 @@ fi
 /usr/bin/vpp*
 /usr/bin/svm*
 /usr/bin/elftool
-%config /etc/sysctl.d/80-vpp.conf
-%config /etc/vpp/startup.conf
+%config(noreplace) /etc/sysctl.d/80-vpp.conf
+%config(noreplace) /etc/vpp/startup.conf
 /usr/share/vpp/api/*
+
+%defattr(-,root,vpp)
+%{_localstatedir}/run/vpp*
+
+%defattr(-,root,root)
+%{_localstatedir}/log/vpp*
 
 %files lib
 %defattr(-,bin,bin)
@@ -288,6 +403,11 @@ fi
 %defattr(644,root,root)
 %{python2_sitelib}/vpp_papi*
 
+%files selinux-policy
+%defattr(-,root,root,0755)
+%attr(0644,root,root) %{_datadir}/selinux/packages/*.pp
+%attr(0644,root,root) %{_datadir}/selinux/devel/include/%{moduletype}/*.if
+
 %files devel
 %defattr(-,bin,bin)
 /usr/bin/vppapigen
@@ -295,6 +415,7 @@ fi
 %{_includedir}/*
 %{python2_sitelib}/jvppgen/*
 /usr/share/doc/vpp/examples/sample-plugin
+/usr/share/vpp
 
 %files plugins
 %defattr(-,bin,bin)

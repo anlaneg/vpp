@@ -17,11 +17,14 @@
 #include <vnet/vnet.h>
 #include <vnet/pg/pg.h>
 #include <vppinfra/error.h>
+#include <vppinfra/random.h>
 #include <vnet/udp/udp.h>
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ikev2.h>
 #include <vnet/ipsec/ikev2_priv.h>
 #include <openssl/sha.h>
+
+ikev2_main_t ikev2_main;
 
 static int ikev2_delete_tunnel_interface (vnet_main_t * vnm,
 					  ikev2_sa_t * sa,
@@ -1595,8 +1598,16 @@ ikev2_create_tunnel_interface (vnet_main_t * vnm, ikev2_sa_t * sa,
 	+ sa->profile->lifetime;
       if (sa->profile->lifetime_jitter)
 	{
+	  // This is not much better than rand(3), which Coverity warns
+	  // is unsuitable for security applications; random_u32 is
+	  // however fast. If this perturbance to the expiration time
+	  // needs to use a better RNG then we may need to use something
+	  // like /dev/urandom which has significant overhead.
+	  u32 rnd = (u32) (vlib_time_now (vnm->vlib_main) * 1e6);
+	  rnd = random_u32 (&rnd);
+
 	  child->time_to_expiration +=
-	    1 + (rand () % sa->profile->lifetime_jitter);
+	    1 + (rnd % sa->profile->lifetime_jitter);
 	}
     }
 
@@ -3019,7 +3030,11 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
     sa.i_auth.method = p->auth.method;
     sa.i_auth.hex = p->auth.hex;
     sa.i_auth.data = vec_dup (p->auth.data);
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+    clib_memcpy (sa.i_auth.key, p->auth.key, EVP_PKEY_size (p->auth.key));
+#else
     sa.i_auth.key = vec_dup (p->auth.key);
+#endif
     vec_add (sa.childs[0].tsi, &p->loc_ts, 1);
     vec_add (sa.childs[0].tsr, &p->rem_ts, 1);
 

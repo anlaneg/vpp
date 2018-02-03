@@ -47,14 +47,14 @@ JNIEXPORT void JNICALL Java_io_fd_vpp_jvpp_gtpu_JVppGtpuImpl_init0
   clib_warning ("Java_io_fd_vpp_jvpp_gtpu_JVppGtpuImpl_init0");
 
   plugin_main->my_client_index = my_client_index;
-  plugin_main->vl_input_queue = (unix_shared_memory_queue_t *)queue_address;
+  plugin_main->vl_input_queue = (svm_queue_t *)queue_address;
 
   plugin_main->callbackObject = (*env)->NewGlobalRef(env, callback);
   plugin_main->callbackClass = (jclass)(*env)->NewGlobalRef(env, (*env)->GetObjectClass(env, callback));
 
   // verify API has not changed since jar generation
   #define _(N)             \
-      get_message_id(env, #N);  \
+      if (get_message_id(env, #N) == 0) return;
       foreach_supported_api_message;
   #undef _
 

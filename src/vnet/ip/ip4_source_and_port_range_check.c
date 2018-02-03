@@ -18,6 +18,8 @@
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/ip4_fib.h>
 
+source_range_check_main_t source_range_check_main;
+
 /**
  * @file
  * @brief IPv4 Source and Port Range Checking.
@@ -591,7 +593,7 @@ VLIB_REGISTER_NODE (ip4_source_port_and_range_check_rx) = {
 
   .n_next_nodes = IP4_SOURCE_AND_PORT_RANGE_CHECK_N_NEXT,
   .next_nodes = {
-    [IP4_SOURCE_AND_PORT_RANGE_CHECK_NEXT_DROP] = "error-drop",
+    [IP4_SOURCE_AND_PORT_RANGE_CHECK_NEXT_DROP] = "ip4-drop",
   },
 
   .format_buffer = format_ip4_header,
@@ -610,7 +612,7 @@ VLIB_REGISTER_NODE (ip4_source_port_and_range_check_tx) = {
 
   .n_next_nodes = IP4_SOURCE_AND_PORT_RANGE_CHECK_N_NEXT,
   .next_nodes = {
-    [IP4_SOURCE_AND_PORT_RANGE_CHECK_NEXT_DROP] = "error-drop",
+    [IP4_SOURCE_AND_PORT_RANGE_CHECK_NEXT_DROP] = "ip4-drop",
   },
 
   .format_buffer = format_ip4_header,
@@ -775,7 +777,7 @@ set_ip_source_and_port_range_check_fn (vlib_main_t * vm,
  * Example of graph node before range checking is enabled:
  * @cliexstart{show vlib graph ip4-source-and-port-range-check-tx}
  *            Name                      Next                    Previous
- * ip4-source-and-port-range-      error-drop [0]
+ * ip4-source-and-port-range-      ip4-drop [0]
  * @cliexend
  *
  * Example of how to enable range checking on TX:
@@ -784,7 +786,7 @@ set_ip_source_and_port_range_check_fn (vlib_main_t * vm,
  * Example of graph node after range checking is enabled:
  * @cliexstart{show vlib graph ip4-source-and-port-range-check-tx}
  *            Name                      Next                    Previous
- * ip4-source-and-port-range-      error-drop [0]              ip4-rewrite
+ * ip4-source-and-port-range-      ip4-drop [0]                ip4-rewrite
  *                              interface-output [1]
  * @cliexend
  *
@@ -1126,6 +1128,14 @@ ip6_source_and_port_range_check_add_del (ip6_address_t * address,
 					 u16 * low_ports,
 					 u16 * high_ports, int is_add)
 {
+  u32 fib_index;
+
+  fib_index = fib_table_find (FIB_PROTOCOL_IP4, vrf_id);
+
+  ASSERT (~0 != fib_index);
+
+  fib_table_unlock (fib_index, FIB_PROTOCOL_IP4, FIB_SOURCE_CLASSIFY);
+
   return 0;
 }
 
@@ -1138,7 +1148,8 @@ ip4_source_and_port_range_check_add_del (ip4_address_t * address,
 {
   u32 fib_index;
 
-  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, vrf_id);
+  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4, vrf_id,
+						 FIB_SOURCE_CLASSIFY);
 
   if (is_add == 0)
     {

@@ -36,7 +36,15 @@ typedef struct
 format_function_t format_ooo_segment;
 format_function_t format_ooo_list;
 
+#define SVM_FIFO_TRACE (0)
 #define OOO_SEGMENT_INVALID_INDEX ((u32)~0)
+
+typedef struct
+{
+  u32 offset;
+  u32 len;
+  u32 action;
+} svm_fifo_trace_elem_t;
 
 typedef struct _svm_fifo
 {
@@ -64,8 +72,29 @@ typedef struct _svm_fifo
   u32 ooos_newest;		/**< Last segment to have been updated */
   struct _svm_fifo *next;	/**< next in freelist/active chain */
   struct _svm_fifo *prev;	/**< prev in active chain */
+#if SVM_FIFO_TRACE
+  svm_fifo_trace_elem_t *trace;
+#endif
+  u32 freelist_index;		/**< aka log2(allocated_size) - const. */
+  i8 refcnt;			/**< reference count  */
     CLIB_CACHE_LINE_ALIGN_MARK (data);
 } svm_fifo_t;
+
+#if SVM_FIFO_TRACE
+#define svm_fifo_trace_add(_f, _s, _l, _t)		\
+{							\
+  svm_fifo_trace_elem_t *trace_elt;			\
+  vec_add2(_f->trace, trace_elt, 1);			\
+  trace_elt->offset = _s;				\
+  trace_elt->len = _l;					\
+  trace_elt->action = _t;				\
+}
+#else
+#define svm_fifo_trace_add(_f, _s, _l, _t)
+#endif
+
+u8 *svm_fifo_dump_trace (u8 * s, svm_fifo_t * f);
+u8 *svm_fifo_replay (u8 * s, svm_fifo_t * f, u8 no_read, u8 verbose);
 
 static inline u32
 svm_fifo_max_dequeue (svm_fifo_t * f)
@@ -127,21 +156,49 @@ format_function_t format_svm_fifo;
 always_inline ooo_segment_t *
 svm_fifo_newest_ooo_segment (svm_fifo_t * f)
 {
-  return f->ooo_segments + f->ooos_newest;
+  if (f->ooos_newest == OOO_SEGMENT_INVALID_INDEX)
+    return 0;
+  return pool_elt_at_index (f->ooo_segments, f->ooos_newest);
+}
+
+always_inline void
+svm_fifo_newest_ooo_segment_reset (svm_fifo_t * f)
+{
+  f->ooos_newest = OOO_SEGMENT_INVALID_INDEX;
+}
+
+always_inline u32
+ooo_segment_distance_from_tail (svm_fifo_t * f, u32 pos)
+{
+  /* Ambiguous. Assumption is that ooo segments don't touch tail */
+  if (PREDICT_FALSE (pos == f->tail && f->tail == f->head))
+    return f->nitems;
+
+  return (((f->nitems + pos) - f->tail) % f->nitems);
+}
+
+always_inline u32
+ooo_segment_distance_to_tail (svm_fifo_t * f, u32 pos)
+{
+  return (((f->nitems + f->tail) - pos) % f->nitems);
 }
 
 always_inline u32
 ooo_segment_offset (svm_fifo_t * f, ooo_segment_t * s)
 {
-//  return ((f->nitems + s->fifo_position - f->tail) % f->nitems);
-  return s->start;
+  return ooo_segment_distance_from_tail (f, s->start);
 }
 
 always_inline u32
 ooo_segment_end_offset (svm_fifo_t * f, ooo_segment_t * s)
 {
-//  return ((f->nitems + s->fifo_position + s->length - f->tail) % f->nitems);
-  return s->start + s->length;
+  return ooo_segment_distance_from_tail (f, s->start) + s->length;
+}
+
+always_inline u32
+ooo_segment_length (svm_fifo_t * f, ooo_segment_t * s)
+{
+  return s->length;
 }
 
 always_inline ooo_segment_t *
@@ -150,6 +207,14 @@ ooo_segment_get_prev (svm_fifo_t * f, ooo_segment_t * s)
   if (s->prev == OOO_SEGMENT_INVALID_INDEX)
     return 0;
   return pool_elt_at_index (f->ooo_segments, s->prev);
+}
+
+always_inline ooo_segment_t *
+ooo_segment_next (svm_fifo_t * f, ooo_segment_t * s)
+{
+  if (s->next == OOO_SEGMENT_INVALID_INDEX)
+    return 0;
+  return pool_elt_at_index (f->ooo_segments, s->next);
 }
 
 #endif /* __included_ssvm_fifo_h__ */

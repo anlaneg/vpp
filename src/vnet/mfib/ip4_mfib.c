@@ -33,7 +33,8 @@ static const mfib_prefix_t ip4_specials[] = {
 };
 
 static u32
-ip4_create_mfib_with_table_id (u32 table_id)
+ip4_create_mfib_with_table_id (u32 table_id,
+                               mfib_source_t src)
 {
     mfib_table_t *mfib_table;
 
@@ -53,7 +54,7 @@ ip4_create_mfib_with_table_id (u32 table_id)
         mfib_table->v4.table_id =
             table_id;
 
-    mfib_table_lock(mfib_table->mft_index, FIB_PROTOCOL_IP4);
+    mfib_table_lock(mfib_table->mft_index, FIB_PROTOCOL_IP4, src);
 
     /*
      * add the special entries into the new FIB
@@ -113,14 +114,15 @@ ip4_mfib_table_destroy (ip4_mfib_t *mfib)
 }
 
 u32
-ip4_mfib_table_find_or_create_and_lock (u32 table_id)
+ip4_mfib_table_find_or_create_and_lock (u32 table_id,
+                                        mfib_source_t src)
 {
     u32 index;
 
     index = ip4_mfib_index_from_table_id(table_id);
     if (~0 == index)
-        return ip4_create_mfib_with_table_id(table_id);
-    mfib_table_lock(index, FIB_PROTOCOL_IP4);
+        return ip4_create_mfib_with_table_id(table_id, src);
+    mfib_table_lock(index, FIB_PROTOCOL_IP4, src);
 
     return (index);
 }
@@ -303,6 +305,42 @@ ip4_mfib_table_walk (ip4_mfib_t *mfib,
     }
 }
 
+u8 *
+format_ip4_mfib_table_memory (u8 * s, va_list * args)
+{
+    mfib_table_t *mfib_table;
+    u64 total_memory;
+
+    total_memory = 0;
+
+    pool_foreach (mfib_table, ip4_main.mfibs,
+    ({
+        ip4_mfib_t *mfib = &mfib_table->v4;
+        uword mfib_size;
+        int i;
+
+        mfib_size = 0;
+
+        for (i = 0; i < ARRAY_LEN (mfib->fib_entry_by_dst_address); i++)
+        {
+            uword * hash = mfib->fib_entry_by_dst_address[i];
+
+            if (NULL != hash)
+            {
+                mfib_size += hash_bytes(hash);
+            }
+        }
+
+        total_memory += mfib_size;
+    }));
+
+    s = format(s, "%=30s %=6d %=8ld\n",
+               "IPv4 multicast",
+               pool_elts(ip4_main.mfibs), total_memory);
+
+    return (s);
+}
+
 static void
 ip4_mfib_table_show_all (ip4_mfib_t *mfib,
                          vlib_main_t * vm)
@@ -361,20 +399,23 @@ ip4_show_mfib (vlib_main_t * vm,
 {
     ip4_main_t * im4 = &ip4_main;
     mfib_table_t *mfib_table;
-    int verbose, matching;
+    int verbose, matching, memory;
     ip4_address_t grp, src = {{0}};
     u32 mask = 32;
+    u64 total_hash_memory;
     int i, table_id = -1, fib_index = ~0;
 
     verbose = 1;
-    matching = 0;
+    memory = matching = 0;
+    total_hash_memory = 0;
 
     while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
         if (unformat (input, "brief") || unformat (input, "summary")
             || unformat (input, "sum"))
             verbose = 0;
-
+        else if (unformat (input, "mem") || unformat (input, "memory"))
+            memory = 1;
         else if (unformat (input, "%U %U",
                            unformat_ip4_address, &src,
                            unformat_ip4_address, &grp))
@@ -410,6 +451,29 @@ ip4_show_mfib (vlib_main_t * vm,
         if (fib_index != ~0 && fib_index != (int)mfib->index)
             continue;
 
+        if (memory)
+        {
+            uword hash_size;
+
+            hash_size = 0;
+
+	    for (i = 0; i < ARRAY_LEN (mfib->fib_entry_by_dst_address); i++)
+	    {
+		uword * hash = mfib->fib_entry_by_dst_address[i];
+                if (NULL != hash)
+                {
+                    hash_size += hash_bytes(hash);
+                }
+            }
+            if (verbose)
+                vlib_cli_output (vm, "%U hash:%d",
+                                 format_mfib_table_name, mfib->index,
+                                 FIB_PROTOCOL_IP4,
+                                 hash_size);
+            total_hash_memory += hash_size;
+            continue;
+        }
+
         vlib_cli_output (vm, "%U, fib_index %d",
                          format_mfib_table_name, mfib->index, FIB_PROTOCOL_IP4,
                          mfib->index);
@@ -437,6 +501,8 @@ ip4_show_mfib (vlib_main_t * vm,
             ip4_mfib_table_show_one(mfib, vm, &src, &grp, mask);
         }
     }));
+    if (memory)
+        vlib_cli_output (vm, "totals: hash:%ld", total_hash_memory);
 
     return 0;
 }

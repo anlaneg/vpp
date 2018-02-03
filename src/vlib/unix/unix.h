@@ -40,40 +40,15 @@
 #ifndef included_unix_unix_h
 #define included_unix_unix_h
 
+#include <vppinfra/file.h>
 #include <vppinfra/socket.h>
 #include <termios.h>
-
-struct unix_file;
-typedef clib_error_t *(unix_file_function_t) (struct unix_file * f);
-
-typedef struct unix_file
-{
-  /* Unix file descriptor from open/socket. */
-  u32 file_descriptor;
-
-  u32 flags;
-#define UNIX_FILE_DATA_AVAILABLE_TO_WRITE (1 << 0)
-#define UNIX_FILE_EVENT_EDGE_TRIGGERED   (1 << 1)
-
-  /* Data available for function's use. */
-  uword private_data;
-
-  /* Functions to be called when read/write data becomes ready. */
-  unix_file_function_t *read_function, *write_function, *error_function;
-} unix_file_t;
 
 typedef struct
 {
   f64 time;
   clib_error_t *error;
 } unix_error_history_t;
-
-typedef enum
-{
-  UNIX_FILE_UPDATE_ADD,
-  UNIX_FILE_UPDATE_MODIFY,
-  UNIX_FILE_UPDATE_DELETE,
-} unix_file_update_type_t;
 
 typedef struct
 {
@@ -85,14 +60,8 @@ typedef struct
 #define UNIX_FLAG_INTERACTIVE (1 << 0)
 #define UNIX_FLAG_NODAEMON (1 << 1)
 
-  /* Pool of files to poll for input/output. */
-  unix_file_t *file_pool;
-
   /* CLI listen socket. */
   clib_socket_t cli_listen_socket;
-
-  void (*file_update) (unix_file_t * file,
-		       unix_file_update_type_t update_type);
 
   /* Circular buffer of last unix errors. */
   unix_error_history_t error_history[128];
@@ -101,6 +70,12 @@ typedef struct
 
   /* startup-config filename */
   u8 *startup_config_filename;
+
+  /* runtime directory path */
+  u8 *runtime_dir;
+
+  /* pidfile filename */
+  u8 *pidfile;
 
   /* unix config complete */
   volatile int unix_config_complete;
@@ -131,47 +106,7 @@ typedef struct
 
 /* Global main structure. */
 extern unix_main_t unix_main;
-
-always_inline uword
-unix_file_add (unix_main_t * um, unix_file_t * template)
-{
-  unix_file_t *f;
-  pool_get (um->file_pool, f);
-  f[0] = template[0];
-  um->file_update (f, UNIX_FILE_UPDATE_ADD);
-  return f - um->file_pool;
-}
-
-always_inline void
-unix_file_del (unix_main_t * um, unix_file_t * f)
-{
-  um->file_update (f, UNIX_FILE_UPDATE_DELETE);
-  close (f->file_descriptor);
-  f->file_descriptor = ~0;
-  pool_put (um->file_pool, f);
-}
-
-always_inline void
-unix_file_del_by_index (unix_main_t * um, uword index)
-{
-  unix_file_t *uf;
-  uf = pool_elt_at_index (um->file_pool, index);
-  unix_file_del (um, uf);
-}
-
-always_inline uword
-unix_file_set_data_available_to_write (u32 unix_file_index,
-				       uword is_available)
-{
-  unix_file_t *uf = pool_elt_at_index (unix_main.file_pool, unix_file_index);
-  uword was_available = (uf->flags & UNIX_FILE_DATA_AVAILABLE_TO_WRITE);
-  if ((was_available != 0) != (is_available != 0))
-    {
-      uf->flags ^= UNIX_FILE_DATA_AVAILABLE_TO_WRITE;
-      unix_main.file_update (uf, UNIX_FILE_UPDATE_MODIFY);
-    }
-  return was_available != 0;
-}
+extern clib_file_main_t file_main;
 
 always_inline void
 unix_save_error (unix_main_t * um, clib_error_t * error)
@@ -188,18 +123,7 @@ unix_save_error (unix_main_t * um, clib_error_t * error)
 /* Main function for Unix VLIB. */
 int vlib_unix_main (int argc, char *argv[]);
 
-/* Call to allocate/initialize physical DMA memory subsystem.
-   This is not an init function so that users can explicitly enable/disable
-   physmem when its not needed. */
-clib_error_t *unix_physmem_init (vlib_main_t * vm,
-				 int fail_if_physical_memory_not_present);
-
-static inline int
-unix_physmem_is_fake (vlib_main_t * vm)
-{
-  vlib_physmem_main_t *vpm = &vm->physmem_main;
-  return vpm->is_fake;
-}
+clib_error_t *unix_physmem_init (vlib_main_t * vm);
 
 /* Set prompt for CLI. */
 void vlib_unix_cli_set_prompt (char *prompt);
@@ -210,24 +134,28 @@ vlib_unix_get_main (void)
   return &unix_main;
 }
 
+static inline char *
+vlib_unix_get_runtime_dir (void)
+{
+  return (char *) unix_main.runtime_dir;
+}
+
 /* thread stack array; vec_len = max number of threads */
 extern u8 **vlib_thread_stacks;
 
 /* utils */
-
-clib_error_t *vlib_sysfs_write (char *file_name, char *fmt, ...);
-
-clib_error_t *vlib_sysfs_read (char *file_name, char *fmt, ...);
-
-u8 *vlib_sysfs_link_to_name (char *link);
-
-int vlib_sysfs_get_free_hugepages (unsigned int numa_node, int page_size);
 
 clib_error_t *foreach_directory_file (char *dir_name,
 				      clib_error_t * (*f) (void *arg,
 							   u8 * path_name,
 							   u8 * file_name),
 				      void *arg, int scan_dirs);
+
+clib_error_t *vlib_unix_recursive_mkdir (char *path);
+
+clib_error_t *vlib_unix_validate_runtime_file (unix_main_t * um,
+					       const char *path,
+					       u8 ** full_path);
 
 #endif /* included_unix_unix_h */
 

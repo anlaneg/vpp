@@ -37,12 +37,20 @@
 #include <vppinfra/heap.h>
 #include <vppinfra/pool.h>
 #include <vppinfra/format.h>
+#include <vppinfra/linux/syscall.h>
 
 #ifndef MMAP_PAGESIZE
 #define MMAP_PAGESIZE (clib_mem_get_page_size())
 #endif
 
 #define SSVM_N_OPAQUE 7
+
+typedef enum ssvm_segment_type_
+{
+  SSVM_SEGMENT_SHM = 0,
+  SSVM_SEGMENT_MEMFD,
+  SSVM_N_SEGMENT_TYPES		/**< Private segments */
+} ssvm_segment_type_t;
 
 typedef struct
 {
@@ -67,8 +75,7 @@ typedef struct
   /* Set when the master application thinks it's time to make the donuts */
   volatile u32 ready;
 
-  /* Needed to make unique MAC addresses, etc. */
-  u32 master_index;
+  ssvm_segment_type_t type;
 } ssvm_shared_header_t;
 
 typedef struct
@@ -76,12 +83,15 @@ typedef struct
   ssvm_shared_header_t *sh;
   u64 ssvm_size;
   u32 my_pid;
-  u32 vlib_hw_if_index;
   u8 *name;
   uword requested_va;
   int i_am_master;
-  u32 per_interface_next_index;
-  u32 *rx_queue;
+
+  union
+  {
+    int fd;			/**< memfd segments */
+    int attach_timeout;		/**< shm segments attach timeout (sec) */
+  };
 } ssvm_private_t;
 
 always_inline void
@@ -102,6 +112,15 @@ ssvm_lock (ssvm_shared_header_t * h, u32 my_pid, u32 tag)
 }
 
 always_inline void
+ssvm_lock_non_recursive (ssvm_shared_header_t * h, u32 tag)
+{
+  while (__sync_lock_test_and_set (&h->lock, 1))
+    ;
+
+  h->tag = tag;
+}
+
+always_inline void
 ssvm_unlock (ssvm_shared_header_t * h)
 {
   if (--h->recursion_count == 0)
@@ -111,6 +130,14 @@ ssvm_unlock (ssvm_shared_header_t * h)
       CLIB_MEMORY_BARRIER ();
       h->lock = 0;
     }
+}
+
+always_inline void
+ssvm_unlock_non_recursive (ssvm_shared_header_t * h)
+{
+  h->tag = 0;
+  CLIB_MEMORY_BARRIER ();
+  h->lock = 0;
 }
 
 static inline void *
@@ -125,6 +152,18 @@ static inline void
 ssvm_pop_heap (void *oldheap)
 {
   clib_mem_set_heap (oldheap);
+}
+
+static inline void *
+ssvm_mem_alloc (ssvm_private_t * ssvm, uword size)
+{
+  u8 *oldheap;
+  void *rv;
+
+  oldheap = clib_mem_set_heap (ssvm->sh->heap);
+  rv = clib_mem_alloc (size);
+  clib_mem_set_heap (oldheap);
+  return (rv);
 }
 
 #define foreach_ssvm_api_error                  \
@@ -144,9 +183,20 @@ typedef enum
 
 #define SSVM_API_ERROR_NO_NAME	(-10)
 
-int ssvm_master_init (ssvm_private_t * ssvm, u32 master_index);
-int ssvm_slave_init (ssvm_private_t * ssvm, int timeout_in_seconds);
+int ssvm_master_init (ssvm_private_t * ssvm, ssvm_segment_type_t type);
+int ssvm_slave_init (ssvm_private_t * ssvm, ssvm_segment_type_t type);
 void ssvm_delete (ssvm_private_t * ssvm);
+
+int ssvm_master_init_shm (ssvm_private_t * ssvm);
+int ssvm_slave_init_shm (ssvm_private_t * ssvm);
+void ssvm_delete_shm (ssvm_private_t * ssvm);
+
+int ssvm_master_init_memfd (ssvm_private_t * memfd);
+int ssvm_slave_init_memfd (ssvm_private_t * memfd);
+void ssvm_delete_memfd (ssvm_private_t * memfd);
+
+ssvm_segment_type_t ssvm_type (const ssvm_private_t * ssvm);
+u8 *ssvm_name (const ssvm_private_t * ssvm);
 
 #endif /* __included_ssvm_h__ */
 

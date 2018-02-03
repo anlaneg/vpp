@@ -36,7 +36,7 @@ install-deb: $(patsubst %,%-find-source,$(ROOT_PACKAGES))
 	find $(INSTALL_PREFIX)$(ARCH)/*/lib* \( -type f -o  -type l \)  \
 	  -print | egrep -e '*\.so\.*\.*\.*'				\
 	  | grep -v plugins\/						\
-	  | sed -e 's:.*:../& /usr/lib/x86_64-linux-gnu:'		\
+	  | sed -e 's:.*:../& /usr/lib/$(MACHINE)-linux-gnu:'		\
 	    > deb/debian/vpp-lib.install ;				\
 									\
 	: vnet api definitions ;					\
@@ -75,8 +75,16 @@ install-deb: $(patsubst %,%-find-source,$(ROOT_PACKAGES))
 	echo ../../src/scripts/vppctl-cmd-list /usr/share/vpp		\
 	   >> deb/debian/vpp.install ;					\
 									\
+	: add log directory ;						\
+	echo /var/log/vpp/						\
+	   >> deb/debian/vpp.dirs ;					\
+									\
 	: dev package needs a couple of additions ;			\
 	echo ../$(INSTALL_PREFIX)$(ARCH)/vpp/bin/vppapigen /usr/bin	\
+	   >> deb/debian/vpp-dev.install ;				\
+	echo ../$(INSTALL_PREFIX)$(ARCH)/vpp/share/vpp/C.py /usr/share/vpp  \
+	   >> deb/debian/vpp-dev.install ;				\
+	echo ../$(INSTALL_PREFIX)$(ARCH)/vpp/share/vpp/JSON.py /usr/share/vpp \
 	   >> deb/debian/vpp-dev.install ;				\
 	echo ../../src/vpp-api/java/jvpp/gen/jvpp_gen.py /usr/bin	\
 	   >> deb/debian/vpp-dev.install ;				\

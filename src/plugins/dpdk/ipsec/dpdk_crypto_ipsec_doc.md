@@ -7,10 +7,10 @@ This document is meant to contain all related information about implementation a
 
 DPDK Cryptodev is an asynchronous crypto API that supports both Hardware and Software implementations (for more details refer to [DPDK Cryptography Device Library documentation](http://dpdk.org/doc/guides/prog_guide/cryptodev_lib.html)).
 
-When DPDK support is enabled and there are enough Cryptodev resources for all workers, the node graph is reconfigured by adding and changing default next nodes.
+When there are enough Cryptodev resources for all workers, the node graph is reconfigured by adding and changing the default next nodes.
 
 The following nodes are added:
-* dpdk-crypto-input : polling input node, basically dequeuing from crypto devices.
+* dpdk-crypto-input : polling input node, dequeuing from crypto devices.
 * dpdk-esp-encrypt : internal node.
 * dpdk-esp-decrypt : internal node.
 * dpdk-esp-encrypt-post : internal node.
@@ -23,16 +23,9 @@ Set new default next nodes:
 
 ### How to enable VPP IPSec with DPDK Cryptodev support
 
-DPDK Cryptodev is supported in DPDK enabled VPP and by default only HW Cryptodev is supported.
-To enable SW Cryptodev support (AESNI-MB-PMD and GCM-PMD), we need the following env option:
+When building DPDK with VPP, Cryptodev support is always enabled.
 
-    vpp_uses_dpdk_cryptodev_sw=yes
-
-A couple of ways to achive this:
-* uncomment/add it in the platforms config (ie. build-data/platforms/vpp.mk)
-* set the option when building vpp (ie. make vpp_uses_dpdk_cryptodev_sw=yes build-release)
-
-When enabling SW Cryptodev support, it means that you need to pre-build the required crypto libraries needed by those SW Cryptodev PMDs. This requires nasm, see nasm section below.
+Additionally, on x86_64 platforms, DPDK is built with SW crypto support.
 
 
 ### Crypto Resources allocation
@@ -46,28 +39,25 @@ VPP allocates crypto resources based on a best effort approach:
 
 ### Configuration example
 
-To enable DPDK Cryptodev the user just need to provide cryptodevs int the
-startup.conf.
+To enable DPDK Cryptodev the user just need to provide cryptodevs in the startup.conf.
 
-Example startup.conf:
+Below is an example startup.conf, it is not meant to be a default configuration:
 
 ```
 dpdk {
-    socket-mem 1024,1024
-    num-mbufs 131072
     dev 0000:81:00.0
     dev 0000:81:00.1
-    enable-cryptodev
     dev 0000:85:01.0
     dev 0000:85:01.1
-    vdev cryptodev_aesni_mb_pmd,socket_id=1
-    vdev cryptodev_aesni_mb_pmd,socket_id=1
+    vdev crypto_aesni_mb0,socket_id=1
+    vdev crypto_aesni_mb1,socket_id=1
 }
 ```
 
 In the above configuration:
-* 0000:85:01.0 and 0000:85:01.1 are crypto BDFs and they require the same driver binding as DPDK Ethernet devices but they do not support any extra configuration options.
-* Two AESNI-MB Software Cryptodev PMDs are created in NUMA node 1.
+* 0000:81:01.0 and 0000:81:01.1 are Ethernet device BDFs.
+* 0000:85:01.0 and 0000:85:01.1 are Crypto device BDFs and they require the same driver binding as DPDK Ethernet devices but they do not support any extra configuration options.
+* Two AESNI-MB Software (Virtual) Cryptodev PMDs are created in NUMA node 1.
 
 For further details refer to [DPDK Crypto Device Driver documentation](http://dpdk.org/doc/guides/cryptodevs/index.html)
 

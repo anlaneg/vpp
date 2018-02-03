@@ -44,6 +44,7 @@
 #include <vppinfra/cache.h>
 #include <vppinfra/serialize.h>
 #include <vppinfra/vector.h>
+#include <vppinfra/lock.h>
 #include <vlib/error.h>		/* for vlib_error_t */
 
 #include <vlib/config.h>	/* for __PRE_DATA_SIZE */
@@ -72,6 +73,7 @@ typedef struct
                           the end of this buffer.
                        */
   u32 flags; /**< buffer flags:
+                <br> VLIB_BUFFER_FREE_LIST_INDEX_MASK: bits used to store free list index,
                 <br> VLIB_BUFFER_IS_TRACED: trace this buffer.
                 <br> VLIB_BUFFER_NEXT_PRESENT: this is a multi-chunk buffer.
                 <br> VLIB_BUFFER_TOTAL_LENGTH_VALID: as it says
@@ -82,28 +84,26 @@ typedef struct
                 set to avoid adding it to a flow report
                 <br> VLIB_BUFFER_FLAG_USER(n): user-defined bit N
              */
-#define VLIB_BUFFER_IS_TRACED (1 << 0)
-#define VLIB_BUFFER_LOG2_NEXT_PRESENT (1)
+
+/* any change to the following line requres update of
+ * vlib_buffer_get_free_list_index(...) and
+ * vlib_buffer_set_free_list_index(...) functions */
+#define VLIB_BUFFER_FREE_LIST_INDEX_MASK ((1 << 5) - 1)
+
+#define VLIB_BUFFER_IS_TRACED (1 << 5)
+#define VLIB_BUFFER_LOG2_NEXT_PRESENT (6)
 #define VLIB_BUFFER_NEXT_PRESENT (1 << VLIB_BUFFER_LOG2_NEXT_PRESENT)
-#define VLIB_BUFFER_IS_RECYCLED (1 << 2)
-#define VLIB_BUFFER_TOTAL_LENGTH_VALID (1 << 3)
-#define VLIB_BUFFER_REPL_FAIL (1 << 4)
-#define VLIB_BUFFER_RECYCLE (1 << 5)
-#define VLIB_BUFFER_FLOW_REPORT (1 << 6)
-#define VLIB_BUFFER_EXT_HDR_VALID (1 << 7)
+#define VLIB_BUFFER_IS_RECYCLED (1 << 7)
+#define VLIB_BUFFER_TOTAL_LENGTH_VALID (1 << 8)
+#define VLIB_BUFFER_REPL_FAIL (1 << 9)
+#define VLIB_BUFFER_RECYCLE (1 << 10)
+#define VLIB_BUFFER_FLOW_REPORT (1 << 11)
+#define VLIB_BUFFER_EXT_HDR_VALID (1 << 12)
 
   /* User defined buffer flags. */
 #define LOG2_VLIB_BUFFER_FLAG_USER(n) (32 - (n))
 #define VLIB_BUFFER_FLAG_USER(n) (1 << LOG2_VLIB_BUFFER_FLAG_USER(n))
 
-  u32 free_list_index; /**< Buffer free list that this buffer was
-                          allocated from and will be freed to.
-                       */
-
-  u32 total_length_not_including_first_buffer;
-  /**< Only valid for first buffer in chain. Current length plus
-     total length given here give total number of bytes in buffer chain.
-  */
     STRUCT_MARK (template_end);
 
   u32 next_buffer;   /**< Next buffer for this linked-list of buffers.
@@ -123,12 +123,13 @@ typedef struct
 
   u8 n_add_refs; /**< Number of additional references to this buffer. */
 
-  u8 dont_waste_me[2]; /**< Available space in the (precious)
+  u8 buffer_pool_index;	/**< index of buffer pool this buffer belongs. */
+  u8 dont_waste_me[1]; /**< Available space in the (precious)
                           first 32 octets of buffer metadata
                           Before allocating any of it, discussion required!
                        */
 
-  u32 opaque[8]; /**< Opaque data used by sub-graphs for their own purposes.
+  u32 opaque[10]; /**< Opaque data used by sub-graphs for their own purposes.
                     See .../vnet/vnet/buffer.h
                  */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
@@ -137,7 +138,13 @@ typedef struct
                       if VLIB_PACKET_IS_TRACED flag is set.
                    */
   u32 recycle_count; /**< Used by L2 path recycle code */
-  u32 opaque2[14];  /**< More opaque data, currently unused */
+
+  u32 total_length_not_including_first_buffer;
+  /**< Only valid for first buffer in chain. Current length plus
+     total length given here give total number of bytes in buffer chain.
+  */
+  u32 align_pad; /**< available */
+  u32 opaque2[12];  /**< More opaque data, see ../vnet/vnet/buffer.h */
 
   /***** end of second cache line */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline2);
@@ -345,6 +352,12 @@ typedef struct vlib_buffer_free_list_t
   /* Vector of free buffers.  Each element is a byte offset into I/O heap. */
   u32 *buffers;
 
+  /* global vector of free buffers, used only on main thread.
+     Bufers are returned to global buffers only in case when number of
+     buffers on free buffers list grows about threshold */
+  u32 *global_buffers;
+  clib_spinlock_t global_buffers_lock;
+
   /* Memory chunks allocated for this free list
      recorded here so they can be freed when free list
      is deleted. */
@@ -367,17 +380,19 @@ typedef struct vlib_buffer_free_list_t
   uword buffer_init_function_opaque;
 } __attribute__ ((aligned (16))) vlib_buffer_free_list_t;
 
+typedef uword (vlib_buffer_fill_free_list_cb_t) (struct vlib_main_t * vm,
+						 vlib_buffer_free_list_t * fl,
+						 uword min_free_buffers);
+typedef void (vlib_buffer_free_cb_t) (struct vlib_main_t * vm, u32 * buffers,
+				      u32 n_buffers);
+typedef void (vlib_buffer_free_no_next_cb_t) (struct vlib_main_t * vm,
+					      u32 * buffers, u32 n_buffers);
+
 typedef struct
 {
-  u32 (*vlib_buffer_alloc_cb) (struct vlib_main_t * vm, u32 * buffers,
-			       u32 n_buffers);
-  u32 (*vlib_buffer_alloc_from_free_list_cb) (struct vlib_main_t * vm,
-					      u32 * buffers, u32 n_buffers,
-					      u32 free_list_index);
-  void (*vlib_buffer_free_cb) (struct vlib_main_t * vm, u32 * buffers,
-			       u32 n_buffers);
-  void (*vlib_buffer_free_no_next_cb) (struct vlib_main_t * vm, u32 * buffers,
-				       u32 n_buffers);
+  vlib_buffer_fill_free_list_cb_t *vlib_buffer_fill_free_list_cb;
+  vlib_buffer_free_cb_t *vlib_buffer_free_cb;
+  vlib_buffer_free_no_next_cb_t *vlib_buffer_free_no_next_cb;
   void (*vlib_packet_template_init_cb) (struct vlib_main_t * vm, void *t,
 					void *packet_data,
 					uword n_packet_data_bytes,
@@ -388,12 +403,29 @@ typedef struct
 					   u32 free_list_index);
 } vlib_buffer_callbacks_t;
 
+extern vlib_buffer_callbacks_t *vlib_buffer_callbacks;
+
 typedef struct
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  uword start;
+  uword size;
+  vlib_physmem_region_index_t physmem_region;
+} vlib_buffer_pool_t;
+
+typedef struct
+{
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  /* Virtual memory address and size of buffer memory, used for calculating
+     buffer index */
+  uword buffer_mem_start;
+  uword buffer_mem_size;
+  vlib_buffer_pool_t *buffer_pools;
+
   /* Buffer free callback, for subversive activities */
-  u32 (*buffer_free_callback) (struct vlib_main_t * vm,
-			       u32 * buffers,
-			       u32 n_buffers, u32 follow_buffer_next);
+    u32 (*buffer_free_callback) (struct vlib_main_t * vm,
+				 u32 * buffers,
+				 u32 n_buffers, u32 follow_buffer_next);
   /* Pool of buffer free lists.
      Multiple free lists exist for packet generator which uses
      separate free lists for each packet stream --- so as to avoid
@@ -411,18 +443,20 @@ typedef struct
      If buffer index is not in hash table then this buffer
      has never been allocated. */
   uword *buffer_known_hash;
+  clib_spinlock_t buffer_known_hash_lockp;
 
   /* List of free-lists needing Blue Light Special announcements */
   vlib_buffer_free_list_t **announce_list;
 
   /* Callbacks */
   vlib_buffer_callbacks_t cb;
-  int extern_buffer_mgmt;
+  int callbacks_registered;
 } vlib_buffer_main_t;
 
-void vlib_buffer_cb_init (struct vlib_main_t *vm);
-int vlib_buffer_cb_register (struct vlib_main_t *vm,
-			     vlib_buffer_callbacks_t * cb);
+u8 vlib_buffer_add_physmem_region (struct vlib_main_t *vm,
+				   vlib_physmem_region_index_t region);
+
+clib_error_t *vlib_buffer_main_init (struct vlib_main_t *vm);
 
 typedef struct
 {
@@ -491,12 +525,28 @@ serialize_vlib_buffer_n_bytes (serialize_main_t * m)
 #define VLIB_BUFFER_TRACE_TRAJECTORY 0
 
 #if VLIB_BUFFER_TRACE_TRAJECTORY > 0
-#define VLIB_BUFFER_TRACE_TRAJECTORY_INIT(b) (b)->pre_data[0]=0
+extern void (*vlib_buffer_trace_trajectory_cb) (vlib_buffer_t * b, u32 index);
+extern void (*vlib_buffer_trace_trajectory_init_cb) (vlib_buffer_t * b);
+extern void vlib_buffer_trace_trajectory_init (vlib_buffer_t * b);
+#define VLIB_BUFFER_TRACE_TRAJECTORY_INIT(b) \
+  vlib_buffer_trace_trajectory_init (b);
 #else
 #define VLIB_BUFFER_TRACE_TRAJECTORY_INIT(b)
 #endif /* VLIB_BUFFER_TRACE_TRAJECTORY */
 
 #endif /* included_vlib_buffer_h */
+
+#define VLIB_BUFFER_REGISTER_CALLBACKS(x,...)                           \
+    __VA_ARGS__ vlib_buffer_callbacks_t __##x##_buffer_callbacks;       \
+static void __vlib_add_buffer_callbacks_t_##x (void)                    \
+    __attribute__((__constructor__)) ;                                  \
+static void __vlib_add_buffer_callbacks_t_##x (void)                    \
+{                                                                       \
+    if (vlib_buffer_callbacks)                                          \
+      clib_panic ("vlib buffer callbacks already registered");          \
+    vlib_buffer_callbacks = &__##x##_buffer_callbacks;                  \
+}                                                                       \
+__VA_ARGS__ vlib_buffer_callbacks_t __##x##_buffer_callbacks
 
 /*
  * fd.io coding-style-patch-verification: ON

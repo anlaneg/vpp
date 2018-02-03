@@ -23,6 +23,7 @@
 #define VHOST_VRING_IDX_RX(qid)         (2*qid)
 #define VHOST_VRING_IDX_TX(qid)         (2*qid + 1)
 
+#define VHOST_USER_VRING_NOFD_MASK      0x100
 #define VIRTQ_DESC_F_NEXT               1
 #define VIRTQ_DESC_F_INDIRECT           4
 #define VHOST_USER_REPLY_MASK       (0x1 << 2)
@@ -191,7 +192,7 @@ typedef struct vhost_user_msg {
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  u16 qsz;
+  u16 qsz_mask;
   u16 last_avail_idx;
   u16 last_used_idx;
   u16 n_since_last_int;
@@ -222,7 +223,7 @@ typedef struct
   u32 is_up;
   u32 admin_up;
   u32 unix_server_index;
-  u32 unix_file_index;
+  u32 clib_file_index;
   char sock_filename[256];
   int sock_errno;
   uword if_index;

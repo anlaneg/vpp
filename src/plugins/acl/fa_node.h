@@ -2,7 +2,7 @@
 #define _FA_NODE_H_
 
 #include <stddef.h>
-#include "bihash_40_8.h"
+#include <vppinfra/bihash_40_8.h>
 
 #define TCP_FLAG_FIN    0x01
 #define TCP_FLAG_SYN    0x02
@@ -22,12 +22,15 @@
 typedef union {
   u64 as_u64;
   struct {
+    u32 sw_if_index;
+    u16 mask_type_index_lsb;
     u8 tcp_flags;
     u8 tcp_flags_valid:1;
     u8 is_input:1;
     u8 l4_valid:1;
     u8 is_nonfirst_fragment:1;
-    u8 flags_reserved:4;
+    u8 is_ip6:1;
+    u8 flags_reserved:3;
   };
 } fa_packet_info_t;
 
@@ -106,6 +109,9 @@ typedef struct {
   /* per-worker ACL_N_TIMEOUTS of conn lists */
   u32 *fa_conn_list_head;
   u32 *fa_conn_list_tail;
+  /* adds and deletes per-worker-per-interface */
+  u64 *fa_session_dels_by_sw_if_index;
+  u64 *fa_session_adds_by_sw_if_index;
   /* Vector of expired connections retrieved from lists */
   u32 *expired;
   /* the earliest next expiry time */
@@ -141,6 +147,10 @@ typedef struct {
    * because there is not enough work for the current rate.
    */
   int interrupt_is_unwanted;
+  /*
+   * Set to copy of a "generation" counter in main thread so we can sync the interrupts.
+   */
+  int interrupt_generation;
 } acl_fa_per_worker_data_t;
 
 
@@ -158,5 +168,8 @@ enum
 
 void acl_fa_enable_disable(u32 sw_if_index, int is_input, int enable_disable);
 
+void show_fa_sessions_hash(vlib_main_t * vm, u32 verbose);
+
+u8 *format_acl_plugin_5tuple (u8 * s, va_list * args);
 
 #endif

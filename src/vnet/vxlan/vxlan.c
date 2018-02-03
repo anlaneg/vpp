@@ -44,15 +44,10 @@ static u8 * format_decap_next (u8 * s, va_list * args)
 {
   u32 next_index = va_arg (*args, u32);
 
-  switch (next_index)
-    {
-    case VXLAN_INPUT_NEXT_DROP:
-      return format (s, "drop");
-    case VXLAN_INPUT_NEXT_L2_INPUT:
-      return format (s, "l2");
-    default:
-      return format (s, "index %d", next_index);
-    }
+  if (next_index == VXLAN_INPUT_NEXT_DROP)
+    return format (s, "drop");
+  else
+    return format (s, "index %d", next_index);
   return s;
 }
 
@@ -61,18 +56,20 @@ u8 * format_vxlan_tunnel (u8 * s, va_list * args)
   vxlan_tunnel_t * t = va_arg (*args, vxlan_tunnel_t *);
   vxlan_main_t * ngm = &vxlan_main;
 
-  s = format (s, "[%d] src %U dst %U vni %d sw_if_index %d ",
+  s = format (s, "[%d] src %U dst %U vni %d fib-idx %d sw-if-idx %d ",
               t - ngm->tunnels,
               format_ip46_address, &t->src, IP46_TYPE_ANY,
               format_ip46_address, &t->dst, IP46_TYPE_ANY,
-              t->vni, t->sw_if_index);
+              t->vni, t->encap_fib_index, t->sw_if_index);
 
-  if (ip46_address_is_multicast (&t->dst))
-    s = format (s, "mcast_sw_if_index %d ", t->mcast_sw_if_index);
+  s = format (s, "encap-dpo-idx %d ", t->next_dpo.dpoi_index);
 
-  s = format (s, "encap_fib_index %d fib_entry_index %d decap_next %U\n", 
-	      t->encap_fib_index, t->fib_entry_index,
-	      format_decap_next, t->decap_next_index);
+  if (PREDICT_FALSE (t->decap_next_index != VXLAN_INPUT_NEXT_L2_INPUT))
+    s = format (s, "decap-next-%U ", format_decap_next, t->decap_next_index);
+
+  if (PREDICT_FALSE (ip46_address_is_multicast (&t->dst)))
+    s = format (s, "mcast-sw-if-idx %d ", t->mcast_sw_if_index);
+
   return s;
 }
 
@@ -80,14 +77,6 @@ static u8 * format_vxlan_name (u8 * s, va_list * args)
 {
   u32 dev_instance = va_arg (*args, u32);
   return format (s, "vxlan_tunnel%d", dev_instance);
-}
-
-static uword dummy_interface_tx (vlib_main_t * vm,
-                                 vlib_node_runtime_t * node,
-                                 vlib_frame_t * frame)
-{
-  clib_warning ("you shouldn't be here, leaking buffers...");
-  return frame->n_vectors;
 }
 
 static clib_error_t *
@@ -104,7 +93,6 @@ VNET_DEVICE_CLASS (vxlan_device_class,static) = {
   .name = "VXLAN",
   .format_device_name = format_vxlan_name,
   .format_tx_trace = format_vxlan_encap_trace,
-  .tx_function = dummy_interface_tx,
   .admin_up_down_function = vxlan_interface_admin_up_down,
 };
 
@@ -138,9 +126,7 @@ vxlan_tunnel_restack_dpo(vxlan_tunnel_t * t)
 static vxlan_tunnel_t *
 vxlan_tunnel_from_fib_node (fib_node_t *node)
 {
-#if (CLIB_DEBUG > 0)
     ASSERT(FIB_NODE_TYPE_VXLAN_TUNNEL == node->fn_type);
-#endif
     return ((vxlan_tunnel_t*) (((char*)node) -
 			       STRUCT_OFFSET_OF(vxlan_tunnel_t, node)));
 }
@@ -265,23 +251,6 @@ vxlan_decap_next_is_valid (vxlan_main_t * vxm, u32 is_ip6, u32 decap_next_index)
   return decap_next_index < r->n_next_nodes;
 }
 
-static void
-hash_set_key_copy (uword ** h, void * key, uword v) {
-	size_t ksz = hash_header(*h)->user;
-        void * copy = clib_mem_alloc (ksz);
-	clib_memcpy (copy, key, ksz);
-	hash_set_mem (*h, copy, v);
-}
-
-static void
-hash_unset_key_free (uword ** h, void * key) {
-	hash_pair_t * hp = hash_get_pair_mem (*h, key);
-	ASSERT (hp);
-	key = uword_to_pointer (hp->key, void *);
-	hash_unset_mem (*h, key);
-	clib_mem_free (key);
-}
-
 static uword
 vtep_addr_ref(ip46_address_t *ip)
 {
@@ -292,7 +261,7 @@ vtep_addr_ref(ip46_address_t *ip)
 		return ++(*vtep);
 	ip46_address_is_ip4(ip) ?
 	                 hash_set (vxlan_main.vtep4, ip->ip4.as_u32, 1) :
-	                 hash_set_key_copy (&vxlan_main.vtep6, &ip->ip6, 1);
+	                 hash_set_mem_alloc (&vxlan_main.vtep6, &ip->ip6, 1);
 	return 1;
 }
 
@@ -307,7 +276,7 @@ vtep_addr_unref(ip46_address_t *ip)
 		return *vtep;
 	ip46_address_is_ip4(ip) ?
 		hash_unset (vxlan_main.vtep4, ip->ip4.as_u32) :
-		hash_unset_key_free (&vxlan_main.vtep6, &ip->ip6);
+		hash_unset_mem_free (&vxlan_main.vtep6, &ip->ip6);
 	return 0;
 }
 
@@ -338,7 +307,7 @@ mcast_shared_add(ip46_address_t *dst,
         .mfib_entry_index = mfei,
     };
 
-    hash_set_key_copy (&vxlan_main.mcast_shared, dst, new_ep.as_u64);
+    hash_set_mem_alloc (&vxlan_main.mcast_shared, dst, new_ep.as_u64);
 }
 
 static inline void
@@ -350,13 +319,7 @@ mcast_shared_remove(ip46_address_t *dst)
     mfib_table_entry_delete_index(ep.mfib_entry_index,
                                   MFIB_SOURCE_VXLAN);
 
-    hash_unset_key_free (&vxlan_main.mcast_shared, dst);
-}
-
-static inline fib_protocol_t
-fib_ip_proto(bool is_ip6)
-{
-  return (is_ip6) ? FIB_PROTOCOL_IP6 : FIB_PROTOCOL_IP4;
+    hash_unset_mem_free (&vxlan_main.mcast_shared, dst);
 }
 
 int vnet_vxlan_add_del_tunnel 
@@ -417,7 +380,8 @@ int vnet_vxlan_add_del_tunnel
 
       /* copy the key */
       if (is_ip6)
-        hash_set_key_copy (&vxm->vxlan6_tunnel_by_key, &key6, t - vxm->tunnels);
+        hash_set_mem_alloc (&vxm->vxlan6_tunnel_by_key, &key6, 
+			    t - vxm->tunnels);
       else
         hash_set (vxm->vxlan4_tunnel_by_key, key4.as_u64, t - vxm->tunnels);
 
@@ -444,17 +408,22 @@ int vnet_vxlan_add_del_tunnel
 	    (&im->sw_if_counters[VNET_INTERFACE_COUNTER_DROP], sw_if_index);
 	  vnet_interface_counter_unlock(im);
         }
-      else 
+      else
         {
           hw_if_index = vnet_register_interface
             (vnm, vxlan_device_class.index, t - vxm->tunnels,
              vxlan_hw_class.index, t - vxm->tunnels);
           hi = vnet_get_hw_interface (vnm, hw_if_index);
         }
-      
+
+      /* Set vxlan tunnel output node */
+      u32 encap_index = !is_ip6 ?
+	  vxlan4_encap_node.index : vxlan6_encap_node.index;
+      vnet_set_interface_output_node (vnm, hw_if_index, encap_index);
+
       t->hw_if_index = hw_if_index;
       t->sw_if_index = sw_if_index = hi->sw_if_index;
-      
+
       vec_validate_init_empty (vxm->tunnel_index_by_sw_if_index, sw_if_index, ~0);
       vxm->tunnel_index_by_sw_if_index[sw_if_index] = t - vxm->tunnels;
 
@@ -462,16 +431,14 @@ int vnet_vxlan_add_del_tunnel
       vec_validate (l2im->configs, sw_if_index);
       l2im->configs[sw_if_index].feature_bitmap = L2INPUT_FEAT_DROP;
       l2im->configs[sw_if_index].bd_index = 0;
-      
+
       vnet_sw_interface_t * si = vnet_get_sw_interface (vnm, sw_if_index);
       si->flags &= ~VNET_SW_INTERFACE_FLAG_HIDDEN;
-      vnet_sw_interface_set_flags (vnm, sw_if_index, 
+      vnet_sw_interface_set_flags (vnm, sw_if_index,
                                    VNET_SW_INTERFACE_FLAG_ADMIN_UP);
 
       fib_node_init(&t->node, FIB_NODE_TYPE_VXLAN_TUNNEL);
       fib_prefix_t tun_dst_pfx;
-      u32 encap_index = !is_ip6 ?
-          vxlan4_encap_node.index : vxlan6_encap_node.index;
       vnet_flood_class_t flood_class = VNET_FLOOD_CLASS_TUNNEL_NORMAL;
 
       fib_prefix_from_ip46_addr(&t->dst, &tun_dst_pfx);
@@ -505,7 +472,7 @@ int vnet_vxlan_add_del_tunnel
               fib_node_index_t mfei;
               adj_index_t ai;
               fib_route_path_t path = {
-                  .frp_proto = fp,
+                  .frp_proto = fib_proto_to_dpo(fp),
                   .frp_addr = zero_addr,
                   .frp_sw_if_index = 0xffffffff,
                   .frp_fib_index = ~0,
@@ -563,9 +530,6 @@ int vnet_vxlan_add_del_tunnel
 	  flood_class = VNET_FLOOD_CLASS_TUNNEL_MASTER;
 	}
 
-      /* Set vxlan tunnel output node */
-      hi->output_node_index = encap_index;
-
       vnet_get_sw_interface (vnet_get_main(), sw_if_index)->flood_class = flood_class;
     }
   else
@@ -590,7 +554,7 @@ int vnet_vxlan_add_del_tunnel
       if (!is_ip6)
         hash_unset (vxm->vxlan4_tunnel_by_key, key4.as_u64);
       else
-	hash_unset_key_free (&vxm->vxlan6_tunnel_by_key, &key6);
+	hash_unset_mem_free (&vxm->vxlan6_tunnel_by_key, &key6);
 
       if (!ip46_address_is_multicast(&t->dst))
         {

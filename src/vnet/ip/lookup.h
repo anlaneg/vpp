@@ -111,6 +111,7 @@ typedef enum
   IP_LOCAL_NEXT_PUNT,
   IP_LOCAL_NEXT_UDP_LOOKUP,
   IP_LOCAL_NEXT_ICMP,
+  IP_LOCAL_NEXT_REASSEMBLY,
   IP_LOCAL_N_NEXT,
 } ip_local_next_t;
 
@@ -210,6 +211,16 @@ do {                                                                    \
     }                                                                   \
 } while (0)
 /* *INDENT-ON* */
+
+typedef struct _vnet_ip_container_proxy_args
+{
+  fib_prefix_t prefix;
+  u32 sw_if_index;
+  u8 is_add;
+} vnet_ip_container_proxy_args_t;
+
+clib_error_t *vnet_ip_container_proxy_add_del (vnet_ip_container_proxy_args_t
+					       * args);
 
 void ip_lookup_init (ip_lookup_main_t * lm, u32 ip_lookup_node_index);
 

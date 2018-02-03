@@ -57,7 +57,8 @@ M:	Damjan Marion <damarion@cisco.com>
 F:	src/vnet/devices/
 
 VNET Device Drivers - DPDK Crypto
-M:	Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+M:	Sergio Gonzalez Monroy <sergio.gonzalez.monroy@outlook.com>
+M:      Radu Nicolau <radu.nicolau@intel.com>
 F:	src/devices/dpdk/ipsec/
 
 VNET Feature Arcs
@@ -83,8 +84,8 @@ F:	src/vnet/srmpls/
 F:	src/examples/srv6-sample-localsid/
 
 VNET IPSec
-M:	Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
 M:	Matus Fabian <matfabia@cisco.com>
+M:	Radu Nicolau <radu.nicolau@intel.com>
 F:	src/vnet/ipsec/
 
 VNET L2
@@ -108,9 +109,35 @@ VNET MPLS
 M:	Neale Ranns <nranns@cisco.com>
 F:	src/vnet/mpls/
 
+VNET Host Stack Session Layer
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/vnet/session
+
+VNET TCP Stack
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/vnet/tcp
+
+VNET SCTP Stack
+M:	Marco Varlese <mvarlese@suse.de>
+F:	src/vnet/sctp
+
 VNET VXLAN
 M:	John Lo <loj@cisco.com>
 F:	src/vnet/vxlan/
+
+VNET VXLAN-GPE
+M:	Keith Burns <alagalah@gmail.com>
+M:	Hongjun Ni <hongjun.ni@intel.com>
+F:	src/vnet/vxlan-gpe/
+
+VNET GENEVE
+M:	Marco Varlese <mvarlese@suse.de>
+F:	src/vnet/geneve/
+
+Plugin - ACL
+M:	Andrew Yourtchenko <ayourtch@gmail.com>
+F:	src/plugins/acl/
+F:	src/plugins/acl.am
 
 Plugin - flowprobe
 M:	Ole Troan <otroan@employees.org>
@@ -123,9 +150,29 @@ F:	src/plugins/sixrd/
 F:	src/plugins/sixrd.am
 
 Plugin - GTPU
-M:      Hongjun Ni <hongjun.ni@intel.com>
-F:      src/plugins/gtpu/
-F:      src/plugins/gtpu.am
+M:	Hongjun Ni <hongjun.ni@intel.com>
+F:	src/plugins/gtpu/
+F:	src/plugins/gtpu.am
+
+Plugin - PPPoE
+M:  Hongjun Ni <hongjun.ni@intel.com>
+F:  src/plugins/pppoe/
+F:  src/plugins/pppoe.am
+
+Plugin - IPv6 Segment Routing Dynamic Proxy
+M:	Francois Clad <fclad@cisco.com>
+F:	src/plugins/srv6-ad/
+F:	src/plugins/srv6_ad.am
+
+Plugin - IPv6 Segment Routing Masquerading Proxy
+M:	Francois Clad <fclad@cisco.com>
+F:	src/plugins/srv6-am/
+F:	src/plugins/srv6_am.am
+
+Plugin - IPv6 Segment Routing Static Proxy
+M:	Francois Clad <fclad@cisco.com>
+F:	src/plugins/srv6-as/
+F:	src/plugins/srv6_as.am
 
 Test Infrastructure
 M:	Klement Sekera <ksekera@cisco.com>

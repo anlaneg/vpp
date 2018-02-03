@@ -38,6 +38,7 @@ typedef enum
     DPDK_TX_FUNC_N_ERROR,
 } dpdk_tx_func_error_t;
 
+#ifndef CLIB_MULTIARCH_VARIANT
 static char *dpdk_tx_func_error_strings[] = {
 #define _(n,s) s,
   foreach_dpdk_tx_func_error
@@ -65,8 +66,9 @@ dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address)
       return NULL;
     }
 }
+#endif
 
-struct rte_mbuf *
+static struct rte_mbuf *
 dpdk_replicate_packet_mb (vlib_buffer_t * b)
 {
   dpdk_main_t *dm = &dpdk_main;
@@ -129,6 +131,7 @@ dpdk_tx_trace_buffer (dpdk_main_t * dm,
 	       sizeof (buffer[0]) - sizeof (buffer->pre_data));
   clib_memcpy (t0->buffer.pre_data, buffer->data + buffer->current_data,
 	       sizeof (t0->buffer.pre_data));
+  clib_memcpy (&t0->data, mb->buf_addr + mb->data_off, sizeof (t0->data));
 }
 
 static_always_inline void
@@ -254,11 +257,7 @@ static_always_inline
 				  &tx_vector[tx_tail], tx_head - tx_tail);
 	  rv = rte_ring_sp_enqueue_burst (hqos->swq,
 					  (void **) &tx_vector[tx_tail],
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 5, 0, 0)
 					  (uint16_t) (tx_head - tx_tail), 0);
-#else
-					  (uint16_t) (tx_head - tx_tail));
-#endif
 	}
       else if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
 	{
@@ -307,7 +306,7 @@ dpdk_prefetch_buffer_by_index (vlib_main_t * vm, u32 bi)
   struct rte_mbuf *mb;
   b = vlib_get_buffer (vm, bi);
   mb = rte_mbuf_from_vlib_buffer (b);
-  CLIB_PREFETCH (mb, CLIB_CACHE_LINE_BYTES, LOAD);
+  CLIB_PREFETCH (mb, 2 * CLIB_CACHE_LINE_BYTES, STORE);
   CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
 }
 
@@ -335,15 +334,47 @@ dpdk_buffer_recycle (vlib_main_t * vm, vlib_node_runtime_t * node,
   vec_add1 (dm->recycle[my_cpu], bi);
 }
 
+static_always_inline void
+dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
+			struct rte_mbuf *mb)
+{
+  u32 ip_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM;
+  u32 tcp_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_TCP_CKSUM;
+  u32 udp_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_UDP_CKSUM;
+  int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
+  u64 ol_flags;
+
+  /* Is there any work for us? */
+  if (PREDICT_TRUE ((ip_cksum | tcp_cksum | udp_cksum) == 0))
+    return;
+
+  mb->l2_len = vnet_buffer (b)->l3_hdr_offset - b->current_data;
+  mb->l3_len = vnet_buffer (b)->l4_hdr_offset -
+    vnet_buffer (b)->l3_hdr_offset;
+  mb->outer_l3_len = 0;
+  mb->outer_l2_len = 0;
+  ol_flags = is_ip4 ? PKT_TX_IPV4 : PKT_TX_IPV6;
+  ol_flags |= ip_cksum ? PKT_TX_IP_CKSUM : 0;
+  ol_flags |= tcp_cksum ? PKT_TX_TCP_CKSUM : 0;
+  ol_flags |= udp_cksum ? PKT_TX_UDP_CKSUM : 0;
+  mb->ol_flags |= ol_flags;
+
+  /* we are trying to help compiler here by using local ol_flags with known
+     state of all flags */
+  if (xd->flags & DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM)
+    rte_net_intel_cksum_flags_prepare (mb, ol_flags);
+}
+
 /*
  * Transmits the packets on the frame to the interface associated with the
  * node. It first copies packets on the frame to a tx_vector containing the
  * rte_mbuf pointers. It then passes this vector to tx_burst_vector_internal
  * which calls the dpdk tx_burst function.
  */
-static uword
-dpdk_interface_tx (vlib_main_t * vm,
-		   vlib_node_runtime_t * node, vlib_frame_t * f)
+uword
+CLIB_MULTIARCH_FN (dpdk_interface_tx) (vlib_main_t * vm,
+				       vlib_node_runtime_t * node,
+				       vlib_frame_t * f)
 {
   dpdk_main_t *dm = &dpdk_main;
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
@@ -435,6 +466,11 @@ dpdk_interface_tx (vlib_main_t * vm,
 
       or_flags = b0->flags | b1->flags | b2->flags | b3->flags;
 
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b1);
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b2);
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b3);
+
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
 	  dpdk_validate_rte_mbuf (vm, b0, 1);
@@ -454,6 +490,18 @@ dpdk_interface_tx (vlib_main_t * vm,
       mb1 = rte_mbuf_from_vlib_buffer (b1);
       mb2 = rte_mbuf_from_vlib_buffer (b2);
       mb3 = rte_mbuf_from_vlib_buffer (b3);
+
+      if (PREDICT_FALSE ((xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD) &&
+			 (or_flags &
+			  (VNET_BUFFER_F_OFFLOAD_TCP_CKSUM
+			   | VNET_BUFFER_F_OFFLOAD_IP_CKSUM
+			   | VNET_BUFFER_F_OFFLOAD_UDP_CKSUM))))
+	{
+	  dpdk_buffer_tx_offload (xd, b0, mb0);
+	  dpdk_buffer_tx_offload (xd, b1, mb1);
+	  dpdk_buffer_tx_offload (xd, b2, mb2);
+	  dpdk_buffer_tx_offload (xd, b3, mb3);
+	}
 
       if (PREDICT_FALSE (or_flags & VLIB_BUFFER_RECYCLE))
 	{
@@ -517,10 +565,12 @@ dpdk_interface_tx (vlib_main_t * vm,
       from++;
 
       b0 = vlib_get_buffer (vm, bi0);
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
 
       dpdk_validate_rte_mbuf (vm, b0, 1);
 
       mb0 = rte_mbuf_from_vlib_buffer (b0);
+      dpdk_buffer_tx_offload (xd, b0, mb0);
       dpdk_buffer_recycle (vm, node, b0, bi0, &mb0);
 
       if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
@@ -586,6 +636,7 @@ dpdk_interface_tx (vlib_main_t * vm,
   return tx_pkts;
 }
 
+#ifndef CLIB_MULTIARCH_VARIANT
 static void
 dpdk_clear_hw_interface_counters (u32 instance)
 {
@@ -743,12 +794,25 @@ VNET_DEVICE_CLASS (dpdk_device_class) = {
   .rx_redirect_to_node = dpdk_set_interface_next_node,
   .mac_addr_change_function = dpdk_set_mac_address,
 };
-
-VLIB_DEVICE_TX_FUNCTION_MULTIARCH (dpdk_device_class, dpdk_interface_tx)
 /* *INDENT-ON* */
+
+#if __x86_64__
+vlib_node_function_t __clib_weak dpdk_interface_tx_avx512;
+vlib_node_function_t __clib_weak dpdk_interface_tx_avx2;
+static void __clib_constructor
+dpdk_interface_tx_multiarch_select (void)
+{
+  if (dpdk_interface_tx_avx512 && clib_cpu_supports_avx512f ())
+    dpdk_device_class.tx_function = dpdk_interface_tx_avx512;
+  else if (dpdk_interface_tx_avx2 && clib_cpu_supports_avx2 ())
+    dpdk_device_class.tx_function = dpdk_interface_tx_avx2;
+}
+#endif
+#endif
 
 #define UP_DOWN_FLAG_EVENT 1
 
+#ifndef CLIB_MULTIARCH_VARIANT
 uword
 admin_up_down_process (vlib_main_t * vm,
 		       vlib_node_runtime_t * rt, vlib_frame_t * f)
@@ -800,6 +864,7 @@ VLIB_REGISTER_NODE (admin_up_down_process_node,static) = {
     .process_log2_n_stack_bytes = 17,  // 256KB
 };
 /* *INDENT-ON* */
+#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

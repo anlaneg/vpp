@@ -16,53 +16,47 @@
 
 package io.fd.vpp.jvpp.acl.test;
 
-import static io.fd.vpp.jvpp.acl.test.AclExpectedDumpData.verifyAclDump;
-import static io.fd.vpp.jvpp.acl.test.AclExpectedDumpData.verifyAclInterfaceList;
-import static io.fd.vpp.jvpp.acl.test.AclExpectedDumpData.verifyMacIpDump;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclAddRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclDelRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclDumpRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclInterfaceDeleteList;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclInterfaceListDumpRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendAclInterfaceSetAclList;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendMacIpAddRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendMacIpDelRequest;
-import static io.fd.vpp.jvpp.acl.test.AclTestRequests.sendMacIpDumpRequest;
-
+import io.fd.vpp.jvpp.Assertions;
 import io.fd.vpp.jvpp.JVppRegistry;
 import io.fd.vpp.jvpp.JVppRegistryImpl;
 import io.fd.vpp.jvpp.acl.JVppAclImpl;
+import io.fd.vpp.jvpp.acl.dto.AclDetailsReplyDump;
+import io.fd.vpp.jvpp.acl.dto.AclDump;
 import io.fd.vpp.jvpp.acl.future.FutureJVppAclFacade;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.Logger;
 
 public class FutureApiTest {
 
+    private static final Logger LOG = Logger.getLogger(FutureApiTest.class.getName());
+
     public static void main(String[] args) throws Exception {
-        testCallbackApi();
+        testFutureApi(args);
     }
 
-    private static void testCallbackApi() throws Exception {
-        System.out.println("Testing Java callback API for acl plugin");
-        try (final JVppRegistry registry = new JVppRegistryImpl("macipAclAddTest");
-             final FutureJVppAclFacade jvpp = new FutureJVppAclFacade(registry, new JVppAclImpl())) {
+    private static void testFutureApi(String[] args) throws Exception {
+        LOG.info("Testing Java future API for core plugin");
+        try (final JVppRegistry registry = new JVppRegistryImpl("FutureApiTest", args[0]);
+             final FutureJVppAclFacade jvppFacade = new FutureJVppAclFacade(registry, new JVppAclImpl())) {
+            LOG.info("Successfully connected to VPP");
 
-            // adds,dump and verifies  Mac-Ip acl
-            sendMacIpAddRequest(jvpp);
-            verifyMacIpDump(sendMacIpDumpRequest(jvpp).macipAclDetails.get(0));
+            testAclDump(jvppFacade);
 
-            // adds,dumps and verifies Acl acl
-            sendAclAddRequest(jvpp);
-            verifyAclDump(sendAclDumpRequest(jvpp).aclDetails.get(0));
-
-            // adds,dumps and verifies Interface for acl
-            sendAclInterfaceSetAclList(jvpp);
-            verifyAclInterfaceList(sendAclInterfaceListDumpRequest(jvpp).aclInterfaceListDetails.get(0));
-
-            // deletes all created data
-            sendAclInterfaceDeleteList(jvpp);
-            sendAclDelRequest(jvpp);
-            sendMacIpDelRequest(jvpp);
-
-            System.out.println("Disconnecting...");
+            LOG.info("Disconnecting...");
         }
     }
+
+    private static void testAclDump(final FutureJVppAclFacade jvpp) throws Exception {
+        LOG.info("Sending AclDump request...");
+        final AclDump request = new AclDump();
+
+        final CompletableFuture<AclDetailsReplyDump>
+            replyFuture = jvpp.aclDump(request).toCompletableFuture();
+        final AclDetailsReplyDump reply = replyFuture.get();
+
+        Assertions.assertNotNull(reply);
+    }
+
+
 }

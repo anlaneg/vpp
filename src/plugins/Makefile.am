@@ -14,7 +14,7 @@
 
 AUTOMAKE_OPTIONS = foreign subdir-objects
 
-AM_CFLAGS = -Wall -I${top_srcdir} -I${top_builddir}
+AM_CFLAGS = @CPU_FLAGS@ -Wall -I${top_srcdir} -I${top_builddir}
 AM_LDFLAGS = -module -shared -avoid-version
 AM_LIBTOOLFLAGS = --quiet
 SUFFIXES = .api.h .api .api.json
@@ -23,6 +23,7 @@ BUILT_SOURCES =
 vppplugins_LTLIBRARIES =
 vppapitestplugins_LTLIBRARIES =
 noinst_HEADERS =
+noinst_LTLIBRARIES =
 nobase_apiinclude_HEADERS =
 nobase_include_HEADERS =
 
@@ -58,20 +59,52 @@ if ENABLE_IXGE_PLUGIN
 include ixge.am
 endif
 
+if ENABLE_KUBEPROXY_PLUGIN
+include kubeproxy.am
+endif
+
 if ENABLE_LB_PLUGIN
 include lb.am
+endif
+
+if ENABLE_MARVELL_PLUGIN
+include marvell.am
 endif
 
 if ENABLE_MEMIF_PLUGIN
 include memif.am
 endif
 
+if ENABLE_PPPOE_PLUGIN
+include pppoe.am
+endif
+
 if ENABLE_SIXRD_PLUGIN
 include sixrd.am
 endif
 
-if ENABLE_SNAT_PLUGIN
-include snat.am
+if ENABLE_SRV6AD_PLUGIN
+include srv6_ad.am
+endif
+
+if ENABLE_SRV6AM_PLUGIN
+include srv6_am.am
+endif
+
+if ENABLE_SRV6AS_PLUGIN
+include srv6_as.am
+endif
+
+if ENABLE_NAT_PLUGIN
+include nat.am
+endif
+
+if ENABLE_STN_PLUGIN
+include stn.am
+endif
+
+if ENABLE_L2E_PLUGIN
+include l2e.am
 endif
 
 include ../suffix-rules.mk

@@ -99,127 +99,87 @@ foreach_directory_file (char *dir_name,
 }
 
 clib_error_t *
-vlib_sysfs_write (char *file_name, char *fmt, ...)
+vlib_unix_recursive_mkdir (char *path)
 {
-  u8 *s;
-  int fd;
   clib_error_t *error = 0;
+  char *c = 0;
+  int i = 0;
 
-  fd = open (file_name, O_WRONLY);
-  if (fd < 0)
-    return clib_error_return_unix (0, "open `%s'", file_name);
+  while (path[i] != 0)
+    {
+      if (c && path[i] == '/')
+	{
+	  vec_add1 (c, 0);
+	  if ((mkdir (c, 0755)) && (errno != EEXIST))
+	    {
+	      error = clib_error_return_unix (0, "mkdir '%s'", c);
+	      goto done;
+	    }
+	  _vec_len (c)--;
+	}
+      vec_add1 (c, path[i]);
+      i++;
+    }
 
-  va_list va;
-  va_start (va, fmt);
-  s = va_format (0, fmt, &va);
-  va_end (va);
+  if ((mkdir (path, 0755)) && (errno != EEXIST))
+    {
+      error = clib_error_return_unix (0, "mkdir '%s'", path);
+      goto done;
+    }
 
-  if (write (fd, s, vec_len (s)) < 0)
-    error = clib_error_return_unix (0, "write `%s'", file_name);
+done:
+  vec_free (c);
 
-  vec_free (s);
-  close (fd);
   return error;
 }
 
 clib_error_t *
-vlib_sysfs_read (char *file_name, char *fmt, ...)
+vlib_unix_validate_runtime_file (unix_main_t * um,
+				 const char *path, u8 ** full_path)
 {
-  unformat_input_t input;
-  u8 *s = 0;
-  int fd;
-  ssize_t sz;
-  uword result;
+  u8 *fp = 0;
+  char *last_slash = 0;
 
-  fd = open (file_name, O_RDONLY);
-  if (fd < 0)
-    return clib_error_return_unix (0, "open `%s'", file_name);
-
-  vec_validate (s, 4095);
-
-  sz = read (fd, s, vec_len (s));
-  if (sz < 0)
+  if (path[0] == '\0')
     {
-      close (fd);
-      vec_free (s);
-      return clib_error_return_unix (0, "read `%s'", file_name);
+      return clib_error_return (0, "path is an empty string");
     }
-
-  _vec_len (s) = sz;
-  unformat_init_vector (&input, s);
-
-  va_list va;
-  va_start (va, fmt);
-  result = va_unformat (&input, fmt, &va);
-  va_end (va);
-
-  vec_free (s);
-  close (fd);
-
-  if (result == 0)
-    return clib_error_return (0, "unformat error");
-
-  return 0;
-}
-
-u8 *
-vlib_sysfs_link_to_name (char *link)
-{
-  char *p, buffer[64];
-  unformat_input_t in;
-  u8 *s = 0;
-  int r;
-
-  r = readlink (link, buffer, sizeof (buffer) - 1);
-
-  if (r < 0)
-    return 0;
-
-  buffer[r] = 0;
-  p = strrchr (buffer, '/');
-
-  if (!p)
-    return 0;
-
-  unformat_init_string (&in, p + 1, strlen (p + 1));
-  if (unformat (&in, "%s", &s) != 1)
-    clib_unix_warning ("no string?");
-  unformat_free (&in);
-
-  return s;
-}
-
-int
-vlib_sysfs_get_free_hugepages (unsigned int numa_node, int page_size)
-{
-  struct stat sb;
-  u8 *p = 0;
-  int r = -1;
-
-  p = format (p, "/sys/devices/system/node/node%u%c", numa_node, 0);
-
-  if (stat ((char *) p, &sb) == 0)
+  else if (strncmp (path, "../", 3) == 0 || strstr (path, "/../"))
     {
-      if (S_ISDIR (sb.st_mode) == 0)
-	goto done;
+      return clib_error_return (0, "'..' not allowed in runtime path");
     }
-  else if (numa_node == 0)
+  else if (path[0] == '/')
     {
-      vec_reset_length (p);
-      p = format (p, "/sys/kernel/mm%c", 0);
-      if (stat ((char *) p, &sb) < 0 || S_ISDIR (sb.st_mode) == 0)
-	goto done;
+      /* Absolute path. Has to start with runtime directory */
+      if (strncmp ((char *) um->runtime_dir, path,
+		   strlen ((char *) um->runtime_dir)))
+	{
+	  return clib_error_return (0,
+				    "file %s is not in runtime directory %s",
+				    path, um->runtime_dir);
+	}
+      fp = format (0, "%s%c", path, '\0');
     }
   else
-    goto done;
+    {
+      /* Relative path, just append to runtime */
+      fp = format (0, "%s/%s%c", um->runtime_dir, path, '\0');
+    }
 
-  _vec_len (p) -= 1;
-  p = format (p, "/hugepages/hugepages-%ukB/free_hugepages%c", page_size, 0);
-  vlib_sysfs_read ((char *) p, "%d", &r);
+  /* We don't want to create a directory out of the last file */
+  if ((last_slash = strrchr ((char *) fp, '/')) != NULL)
+    *last_slash = '\0';
 
-done:
-  vec_free (p);
-  return r;
+  clib_error_t *error = vlib_unix_recursive_mkdir ((char *) fp);
+
+  if (last_slash != NULL)
+    *last_slash = '/';
+
+  if (error)
+    vec_free (fp);
+
+  *full_path = fp;
+  return error;
 }
 
 /*

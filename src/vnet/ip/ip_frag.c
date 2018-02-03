@@ -90,8 +90,8 @@ ip4_frag_do_fragment (vlib_main_t * vm, u32 pi, u32 ** buffer,
       ip_frag_id = ip4->fragment_id;
       ip_frag_offset = ip4_get_fragment_offset (ip4);
       more =
-	! !(ip4->flags_and_fragment_offset &
-	    clib_host_to_net_u16 (IP4_HEADER_FLAG_MORE_FRAGMENTS));
+	!(!(ip4->flags_and_fragment_offset &
+	    clib_host_to_net_u16 (IP4_HEADER_FLAG_MORE_FRAGMENTS)));
     }
   else
     {
@@ -131,6 +131,12 @@ ip4_frag_do_fragment (vlib_main_t * vm, u32 pi, u32 ** buffer,
 	    vnet_buffer (p)->sw_if_index[VLIB_RX];
 	  vnet_buffer (b)->sw_if_index[VLIB_TX] =
 	    vnet_buffer (p)->sw_if_index[VLIB_TX];
+	  /* Copy Adj_index in case DPO based node is sending for the fragmentation,
+	     the packet would be sent back to the proper DPO next node and Index */
+	  vnet_buffer (b)->ip.adj_index[VLIB_RX] =
+	    vnet_buffer (p)->ip.adj_index[VLIB_RX];
+	  vnet_buffer (b)->ip.adj_index[VLIB_TX] =
+	    vnet_buffer (p)->ip.adj_index[VLIB_TX];
 	  fip4 = (ip4_header_t *) (vlib_buffer_get_current (b) + offset);
 
 	  //Copy offset and ip4 header
@@ -239,10 +245,12 @@ ip4_frag (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	      next0 = IP4_FRAG_NEXT_ICMP_ERROR;
 	    }
 	  else
-	    next0 =
-	      (error0 ==
-	       IP_FRAG_ERROR_NONE) ? vnet_buffer (p0)->
-	      ip_frag.next_index : IP4_FRAG_NEXT_DROP;
+	    {
+              /* *INDENT-OFF* */
+              next0 = (error0 == IP_FRAG_ERROR_NONE) ? vnet_buffer (p0)->
+                ip_frag.next_index : IP4_FRAG_NEXT_DROP;
+              /* *INDENT-ON* */
+	    }
 
 	  if (error0 == IP_FRAG_ERROR_NONE)
 	    {
@@ -391,6 +399,14 @@ ip6_frag_do_fragment (vlib_main_t * vm, u32 pi, u32 ** buffer,
 	    vnet_buffer (p)->sw_if_index[VLIB_RX];
 	  vnet_buffer (b)->sw_if_index[VLIB_TX] =
 	    vnet_buffer (p)->sw_if_index[VLIB_TX];
+
+	  /* Copy Adj_index in case DPO based node is sending for the fragmentation,
+	     the packet would be sent back to the proper DPO next node and Index */
+	  vnet_buffer (b)->ip.adj_index[VLIB_RX] =
+	    vnet_buffer (p)->ip.adj_index[VLIB_RX];
+	  vnet_buffer (b)->ip.adj_index[VLIB_TX] =
+	    vnet_buffer (p)->ip.adj_index[VLIB_TX];
+
 	  clib_memcpy (vlib_buffer_get_current (b),
 		       vlib_buffer_get_current (p), headers_len);
 	  clib_memcpy (vlib_buffer_get_current (b) + headers_len,
@@ -482,10 +498,11 @@ ip6_frag (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	      tr->next = vnet_buffer (p0)->ip_frag.next_index;
 	    }
 
-	  next0 =
-	    (error0 ==
-	     IP_FRAG_ERROR_NONE) ? vnet_buffer (p0)->
+          /* *INDENT-OFF* */
+	  next0 = (error0 == IP_FRAG_ERROR_NONE) ? vnet_buffer (p0)->
 	    ip_frag.next_index : IP6_FRAG_NEXT_DROP;
+          /* *INDENT-ON* */
+
 	  frag_sent += vec_len (buffer);
 	  small_packets += (vec_len (buffer) == 1);
 
@@ -547,7 +564,7 @@ VLIB_REGISTER_NODE (ip4_frag_node) = {
     [IP4_FRAG_NEXT_IP4_LOOKUP] = "ip4-lookup",
     [IP4_FRAG_NEXT_IP6_LOOKUP] = "ip6-lookup",
     [IP4_FRAG_NEXT_ICMP_ERROR] = "ip4-icmp-error",
-    [IP4_FRAG_NEXT_DROP] = "error-drop"
+    [IP4_FRAG_NEXT_DROP] = "ip4-drop"
   },
 };
 /* *INDENT-ON* */
@@ -567,7 +584,7 @@ VLIB_REGISTER_NODE (ip6_frag_node) = {
   .next_nodes = {
     [IP6_FRAG_NEXT_IP4_LOOKUP] = "ip4-lookup",
     [IP6_FRAG_NEXT_IP6_LOOKUP] = "ip6-lookup",
-    [IP6_FRAG_NEXT_DROP] = "error-drop"
+    [IP6_FRAG_NEXT_DROP] = "ip6-drop"
   },
 };
 /* *INDENT-ON* */

@@ -167,6 +167,7 @@ BASIC_ARCH = \
 # x86_64 can be either 32/64.  set BIACH=32 to get 32 bit libraries.
 BIARCH = 64
 
+aarch64_libdir = 64
 x86_64_libdir = $(BIARCH)
 native_libdir = $($(NATIVE_ARCH)_libdir)
 
@@ -246,6 +247,8 @@ tag_var_with_added_space_fn = $(if $($(TAG)_TAG_$(1)),$($(TAG)_TAG_$(1)) )
 # TAG=debug for debugging
 debug_TAG_CFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 -march=$(MARCH) \
 		   -fstack-protector-all -fPIC
+debug_TAG_CXXFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 -march=$(MARCH) \
+		   -fstack-protector-all -fPIC
 debug_TAG_LDFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 -march=$(MARCH) \
 		   -fstack-protector-all -fPIC
 
@@ -259,13 +262,7 @@ tool_or_package_fn = $(if $(is_build_tool),tool,package)
 
 # Directory where packages are built & installed
 BUILD_DIR = $(MU_BUILD_ROOT_DIR)/$(BUILD_PREFIX_$(call tool_or_package_fn))$(ARCH)
-
-## BURT
-# we will deprecate INSTALL_DIR shortly for DFLT_INSTALL_DIR
 INSTALL_DIR = $(MU_BUILD_ROOT_DIR)/$(INSTALL_PREFIX)$(ARCH)
-# DFLT_INSTALL_DIR used in platforms.mk for $(PLATFORM)_DESTDIR_BASE
-DFLT_INSTALL_DIR := $(MU_BUILD_ROOT_DIR)/$(INSTALL_PREFIX)$(ARCH)
-## BURT
 
 PLATFORM_IMAGE_DIR = $(MU_BUILD_ROOT_DIR)/$(IMAGES_PREFIX)$(PLATFORM)
 
@@ -314,12 +311,17 @@ endif
 
 # Always prefer our own tools to those installed on system.
 # Note: ccache-bin must be before tool bin.
+# 
+# Removed LD_LIBRARY_PATH from BUILD_ENV (drb, 10/31/17):  
+# export LD_LIBRARY_PATH=$(TOOL_INSTALL_DIR)/lib64:$(TOOL_INSTALL_DIR)/lib
+#   Reported to cause trouble. Only of historical interest, since we no longer
+#   build a full tool chain from source.
+
 BUILD_ENV =										\
     export CCACHE_DIR=$(CCACHE_DIR) ;					\
     export PATH=$(TOOL_INSTALL_DIR)/ccache-bin:$(TOOL_INSTALL_DIR)/bin:$${PATH} ;	\
     export PATH="`echo $${PATH} | sed -e s/[.]://`" ;					\
     $(if $(not_native),export CONFIG_SITE=$(MU_BUILD_ROOT_DIR)/config.site ;,)	\
-    export LD_LIBRARY_PATH=$(TOOL_INSTALL_DIR)/lib64:$(TOOL_INSTALL_DIR)/lib ;		\
     set -eu$(BUILD_DEBUG) ;							        \
     set -o pipefail
 
@@ -331,16 +333,6 @@ package_dir_fn = \
   $(call find_build_data_dir_for_package_fn,$(1))/packages
 
 package_mk_fn = $(call package_dir_fn,$(1))/$(1).mk
-
-### BURT
-
-#next version
-#pkgPhaseDependMacro = $(foreach x,configure build install,                  \
-			$(eval $(1)_$(x)_depend := $($(1)_depend:%=%-$(x))))
-#version equivalent to original code
-pkgPhaseDependMacro = $(eval $(1)_configure_depend := $($(1)_depend:%=%-install))
-
-### BURT
 
 # Pick up built-root/pre-package-include.mk for all source directories
 $(foreach d,$(SOURCE_PATH_BUILD_ROOT_DIRS),	\
@@ -377,7 +369,7 @@ CROSS_TOOLS_$(IS_LINUX) += glibc gcc
 NATIVE_TOOLS = findutils make
 
 # basic tools needed for build system
-NATIVE_TOOLS += git automake autoconf libtool texinfo bison flex tar
+NATIVE_TOOLS += git automake autoconf libtool texinfo tar
 
 # needed to compile gcc
 NATIVE_TOOLS += mpfr gmp mpc
@@ -549,6 +541,8 @@ configure_ldflags_fn = \
 CONFIGURE_ENV =								\
     $(if $(call configure_var_fn,CPPFLAGS),				\
 	 CPPFLAGS="$(CPPFLAGS) $(call configure_var_fn,CPPFLAGS)")	\
+    $(if $(call configure_var_fn,CXXFLAGS),				\
+	 CXXFLAGS="$(CXXFLAGS) $(call configure_var_fn,CXXFLAGS)")	\
     $(if $(call configure_var_fn,CFLAGS),				\
 	 CFLAGS="$(CFLAGS) $(call configure_var_fn,CFLAGS)")		\
     $(if $(call configure_var_fn,CCASFLAGS),				\
@@ -557,7 +551,6 @@ CONFIGURE_ENV =								\
 	 LDFLAGS="$(LDFLAGS) $(call configure_ldflags_fn)")		\
     $(if $($(PACKAGE)_configure_env),$($(PACKAGE)_configure_env))
 
-### BURT
 # only partially used now (used in a few .mk files)
 ifeq ($(is_build_tool),yes)
 prefix     = $(PACKAGE_INSTALL_DIR)
@@ -575,10 +568,6 @@ libexecdir = $($(PLATFORM)_LIBEXECDIR)
 destdirMacro  = $($(PLATFORM)_DESTDIR_BASE)$(ppdMacro)
 DESTDIR  = $(call destdirMacro,$(PACKAGE))
 endif
-### BURT
-### dbarach
-image_extra_dependencies = $($(PLATFORM)_image_extra_dependencies)
-### dbarach
 
 configure_package_gnu =						\
   s=$(call find_source_fn,$(PACKAGE_SOURCE))$(PACKAGE_SUBDIR) ;	\
@@ -655,17 +644,14 @@ configure_check_timestamp =						\
 # Package build
 ######################################################################
 
-linux_n_cpus = `grep '^processor' /proc/cpuinfo | wc -l`
-
-MAKE_PARALLEL_JOBS =				\
-  -j $(shell					\
-    if [ -f /proc/cpuinfo ] ; then		\
-      expr 2 '*' $(linux_n_cpus) ;		\
-    else					\
-      echo 1 ;					\
-    fi)
-
-MAKE_PARALLEL_FLAGS = $(if $($(PACKAGE)_make_parallel_fails),,$(MAKE_PARALLEL_JOBS))
+# /proc/cpuinfo does not exist on platforms without a /proc and on some
+# platforms, notably inside containers, it has no content. In those cases
+# we assume there's 1 processor; we use 2*ncpu for the -j option.
+# NB: GNU Make 4.2 will let us use '$(file </proc/cpuinfo)' to both test
+# for file presence and content; for now this will have to do.
+MAKE_PARALLEL_JOBS = -j $(if $(shell [ -f /proc/cpuinfo ] && head /proc/cpuinfo), \
+	$(shell grep -c ^processor /proc/cpuinfo), 2)
+MAKE_PARALLEL_FLAGS ?= $(if $($(PACKAGE)_make_parallel_fails),,$(MAKE_PARALLEL_JOBS))
 
 # Make command shorthand for packages & tools.
 PACKAGE_MAKE =					\

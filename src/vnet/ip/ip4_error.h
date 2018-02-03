@@ -57,8 +57,9 @@
   _ (MTU_EXCEEDED, "ip4 MTU exceeded and DF set")			\
   _ (DST_LOOKUP_MISS, "ip4 destination lookup miss")			\
   _ (SRC_LOOKUP_MISS, "ip4 source lookup miss")				\
-  _ (ADJACENCY_DROP, "ip4 adjacency drop")				\
-  _ (ADJACENCY_PUNT, "ip4 adjacency punt")				\
+  _ (DROP, "ip4 drop")                                                  \
+  _ (PUNT, "ip4 punt")                                                  \
+  _ (SAME_INTERFACE, "ip4 egrees interface same as ingress")            \
 									\
   /* Errors signalled by ip4-local. */					\
   _ (UNKNOWN_PROTOCOL, "unknown ip protocol")				\
@@ -70,11 +71,19 @@
   _ (UNICAST_SOURCE_CHECK_FAILS, "ip4 unicast source check fails")	\
                                                                         \
   /* Spoofed packets in ip4-rewrite-local */                            \
-  _(SPOOFED_LOCAL_PACKETS, "ip4 spoofed local-address packet drops")    \
+  _ (SPOOFED_LOCAL_PACKETS, "ip4 spoofed local-address packet drops")   \
                                                                         \
   /* Errors singalled by ip4-inacl */                                   \
   _ (INACL_TABLE_MISS, "input ACL table-miss drops")                    \
-  _ (INACL_SESSION_DENY, "input ACL session deny drops")
+  _ (INACL_SESSION_DENY, "input ACL session deny drops")                \
+                                                                        \
+  /* Erros from mfib-forward */                                         \
+  _ (RPF_FAILURE, "Multicast RPF check failed")                         \
+                                                                        \
+  /* Errors signalled by ip4-reassembly */                              \
+  _ (REASS_DUPLICATE_FRAGMENT, "duplicate/overlapping fragments")       \
+  _ (REASS_LIMIT_REACHED, "drops due to concurrent reassemblies limit") \
+  _ (REASS_TIMEOUT, "fragments dropped due to reassembly timeout")
 
 typedef enum
 {

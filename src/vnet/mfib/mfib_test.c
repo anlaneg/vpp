@@ -22,6 +22,7 @@
 #include <vnet/fib/fib_path_list.h>
 #include <vnet/fib/fib_test.h>
 #include <vnet/fib/fib_table.h>
+#include <vnet/fib/mpls_fib.h>
 
 #include <vnet/dpo/replicate_dpo.h>
 #include <vnet/adj/adj_mcast.h>
@@ -179,7 +180,7 @@ mfib_test_mk_intf (u32 ninterfaces)
 static int
 mfib_test_validate_rep_v (const replicate_t *rep,
                           u16 n_buckets,
-                          va_list ap)
+                          va_list *ap)
 {
     const dpo_id_t *dpo;
     adj_index_t ai;
@@ -191,8 +192,8 @@ mfib_test_validate_rep_v (const replicate_t *rep,
 
     for (bucket = 0; bucket < n_buckets; bucket++)
     {
-        dt = va_arg(ap, int);  // type promotion
-        ai = va_arg(ap, adj_index_t);
+        dt = va_arg(*ap, int);  // type promotion
+        ai = va_arg(*ap, adj_index_t);
         dpo = replicate_get_bucket_i(rep, bucket);
 
         MFIB_TEST_REP((dt == dpo->dpoi_type),
@@ -231,7 +232,7 @@ fib_forw_chain_type_from_fib_proto (fib_protocol_t proto)
 static int
 mfib_test_entry (fib_node_index_t fei,
                  mfib_entry_flags_t eflags,
-                 u16 n_buckets,
+                 int n_buckets,
                  ...)
 {
     const mfib_entry_t *mfe;
@@ -274,7 +275,7 @@ mfib_test_entry (fib_node_index_t fei,
                       format_mfib_prefix, &pfx,
                       format_dpo_type, tmp.dpoi_type);
 
-        res = mfib_test_validate_rep_v(rep, n_buckets, ap);
+        res = mfib_test_validate_rep_v(rep, n_buckets, &ap);
 
         dpo_reset(&tmp);
     }
@@ -366,7 +367,7 @@ mfib_test_i (fib_protocol_t PROTO,
     MFIB_TEST(3 == adj_mcast_db_size(), "3 MCAST adjs");
 
     /* Find or create FIB table 11 */
-    fib_index = mfib_table_find_or_create_and_lock(PROTO, 11);
+    fib_index = mfib_table_find_or_create_and_lock(PROTO, 11, MFIB_SOURCE_API);
 
     mfib_prefix_t pfx_dft = {
         .fp_len = 0,
@@ -387,7 +388,7 @@ mfib_test_i (fib_protocol_t PROTO,
 
 
     fib_route_path_t path_via_if0 = {
-        .frp_proto = PROTO,
+        .frp_proto = fib_proto_to_dpo(PROTO),
         .frp_addr = zero_addr,
         .frp_sw_if_index = tm->hw[0]->sw_if_index,
         .frp_fib_index = ~0,
@@ -411,7 +412,7 @@ mfib_test_i (fib_protocol_t PROTO,
                                      MFIB_ITF_FLAG_ACCEPT));
 
     fib_route_path_t path_via_if1 = {
-        .frp_proto = PROTO,
+        .frp_proto = fib_proto_to_dpo(PROTO),
         .frp_addr = zero_addr,
         .frp_sw_if_index = tm->hw[1]->sw_if_index,
         .frp_fib_index = ~0,
@@ -419,7 +420,7 @@ mfib_test_i (fib_protocol_t PROTO,
         .frp_flags = 0,
     };
     fib_route_path_t path_via_if2 = {
-        .frp_proto = PROTO,
+        .frp_proto = fib_proto_to_dpo(PROTO),
         .frp_addr = zero_addr,
         .frp_sw_if_index = tm->hw[2]->sw_if_index,
         .frp_fib_index = ~0,
@@ -427,7 +428,7 @@ mfib_test_i (fib_protocol_t PROTO,
         .frp_flags = 0,
     };
     fib_route_path_t path_via_if3 = {
-        .frp_proto = PROTO,
+        .frp_proto = fib_proto_to_dpo(PROTO),
         .frp_addr = zero_addr,
         .frp_sw_if_index = tm->hw[3]->sw_if_index,
         .frp_fib_index = ~0,
@@ -435,7 +436,7 @@ mfib_test_i (fib_protocol_t PROTO,
         .frp_flags = 0,
     };
     fib_route_path_t path_for_us = {
-        .frp_proto = PROTO,
+        .frp_proto = fib_proto_to_dpo(PROTO),
         .frp_addr = zero_addr,
         .frp_sw_if_index = 0xffffffff,
         .frp_fib_index = ~0,
@@ -1113,15 +1114,16 @@ mfib_test_i (fib_protocol_t PROTO,
     /*
      * MPLS enable an interface so we get the MPLS table created
      */
+    mpls_table_create(MPLS_FIB_DEFAULT_TABLE_ID, FIB_SOURCE_API, NULL);
     mpls_sw_interface_enable_disable(&mpls_main,
                                      tm->hw[0]->sw_if_index,
-                                     1);
+                                     1, 0);
 
     lfei = fib_table_entry_update_one_path(0, // default MPLS Table
                                            &pfx_3500,
                                            FIB_SOURCE_API,
                                            FIB_ENTRY_FLAG_MULTICAST,
-                                           FIB_PROTOCOL_IP4,
+                                           DPO_PROTO_IP4,
                                            &nh_10_10_10_1,
                                            tm->hw[0]->sw_if_index,
                                            ~0, // invalid fib index
@@ -1138,7 +1140,7 @@ mfib_test_i (fib_protocol_t PROTO,
      * An (S,G) that resolves via the mLDP head-end
      */
     fib_route_path_t path_via_mldp = {
-        .frp_proto = FIB_PROTOCOL_MPLS,
+        .frp_proto = DPO_PROTO_MPLS,
         .frp_local_label = pfx_3500.fp_label,
         .frp_eos = MPLS_EOS,
         .frp_sw_if_index = 0xffffffff,
@@ -1192,7 +1194,7 @@ mfib_test_i (fib_protocol_t PROTO,
     /*
      * Unlock the table - it's the last lock so should be gone thereafter
      */
-    mfib_table_unlock(fib_index, PROTO);
+    mfib_table_unlock(fib_index, PROTO, MFIB_SOURCE_API);
 
     MFIB_TEST((FIB_NODE_INDEX_INVALID ==
                mfib_table_find(PROTO, fib_index)),
@@ -1207,7 +1209,8 @@ mfib_test_i (fib_protocol_t PROTO,
      */
     mpls_sw_interface_enable_disable(&mpls_main,
                                      tm->hw[0]->sw_if_index,
-                                     0);
+                                     0, 0);
+    mpls_table_delete(MPLS_FIB_DEFAULT_TABLE_ID, FIB_SOURCE_API);
 
     /*
      * test we've leaked no resources

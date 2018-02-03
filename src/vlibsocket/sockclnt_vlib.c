@@ -29,23 +29,23 @@
 #include <sys/stat.h>
 
 #include <vlibmemory/api.h>
-#include <vlibsocket/api.h>
 
-#include <vlibsocket/vl_socket_msg_enum.h>
+
+#include <vlibmemory/vl_memory_msg_enum.h>
 
 #define vl_typedefs		/* define message structures */
-#include <vlibsocket/vl_socket_api_h.h>
+#include <vlibmemory/vl_memory_api_h.h>
 #undef vl_typedefs
 
 /* instantiate all the print functions we know about */
 #define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
 #define vl_printfun
-#include <vlibsocket/vl_socket_api_h.h>
+#include <vlibmemory/vl_memory_api_h.h>
 #undef vl_printfun
 
 /* instantiate all the endian swap functions we know about */
 #define vl_endianfun
-#include <vlibsocket/vl_socket_api_h.h>
+#include <vlibmemory/vl_memory_api_h.h>
 #undef vl_endianfun
 
 static void
@@ -60,20 +60,20 @@ vl_api_sockclnt_create_reply_t_handler (vl_api_sockclnt_create_reply_t * mp)
 static void
 vl_api_sockclnt_delete_reply_t_handler (vl_api_sockclnt_delete_reply_t * mp)
 {
-  unix_main_t *um = &unix_main;
-  unix_file_t *uf = socket_main.current_uf;
+  clib_file_main_t *fm = &file_main;
+  clib_file_t *uf = socket_main.current_uf;
   vl_api_registration_t *rp = socket_main.current_rp;
 
-  unix_file_del (um, uf);
-  vl_free_socket_registration_index (rp->vl_api_registration_pool_index);
+  clib_file_del (fm, uf);
+  vl_socket_free_registration_index (rp->vl_api_registration_pool_index);
 }
 
 u32
 sockclnt_open_index (char *client_name, char *hostname, int port)
 {
   vl_api_registration_t *rp;
-  unix_main_t *um = &unix_main;
-  unix_file_t template = { 0 };
+  clib_file_main_t *fm = &file_main;
+  clib_file_t template = { 0 };
   int sockfd;
   int one = 1;
   int rv;
@@ -129,7 +129,7 @@ sockclnt_open_index (char *client_name, char *hostname, int port)
   template.file_descriptor = sockfd;
   template.private_data = rp - socket_main.registration_pool;
 
-  rp->unix_file_index = unix_file_add (um, &template);
+  rp->clib_file_index = clib_file_add (fm, &template);
   rp->name = format (0, "%s:%d", hostname, port);
 
   mp = vl_msg_api_alloc (sizeof (*mp));
@@ -143,7 +143,7 @@ sockclnt_open_index (char *client_name, char *hostname, int port)
     }
   strncpy ((char *) mp->name, my_hostname, sizeof (mp->name) - 1);
 
-  vl_msg_api_send (rp, (u8 *) mp);
+  vl_api_send_msg (rp, (u8 *) mp);
   return rp - socket_main.registration_pool;
 }
 
@@ -165,7 +165,7 @@ sockclnt_close_index (u32 index)
   mp->_vl_msg_id = ntohs (VL_API_SOCKCLNT_DELETE);
   mp->handle = rp->server_handle;
   mp->index = rp->server_index;
-  vl_msg_api_send (rp, (u8 *) mp);
+  vl_api_send_msg (rp, (u8 *) mp);
 }
 
 vl_api_registration_t *

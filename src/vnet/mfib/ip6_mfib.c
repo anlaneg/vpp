@@ -151,14 +151,15 @@ static const ip6_mfib_special_t ip6_mfib_specials[] =
 
 
 static u32
-ip6_create_mfib_with_table_id (u32 table_id)
+ip6_create_mfib_with_table_id (u32 table_id,
+                               mfib_source_t src)
 {
     mfib_table_t *mfib_table;
     mfib_prefix_t pfx = {
         .fp_proto = FIB_PROTOCOL_IP6,
     };
     const fib_route_path_t path_for_us = {
-        .frp_proto = FIB_PROTOCOL_IP6,
+        .frp_proto = DPO_PROTO_IP6,
         .frp_addr = zero_addr,
         .frp_sw_if_index = 0xffffffff,
         .frp_fib_index = ~0,
@@ -182,7 +183,7 @@ ip6_create_mfib_with_table_id (u32 table_id)
         mfib_table->v6.table_id =
             table_id;
 
-    mfib_table_lock(mfib_table->mft_index, FIB_PROTOCOL_IP6);
+    mfib_table_lock(mfib_table->mft_index, FIB_PROTOCOL_IP6, src);
 
     mfib_table->v6.rhead =
         clib_mem_alloc_aligned (sizeof(*mfib_table->v6.rhead),
@@ -222,7 +223,7 @@ ip6_mfib_table_destroy (ip6_mfib_t *mfib)
         .fp_proto = FIB_PROTOCOL_IP6,
     };
     const fib_route_path_t path_for_us = {
-        .frp_proto = FIB_PROTOCOL_IP6,
+        .frp_proto = DPO_PROTO_IP6,
         .frp_addr = zero_addr,
         .frp_sw_if_index = 0xffffffff,
         .frp_fib_index = ~0,
@@ -259,7 +260,7 @@ void
 ip6_mfib_interface_enable_disable (u32 sw_if_index, int is_enable)
 {
     const fib_route_path_t path = {
-        .frp_proto = FIB_PROTOCOL_IP6,
+        .frp_proto = DPO_PROTO_IP6,
         .frp_addr = zero_addr,
         .frp_sw_if_index = sw_if_index,
         .frp_fib_index = ~0,
@@ -297,14 +298,15 @@ ip6_mfib_interface_enable_disable (u32 sw_if_index, int is_enable)
 }
 
 u32
-ip6_mfib_table_find_or_create_and_lock (u32 table_id)
+ip6_mfib_table_find_or_create_and_lock (u32 table_id,
+                                        mfib_source_t src)
 {
     u32 index;
 
     index = ip6_mfib_index_from_table_id(table_id);
     if (~0 == index)
-        return ip6_create_mfib_with_table_id(table_id);
-    mfib_table_lock(index, FIB_PROTOCOL_IP6);
+        return ip6_create_mfib_with_table_id(table_id, src);
+    mfib_table_lock(index, FIB_PROTOCOL_IP6, src);
 
     return (index);
 }
@@ -470,6 +472,16 @@ ip6_mfib_module_init (vlib_main_t * vm)
 
 VLIB_INIT_FUNCTION(ip6_mfib_module_init);
 
+u8 *
+format_ip6_mfib_table_memory (u8 * s, va_list * args)
+{
+    s = format(s, "%=30s %=6d %=8s\n",
+               "IPv6 multicast",
+               pool_elts(ip6_main.mfibs), "???");
+
+    return (s);
+}
+
 static void
 ip6_mfib_table_show_one (ip6_mfib_t *mfib,
                          vlib_main_t * vm,
@@ -564,7 +576,7 @@ ip6_show_mfib (vlib_main_t * vm,
                unformat_input_t * input,
                vlib_cli_command_t * cmd)
 {
-    ip6_main_t * im4 = &ip6_main;
+    ip6_main_t * im6 = &ip6_main;
     mfib_table_t *mfib_table;
     int verbose, matching;
     ip6_address_t grp, src = {{0}};
@@ -606,7 +618,7 @@ ip6_show_mfib (vlib_main_t * vm,
             break;
     }
 
-    pool_foreach (mfib_table, im4->mfibs,
+    pool_foreach (mfib_table, im6->mfibs,
     ({
         ip6_mfib_t *mfib = &mfib_table->v6;
 
@@ -647,7 +659,7 @@ ip6_show_mfib (vlib_main_t * vm,
 }
 
 /*
- * This command displays the IPv4 MulticasrFIB Tables (VRF Tables) and
+ * This command displays the IPv6 MulticasrFIB Tables (VRF Tables) and
  * the route entries for each table.
  *
  * @note This command will run for a long time when the FIB tables are
@@ -655,9 +667,9 @@ ip6_show_mfib (vlib_main_t * vm,
  * a single table or summary mode.
  *
  * @cliexpar
- * Example of how to display all the IPv4 Multicast FIB tables:
+ * Example of how to display all the IPv6 Multicast FIB tables:
  * @cliexstart{show ip fib}
- * ipv4-VRF:0, fib_index 0
+ * ipv6-VRF:0, fib_index 0
  * (*, 0.0.0.0/0):  flags:D,
  *  Interfaces:
  *  multicast-ip6-chain
@@ -669,18 +681,18 @@ ip6_show_mfib (vlib_main_t * vm,
  *  test-eth0: Accept,
  * multicast-ip6-chain
  * [@2]: dpo-replicate: [index:1 buckets:2 to:[0:0]]
- *   [0] [@1]: ipv4-mcast: test-eth1: IP6: d0:d1:d2:d3:d4:01 -> 01:00:05:00:00:00
- *   [1] [@1]: ipv4-mcast: test-eth2: IP6: d0:d1:d2:d3:d4:02 -> 01:00:05:00:00:00
+ *   [0] [@1]: ipv6-mcast: test-eth1: IP6: d0:d1:d2:d3:d4:01 -> 01:00:05:00:00:00
+ *   [1] [@1]: ipv6-mcast: test-eth2: IP6: d0:d1:d2:d3:d4:02 -> 01:00:05:00:00:00
  *
  * @cliexend
- * Example of how to display a summary of all IPv4 FIB tables:
+ * Example of how to display a summary of all IPv6 FIB tables:
  * @cliexstart{show ip fib summary}
- * ipv4-VRF:0, fib_index 0, flow hash: src dst sport dport proto
+ * ipv6-VRF:0, fib_index 0, flow hash: src dst sport dport proto
  *     Prefix length         Count
  *                    0               1
  *                    8               2
  *                   32               4
- * ipv4-VRF:7, fib_index 1, flow hash: src dst sport dport proto
+ * ipv6-VRF:7, fib_index 1, flow hash: src dst sport dport proto
  *     Prefix length         Count
  *                    0               1
  *                    8               2
