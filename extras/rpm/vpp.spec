@@ -70,6 +70,7 @@ BuildRequires: numactl-devel
 BuildRequires: autoconf automake libtool byacc bison flex
 BuildRequires: boost boost-devel
 BuildRequires: selinux-policy selinux-policy-devel
+BuildRequires: mbedtls-devel
 
 Source: %{name}-%{_version}-%{_release}.tar.xz
 # Source: vpp-latest.tar.xz
@@ -325,8 +326,8 @@ fi
 
 %post selinux-policy
 %_format MODULES %{_datadir}/selinux/packages/$x.pp
-%{_sbindir}/semodule -n -X 400 -s %{selinuxtype} -i $MODULES
 if %{_sbindir}/selinuxenabled ; then
+    %{_sbindir}/semodule -n -X 400 -s %{selinuxtype} -i $MODULES
     %{_sbindir}/load_policy
     %relabel_files
 fi

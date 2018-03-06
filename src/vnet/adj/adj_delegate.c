@@ -17,6 +17,16 @@
 #include <vnet/adj/adj.h>
 #include <vnet/adj/adj_internal.h>
 
+/*
+ * The per-type vector of virtual function tables
+ */
+static adj_delegate_vft_t *ad_vfts;
+
+/**
+ * The value of the last dynamically allocated delegeate value
+ */
+static adj_delegate_type_t ad_max_id = ADJ_DELEGATE_BFD;
+
 static adj_delegate_t *
 adj_delegate_find_i (const ip_adjacency_t *adj,
                      adj_delegate_type_t type,
@@ -52,12 +62,14 @@ adj_delegate_get (const ip_adjacency_t *adj,
 }
 
 void
-adj_delegate_remove (ip_adjacency_t *adj,
+adj_delegate_remove (adj_index_t ai,
                      adj_delegate_type_t type)
 {
+    ip_adjacency_t *adj;
     adj_delegate_t *aed;
     u32 index = ~0;
 
+    adj = adj_get(ai);
     aed = adj_delegate_find_i(adj, type, &index);
 
     ASSERT(NULL != aed);
@@ -69,29 +81,32 @@ static int
 adj_delegate_cmp_for_sort (void * v1,
                            void * v2)
 {
-    adj_delegate_t *delegate1 = v1, *delegate2 = v2;
+    adj_delegate_t *aed1 = v1, *aed2 = v2;
 
-    return (delegate1->ad_type - delegate2->ad_type);
+    return (aed1->ad_type - aed2->ad_type);
 }
 
 static void
 adj_delegate_init (ip_adjacency_t *adj,
-                   adj_delegate_type_t type)
+                   adj_delegate_type_t adt,
+                   index_t adi)
 
 {
-    adj_delegate_t delegate = {
-	.ad_adj_index = adj_get_index(adj),
-	.ad_type = type,
+    adj_delegate_t aed = {
+        .ad_adj_index = adj_get_index(adj),
+        .ad_type = adt,
+        .ad_index = adi,
     };
 
-    vec_add1(adj->ia_delegates, delegate);
+    vec_add1(adj->ia_delegates, aed);
     vec_sort_with_function(adj->ia_delegates,
 			   adj_delegate_cmp_for_sort);
 }
 
-adj_delegate_t *
-adj_delegate_find_or_add (ip_adjacency_t *adj,
-                          adj_delegate_type_t adt)
+int
+adj_delegate_add (ip_adjacency_t *adj,
+                  adj_delegate_type_t adt,
+                  index_t adi)
 {
     adj_delegate_t *delegate;
 
@@ -99,46 +114,87 @@ adj_delegate_find_or_add (ip_adjacency_t *adj,
 
     if (NULL == delegate)
     {
-	adj_delegate_init(adj, adt);
+	adj_delegate_init(adj, adt, adi);
+    }
+    else
+    {
+        return (-1);
     }
 
-    return (adj_delegate_get(adj, adt));
+    return (0);
 }
 
-/**
- * typedef for printing a delegate
- */
-typedef u8 * (*adj_delegate_format_t)(const adj_delegate_t *aed,
-                                      u8 *s);
-
-/**
- * Print a delegate that represents BFD tracking
- */
-static u8 *
-adj_delegate_fmt_bfd (const adj_delegate_t *aed,
-                      u8 *s)
+void
+adj_delegate_adj_deleted (ip_adjacency_t *adj)
 {
-    s = format(s, "BFD:[state:%d index:%d]",
-               aed->ad_bfd_state,
-               aed->ad_bfd_index);
+    adj_delegate_t *aed;
+
+    vec_foreach(aed, adj->ia_delegates)
+    {
+        if (ad_vfts[aed->ad_type].adv_adj_deleted)
+        {
+            ad_vfts[aed->ad_type].adv_adj_deleted(aed);
+        }
+    }
+
+    vec_reset_length(adj->ia_delegates);
+}
+
+u8*
+adj_delegate_format (u8* s, ip_adjacency_t *adj)
+{
+    adj_delegate_t *aed;
+
+    vec_foreach(aed, adj->ia_delegates)
+    {
+        if (ad_vfts[aed->ad_type].adv_format)
+        {
+            s = format(s, "{");
+            s = ad_vfts[aed->ad_type].adv_format(aed, s);
+            s = format(s, "}");
+        }
+        else
+        {
+            s = format(s, "{unknown delegate}");
+        }
+    }
 
     return (s);
 }
 
 /**
- * A delegate type to formatter map
+ * adj_delegate_register_type
+ *
+ * Register the function table for a given type
  */
-static adj_delegate_format_t aed_formatters[] =
+void
+adj_delegate_register_type (adj_delegate_type_t type,
+			    const adj_delegate_vft_t *vft)
 {
-    [ADJ_DELEGATE_BFD] = adj_delegate_fmt_bfd,
-};
+    /*
+     * assert that one only registration is made per-node type
+     */
+    if (vec_len(ad_vfts) > type)
+        ASSERT(NULL == ad_vfts[type].adv_adj_deleted);
 
-u8 *
-format_adj_deletegate (u8 * s, va_list * args)
+    vec_validate(ad_vfts, type);
+    ad_vfts[type] = *vft;
+}
+
+/**
+ * adj_delegate_register_new_type
+ *
+ * Register the function table for a new type
+ */
+adj_delegate_type_t
+adj_delegate_register_new_type (const adj_delegate_vft_t *vft)
 {
-    adj_delegate_t *aed;
+    adj_delegate_type_t type;
 
-    aed = va_arg (*args, adj_delegate_t *);
+    type = ++ad_max_id;
 
-    return (aed_formatters[aed->ad_type](aed, s));
+    vec_validate(ad_vfts, type);
+    ad_vfts[type] = *vft;
+
+    return (type);
 }

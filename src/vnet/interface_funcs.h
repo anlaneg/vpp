@@ -245,7 +245,7 @@ always_inline vlib_frame_t *
 vnet_get_frame_to_sw_interface (vnet_main_t * vnm, u32 sw_if_index)
 {
   vnet_hw_interface_t *hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
-  return vlib_get_frame_to_node (vnm->vlib_main, hw->output_node_index);
+  return vlib_get_frame_to_node (vlib_get_main (), hw->output_node_index);
 }
 
 always_inline void
@@ -253,7 +253,7 @@ vnet_put_frame_to_sw_interface (vnet_main_t * vnm, u32 sw_if_index,
 				vlib_frame_t * f)
 {
   vnet_hw_interface_t *hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
-  return vlib_put_frame_to_node (vnm->vlib_main, hw->output_node_index, f);
+  return vlib_put_frame_to_node (vlib_get_main (), hw->output_node_index, f);
 }
 
 /* Change interface flags (e.g. up, down, enable, disable). */
@@ -291,6 +291,9 @@ clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
 					       u32 queue_id,
 					       vnet_hw_interface_rx_mode
 					       mode);
+
+/* Set the MTU on the HW interface */
+void vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu);
 
 /* Formats sw/hw interface. */
 format_function_t format_vnet_hw_interface;

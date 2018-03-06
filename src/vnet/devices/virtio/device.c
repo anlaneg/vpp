@@ -130,6 +130,9 @@ add_buffer_to_slot (vlib_main_t * vm, virtio_vring_t * vring, u32 bi,
   struct vring_desc *d;
   d = &vring->desc[next];
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
+  struct virtio_net_hdr_v1 *hdr = vlib_buffer_get_current (b) - hdr_sz;
+
+  memset (hdr, 0, hdr_sz);
 
   if (PREDICT_TRUE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0))
     {
@@ -179,6 +182,8 @@ virtio_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u16 mask = sz - 1;
   u32 *buffers = vlib_frame_args (frame);
 
+  clib_spinlock_lock_if_init (&vif->lockp);
+
   /* free consumed buffers */
   virtio_free_used_desc (vm, vring);
 
@@ -217,6 +222,8 @@ virtio_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			n_left);
       vlib_buffer_free (vm, buffers, n_left);
     }
+
+  clib_spinlock_unlock_if_init (&vif->lockp);
 
   return frame->n_vectors - n_left;
 }

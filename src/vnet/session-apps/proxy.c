@@ -146,13 +146,6 @@ proxy_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
 }
 
 static int
-proxy_redirect_connect_callback (u32 client_index, void *mp)
-{
-  clib_warning ("called...");
-  return -1;
-}
-
-static int
 proxy_rx_callback (stream_session_t * s)
 {
   u32 max_dequeue;
@@ -239,8 +232,7 @@ static session_cb_vft_t proxy_session_cb_vft = {
   .session_disconnect_callback = proxy_disconnect_callback,
   .session_connected_callback = proxy_connected_callback,
   .add_segment_callback = proxy_add_segment_callback,
-  .redirect_connect_callback = proxy_redirect_connect_callback,
-  .builtin_server_rx_callback = proxy_rx_callback,
+  .builtin_app_rx_callback = proxy_rx_callback,
   .session_reset_callback = proxy_reset_callback
 };
 
@@ -356,7 +348,7 @@ static session_cb_vft_t active_open_clients = {
   .session_connected_callback = active_open_connected_callback,
   .session_accept_callback = active_open_create_callback,
   .session_disconnect_callback = active_open_disconnect_callback,
-  .builtin_server_rx_callback = active_open_rx_callback
+  .builtin_app_rx_callback = active_open_rx_callback
 };
 /* *INDENT-ON* */
 

@@ -11,6 +11,7 @@ import time
 import resource
 import faulthandler
 import random
+import copy
 from collections import deque
 from threading import Thread, Event
 from inspect import getdoc, isclass
@@ -31,6 +32,12 @@ if os.name == 'posix' and sys.version_info[0] < 3:
     import subprocess32 as subprocess
 else:
     import subprocess
+
+debug_framework = False
+if os.getenv('TEST_DEBUG', "0") == "1":
+    debug_framework = True
+    import debug_internal
+
 
 """
   Test framework module.
@@ -453,6 +460,9 @@ class VppTestCase(unittest.TestCase):
         """ Perform final cleanup after running all tests in this test-case """
         cls.quit()
         cls.file_handler.close()
+        cls.reset_packet_infos()
+        if debug_framework:
+            debug_internal.on_tear_down_class(cls)
 
     def tearDown(self):
         """ Show various debug prints after each test """
@@ -474,7 +484,7 @@ class VppTestCase(unittest.TestCase):
             self.logger.info("Moving %s to %s\n" % (tmp_api_trace,
                                                     vpp_api_trace_log))
             os.rename(tmp_api_trace, vpp_api_trace_log)
-            self.logger.info(self.vapi.ppcli("api trace dump %s" %
+            self.logger.info(self.vapi.ppcli("api trace custom-dump %s" %
                                              vpp_api_trace_log))
         else:
             self.registry.unregister_all(self.logger)
@@ -1117,16 +1127,18 @@ class VppTestRunner(unittest.TextTestRunner):
 
 
 class Worker(Thread):
-    def __init__(self, args, logger):
+    def __init__(self, args, logger, env={}):
         self.logger = logger
         self.args = args
         self.result = None
+        self.env = copy.deepcopy(env)
         super(Worker, self).__init__()
 
     def run(self):
         executable = self.args[0]
         self.logger.debug("Running executable w/args `%s'" % self.args)
         env = os.environ.copy()
+        env.update(self.env)
         env["CK_LOG_FILE_NAME"] = "-"
         self.process = subprocess.Popen(
             self.args, shell=False, env=env, preexec_fn=os.setpgrp,
@@ -1141,6 +1153,6 @@ class Worker(Thread):
         self.logger.info(single_line_delim)
         self.logger.info("Executable `%s' wrote to stderr:" % executable)
         self.logger.info(single_line_delim)
-        self.logger.error(err)
+        self.logger.info(err)
         self.logger.info(single_line_delim)
         self.result = self.process.returncode

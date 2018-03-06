@@ -96,8 +96,8 @@ echo_server_session_connected_callback (u32 app_index, u32 api_context,
 int
 echo_server_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
 {
-  clib_warning ("called...");
-  return -1;
+  /* New heaps may be added */
+  return 0;
 }
 
 int
@@ -245,8 +245,7 @@ static session_cb_vft_t echo_server_session_cb_vft = {
   .session_disconnect_callback = echo_server_session_disconnect_callback,
   .session_connected_callback = echo_server_session_connected_callback,
   .add_segment_callback = echo_server_add_segment_callback,
-  .redirect_connect_callback = echo_server_redirect_connect_callback,
-  .builtin_server_rx_callback = echo_server_rx_callback,
+  .builtin_app_rx_callback = echo_server_rx_callback,
   .session_reset_callback = echo_server_session_reset_callback
 };
 
@@ -268,19 +267,21 @@ create_api_loopback (vlib_main_t * vm)
 static int
 echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
 {
+  vnet_app_add_tls_cert_args_t _a_cert, *a_cert = &_a_cert;
+  vnet_app_add_tls_key_args_t _a_key, *a_key = &_a_key;
   echo_server_main_t *esm = &echo_server_main;
-  u64 options[APP_OPTIONS_N_OPTIONS];
   vnet_app_attach_args_t _a, *a = &_a;
+  u64 options[APP_OPTIONS_N_OPTIONS];
   u32 segment_size = 512 << 20;
 
   memset (a, 0, sizeof (*a));
   memset (options, 0, sizeof (options));
 
   if (esm->no_echo)
-    echo_server_session_cb_vft.builtin_server_rx_callback =
+    echo_server_session_cb_vft.builtin_app_rx_callback =
       echo_server_builtin_server_rx_callback_no_echo;
   else
-    echo_server_session_cb_vft.builtin_server_rx_callback =
+    echo_server_session_cb_vft.builtin_app_rx_callback =
       echo_server_rx_callback;
 
   if (esm->private_segment_size)
@@ -290,6 +291,7 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   a->session_cb_vft = &echo_server_session_cb_vft;
   a->options = options;
   a->options[APP_OPTIONS_SEGMENT_SIZE] = segment_size;
+  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = segment_size;
   a->options[APP_OPTIONS_RX_FIFO_SIZE] = esm->fifo_size;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] = esm->fifo_size;
   a->options[APP_OPTIONS_PRIVATE_SEGMENT_COUNT] = esm->private_segment_count;
@@ -310,6 +312,18 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
       return -1;
     }
   esm->app_index = a->app_index;
+
+  memset (a_cert, 0, sizeof (*a_cert));
+  a_cert->app_index = a->app_index;
+  vec_validate (a_cert->cert, test_srv_crt_rsa_len);
+  clib_memcpy (a_cert->cert, test_srv_crt_rsa, test_srv_crt_rsa_len);
+  vnet_app_add_tls_cert (a_cert);
+
+  memset (a_key, 0, sizeof (*a_key));
+  a_key->app_index = a->app_index;
+  vec_validate (a_key->key, test_srv_key_rsa_len);
+  clib_memcpy (a_key->key, test_srv_key_rsa, test_srv_key_rsa_len);
+  vnet_app_add_tls_key (a_key);
   return 0;
 }
 
@@ -386,7 +400,7 @@ echo_server_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u8 server_uri_set = 0, *appns_id = 0;
   u64 tmp, appns_flags = 0, appns_secret = 0;
   char *default_uri = "tcp://0.0.0.0/1234";
-  int rv;
+  int rv, is_stop = 0;
 
   esm->no_echo = 0;
   esm->fifo_size = 64 << 10;
@@ -430,9 +444,27 @@ echo_server_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	appns_flags |= APP_OPTIONS_FLAGS_USE_GLOBAL_SCOPE;
       else if (unformat (input, "secret %lu", &appns_secret))
 	;
+      else if (unformat (input, "stop"))
+	is_stop = 1;
       else
 	return clib_error_return (0, "failed: unknown input `%U'",
 				  format_unformat_error, input);
+    }
+
+  if (is_stop)
+    {
+      if (esm->app_index == (u32) ~ 0)
+	{
+	  clib_warning ("server not running");
+	  return clib_error_return (0, "failed: server not running");
+	}
+      rv = echo_server_detach ();
+      if (rv)
+	{
+	  clib_warning ("failed: detach");
+	  return clib_error_return (0, "failed: server detach %d", rv);
+	}
+      return 0;
     }
 
   vnet_session_enable_disable (vm, 1 /* turn on TCP, etc. */ );

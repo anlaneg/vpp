@@ -116,6 +116,10 @@ typedef struct
   u32 ip4_table_index;
   u32 ip6_table_index;
   u32 l2_table_index;
+  /* outacl classifier tables */
+  u32 out_ip4_table_index;
+  u32 out_ip6_table_index;
+  u32 out_l2_table_index;
 } macip_acl_list_t;
 
 /*
@@ -184,6 +188,12 @@ typedef struct {
   u32 *acl_dot1q_output_classify_table_by_sw_if_index;
   u32 *acl_dot1ad_output_classify_table_by_sw_if_index;
 
+  u32 *acl_etype_input_classify_table_by_sw_if_index;
+  u32 *acl_etype_output_classify_table_by_sw_if_index;
+
+  u16 **input_etype_whitelist_by_sw_if_index;
+  u16 **output_etype_whitelist_by_sw_if_index;
+
   /* MACIP (input) ACLs associated with the interfaces */
   u32 *macip_acl_by_sw_if_index;
 
@@ -224,6 +234,8 @@ typedef struct {
   u32 fa_conn_table_hash_num_buckets;
   uword fa_conn_table_hash_memory_size;
   u64 fa_conn_table_max_entries;
+
+  int trace_sessions;
 
   /*
    * If the cleaner has to delete more than this number

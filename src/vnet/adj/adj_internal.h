@@ -78,6 +78,21 @@ adj_fib_proto_2_nd (fib_protocol_t fp)
     return (0);
 }
 
+static inline ip46_type_t
+adj_proto_to_46 (fib_protocol_t proto)
+{
+    switch (proto)
+    {
+    case FIB_PROTOCOL_IP4:
+	return (IP46_TYPE_IP4);
+    case FIB_PROTOCOL_IP6:
+	return (IP46_TYPE_IP6);
+    default:
+	return (IP46_TYPE_IP4);
+    }
+    return (IP46_TYPE_IP4);
+}
+
 /**
  * @brief
  * Get a pointer to an adjacency object from its index
@@ -111,5 +126,16 @@ extern void adj_mcast_remove(fib_protocol_t proto,
 			     u32 sw_if_index);
 
 extern u32 adj_dpo_get_urpf(const dpo_id_t *dpo);
+
+/*
+ * Adj BFD
+ */
+extern int adj_bfd_is_up (adj_index_t ai);
+
+/*
+ * Adj delegates
+ */ 
+extern void adj_delegate_adj_deleted(ip_adjacency_t *adj);
+extern u8* adj_delegate_format(u8* s, ip_adjacency_t *adj);
 
 #endif

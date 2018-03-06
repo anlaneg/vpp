@@ -22,6 +22,7 @@ libvppcom_la_DEPENDENCIES = 	\
 libvppcom_la_LIBADD = $(libvppcom_la_DEPENDENCIES) -lpthread -lrt -ldl
 
 libvppcom_la_SOURCES +=				\
+  vcl/vcl_event.c               \
   vcl/vppcom.c					\
   $(libvppinfra_la_SOURCES)			\
   $(libvlib_la_SOURCES)				\
@@ -29,19 +30,20 @@ libvppcom_la_SOURCES +=				\
   $(libvlibmemoryclient_la_SOURCES)
 
 nobase_include_HEADERS +=			\
+  vcl/vcl_event.h 					\
   vcl/vppcom.h
 
 libvcl_ldpreload_la_LIBADD =  $(libvppcom_la_DEPENDENCIES) -lpthread -lrt -ldl
 
 libvcl_ldpreload_la_SOURCES +=			\
-  vcl/vcom_socket_wrapper.c			\
-  vcl/vcom.c					\
+  vcl/ldp_socket_wrapper.c			\
+  vcl/ldp.c					\
   $(libvppcom_la_SOURCES)
 
 nobase_include_HEADERS +=			\
-  vcl/vcom_socket_wrapper.h			\
-  vcl/vcom_glibc_socket.h			\
-  vcl/vcom.h
+  vcl/ldp_socket_wrapper.h			\
+  vcl/ldp_glibc_socket.h			\
+  vcl/ldp.h
 
 noinst_PROGRAMS +=				\
 	vcl_test_server				\
@@ -68,3 +70,5 @@ sock_test_client_SOURCES = vcl/sock_test_client.c
 
 nobase_include_HEADERS +=			\
   vcl/sock_test.h
+
+# vi:syntax=automake

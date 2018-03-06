@@ -17,22 +17,48 @@
 #define included_vector_neon_h
 #include <arm_neon.h>
 
-/* Splats. */
-
-#define u8x16_splat(i) vdupq_n_u8(i)
-#define u16x8_splat(i) vdupq_n_u16(i)
-#define i16x8_splat(i) vdupq_n_s16(i)
-#define u32x4_splat(i) vdupq_n_u32(i)
-#define i32x4_splat(i) vdupq_n_s32(i)
-
 /* Arithmetic */
-#define u16x8_add(a,b) vaddq_u16(a,b)
-#define i16x8_add(a,b) vaddq_s16(a,b)
 #define u16x8_sub_saturate(a,b) vsubq_u16(a,b)
 #define i16x8_sub_saturate(a,b) vsubq_s16(a,b)
 
-#define u16x8_is_equal(a,b) vceqq_u16(a,b)
-#define i16x8_is_equal(a,b) vceqq_i16(a,b)
+always_inline int
+u8x16_is_all_zero (u8x16 x)
+{
+  return !(vaddvq_u8 (x));
+}
+
+always_inline int
+u16x8_is_all_zero (u16x8 x)
+{
+  return !(vaddvq_u16 (x));
+}
+
+always_inline int
+u32x4_is_all_zero (u32x4 x)
+{
+  return !(vaddvq_u32 (x));
+}
+
+always_inline int
+u64x2_is_all_zero (u64x2 x)
+{
+  return !(vaddvq_u64 (x));
+}
+
+/* Converts all ones/zeros compare mask to bitmap. */
+always_inline u32
+u8x16_compare_byte_mask (u8x16 x)
+{
+  uint8x16_t mask_shift =
+    { -7, -6, -5, -4, -3, -2, -1, 0, -7, -6, -5, -4, -3, -2, -1, 0 };
+  uint8x16_t mask_and = vdupq_n_u8 (0x80);
+  x = vandq_u8 (x, mask_and);
+  x = vshlq_u8 (x, vreinterpretq_s8_u8 (mask_shift));
+  x = vpaddq_u8 (x, x);
+  x = vpaddq_u8 (x, x);
+  x = vpaddq_u8 (x, x);
+  return vgetq_lane_u8 (x, 0) | (vgetq_lane_u8 (x, 1) << 8);
+}
 
 always_inline u32
 u16x8_zero_byte_mask (u16x8 input)
@@ -59,6 +85,26 @@ u16x8_zero_byte_mask (u16x8 input)
   /* u64x2-->  [a+b+c+d+e+f+g+h,  i+j+k+l+m+n+o+p]  */
   return (u32) (vgetq_lane_u64 (merge3, 1) << 8) + vgetq_lane_u64 (merge3, 0);
 }
+
+always_inline u32
+u8x16_zero_byte_mask (u8x16 input)
+{
+  return u16x8_zero_byte_mask ((u16x8) input);
+}
+
+always_inline u32
+u32x4_zero_byte_mask (u32x4 input)
+{
+  return u16x8_zero_byte_mask ((u16x8) input);
+}
+
+always_inline u32
+u64x2_zero_byte_mask (u64x2 input)
+{
+  return u16x8_zero_byte_mask ((u16x8) input);
+}
+
+
 
 #endif /* included_vector_neon_h */
 

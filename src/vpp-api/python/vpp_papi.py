@@ -23,6 +23,7 @@ import struct
 import json
 import threading
 import fnmatch
+import weakref
 import atexit
 from cffi import FFI
 import cffi
@@ -55,11 +56,14 @@ void vac_set_error_handler(vac_error_callback_t);
 # Barfs on failure, no need to check success.
 vpp_api = ffi.dlopen('libvppapiclient.so')
 
-def vpp_atexit(self):
+
+def vpp_atexit(vpp_weakref):
     """Clean up VPP connection on shutdown."""
-    if self.connected:
-        self.logger.debug('Cleaning up VPP on exit')
-        self.disconnect()
+    vpp_instance = vpp_weakref()
+    if vpp_instance.connected:
+        vpp_instance.logger.debug('Cleaning up VPP on exit')
+        vpp_instance.disconnect()
+
 
 vpp_object = None
 
@@ -112,7 +116,8 @@ class VPP():
     these messages in a background thread.
     """
     def __init__(self, apifiles=None, testmode=False, async_thread=True,
-                 logger=logging.getLogger('vpp_papi'), loglevel='debug', read_timeout=0):
+                 logger=logging.getLogger('vpp_papi'), loglevel='debug',
+                 read_timeout=0):
         """Create a VPP API object.
 
         apifiles is a list of files containing API
@@ -136,11 +141,7 @@ class VPP():
         self.message_queue = queue.Queue()
         self.read_timeout = read_timeout
         self.vpp_api = vpp_api
-        if async_thread:
-            self.event_thread = threading.Thread(
-                target=self.thread_msg_handler)
-            self.event_thread.daemon = True
-            self.event_thread.start()
+        self.async_thread = async_thread
 
         if not apifiles:
             # Pick up API definitions from default directory
@@ -168,14 +169,15 @@ class VPP():
             raise ValueError(1, 'Missing JSON message definitions')
 
         # Make sure we allow VPP to clean up the message rings.
-        atexit.register(vpp_atexit, self)
+        atexit.register(vpp_atexit, weakref.ref(self))
 
         # Register error handler
         vpp_api.vac_set_error_handler(vac_error_handler)
 
         # Support legacy CFFI
         # from_buffer supported from 1.8.0
-        (major, minor, patch) = [int(s) for s in cffi.__version__.split('.', 3)]
+        (major, minor, patch) = [int(s) for s in
+                                 cffi.__version__.split('.', 3)]
         if major >= 1 and minor >= 8:
             self._write = self._write_new_cffi
         else:
@@ -225,8 +227,8 @@ class VPP():
         def dmatch(dir):
             """Match dir against right-hand components of the script dir"""
             d = dir.split('/')  # param 'dir' assumes a / separator
-            l = len(d)
-            return len(localdir_s) > l and localdir_s[-l:] == d
+            length = len(d)
+            return len(localdir_s) > length and localdir_s[-length:] == d
 
         def sdir(srcdir, variant):
             """Build a path from srcdir to the staged API files of
@@ -255,7 +257,6 @@ class VPP():
         if srcdir:
             # we're in the source tree, try both the debug and release
             # variants.
-            x = 'vpp/share/vpp/api'
             dirs.append(sdir(srcdir, '_debug'))
             dirs.append(sdir(srcdir, ''))
 
@@ -332,9 +333,8 @@ class VPP():
                       'i32': 'i',
                       'u64': 'Q',
                       'f64': 'd', }
-        pack = None
+
         if t in base_types:
-            pack = base_types[t]
             if not vl:
                 if e > 0 and t == 'u8':
                     # Fixed byte array
@@ -395,9 +395,9 @@ class VPP():
 
         for k in kwargs:
             if k not in msgdef['args']:
-                raise ValueError(1,'Non existing argument [' + k + ']' + \
-                                 ' used in call to: ' + \
-                                 self.id_names[kwargs['_vl_msg_id']] + '()' )
+                raise ValueError(1, 'Non existing argument [' + k + ']' +
+                                    ' used in call to: ' +
+                                 self.id_names[kwargs['_vl_msg_id']] + '()')
 
         for k, v in vpp_iterator(msgdef['args']):
             off += size
@@ -406,21 +406,28 @@ class VPP():
                     if callable(v[1]):
                         e = kwargs[v[0]] if v[0] in kwargs else v[0]
                         if e != len(kwargs[k]):
-                            raise (ValueError(1, 'Input list length mismatch: %s (%s != %s)' %  (k, e, len(kwargs[k]))))
+                            raise (ValueError(1,
+                                              'Input list length mismatch: '
+                                              '%s (%s != %s)' %
+                                              (k, e, len(kwargs[k]))))
                         size = 0
                         for i in range(e):
                             size += v[1](self, True, buf, off + size,
                                          kwargs[k][i])
                     else:
                         if v[0] in kwargs:
-                            l = kwargs[v[0]]
-                            if l != len(kwargs[k]):
-                                raise ValueError(1, 'Input list length mismatch: %s (%s != %s)' % (k, l, len(kwargs[k])))
+                            kwargslen = kwargs[v[0]]
+                            if kwargslen != len(kwargs[k]):
+                                raise ValueError(1,
+                                                 'Input list length mismatch:'
+                                                 ' %s (%s != %s)' %
+                                                 (k, kwargslen,
+                                                  len(kwargs[k])))
                         else:
-                            l = len(kwargs[k])
+                            kwargslen = len(kwargs[k])
                         if v[1].size == 1:
-                            buf[off:off + l] = bytearray(kwargs[k])
-                            size = l
+                            buf[off:off + kwargslen] = bytearray(kwargs[k])
+                            size = kwargslen
                         else:
                             size = 0
                             for i in kwargs[k]:
@@ -431,7 +438,10 @@ class VPP():
                         size = v(self, True, buf, off, kwargs[k])
                     else:
                         if type(kwargs[k]) is str and v.size < len(kwargs[k]):
-                            raise ValueError(1, 'Input list length mismatch: %s (%s < %s)' % (k, v.size, len(kwargs[k])))
+                            raise ValueError(1,
+                                             'Input list length mismatch: '
+                                             '%s (%s < %s)' %
+                                             (k, v.size, len(kwargs[k])))
                         v.pack_into(buf, off, kwargs[k])
                         size = v.size
             else:
@@ -550,7 +560,8 @@ class VPP():
                 raise ValueError('Variable Length Array must be last: ' + name)
             size, s = self.__struct(*f)
             args[field_name] = s
-            if type(s) == list and type(s[0]) == int and type(s[1]) == struct.Struct:
+            if type(s) == list and type(s[0]) == int and \
+               type(s[1]) == struct.Struct:
                 if s[0] < 0:
                     sizes[field_name] = size
                 else:
@@ -580,10 +591,11 @@ class VPP():
 
     def make_function(self, name, i, msgdef, multipart, async):
         if (async):
-            f = lambda **kwargs: (self._call_vpp_async(i, msgdef, **kwargs))
+            def f(**kwargs):
+                return self._call_vpp_async(i, msgdef, **kwargs)
         else:
-            f = lambda **kwargs: (self._call_vpp(i, msgdef, multipart,
-                                                 **kwargs))
+            def f(**kwargs):
+                return self._call_vpp(i, msgdef, multipart, **kwargs)
         args = self.messages[name]['args']
         argtypes = self.messages[name]['argtypes']
         f.__name__ = str(name)
@@ -613,13 +625,6 @@ class VPP():
                 multipart = True if name.find('_dump') > 0 else False
                 f = self.make_function(name, i, msgdef, multipart, async)
                 setattr(self._api, name, FuncWrapper(f))
-
-                # old API stuff starts here - will be removed in 17.07
-                if hasattr(self, name):
-                    raise NameError(
-                        3, "Conflicting name in JSON definition: `%s'" % name)
-                setattr(self, name, f)
-                # old API stuff ends here
             else:
                 self.logger.debug(
                     'No such message type or failed CRC checksum: %s', n)
@@ -664,6 +669,11 @@ class VPP():
         self.control_ping_index = vpp_api.vac_get_msg_index(
             ('control_ping' + '_' + crc[2:]).encode())
         self.control_ping_msgdef = self.messages['control_ping']
+        if self.async_thread:
+            self.event_thread = threading.Thread(
+                target=self.thread_msg_handler)
+            self.event_thread.daemon = True
+            self.event_thread.start()
         return rv
 
     def connect(self, name, chroot_prefix=None, async=False, rx_qlen=32):
@@ -695,6 +705,7 @@ class VPP():
         """Detach from VPP."""
         rv = vpp_api.vac_disconnect()
         self.connected = False
+        self.message_queue.put("terminate event thread")
         return rv
 
     def msg_handler_sync(self, msg):
@@ -711,8 +722,6 @@ class VPP():
         context = 0
         if hasattr(r, 'context') and r.context > 0:
             context = r.context
-
-        msgname = type(r).__name__
 
         if context == 0:
             # No context -> async notification that we feed to the callback
@@ -863,6 +872,8 @@ class VPP():
         """
         while True:
             r = self.message_queue.get()
+            if r == "terminate event thread":
+                break
             msgname = type(r).__name__
             if self.event_callback:
                 self.event_callback(msgname, r)

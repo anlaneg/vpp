@@ -39,9 +39,7 @@
 #include <rte_eth_bond.h>
 #include <rte_sched.h>
 #include <rte_net.h>
-#if RTE_VERSION >= RTE_VERSION_NUM(17, 11, 0, 0)
 #include <rte_bus_pci.h>
-#endif
 
 #include <vnet/unix/pcap.h>
 #include <vnet/devices/devices.h>
@@ -119,11 +117,7 @@ typedef struct
   u64 tx_tail;
 } tx_ring_hdr_t;
 
-#if RTE_VERSION < RTE_VERSION_NUM(17, 11, 0, 0)
-typedef uint8_t dpdk_portid_t;
-#else
 typedef uint16_t dpdk_portid_t;
-#endif
 
 typedef struct
 {
@@ -171,9 +165,6 @@ typedef struct
   /* dpdk rte_mbuf rx and tx vectors, VLIB_FRAME_SIZE */
   struct rte_mbuf ***tx_vectors;	/* one per worker thread */
   struct rte_mbuf ***rx_vectors;//自下层收到到的包（两维，第一维是队列）
-
-  /* vector of traced contexts, per device */
-  u32 **d_trace_buffers;
 
   dpdk_pmd_t pmd:8;
   i8 cpu_socket;
@@ -361,9 +352,6 @@ typedef struct
 
   /* buffer flags template, configurable to enable/disable tcp / udp cksum */
   u32 buffer_flags_template;
-
-  /* vlib buffer free list, must be same size as an rte_mbuf */
-  u32 vlib_buffer_free_list_index;
 
   /* pcap tracing [only works if (CLIB_DEBUG > 0)] */
   int tx_pcap_enable;

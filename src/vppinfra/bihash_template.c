@@ -15,10 +15,28 @@
 
 /** @cond DOCUMENTATION_IS_IN_BIHASH_DOC_H */
 
+static inline void *BV (alloc_aligned) (BVT (clib_bihash) * h, uword nbytes)
+{
+  uword rv;
+
+  /* Round to an even number of cache lines */
+  nbytes += CLIB_CACHE_LINE_BYTES - 1;
+  nbytes &= ~(CLIB_CACHE_LINE_BYTES - 1);
+
+  rv = h->alloc_arena_next;
+  h->alloc_arena_next += nbytes;
+
+  if (rv >= (h->alloc_arena + h->alloc_arena_size))
+    os_out_of_memory ();
+
+  return (void *) rv;
+}
+
+
 void BV (clib_bihash_init)
   (BVT (clib_bihash) * h, char *name, u32 nbuckets, uword memory_size)
 {
-  void *oldheap;
+  uword bucket_size;
   int i;
 
   nbuckets = 1 << (max_log2 (nbuckets));
@@ -29,18 +47,18 @@ void BV (clib_bihash_init)
   h->cache_hits = 0;
   h->cache_misses = 0;
 
-  h->mheap = mheap_alloc (0 /* use VM */ , memory_size);
+  h->alloc_arena = (uword) clib_mem_vm_alloc (memory_size);
+  h->alloc_arena_next = h->alloc_arena;
+  h->alloc_arena_size = memory_size;
 
-  oldheap = clib_mem_set_heap (h->mheap);
-  vec_validate_aligned (h->buckets, nbuckets - 1, CLIB_CACHE_LINE_BYTES);
-  h->writer_lock = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
-					   CLIB_CACHE_LINE_BYTES);
+  bucket_size = nbuckets * sizeof (h->buckets[0]);
+  h->buckets = BV (alloc_aligned) (h, bucket_size);
+
+  h->writer_lock = BV (alloc_aligned) (h, CLIB_CACHE_LINE_BYTES);
   h->writer_lock[0] = 0;
 
   for (i = 0; i < nbuckets; i++)
     BV (clib_bihash_reset_cache) (h->buckets + i);
-
-  clib_mem_set_heap (oldheap);
 
   h->fmt_fn = NULL;
 }
@@ -53,7 +71,9 @@ void BV (clib_bihash_set_kvp_format_fn) (BVT (clib_bihash) * h,
 
 void BV (clib_bihash_free) (BVT (clib_bihash) * h)
 {
-  mheap_free (h->mheap);
+  vec_free (h->working_copies);
+  vec_free (h->freelists);
+  clib_mem_vm_free ((void *) (h->alloc_arena), h->alloc_arena_size);
   memset (h, 0, sizeof (*h));
 }
 
@@ -62,17 +82,12 @@ BVT (clib_bihash_value) *
 BV (value_alloc) (BVT (clib_bihash) * h, u32 log2_pages)
 {
   BVT (clib_bihash_value) * rv = 0;
-  void *oldheap;
 
   ASSERT (h->writer_lock[0]);
   if (log2_pages >= vec_len (h->freelists) || h->freelists[log2_pages] == 0)
     {
-      oldheap = clib_mem_set_heap (h->mheap);
-
-      vec_validate (h->freelists, log2_pages);
-      rv = clib_mem_alloc_aligned ((sizeof (*rv) * (1 << log2_pages)),
-				   CLIB_CACHE_LINE_BYTES);
-      clib_mem_set_heap (oldheap);
+      vec_validate_init_empty (h->freelists, log2_pages, 0);
+      rv = BV (alloc_aligned) (h, (sizeof (*rv) * (1 << log2_pages)));
       goto initialize;
     }
   rv = h->freelists[log2_pages];
@@ -106,17 +121,14 @@ BV (make_working_copy) (BVT (clib_bihash) * h, BVT (clib_bihash_bucket) * b)
 {
   BVT (clib_bihash_value) * v;
   BVT (clib_bihash_bucket) working_bucket __attribute__ ((aligned (8)));
-  void *oldheap;
   BVT (clib_bihash_value) * working_copy;
   u32 thread_index = os_get_thread_index ();
   int log2_working_copy_length;
 
   if (thread_index >= vec_len (h->working_copies))
     {
-      oldheap = clib_mem_set_heap (h->mheap);
       vec_validate (h->working_copies, thread_index);
       vec_validate_init_empty (h->working_copy_lengths, thread_index, ~0);
-      clib_mem_set_heap (oldheap);
     }
 
   /*
@@ -128,21 +140,19 @@ BV (make_working_copy) (BVT (clib_bihash) * h, BVT (clib_bihash_bucket) * b)
   log2_working_copy_length = h->working_copy_lengths[thread_index];
 
   h->saved_bucket.as_u64 = b->as_u64;
-  oldheap = clib_mem_set_heap (h->mheap);
 
   if (b->log2_pages > log2_working_copy_length)
     {
-      if (working_copy)
-	clib_mem_free (working_copy);
-
-      working_copy = clib_mem_alloc_aligned
-	(sizeof (working_copy[0]) * (1 << b->log2_pages),
-	 CLIB_CACHE_LINE_BYTES);
+      /*
+       * It's not worth the bookkeeping to free working copies
+       *   if (working_copy)
+       *     clib_mem_free (working_copy);
+       */
+      working_copy = BV (alloc_aligned)
+	(h, sizeof (working_copy[0]) * (1 << b->log2_pages));
       h->working_copy_lengths[thread_index] = b->log2_pages;
       h->working_copies[thread_index] = working_copy;
     }
-
-  clib_mem_set_heap (oldheap);
 
   /* Lock the bucket... */
   while (BV (clib_bihash_lock_bucket) (b) == 0)
@@ -290,6 +300,7 @@ int BV (clib_bihash_add_del)
       *v->kvp = *add_v;
       tmp_b.as_u64 = 0;
       tmp_b.offset = BV (clib_bihash_get_offset) (h, v);
+      tmp_b.refcnt = 1;
 
       b->as_u64 = tmp_b.as_u64;
       goto unlock;
@@ -329,6 +340,7 @@ int BV (clib_bihash_add_del)
 	      clib_memcpy (&(v->kvp[i]), add_v, sizeof (*add_v));
 	      CLIB_MEMORY_BARRIER ();
 	      b->as_u64 = h->saved_bucket.as_u64;
+	      b->refcnt++;
 	      goto unlock;
 	    }
 	}
@@ -342,8 +354,17 @@ int BV (clib_bihash_add_del)
 	    {
 	      memset (&(v->kvp[i]), 0xff, sizeof (*(add_v)));
 	      CLIB_MEMORY_BARRIER ();
-	      b->as_u64 = h->saved_bucket.as_u64;
-	      goto unlock;
+	      if (PREDICT_TRUE (h->saved_bucket.refcnt > 1))
+		{
+		  h->saved_bucket.refcnt -= 1;
+		  b->as_u64 = h->saved_bucket.as_u64;
+		  goto unlock;
+		}
+	      else
+		{
+		  tmp_b.as_u64 = 0;
+		  goto free_old_bucket;
+		}
 	    }
 	}
       rv = -3;
@@ -411,18 +432,18 @@ int BV (clib_bihash_add_del)
     goto try_resplit;
 
 expand_ok:
-  /* Keep track of the number of linear-scan buckets */
-  if (tmp_b.linear_search ^ mark_bucket_linear)
-    h->linear_buckets += (mark_bucket_linear == 1) ? 1 : -1;
-
   tmp_b.log2_pages = new_log2_pages;
   tmp_b.offset = BV (clib_bihash_get_offset) (h, save_new_v);
   tmp_b.linear_search = mark_bucket_linear;
+  tmp_b.refcnt = h->saved_bucket.refcnt + 1;
+
+free_old_bucket:
 
   CLIB_MEMORY_BARRIER ();
   b->as_u64 = tmp_b.as_u64;
   v = BV (clib_bihash_get_value) (h, h->saved_bucket.offset);
-  BV (value_free) (h, v, old_log2_pages);
+
+  BV (value_free) (h, v, h->saved_bucket.log2_pages);
 
 unlock:
   BV (clib_bihash_reset_cache) (b);
@@ -541,6 +562,9 @@ u8 *BV (format_bihash) (u8 * s, va_list * args)
   BVT (clib_bihash_value) * v;
   int i, j, k;
   u64 active_elements = 0;
+  u64 active_buckets = 0;
+  u64 linear_buckets = 0;
+  u64 used_bytes;
 
   s = format (s, "Hash table %s\n", h->name ? h->name : (u8 *) "(unnamed)");
 
@@ -553,6 +577,11 @@ u8 *BV (format_bihash) (u8 * s, va_list * args)
 	    s = format (s, "[%d]: empty\n", i);
 	  continue;
 	}
+
+      active_buckets++;
+
+      if (b->linear_search)
+	linear_buckets++;
 
       if (verbose)
 	{
@@ -593,11 +622,35 @@ u8 *BV (format_bihash) (u8 * s, va_list * args)
 	}
     }
 
-  s = format (s, "    %lld active elements\n", active_elements);
+  s = format (s, "    %lld active elements %lld active buckets\n",
+	      active_elements, active_buckets);
   s = format (s, "    %d free lists\n", vec_len (h->freelists));
-  s = format (s, "    %d linear search buckets\n", h->linear_buckets);
+
+  for (i = 0; i < vec_len (h->freelists); i++)
+    {
+      u32 nfree = 0;
+      BVT (clib_bihash_value) * free_elt;
+
+      free_elt = h->freelists[i];
+      while (free_elt)
+	{
+	  nfree++;
+	  free_elt = free_elt->next_free;
+	}
+
+      s = format (s, "       [len %d] %u free elts\n", 1 << i, nfree);
+    }
+
+  s = format (s, "    %lld linear search buckets\n", linear_buckets);
   s = format (s, "    %lld cache hits, %lld cache misses\n",
 	      h->cache_hits, h->cache_misses);
+  used_bytes = h->alloc_arena_next - h->alloc_arena;
+  s = format (s,
+	      "    arena: base %llx, next %llx\n"
+	      "           used %lld b (%lld Mbytes) of %lld b (%lld Mbytes)\n",
+	      h->alloc_arena, h->alloc_arena_next,
+	      used_bytes, used_bytes >> 20,
+	      h->alloc_arena_size, h->alloc_arena_size >> 20);
   return s;
 }
 

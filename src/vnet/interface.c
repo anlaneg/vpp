@@ -122,6 +122,22 @@ unserialize_vnet_sw_interface_set_flags (serialize_main_t * m, va_list * va)
      /* helper_flags no redistribution */ 0);
 }
 
+void
+vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu)
+{
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+
+  if (hi->max_packet_bytes != mtu)
+    {
+      u16 l3_pad = hi->max_packet_bytes - hi->max_l3_packet_bytes[VLIB_TX];
+      hi->max_packet_bytes = mtu;
+      hi->max_l3_packet_bytes[VLIB_TX] =
+	hi->max_l3_packet_bytes[VLIB_RX] = mtu - l3_pad;
+      ethernet_set_flags (vnm, hw_if_index, ETHERNET_INTERFACE_FLAG_MTU);
+      adj_mtu_update (hw_if_index);
+    }
+}
+
 static void
 unserialize_vnet_hw_interface_set_flags (serialize_main_t * m, va_list * va)
 {
@@ -1437,8 +1453,10 @@ default_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
 
   switch (adj->lookup_next_index)
     {
-    case IP_LOOKUP_NEXT_ARP:
     case IP_LOOKUP_NEXT_GLEAN:
+      adj_glean_update_rewrite (ai);
+      break;
+    case IP_LOOKUP_NEXT_ARP:
       /*
        * default rewirte in neighbour adj
        */

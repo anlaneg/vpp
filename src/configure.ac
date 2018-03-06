@@ -137,6 +137,7 @@ DISABLE_ARG(vom,	[Disable VPP object model bindings])
 # --without-X
 WITHOUT_ARG(libssl,	[Disable libssl])
 WITHOUT_ARG(apicli,	[Disable binary api CLI])
+WITHOUT_ARG(mbedtls,	[Disable mbedtls])
 
 AC_ARG_WITH(unix,
             AC_HELP_STRING([--with-unix],[Compile unix version of clib]),
@@ -196,6 +197,7 @@ AC_SUBST(APICLI,		[-DVPP_API_TEST_BUILTIN=${n_with_apicli}])
 
 AC_DEFINE_UNQUOTED(DPDK_SHARED_LIB,	[${n_enable_dpdk_shared}])
 AC_DEFINE_UNQUOTED(WITH_LIBSSL,		[${n_with_libssl}])
+AC_DEFINE_UNQUOTED(WITH_MBEDTLS,	[${n_with_mbedtls}])
 
 
 # Silence following noise:
@@ -211,22 +213,23 @@ AC_SUBST(AR_FLAGS)
 PLUGIN_ENABLED(acl)
 PLUGIN_ENABLED(dpdk)
 PLUGIN_ENABLED(flowprobe)
+PLUGIN_ENABLED(gbp)
 PLUGIN_ENABLED(gtpu)
 PLUGIN_ENABLED(ila)
 PLUGIN_ENABLED(ioam)
 PLUGIN_ENABLED(ixge)
 PLUGIN_ENABLED(kubeproxy)
+PLUGIN_ENABLED(l2e)
 PLUGIN_ENABLED(lb)
 PLUGIN_ENABLED(marvell)
 PLUGIN_ENABLED(memif)
 PLUGIN_ENABLED(pppoe)
+PLUGIN_ENABLED(nat)
 PLUGIN_ENABLED(sixrd)
 PLUGIN_ENABLED(srv6ad)
 PLUGIN_ENABLED(srv6am)
 PLUGIN_ENABLED(srv6as)
-PLUGIN_ENABLED(nat)
 PLUGIN_ENABLED(stn)
-PLUGIN_ENABLED(l2e)
 
 ###############################################################################
 # Dependency checks
@@ -268,28 +271,6 @@ AM_CONDITIONAL(WITH_AESNI_MB_LIB, test "$with_aesni_mb_lib" = "yes")
 m4_append([list_of_with], [isa_l_crypto_lib], [, ])
 AM_CONDITIONAL(WITH_ISA_L_CRYPTO_LIB, test "$with_isa_l_crypto_lib" = "yes")
 
-
-with_ibverbs_lib=no
-DPDK_IS_PMD_ENABLED(LIBRTE_MLX4_PMD, dpdk_mlx4_pmd)
-AM_COND_IF([WITH_DPDK_MLX4_PMD],
-[
-  AC_CHECK_LIB([ibverbs], [ibv_fork_init],
-	       [with_ibverbs_lib=yes],
-	       [AC_MSG_ERROR([ibverbs library not found])])
-])
-
-DPDK_IS_PMD_ENABLED(LIBRTE_MLX5_PMD, dpdk_mlx5_pmd)
-AM_COND_IF([WITH_DPDK_MLX5_PMD],
-[
-  AC_CHECK_LIB([ibverbs], [ibv_fork_init],
-	       [with_ibverbs_lib=yes],
-	       [AC_MSG_ERROR([ibverbs library not found])])
-])
-
-m4_append([list_of_with], [ibverbs_lib], [, ])
-AM_CONDITIONAL(WITH_IBVERBS_LIB, test "$with_ibverbs_lib" = "yes")
-
-
 AM_COND_IF([ENABLE_G2],
 [
   PKG_CHECK_MODULES(g2, gtk+-2.0)
@@ -304,6 +285,15 @@ AM_COND_IF([ENABLE_MARVELL_PLUGIN],
       enable_marvell_plugin=no
       AM_CONDITIONAL(ENABLE_MARVELL_PLUGIN, false)
     ])
+])
+
+AM_COND_IF([WITH_MBEDTLS],
+[
+  AC_CHECK_HEADERS([mbedtls/ssl.h], [],
+    [
+      AC_MSG_WARN([mbedtls headers not found. TLS app disabled])
+      AM_CONDITIONAL(WITH_MBEDTLS, false)
+    ], [])
 ])
 
 AC_PATH_PROG([VPPAPIGEN], [vppapigen], [no])

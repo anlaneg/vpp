@@ -80,6 +80,7 @@ void
 tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 {
   vnet_main_t *vnm = vnet_get_main ();
+  vlib_thread_main_t *thm = vlib_get_thread_main ();
   virtio_main_t *vim = &virtio_main;
   tap_main_t *tm = &tap_main;
   vnet_sw_interface_t *sw;
@@ -128,8 +129,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   vif->dev_instance = vif - vim->interfaces;
   vif->tap_fd = -1;
   vif->id = args->id;
-
-  hash_set (tm->dev_instance_by_interface_id, vif->id, vif->dev_instance);
 
   if ((vif->fd = open ("/dev/vhost-net", O_RDWR | O_NONBLOCK)) < 0)
     {
@@ -382,6 +381,8 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
       goto error;
     }
 
+  hash_set (tm->dev_instance_by_interface_id, vif->id, vif->dev_instance);
+
   sw = vnet_get_hw_sw_interface (vnm, vif->hw_if_index);
   vif->sw_if_index = sw->sw_if_index;
   args->sw_if_index = vif->sw_if_index;
@@ -397,6 +398,8 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   vif->flags |= VIRTIO_IF_FLAG_ADMIN_UP;
   vnet_hw_interface_set_flags (vnm, vif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
+  if (thm->n_vlib_mains > 1)
+    clib_spinlock_init (&vif->lockp);
   goto done;
 
 error:
@@ -440,6 +443,7 @@ tap_delete_if (vlib_main_t * vm, u32 sw_if_index)
   /* bring down the interface */
   vnet_hw_interface_set_flags (vnm, vif->hw_if_index, 0);
   vnet_sw_interface_set_flags (vnm, vif->sw_if_index, 0);
+  vnet_hw_interface_unassign_rx_thread (vnm, vif->hw_if_index, 0);
 
   ethernet_delete_interface (vnm, vif->hw_if_index);
   vif->hw_if_index = ~0;
@@ -453,6 +457,7 @@ tap_delete_if (vlib_main_t * vm, u32 sw_if_index)
   vec_free (vif->vrings);
 
   hash_unset (tm->dev_instance_by_interface_id, vif->id);
+  clib_spinlock_free (&vif->lockp);
   memset (vif, 0, sizeof (*vif));
   pool_put (mm->interfaces, vif);
 

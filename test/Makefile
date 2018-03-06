@@ -46,8 +46,15 @@ ifneq ($(EXTERN_TESTS),)
 UNITTEST_EXTRA_OPTS=$(UNITTEST_FAILFAST_OPTS) -d $(EXTERN_TESTS)
 endif
 
+ifeq ($(TEST_DEBUG),1)
+VPP_PYTHON_PREFIX:=$(VPP_PYTHON_PREFIX)/debug
+PYTHON_EXTRA_DEPENDS=objgraph pympler
+else
+PYTHON_EXTRA_DEPENDS=
+endif
+
 PYTHON_VENV_PATH=$(VPP_PYTHON_PREFIX)/virtualenv
-PYTHON_DEPENDS=faulthandler six scapy==2.3.3 pexpect pycrypto subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup
+PYTHON_DEPENDS=$(PYTHON_EXTRA_DEPENDS) faulthandler six scapy==2.3.3 pexpect pycrypto subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup py2-ipaddress
 SCAPY_SOURCE=$(shell find $(PYTHON_VENV_PATH) -name site-packages)
 BUILD_COV_DIR=$(BR)/test-cov
 
@@ -165,7 +172,7 @@ doc: verify-python-path $(PIP_PATCH_DONE)
 wipe-doc:
 	@make -C doc wipe BR=$(BR)
 
-cov: wipe-cov reset verify-python-path $(PAPI_INSTALL_DONE)
+cov: wipe-cov reset ext verify-python-path $(PAPI_INSTALL_DONE)
 	@lcov --zerocounters --directory $(VPP_TEST_BUILD_DIR)
 	@test -z "$(EXTERN_COV_DIR)" || lcov --zerocounters --directory $(EXTERN_COV_DIR)
 	$(call retest-func)
@@ -186,9 +193,9 @@ wipe-cov: wipe
 .PHONY: checkstyle
 checkstyle: verify-python-path
 	@virtualenv $(PYTHON_VENV_PATH) -p $(PYTHON_INTERP)
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install pep8"
+	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install pycodestyle"
 	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate &&\
-		pep8 --show-source -v $(WS_ROOT)/test/*.py ||\
+		pycodestyle --show-source --ignore=E126,E241,E226,E305,E704,E741,E722 -v $(WS_ROOT)/test/*.py ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Test framework PEP8 compliance check FAILED \" &&\
 	         echo \"*******************************************************************\" &&\
@@ -214,7 +221,7 @@ help:
 	@echo " V=[0|1|2]            - set test verbosity level"
 	@echo " CACHE_OUTPUT=[0|1]   - cache VPP stdout/stderr and log as one block after test finishes (default: 1)"
 	@echo " FAILFAST=[0|1]       - fail fast if 1, complete all tests if 0"
-	@echo " TIMEOUT=<timeout>    - fail test suite if any single test takes longer than <timeout> to finish"
+	@echo " TIMEOUT=<timeout>    - fail test suite if any single test takes longer than <timeout> (in seconds) to finish"
 	@echo " RETRIES=<n>          - retry failed tests <n> times"
 	@echo " DEBUG=<type>         - set VPP debugging kind"
 	@echo "    DEBUG=core        - detect coredump and load it in gdb on crash"
@@ -225,6 +232,7 @@ help:
 	@echo "                        same as above"
 	@echo " STEP=[yes|no]        - ease debugging by stepping through a testcase "
 	@echo " SANITY=[yes|no]      - perform sanity import of vpp-api/sanity vpp run before running tests (default: yes)"
+	@echo " EXTENDED_TESTS=[1|y] - run extended tests"
 	@echo " TEST=<filter>        - filter the set of tests:"
 	@echo "    by file-name      - only run tests from specified file, e.g. TEST=test_bfd selects all tests from test_bfd.py"
 	@echo "    by file-suffix    - same as file-name, but 'test_' is omitted e.g. TEST=bfd selects all tests from test_bfd.py"
@@ -242,6 +250,8 @@ help:
 	@echo " EXTERN_TESTS=<path>  - path to out-of-tree test_<name>.py files containing test cases"
 	@echo " EXTERN_PLUGINS=<path>- path to out-of-tree plugins to be loaded by vpp under test"
 	@echo " EXTERN_COV_DIR=<path>- path to out-of-tree prefix, where source, object and .gcda files can be found for coverage report"
+	@echo ""
+	@echo " TEST_DEBUG=1         - turn on debugging of the test framework itself (expert)"
 	@echo ""
 	@echo "Creating test documentation"
 	@echo " test-doc            - generate documentation for test framework"

@@ -1494,14 +1494,12 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	}
 
       /* Process pre-input nodes. */
-      //input前的nodes处理
-      if (is_main)
-	vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
-	  cpu_time_now = dispatch_node (vm, n,
-					VLIB_NODE_TYPE_PRE_INPUT,
-					VLIB_NODE_STATE_POLLING,
-					/* frame */ 0,
-					cpu_time_now);
+      vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
+	cpu_time_now = dispatch_node (vm, n,
+				      VLIB_NODE_TYPE_PRE_INPUT,
+				      VLIB_NODE_STATE_POLLING,
+				      /* frame */ 0,
+				      cpu_time_now);
 
       /* Next process input nodes. */
       //input的nodes处理

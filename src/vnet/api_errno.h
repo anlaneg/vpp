@@ -134,7 +134,10 @@ _(APP_CONNECT_FILTERED, -141, "Connect was filtered")			\
 _(ACL_IN_USE_INBOUND, -142, "Inbound ACL in use")			\
 _(ACL_IN_USE_OUTBOUND, -143, "Outbound ACL in use")			\
 _(INIT_FAILED, -144, "Initialization Failed")				\
-_(NETLINK_ERROR, -145, "netlink error")
+_(NETLINK_ERROR, -145, "netlink error")                                 \
+_(BIER_BSL_UNSUP, -146, "BIER bit-string-length unsupported")		\
+_(INSTANCE_IN_USE, -147, "Instance in use")				\
+_(INVALID_SESSION_ID, -148, "session ID out of range")
 
 typedef enum
 {

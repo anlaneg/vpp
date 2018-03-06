@@ -26,6 +26,7 @@
 #include <vnet/l2/l2_input.h>
 #include <vnet/srv6/sr.h>
 #include <vnet/srmpls/sr_mpls.h>
+#include <vnet/gre/gre.h>
 #include <vnet/vxlan-gpe/vxlan_gpe.h>
 #include <vnet/geneve/geneve.h>
 #include <vnet/classify/policer_classify.h>
@@ -557,7 +558,7 @@ static void *vl_api_tap_create_v2_t_print
   memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: tap_create_v2 ");
-  s = format (s, "id %s ", mp->id);
+  s = format (s, "id %u ", mp->id);
   if (memcmp (mp->mac_address, null_mac, 6))
     s = format (s, "mac-address %U ",
 		format_ethernet_address, mp->mac_address);
@@ -1543,6 +1544,8 @@ static void *vl_api_vxlan_add_del_tunnel_t_print
 
   s = format (s, "vni %d ", ntohl (mp->vni));
 
+  s = format (s, "instance %d ", ntohl (mp->instance));
+
   if (mp->is_add == 0)
     s = format (s, "del ");
 
@@ -1620,8 +1623,13 @@ static void *vl_api_gre_add_del_tunnel_t_print
 	      (ip46_address_t *) & (mp->src_address),
 	      mp->is_ipv6 ? IP46_TYPE_IP6 : IP46_TYPE_IP4);
 
-  if (mp->teb)
+  s = format (s, "instance %d ", ntohl (mp->instance));
+
+  if (mp->tunnel_type == GRE_TUNNEL_TYPE_TEB)
     s = format (s, "teb ");
+
+  if (mp->tunnel_type == GRE_TUNNEL_TYPE_ERSPAN)
+    s = format (s, "erspan %d ", ntohs (mp->session_id));
 
   if (mp->outer_fib_id)
     s = format (s, "outer-fib-id %d ", ntohl (mp->outer_fib_id));
@@ -1804,9 +1812,15 @@ static void *vl_api_cli_inband_t_print
   (vl_api_cli_inband_t * mp, void *handle)
 {
   u8 *s;
+  u8 *cmd = 0;
+  u32 length = ntohl (mp->length);
 
-  s = format (0, "SCRIPT: cli_inband ");
+  vec_validate (cmd, length);
+  clib_memcpy (cmd, mp->cmd, length);
 
+  s = format (0, "SCRIPT: exec %v ", cmd);
+
+  vec_free (cmd);
   FINISH;
 }
 
@@ -1951,6 +1965,24 @@ static void *vl_api_input_acl_set_interface_t_print
   u8 *s;
 
   s = format (0, "SCRIPT: input_acl_set_interface ");
+
+  s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
+  s = format (s, "ip4-table %d ", ntohl (mp->ip4_table_index));
+  s = format (s, "ip6-table %d ", ntohl (mp->ip6_table_index));
+  s = format (s, "l2-table %d ", ntohl (mp->l2_table_index));
+
+  if (mp->is_add == 0)
+    s = format (s, "del ");
+
+  FINISH;
+}
+
+static void *vl_api_output_acl_set_interface_t_print
+  (vl_api_output_acl_set_interface_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: output_acl_set_interface ");
 
   s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
   s = format (s, "ip4-table %d ", ntohl (mp->ip4_table_index));
@@ -3491,7 +3523,8 @@ _(DNS_ENABLE_DISABLE, dns_enable_disable)                               \
 _(DNS_NAME_SERVER_ADD_DEL, dns_name_server_add_del)                     \
 _(DNS_RESOLVE_NAME, dns_resolve_name)					\
 _(DNS_RESOLVE_IP, dns_resolve_ip)					\
-_(SESSION_RULE_ADD_DEL, session_rule_add_del)
+_(SESSION_RULE_ADD_DEL, session_rule_add_del)                           \
+_(OUTPUT_ACL_SET_INTERFACE, output_acl_set_interface)
   void
 vl_msg_api_custom_dump_configure (api_main_t * am)
 {

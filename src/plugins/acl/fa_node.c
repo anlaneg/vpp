@@ -24,6 +24,7 @@
 
 #include <vppinfra/bihash_template.h>
 #include <vppinfra/bihash_template.c>
+#include <vnet/ip/icmp46_packet.h>
 
 #include "fa_node.h"
 #include "hash_lookup.h"
@@ -38,6 +39,37 @@ typedef struct
   u32 trace_bitmap;
   u8 action;
 } acl_fa_trace_t;
+
+/* ICMPv4 invert type for stateful ACL */
+static const u8 icmp4_invmap[] = {
+  [ICMP4_echo_reply] = ICMP4_echo_request + 1,
+  [ICMP4_timestamp_reply] = ICMP4_timestamp_request + 1,
+  [ICMP4_information_reply] = ICMP4_information_request + 1,
+  [ICMP4_address_mask_reply] = ICMP4_address_mask_request + 1
+};
+
+/* Supported ICMPv4 messages for session creation */
+static const u8 icmp4_valid_new[] = {
+  [ICMP4_echo_request] = 1,
+  [ICMP4_timestamp_request] = 1,
+  [ICMP4_information_request] = 1,
+  [ICMP4_address_mask_request] = 1
+};
+
+/* ICMPv6 invert type for stateful ACL */
+static const u8 icmp6_invmap[] = {
+  [ICMP6_echo_reply - 128]   = ICMP6_echo_request + 1,
+  [ICMP6_node_information_response - 128] = ICMP6_node_information_request + 1
+};
+
+/* Supported ICMPv6 messages for session creation */
+static const u8 icmp6_valid_new[] = {
+  [ICMP6_echo_request - 128] = 1,
+  [ICMP6_node_information_request - 128] = 1
+};
+
+/* IP4 and IP6 protocol numbers of ICMP */
+static u8 icmp_protos[] = { IP_PROTOCOL_ICMP, IP_PROTOCOL_ICMP6 };
 
 static u8 *
 format_fa_5tuple (u8 * s, va_list * args)
@@ -365,9 +397,6 @@ acl_fill_5tuple (acl_main_t * am, vlib_buffer_t * b0, int is_ip6,
   u16 ports[2];
   u16 proto;
 
-  /* IP4 and IP6 protocol numbers of ICMP */
-  static u8 icmp_protos[] = { IP_PROTOCOL_ICMP, IP_PROTOCOL_ICMP6 };
-
   if (is_l2_path)
     {
       l3_offset = ethernet_buffer_header_size(b0);
@@ -529,22 +558,6 @@ acl_fill_5tuple (acl_main_t * am, vlib_buffer_t * b0, int is_ip6,
     }
 }
 
-
-/* Session keys match the packets received, and mirror the packets sent */
-static void
-acl_make_5tuple_session_key (int is_input, fa_5tuple_t * p5tuple_pkt,
-			     fa_5tuple_t * p5tuple_sess)
-{
-  int src_index = is_input ? 0 : 1;
-  int dst_index = is_input ? 1 : 0;
-  p5tuple_sess->addr[src_index] = p5tuple_pkt->addr[0];
-  p5tuple_sess->addr[dst_index] = p5tuple_pkt->addr[1];
-  p5tuple_sess->l4.as_u64 = p5tuple_pkt->l4.as_u64;
-  p5tuple_sess->l4.port[src_index] = p5tuple_pkt->l4.port[0];
-  p5tuple_sess->l4.port[dst_index] = p5tuple_pkt->l4.port[1];
-}
-
-
 static int
 acl_fa_ifc_has_sessions (acl_main_t * am, int sw_if_index0)
 {
@@ -563,6 +576,70 @@ acl_fa_ifc_has_out_acl (acl_main_t * am, int sw_if_index0)
 {
   int it_has = clib_bitmap_get (am->fa_out_acl_on_sw_if_index, sw_if_index0);
   return it_has;
+}
+
+/* Session keys match the packets received, and mirror the packets sent */
+static u32
+acl_make_5tuple_session_key (acl_main_t * am, int is_input, int is_ip6,
+                             u32 sw_if_index, fa_5tuple_t * p5tuple_pkt,
+                             fa_5tuple_t * p5tuple_sess)
+{
+  int src_index = is_input ? 0 : 1;
+  int dst_index = is_input ? 1 : 0;
+  u32 valid_new_sess = 1;
+  p5tuple_sess->addr[src_index] = p5tuple_pkt->addr[0];
+  p5tuple_sess->addr[dst_index] = p5tuple_pkt->addr[1];
+  p5tuple_sess->l4.as_u64 = p5tuple_pkt->l4.as_u64;
+
+  if (PREDICT_TRUE(p5tuple_pkt->l4.proto != icmp_protos[is_ip6]))
+    {
+      p5tuple_sess->l4.port[src_index] = p5tuple_pkt->l4.port[0];
+      p5tuple_sess->l4.port[dst_index] = p5tuple_pkt->l4.port[1];
+    }
+  else
+    {
+      static const u8 * icmp_invmap[] = { icmp4_invmap, icmp6_invmap };
+      static const u8 * icmp_valid_new[] = { icmp4_valid_new, icmp6_valid_new };
+      static const u8 icmp_invmap_size[] = { sizeof(icmp4_invmap),
+                                             sizeof(icmp6_invmap) };
+      static const u8 icmp_valid_new_size[] = { sizeof(icmp4_valid_new),
+                                                sizeof(icmp6_valid_new) };
+      int type = is_ip6 ? p5tuple_pkt->l4.port[0]-128: p5tuple_pkt->l4.port[0];
+
+      p5tuple_sess->l4.port[0] = p5tuple_pkt->l4.port[0];
+      p5tuple_sess->l4.port[1] = p5tuple_pkt->l4.port[1];
+
+      /*
+       * Invert ICMP type for valid icmp_invmap messages:
+       *  1) input node with outbound ACL interface
+       *  2) output node with inbound ACL interface
+       *
+       */
+      if ((is_input && acl_fa_ifc_has_out_acl(am, sw_if_index)) ||
+          (!is_input && acl_fa_ifc_has_in_acl(am, sw_if_index)))
+        {
+          if (type >= 0 &&
+              type <= icmp_invmap_size[is_ip6] &&
+              icmp_invmap[is_ip6][type])
+            {
+              p5tuple_sess->l4.port[0] = icmp_invmap[is_ip6][type] - 1;
+            }
+        }
+
+      /*
+       * ONLY ICMP messages defined in icmp4_valid_new/icmp6_valid_new table
+       * are allowed to create stateful ACL.
+       * The other messages will be forwarded without creating a reflexive ACL.
+       */
+      if (type < 0 ||
+          type > icmp_valid_new_size[is_ip6] ||
+          !icmp_valid_new[is_ip6][type])
+        {
+          valid_new_sess = 0;
+        }
+    }
+
+    return valid_new_sess;
 }
 
 
@@ -845,6 +922,7 @@ acl_fa_check_idle_sessions(acl_main_t *am, u16 thread_index, u64 now)
 	    && (acl_fa_conn_time_to_check(am, pw, now, thread_index,
 					  pw->fa_conn_list_head[tt]))) {
 	fsid.session_index = pw->fa_conn_list_head[tt];
+        elog_acl_maybe_trace_X2(am, "acl_fa_check_idle_sessions: expire session %d on thread %d", "i4i4", (u32)fsid.session_index, (u32)thread_index);
 	vec_add1(pw->expired, fsid.session_index);
 	acl_fa_conn_list_delete_session(am, fsid);
       }
@@ -1016,6 +1094,7 @@ acl_fa_node_fn (vlib_main_t * vm,
 	  u32 match_acl_in_index = ~0;
 	  u32 match_rule_index = ~0;
 	  u8 error0 = 0;
+	  u32 valid_new_sess;
 
 	  /* speculatively enqueue b0 to the current next frame */
 	  bi0 = from[0];
@@ -1040,7 +1119,7 @@ acl_fa_node_fn (vlib_main_t * vm,
 
 	  acl_fill_5tuple (am, b0, is_ip6, is_input, is_l2_path, &fa_5tuple);
           fa_5tuple.l4.lsb_of_sw_if_index = sw_if_index0 & 0xffff;
-	  acl_make_5tuple_session_key (is_input, &fa_5tuple, &kv_sess);
+	  valid_new_sess = acl_make_5tuple_session_key (am, is_input, is_ip6, sw_if_index0,  &fa_5tuple, &kv_sess);
 	  fa_5tuple.pkt.sw_if_index = sw_if_index0;
           fa_5tuple.pkt.is_ip6 = is_ip6;
           fa_5tuple.pkt.is_input = is_input;
@@ -1124,11 +1203,21 @@ acl_fa_node_fn (vlib_main_t * vm,
 
 		  if (acl_fa_can_add_session (am, is_input, sw_if_index0))
 		    {
-                      fa_session_t *sess = acl_fa_add_session (am, is_input, sw_if_index0, now,
-					                       &kv_sess);
-                      acl_fa_track_session (am, is_input, sw_if_index0, now,
-                                            sess, &fa_5tuple);
-		      pkts_new_session += 1;
+                      if (PREDICT_TRUE (valid_new_sess)) {
+                        fa_session_t *sess = acl_fa_add_session (am, is_input,
+                                                                 sw_if_index0,
+                                                                 now, &kv_sess);
+                        acl_fa_track_session (am, is_input, sw_if_index0, now,
+                                              sess, &fa_5tuple);
+                        pkts_new_session += 1;
+                      } else {
+                        /*
+                         *  ICMP packets with non-icmp_valid_new type will be
+                         *  forwared without being dropped.
+                         */
+                        action = 1;
+                        pkts_acl_permit += 1;
+                      }
 		    }
 		  else
 		    {
@@ -1322,9 +1411,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
    u16 thread_index = os_get_thread_index ();
    acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
    int num_expired;
-#ifdef FA_NODE_VERBOSE_DEBUG
-   clib_warning("\nacl_fa_worker_conn_cleaner: thread index %d now %lu\n\n", thread_index, now);
-#endif
+   elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner interrupt: now %lu", "i8", now);
    /* allow another interrupt to be queued */
    pw->interrupt_is_pending = 0;
    if (pw->clear_in_process) {
@@ -1342,9 +1429,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
         */
        if ((pw->pending_clear_sw_if_index_bitmap == 0)
            || (pw->serviced_sw_if_index_bitmap == 0)) {
-#ifdef FA_NODE_VERBOSE_DEBUG
-         clib_warning("WORKER-CLEAR: someone tried to call clear, but one of the bitmaps are empty");
-#endif
+         elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner: now %lu, someone tried to call clear but one of the bitmaps are empty", "i8", now);
 	 clib_bitmap_zero(pw->pending_clear_sw_if_index_bitmap);
        } else {
 #ifdef FA_NODE_VERBOSE_DEBUG
@@ -1358,9 +1443,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
 
        if (clib_bitmap_is_zero(pw->pending_clear_sw_if_index_bitmap)) {
          /* if the cross-section is a zero vector, no need to do anything. */
-#ifdef FA_NODE_VERBOSE_DEBUG
-         clib_warning("WORKER: clearing done - nothing to do");
-#endif
+         elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner: now %lu, clearing done, nothing to do", "i8", now);
          pw->clear_in_process = 0;
        } else {
 #ifdef FA_NODE_VERBOSE_DEBUG
@@ -1368,6 +1451,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
                       format_bitmap_hex, pw->pending_clear_sw_if_index_bitmap,
                       format_bitmap_hex, pw->serviced_sw_if_index_bitmap);
 #endif
+         elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner: swiping until %lu", "i8", now);
          /* swipe through the connection lists until enqueue timestamps become above "now" */
          pw->swipe_end_time = now;
        }
@@ -1375,18 +1459,15 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
    }
    num_expired = acl_fa_check_idle_sessions(am, thread_index, now);
    // clib_warning("WORKER-CLEAR: checked %d sessions (clear_in_progress: %d)", num_expired, pw->clear_in_process);
+   elog_acl_maybe_trace_X2(am, "acl_fa_worker_conn_cleaner: checked %d sessions (clear_in_process: %d)", "i4i4", (u32)num_expired, (u32)pw->clear_in_process);
    if (pw->clear_in_process) {
      if (0 == num_expired) {
        /* we were clearing but we could not process any more connections. time to stop. */
        clib_bitmap_zero(pw->pending_clear_sw_if_index_bitmap);
        pw->clear_in_process = 0;
-#ifdef FA_NODE_VERBOSE_DEBUG
-       clib_warning("WORKER: clearing done, all done");
-#endif
+       elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner: now %lu, clearing done - all done", "i8", now);
      } else {
-#ifdef FA_NODE_VERBOSE_DEBUG
-       clib_warning("WORKER-CLEAR: more work to do, raising interrupt");
-#endif
+       elog_acl_maybe_trace_X1(am, "acl_fa_worker_conn_cleaner: now %lu, more work to do - requesting interrupt", "i8", now);
        /* should continue clearing.. So could they please sent an interrupt again? */
        pw->interrupt_is_needed = 1;
      }
@@ -1404,6 +1485,7 @@ acl_fa_worker_conn_cleaner_process(vlib_main_t * vm,
        pw->interrupt_is_needed = 0;
        pw->interrupt_is_unwanted = 0;
      }
+     elog_acl_maybe_trace_X3(am, "acl_fa_worker_conn_cleaner: now %lu, interrupt needed: %u, interrupt unwanted: %u", "i8i4i4", now, ((u32)pw->interrupt_is_needed), ((u32)pw->interrupt_is_unwanted));
    }
    pw->interrupt_generation = am->fa_interrupt_generation;
    return 0;
@@ -1417,6 +1499,7 @@ send_one_worker_interrupt (vlib_main_t * vm, acl_main_t *am, int thread_index)
     pw->interrupt_is_pending = 1;
     vlib_node_set_interrupt_pending (vlib_mains[thread_index],
                   acl_fa_worker_session_cleaner_process_node.index);
+    elog_acl_maybe_trace_X1(am, "send_one_worker_interrupt: send interrupt to worker %d", "i4", ((u32)thread_index));
     /* if the interrupt was requested, mark that done. */
     /* pw->interrupt_is_needed = 0; */
   }
@@ -1428,7 +1511,7 @@ send_interrupts_to_workers (vlib_main_t * vm, acl_main_t *am)
   int i;
   /* Can't use vec_len(am->per_worker_data) since the threads might not have come up yet; */
   int n_threads = vec_len(vlib_mains);
-  for (i = n_threads > 1 ? 1 : 0; i < n_threads; i++) {
+  for (i = 0; i < n_threads; i++) {
     send_one_worker_interrupt(vm, am, i);
   }
 }
@@ -1474,9 +1557,8 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
         for(tt = 0; tt < vec_len(pw->fa_conn_list_head); tt++) {
           u64 head_expiry = acl_fa_get_list_head_expiry_time(am, pw, now, ti, tt);
           if ((head_expiry < next_expire) && !pw->interrupt_is_pending) {
-#ifdef FA_NODE_VERBOSE_DEBUG
-            clib_warning("Head expiry: %lu, now: %lu, next_expire: %lu (worker: %d, tt: %d)", head_expiry, now, next_expire, ti, tt);
-#endif
+            elog_acl_maybe_trace_X3(am, "acl_fa_session_cleaner_process: now %lu, worker: %d tt: %d", "i8i2i2", now, ti, tt);
+            elog_acl_maybe_trace_X2(am, "acl_fa_session_cleaner_process: head expiry: %lu, is earlier than curr next expire: %lu", "i8i8", head_expiry, next_expire);
             next_expire = head_expiry;
 	  }
           if (~0 != pw->fa_conn_list_head[tt]) {
@@ -1489,6 +1571,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
       if (!has_pending_conns && (0 == am->fa_total_enabled_count))
         {
           am->fa_cleaner_cnt_wait_without_timeout++;
+          elog_acl_maybe_trace_X1(am, "acl_conn_cleaner: now %lu entering wait without timeout", "i8", now);
           (void) vlib_process_wait_for_event (vm);
           event_type = vlib_process_get_events (vm, &event_data);
         }
@@ -1503,6 +1586,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 	  else
 	    {
               am->fa_cleaner_cnt_wait_with_timeout++;
+              elog_acl_maybe_trace_X2(am, "acl_conn_cleaner: now %lu entering wait with timeout %.6f sec", "i8f8", now, timeout);
 	      (void) vlib_process_wait_for_event_or_clock (vm, timeout);
 	      event_type = vlib_process_get_events (vm, &event_data);
 	    }
@@ -1521,17 +1605,12 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
             uword *clear_sw_if_index_bitmap = 0;
 	    uword *sw_if_index0;
             int clear_all = 0;
-#ifdef FA_NODE_VERBOSE_DEBUG
-	    clib_warning("ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX received");
-#endif
+            now = clib_cpu_time_now ();
+            elog_acl_maybe_trace_X1(am, "acl_fa_session_cleaner_process: now %lu, received ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX", "i8", now);
 	    vec_foreach (sw_if_index0, event_data)
 	    {
               am->fa_cleaner_cnt_delete_by_sw_index++;
-#ifdef FA_NODE_VERBOSE_DEBUG
-	      clib_warning
-		("ACL_FA_NODE_CLEAN: ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX: %d",
-		 *sw_if_index0);
-#endif
+              elog_acl_maybe_trace_X1(am, "acl_fa_session_cleaner_process: ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX %d", "i4", *sw_if_index0);
               if (*sw_if_index0 == ~0)
                 {
                   clear_all = 1;
@@ -1551,9 +1630,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
               CLIB_MEMORY_BARRIER ();
 	      while (pw0->clear_in_process) {
                 CLIB_MEMORY_BARRIER ();
-#ifdef FA_NODE_VERBOSE_DEBUG
-                clib_warning("ACL_FA_NODE_CLEAN: waiting previous cleaning cycle to finish on %d...", pw0 - am->per_worker_data);
-#endif
+                elog_acl_maybe_trace_X1(am, "ACL_FA_NODE_CLEAN: waiting previous cleaning cycle to finish on %d", "i4", (u32)(pw0 - am->per_worker_data));
                 vlib_process_suspend(vm, 0.0001);
                 if (pw0->interrupt_is_needed) {
                   send_one_worker_interrupt(vm, am, (pw0 - am->per_worker_data));
@@ -1585,9 +1662,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
               CLIB_MEMORY_BARRIER ();
 	      while (pw0->clear_in_process) {
                 CLIB_MEMORY_BARRIER ();
-#ifdef FA_NODE_VERBOSE_DEBUG
-                clib_warning("ACL_FA_NODE_CLEAN: waiting for my cleaning cycle to finish on %d...", pw0 - am->per_worker_data);
-#endif
+                elog_acl_maybe_trace_X1(am, "ACL_FA_NODE_CLEAN: waiting for my cleaning cycle to finish on %d", "i4", (u32)(pw0 - am->per_worker_data));
                 vlib_process_suspend(vm, 0.0001);
                 if (pw0->interrupt_is_needed) {
                   send_one_worker_interrupt(vm, am, (pw0 - am->per_worker_data));

@@ -362,7 +362,8 @@ class VppPapiProvider(object):
             is_ipv6=0,
             encap_vrf_id=0,
             decap_next_index=0xFFFFFFFF,
-            vni=0):
+            vni=0,
+            instance=0xFFFFFFFF):
         """
 
         :param dst_addr:
@@ -373,6 +374,7 @@ class VppPapiProvider(object):
         :param decap_next_index:  (Default value = 0xFFFFFFFF)
         :param mcast_sw_if_index:  (Default value = 0xFFFFFFFF)
         :param vni:  (Default value = 0)
+        :param instance:  (Default value = 0xFFFFFFFF)
 
         """
         return self.api(self.papi.vxlan_add_del_tunnel,
@@ -383,7 +385,8 @@ class VppPapiProvider(object):
                          'mcast_sw_if_index': mcast_sw_if_index,
                          'encap_vrf_id': encap_vrf_id,
                          'decap_next_index': decap_next_index,
-                         'vni': vni})
+                         'vni': vni,
+                         'instance': instance})
 
     def geneve_add_del_tunnel(
             self,
@@ -625,6 +628,21 @@ class VppPapiProvider(object):
         return self.api(self.papi.sw_interface_set_flags,
                         {'sw_if_index': sw_if_index,
                          'admin_up_down': admin_up_down})
+
+    def sw_interface_set_mtu(self, sw_if_index, mtu):
+        """
+        :param sw_if_index:
+        :param mtu:
+
+        """
+        return self.api(self.papi.sw_interface_set_mtu,
+                        {'sw_if_index': sw_if_index,
+                         'mtu': mtu})
+
+    def sw_interface_set_mac_address(self, sw_if_index, mac):
+        return self.api(self.papi.sw_interface_set_mac_address,
+                        {'sw_if_index': sw_if_index,
+                         'mac_address': mac})
 
     def create_subif(self, sw_if_index, sub_id, outer_vlan, inner_vlan,
                      no_tags=0, one_tag=0, two_tags=0, dot1ad=0, exact_match=0,
@@ -973,7 +991,9 @@ class VppPapiProvider(object):
                            src_address,
                            dst_address,
                            outer_fib_id=0,
-                           is_teb=0,
+                           tunnel_type=0,
+                           instance=0xFFFFFFFF,
+                           session_id=0,
                            is_add=1,
                            is_ip6=0):
         """ Add a GRE tunnel
@@ -981,19 +1001,23 @@ class VppPapiProvider(object):
         :param src_address:
         :param dst_address:
         :param outer_fib_id:  (Default value = 0)
+        :param tunnel_type:  (Default value = 0)
+        :param instance:  (Default value = 0xFFFFFFFF)
+        :param session_id: (Defalt value = 0)
         :param is_add:  (Default value = 1)
         :param is_ipv6:  (Default value = 0)
-        :param is_teb:  (Default value = 0)
         """
 
         return self.api(
             self.papi.gre_add_del_tunnel,
             {'is_add': is_add,
              'is_ipv6': is_ip6,
-             'teb': is_teb,
+             'tunnel_type': tunnel_type,
+             'instance': instance,
              'src_address': src_address,
              'dst_address': dst_address,
-             'outer_fib_id': outer_fib_id}
+             'outer_fib_id': outer_fib_id,
+             'session_id': session_id}
         )
 
     def udp_encap_add_del(self,
@@ -2125,6 +2149,29 @@ class VppPapiProvider(object):
              'l2_table_index': l2_table_index,
              'is_add': is_add})
 
+    def output_acl_set_interface(
+            self,
+            is_add,
+            sw_if_index,
+            ip4_table_index=0xFFFFFFFF,
+            ip6_table_index=0xFFFFFFFF,
+            l2_table_index=0xFFFFFFFF):
+        """
+        :param is_add:
+        :param sw_if_index:
+        :param ip4_table_index:  (Default value = 0xFFFFFFFF)
+        :param ip6_table_index:  (Default value = 0xFFFFFFFF)
+        :param l2_table_index:  (Default value = 0xFFFFFFFF)
+        """
+
+        return self.api(
+            self.papi.output_acl_set_interface,
+            {'sw_if_index': sw_if_index,
+             'ip4_table_index': ip4_table_index,
+             'ip6_table_index': ip6_table_index,
+             'l2_table_index': l2_table_index,
+             'is_add': is_add})
+
     def set_ipfix_exporter(
             self,
             collector_address,
@@ -2654,6 +2701,16 @@ class VppPapiProvider(object):
                          'acls': acls},
                         expected_retval=expected_retval)
 
+    def acl_interface_set_etype_whitelist(self, sw_if_index,
+                                          n_input, whitelist,
+                                          expected_retval=0):
+        return self.api(self.papi.acl_interface_set_etype_whitelist,
+                        {'sw_if_index': sw_if_index,
+                         'count': len(whitelist),
+                         'n_input': n_input,
+                         'whitelist': whitelist},
+                        expected_retval=expected_retval)
+
     def acl_interface_add_del(self,
                               sw_if_index,
                               acl_index,
@@ -2886,6 +2943,7 @@ class VppPapiProvider(object):
                                 bdti,
                                 bp,
                                 payload_proto,
+                                next_hop_afi,
                                 next_hop,
                                 next_hop_tbl_id=0,
                                 next_hop_rpf_id=~0,
@@ -2900,7 +2958,7 @@ class VppPapiProvider(object):
              'bde_n_paths': 1,
              'bde_paths': [{'next_hop': next_hop,
                             'table_id': next_hop_tbl_id,
-                            'afi': 0,
+                            'afi': next_hop_afi,
                             'rpf_id': next_hop_rpf_id,
                             'n_labels': 0,
                             'label_stack': [0]}],
@@ -3125,3 +3183,49 @@ class VppPapiProvider(object):
     def ip_reassembly_get(self, is_ip6=0):
         """ Get IP reassembly parameters """
         return self.api(self.papi.ip_reassembly_get, {'is_ip6': is_ip6})
+
+    def gbp_endpoint_add_del(self, is_add, sw_if_index, addr, is_ip6, epg):
+        """ GBP endpoint Add/Del """
+        return self.api(self.papi.gbp_endpoint_add_del,
+                        {'is_add': is_add,
+                         'endpoint': {
+                             'is_ip6': is_ip6,
+                             'sw_if_index': sw_if_index,
+                             'address': addr,
+                             'epg_id': epg}})
+
+    def gbp_endpoint_dump(self):
+        """ GBP endpoint Dump """
+        return self.api(self.papi.gbp_endpoint_dump, {})
+
+    def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index):
+        """ GBP contract Add/Del """
+        return self.api(self.papi.gbp_contract_add_del,
+                        {'is_add': is_add,
+                         'contract': {
+                             'acl_index': acl_index,
+                             'src_epg': src_epg,
+                             'dst_epg': dst_epg}})
+
+    def gbp_contract_dump(self):
+        """ GBP contract Dump """
+        return self.api(self.papi.gbp_contract_dump, {})
+
+    def sixrd_add_tunnel(self, fib_index, ip6_prefix, ip6_prefix_len,
+                         ip4_prefix, ip4_prefix_len, ip4_src, mtu,
+                         security_check):
+        """ 6RD tunnel Add """
+        return self.api(self.papi.sixrd_add_tunnel,
+                        {'fib_index': fib_index,
+                         'ip6_prefix': ip6_prefix,
+                         'ip6_prefix_len': ip6_prefix_len,
+                         'ip4_prefix': ip4_prefix,
+                         'ip4_prefix_len': ip4_prefix_len,
+                         'ip4_src': ip4_src,
+                         'mtu': mtu,
+                         'security_check': security_check})
+
+    def sixrd_del_tunnel(self, sw_if_index):
+        """ 6RD tunnel Delete """
+        return self.api(self.papi.sixrd_del_tunnel,
+                        {'sw_if_index': sw_if_index})

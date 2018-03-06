@@ -21,6 +21,29 @@ dhcp_client_main_t dhcp_client_main;
 static u8 *format_dhcp_client_state (u8 * s, va_list * va);
 static vlib_node_registration_t dhcp_client_process_node;
 
+#define foreach_dhcp_client_process_stat        \
+_(DISCOVER, "DHCP discover packets sent")       \
+_(OFFER, "DHCP offer packets sent")             \
+_(REQUEST, "DHCP request packets sent")         \
+_(ACK, "DHCP ack packets sent")
+
+typedef enum
+{
+#define _(sym,str) DHCP_STAT_##sym,
+  foreach_dhcp_client_process_stat
+#undef _
+    DHCP_STAT_UNKNOWN,
+  DHCP_STAT_N_STAT,
+} sample_error_t;
+
+static char *dhcp_client_process_stat_strings[] = {
+#define _(sym,string) string,
+  foreach_dhcp_client_process_stat
+#undef _
+    "DHCP unknown packets sent",
+};
+
+
 static void
 dhcp_client_acquire_address (dhcp_client_main_t * dcm, dhcp_client_t * c)
 {
@@ -64,6 +87,58 @@ dhcp_client_proc_callback (uword * client_index)
   ASSERT (vlib_get_thread_index () == 0);
   vlib_process_signal_event (vm, dhcp_client_process_node.index,
 			     EVENT_DHCP_CLIENT_WAKEUP, *client_index);
+}
+
+static void
+dhcp_client_addr_callback (dhcp_client_t * c)
+{
+  dhcp_client_main_t *dcm = &dhcp_client_main;
+  void (*fp) (u32, u32, u8 *, u8, u8, u8 *, u8 *, u8 *) = c->event_callback;
+
+  /* add the advertised subnet and disable the feature */
+  dhcp_client_acquire_address (dcm, c);
+  vnet_feature_enable_disable ("ip4-unicast",
+			       "ip4-dhcp-client-detect",
+			       c->sw_if_index, 0, 0, 0);
+
+  /*
+   * Configure default IP route:
+   */
+  if (c->router_address.as_u32)
+    {
+      fib_prefix_t all_0s = {
+	.fp_len = 0,
+	.fp_addr.ip4.as_u32 = 0x0,
+	.fp_proto = FIB_PROTOCOL_IP4,
+      };
+      ip46_address_t nh = {
+	.ip4 = c->router_address,
+      };
+
+      /* *INDENT-OFF* */
+      fib_table_entry_path_add (
+	fib_table_get_index_for_sw_if_index (
+	  FIB_PROTOCOL_IP4,
+	  c->sw_if_index),
+	  &all_0s,
+	  FIB_SOURCE_DHCP,
+	  FIB_ENTRY_FLAG_NONE,
+          DPO_PROTO_IP4,
+          &nh, c->sw_if_index,
+          ~0, 1, NULL,	// no label stack
+          FIB_ROUTE_PATH_FLAG_NONE);
+      /* *INDENT-ON* */
+    }
+
+  /*
+   * Call the user's event callback to report DHCP information
+   */
+  if (fp)
+    (*fp) (c->client_index,	/* clinet index */
+	   c->pid, c->hostname, c->subnet_mask_width, 0,	/* is_ipv6 */
+	   (u8 *) & c->leased_address,	/* host IP address */
+	   (u8 *) & c->router_address,	/* router IP address */
+	   (u8 *) (c->l2_rewrite + 6));	/* host MAC address */
 }
 
 /*
@@ -206,55 +281,8 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
 	}
       /* OK, we own the address (etc), add to the routing table(s) */
       if (c->state == DHCP_REQUEST)
-	{
-	  void (*fp) (u32, u32, u8 *, u8, u8, u8 *, u8 *, u8 *) =
-	    c->event_callback;
-
-	  /* add the advertised subnet and disable the feature */
-	  dhcp_client_acquire_address (dcm, c);
-	  vnet_feature_enable_disable ("ip4-unicast",
-				       "ip4-dhcp-client-detect",
-				       c->sw_if_index, 0, 0, 0);
-
-	  /*
-	   * Configure default IP route:
-	   */
-	  if (c->router_address.as_u32)
-	    {
-	      fib_prefix_t all_0s = {
-		.fp_len = 0,
-		.fp_addr.ip4.as_u32 = 0x0,
-		.fp_proto = FIB_PROTOCOL_IP4,
-	      };
-	      ip46_address_t nh = {
-		.ip4 = c->router_address,
-	      };
-
-              /* *INDENT-OFF* */
-	      fib_table_entry_path_add (
-                  fib_table_get_index_for_sw_if_index (
-                      FIB_PROTOCOL_IP4,
-                      c->sw_if_index),
-                  &all_0s,
-                  FIB_SOURCE_DHCP,
-                  FIB_ENTRY_FLAG_NONE,
-                  DPO_PROTO_IP4,
-                  &nh, c->sw_if_index,
-                  ~0, 1, NULL,	// no label stack
-                  FIB_ROUTE_PATH_FLAG_NONE);
-              /* *INDENT-ON* */
-	    }
-
-	  /*
-	   * Call the user's event callback to report DHCP information
-	   */
-	  if (fp)
-	    (*fp) (c->client_index,	/* clinet index */
-		   c->pid, c->hostname, c->subnet_mask_width, 0,	/* is_ipv6 */
-		   (u8 *) & c->leased_address,	/* host IP address */
-		   (u8 *) & c->router_address,	/* router IP address */
-		   (u8 *) (c->l2_rewrite + 6));	/* host MAC address */
-	}
+	vl_api_rpc_call_main_thread (dhcp_client_addr_callback,
+				     (u8 *) c, sizeof (*c));
 
       c->state = DHCP_BOUND;
       c->retry_count = 0;
@@ -291,6 +319,7 @@ send_dhcp_pkt (dhcp_client_main_t * dcm, dhcp_client_t * c,
   vlib_frame_t *f;
   dhcp_option_t *o;
   u16 udp_length, ip_length;
+  u32 counter_index;
 
   /* Interface(s) down? */
   if ((hw->flags & VNET_HW_INTERFACE_FLAG_LINK_UP) == 0)
@@ -469,6 +498,19 @@ send_dhcp_pkt (dhcp_client_main_t * dcm, dhcp_client_t * c,
 
   udp_length = ip_length - (sizeof (*ip));
   udp->length = clib_host_to_net_u16 (udp_length);
+
+  switch (type)
+    {
+#define _(a,b) case DHCP_PACKET_##a: {counter_index = DHCP_STAT_##a; break;}
+      foreach_dhcp_client_process_stat
+#undef _
+    default:
+      counter_index = DHCP_STAT_UNKNOWN;
+      break;
+    }
+
+  vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+			       counter_index, 1);
 }
 
 static int
@@ -527,6 +569,7 @@ dhcp_bound_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
 
   if (now > c->lease_expires)
     {
+      /* Remove the default route */
       if (c->router_address.as_u32)
 	{
 	  fib_prefix_t all_0s = {
@@ -544,7 +587,7 @@ dhcp_bound_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
 				       DPO_PROTO_IP4, &nh, c->sw_if_index, ~0,
 				       1, FIB_ROUTE_PATH_FLAG_NONE);
 	}
-
+      /* Remove the interface address */
       dhcp_client_release_address (dcm, c);
       c->state = DHCP_DISCOVER;
       c->next_transmit = now;
@@ -555,6 +598,15 @@ dhcp_bound_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
       c->router_address.as_u32 = 0;
       c->lease_renewal_interval = 0;
       c->dhcp_server.as_u32 = 0;
+      /*
+       * We disable the client detect feature when we bind a
+       * DHCP address. Turn it back on again here.
+       * Otherwise, if the DHCP server replies after an outage,
+       * we'll never see it.
+       */
+      vnet_feature_enable_disable ("ip4-unicast",
+				   "ip4-dhcp-client-detect",
+				   c->sw_if_index, 1, 0, 0);
       return 1;
     }
   return 0;
@@ -659,6 +711,8 @@ VLIB_REGISTER_NODE (dhcp_client_process_node,static) = {
     .type = VLIB_NODE_TYPE_PROCESS,
     .name = "dhcp-client-process",
     .process_log2_n_stack_bytes = 16,
+    .n_errors = ARRAY_LEN(dhcp_client_process_stat_strings),
+    .error_strings = dhcp_client_process_stat_strings,
 };
 /* *INDENT-ON* */
 

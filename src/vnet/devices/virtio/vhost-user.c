@@ -97,10 +97,11 @@
  */
 #define VHOST_USER_TX_COPY_THRESHOLD (VHOST_USER_COPY_ARRAY_N - 40)
 
-#define UNIX_GET_FD(unixfd_idx) \
-    (unixfd_idx != ~0) ? \
+#define UNIX_GET_FD(unixfd_idx) ({ \
+    typeof(unixfd_idx) __unixfd_idx = (unixfd_idx); \
+    (__unixfd_idx != ~0) ? \
 	pool_elt_at_index (file_main.file_pool, \
-			   unixfd_idx)->file_descriptor : -1;
+			   __unixfd_idx)->file_descriptor : -1; })
 
 #define foreach_virtio_trace_flags \
   _ (SIMPLE_CHAINED, 0, "Simple descriptor chaining") \
@@ -256,7 +257,76 @@ map_guest_mem (vhost_user_intf_t * vui, uword addr, u32 * hint)
       return (void *) (vui->region_mmap_addr[i] + addr -
 		       vui->regions[i].guest_phys_addr);
     }
+#elif __aarch64__ && __ARM_NEON
+  uint64x2_t al, ah, rl, rh, r;
+  uint32_t u32 = 0;
 
+  al = vdupq_n_u64 (addr + 1);
+  ah = vdupq_n_u64 (addr);
+
+  /*First Iteration */
+  rl = vld1q_u64 (&vui->region_guest_addr_lo[0]);
+  rl = vcgtq_u64 (al, rl);
+  rh = vld1q_u64 (&vui->region_guest_addr_hi[0]);
+  rh = vcgtq_u64 (rh, ah);
+  r = vandq_u64 (rl, rh);
+  u32 |= (vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 0) & 0x1);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 8) & 0x1) << 1);
+
+  if (u32)
+    {
+      i = __builtin_ctzll (u32);
+      goto vhost_map_guest_mem_done;
+    }
+
+  /*Second Iteration */
+  rl = vld1q_u64 (&vui->region_guest_addr_lo[2]);
+  rl = vcgtq_u64 (al, rl);
+  rh = vld1q_u64 (&vui->region_guest_addr_hi[2]);
+  rh = vcgtq_u64 (rh, ah);
+  r = vandq_u64 (rl, rh);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 0) & 0x1) << 2);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 8) & 0x1) << 3);
+
+  if (u32)
+    {
+      i = __builtin_ctzll (u32);
+      goto vhost_map_guest_mem_done;
+    }
+
+  /*Third Iteration */
+  rl = vld1q_u64 (&vui->region_guest_addr_lo[4]);
+  rl = vcgtq_u64 (al, rl);
+  rh = vld1q_u64 (&vui->region_guest_addr_hi[4]);
+  rh = vcgtq_u64 (rh, ah);
+  r = vandq_u64 (rl, rh);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 0) & 0x1) << 4);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 8) & 0x1) << 5);
+
+  if (u32)
+    {
+      i = __builtin_ctzll (u32);
+      goto vhost_map_guest_mem_done;
+    }
+
+  /*Fourth Iteration */
+  rl = vld1q_u64 (&vui->region_guest_addr_lo[6]);
+  rl = vcgtq_u64 (al, rl);
+  rh = vld1q_u64 (&vui->region_guest_addr_hi[6]);
+  rh = vcgtq_u64 (rh, ah);
+  r = vandq_u64 (rl, rh);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 0) & 0x1) << 6);
+  u32 |= ((vgetq_lane_u8 (vreinterpretq_u8_u64 (r), 8) & 0x1) << 7);
+
+  i = __builtin_ctzll (u32 | (1 << VHOST_MEMORY_MAX_NREGIONS));
+
+vhost_map_guest_mem_done:
+  if (i < vui->nregions)
+    {
+      *hint = i;
+      return (void *) (vui->region_mmap_addr[i] + addr -
+		       vui->regions[i].guest_phys_addr);
+    }
 #else
   for (i = 0; i < vui->nregions; i++)
     {
@@ -306,7 +376,7 @@ unmap_all_mem_regions (vhost_user_intf_t * vui)
   int i, r;
   for (i = 0; i < vui->nregions; i++)
     {
-      if (vui->region_mmap_addr[i] != (void *) -1)
+      if (vui->region_mmap_addr[i] != MAP_FAILED)
 	{
 
 	  long page_sz = get_huge_page_size (vui->region_mmap_fd[i]);
@@ -323,7 +393,7 @@ unmap_all_mem_regions (vhost_user_intf_t * vui)
 	    ("unmap memory region %d addr 0x%lx len 0x%lx page_sz 0x%x", i,
 	     vui->region_mmap_addr[i], map_sz, page_sz);
 
-	  vui->region_mmap_addr[i] = (void *) -1;
+	  vui->region_mmap_addr[i] = MAP_FAILED;
 
 	  if (r == -1)
 	    {
@@ -829,7 +899,7 @@ vhost_user_socket_read (clib_file_t * uf)
 
 	  long page_sz = get_huge_page_size (fds[i]);
 
-	  /* align size to 2M page */
+	  /* align size to page */
 	  ssize_t map_sz = (vui->regions[i].memory_size +
 			    vui->regions[i].mmap_offset +
 			    page_sz - 1) & ~(page_sz - 1);
@@ -1076,7 +1146,7 @@ vhost_user_socket_read (clib_file_t * uf)
 	  }
 
 	fd = fds[0];
-	/* align size to 2M page */
+	/* align size to page */
 	long page_sz = get_huge_page_size (fd);
 	ssize_t map_sz =
 	  (msg.log.size + msg.log.offset + page_sz - 1) & ~(page_sz - 1);
@@ -1213,7 +1283,15 @@ vhost_user_socksvr_accept_ready (clib_file_t * uf)
   if (client_fd < 0)
     return clib_error_return_unix (0, "accept");
 
-  DBG_SOCK ("New client socket for vhost interface %d", vui->sw_if_index);
+  if (vui->clib_file_index != ~0)
+    {
+      DBG_SOCK ("Close client socket for vhost interface %d, fd %d",
+		vui->sw_if_index, UNIX_GET_FD (vui->clib_file_index));
+      clib_file_del (&file_main, file_main.file_pool + vui->clib_file_index);
+    }
+
+  DBG_SOCK ("New client socket for vhost interface %d, fd %d",
+	    vui->sw_if_index, client_fd);
   template.read_function = vhost_user_socket_read;
   template.error_function = vhost_user_socket_error;
   template.file_descriptor = client_fd;

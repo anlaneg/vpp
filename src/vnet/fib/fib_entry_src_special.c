@@ -52,11 +52,22 @@ fib_entry_src_special_add (fib_entry_src_t *src,
 				     dpo);
 }
 
+static void
+fib_entry_src_special_path_swap (fib_entry_src_t *src,
+                                 const fib_entry_t *entry,
+                                 fib_path_list_flags_t pl_flags,
+                                 const fib_route_path_t *rpaths)
+{
+    src->fes_pl = fib_path_list_create((FIB_PATH_LIST_FLAG_SHARED | pl_flags),
+				       rpaths);
+}
+
 const static fib_entry_src_vft_t special_src_vft = {
     .fesv_init = fib_entry_src_special_init,
     .fesv_deinit = fib_entry_src_special_deinit,
     .fesv_add = fib_entry_src_special_add,
     .fesv_remove = fib_entry_src_special_remove,
+    .fesv_path_swap = fib_entry_src_special_path_swap,
 };
 
 void
@@ -64,7 +75,6 @@ fib_entry_src_special_register (void)
 {
     fib_entry_src_register(FIB_SOURCE_SPECIAL, &special_src_vft);
     fib_entry_src_register(FIB_SOURCE_MAP, &special_src_vft);
-    fib_entry_src_register(FIB_SOURCE_SIXRD, &special_src_vft);
     fib_entry_src_register(FIB_SOURCE_CLASSIFY, &special_src_vft);
     fib_entry_src_register(FIB_SOURCE_AE, &special_src_vft);
     fib_entry_src_register(FIB_SOURCE_PROXY, &special_src_vft);

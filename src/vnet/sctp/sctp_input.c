@@ -27,7 +27,8 @@ static char *sctp_error_strings[] = {
 
 /* All SCTP nodes have the same outgoing arcs */
 #define foreach_sctp_state_next                  \
-  _ (DROP, "error-drop")                        \
+  _ (DROP4, "ip4-drop")                         \
+  _ (DROP6, "ip6-drop")                         \
   _ (SCTP4_OUTPUT, "sctp4-output")                \
   _ (SCTP6_OUTPUT, "sctp6-output")
 
@@ -233,6 +234,8 @@ typedef struct
 #define sctp_next_output(is_ip4) (is_ip4 ? SCTP_NEXT_SCTP4_OUTPUT          \
                                         : SCTP_NEXT_SCTP6_OUTPUT)
 
+#define sctp_next_drop(is_ip4) (is_ip4 ? SCTP_NEXT_DROP4                  \
+                                      : SCTP_NEXT_DROP6)
 
 void
 sctp_set_rx_trace_data (sctp_rx_trace_t * rx_trace,
@@ -280,6 +283,36 @@ sctp_is_bundling (u16 sctp_implied_length,
 }
 
 always_inline u16
+sctp_handle_operation_err (sctp_header_t * sctp_hdr,
+			   sctp_connection_t * sctp_conn, u8 idx,
+			   vlib_buffer_t * b, u16 * next0)
+{
+  sctp_operation_error_t *op_err = (sctp_operation_error_t *) sctp_hdr;
+
+  /* Check that the LOCALLY generated tag is being used by the REMOTE peer as the verification tag */
+  if (sctp_conn->local_tag != sctp_hdr->verification_tag)
+    {
+      return SCTP_ERROR_INVALID_TAG;
+    }
+
+  if (clib_net_to_host_u16 (op_err->err_causes[0].param_hdr.type) ==
+      STALE_COOKIE_ERROR)
+    {
+      if (sctp_conn->state != SCTP_STATE_COOKIE_ECHOED)
+	*next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
+      else
+	{
+	  sctp_connection_cleanup (sctp_conn);
+
+	  stream_session_disconnect_notify (&sctp_conn->
+					    sub_conn[idx].connection);
+	}
+    }
+
+  return SCTP_ERROR_NONE;
+}
+
+always_inline u16
 sctp_handle_init (sctp_header_t * sctp_hdr,
 		  sctp_chunks_common_hdr_t * sctp_chunk_hdr,
 		  sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
@@ -301,12 +334,24 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
     {				/* UNEXPECTED scenario */
       switch (sctp_conn->state)
 	{
-	case SCTP_STATE_COOKIE_WAIT:	/* TODO */
+	case SCTP_STATE_COOKIE_WAIT:
 	  SCTP_ADV_DBG ("Received INIT chunk while in COOKIE_WAIT state");
-	  break;
-	case SCTP_STATE_COOKIE_ECHOED:	/* TODO */
+	  sctp_prepare_initack_chunk_for_collision (sctp_conn,
+						    SCTP_PRIMARY_PATH_IDX,
+						    b0, ip4_addr, ip6_addr);
+	  return SCTP_ERROR_NONE;
+	case SCTP_STATE_COOKIE_ECHOED:
+	case SCTP_STATE_SHUTDOWN_ACK_SENT:
 	  SCTP_ADV_DBG ("Received INIT chunk while in COOKIE_ECHOED state");
-	  break;
+	  if (sctp_conn->forming_association_changed == 0)
+	    sctp_prepare_initack_chunk_for_collision (sctp_conn,
+						      SCTP_PRIMARY_PATH_IDX,
+						      b0, ip4_addr, ip6_addr);
+	  else
+	    sctp_prepare_abort_for_collision (sctp_conn,
+					      SCTP_PRIMARY_PATH_IDX, b0,
+					      ip4_addr, ip6_addr);
+	  return SCTP_ERROR_NONE;
 	}
     }
 
@@ -329,7 +374,7 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
   SCTP_CONN_TRACKING_DBG ("sctp_conn->remote_initial_tsn = %u",
 			  sctp_conn->remote_initial_tsn);
 
-  sctp_conn->snd_opts.a_rwnd = clib_net_to_host_u32 (init_chunk->a_rwnd);
+  sctp_conn->peer_rwnd = clib_net_to_host_u32 (init_chunk->a_rwnd);
 
   /*
    * If the length specified in the INIT message is bigger than the size in bytes of our structure it means that
@@ -354,7 +399,10 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 		clib_memcpy (ip4_addr, &ipv4->address,
 			     sizeof (ip4_address_t));
 
-		sctp_sub_connection_add_ip4 (vlib_get_thread_index (), ipv4);
+		sctp_sub_connection_add_ip4 (vlib_get_main (),
+					     &sctp_conn->sub_conn
+					     [SCTP_PRIMARY_PATH_IDX].connection.
+					     lcl_ip.ip4, &ipv4->address);
 
 		break;
 	      }
@@ -365,7 +413,10 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 		clib_memcpy (ip6_addr, &ipv6->address,
 			     sizeof (ip6_address_t));
 
-		sctp_sub_connection_add_ip6 (vlib_get_thread_index (), ipv6);
+		sctp_sub_connection_add_ip6 (vlib_get_main (),
+					     &sctp_conn->sub_conn
+					     [SCTP_PRIMARY_PATH_IDX].connection.
+					     lcl_ip.ip6, &ipv6->address);
 
 		break;
 	      }
@@ -396,7 +447,8 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
     }
 
   /* Reuse buffer to make init-ack and send */
-  sctp_prepare_initack_chunk (sctp_conn, b0, ip4_addr, ip6_addr);
+  sctp_prepare_initack_chunk (sctp_conn, SCTP_PRIMARY_PATH_IDX, b0, ip4_addr,
+			      ip6_addr);
   return SCTP_ERROR_NONE;
 }
 
@@ -427,13 +479,11 @@ sctp_is_valid_init_ack (sctp_header_t * sctp_hdr,
 always_inline u16
 sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 		      sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-		      sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
-		      u16 sctp_implied_length)
+		      sctp_connection_t * sctp_conn, u8 idx,
+		      vlib_buffer_t * b0, u16 sctp_implied_length)
 {
   sctp_init_ack_chunk_t *init_ack_chunk =
     (sctp_init_ack_chunk_t *) (sctp_hdr);
-  ip4_address_t *ip4_addr = 0;
-  ip6_address_t *ip6_addr = 0;
   sctp_state_cookie_param_t state_cookie;
 
   char hostname[FQDN_MAX_LENGTH];
@@ -450,6 +500,11 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
   if (sctp_is_bundling (sctp_implied_length, &init_ack_chunk->chunk_hdr))
     return SCTP_ERROR_BUNDLING_VIOLATION;
 
+  /* Stop the T1_INIT timer */
+  sctp_timer_reset (sctp_conn, idx, SCTP_TIMER_T1_INIT);
+
+  sctp_calculate_rto (sctp_conn, idx);
+
   /* remote_tag to be placed in the VERIFICATION_TAG field of the COOKIE_ECHO chunk */
   sctp_conn->remote_tag = init_ack_chunk->initiate_tag;
   sctp_conn->remote_initial_tsn =
@@ -458,7 +513,7 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
   sctp_conn->next_tsn_expected = sctp_conn->remote_initial_tsn + 1;
   SCTP_CONN_TRACKING_DBG ("sctp_conn->remote_initial_tsn = %u",
 			  sctp_conn->remote_initial_tsn);
-  sctp_conn->snd_opts.a_rwnd = clib_net_to_host_u32 (init_ack_chunk->a_rwnd);
+  sctp_conn->peer_rwnd = clib_net_to_host_u32 (init_ack_chunk->a_rwnd);
 
   u16 length = vnet_sctp_get_chunk_length (sctp_chunk_hdr);
 
@@ -481,10 +536,11 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 	      {
 		sctp_ipv4_addr_param_t *ipv4 =
 		  (sctp_ipv4_addr_param_t *) opt_params_hdr;
-		clib_memcpy (ip4_addr, &ipv4->address,
-			     sizeof (ip4_address_t));
 
-		sctp_sub_connection_add_ip4 (vlib_get_thread_index (), ipv4);
+		sctp_sub_connection_add_ip4 (vlib_get_main (),
+					     &sctp_conn->sub_conn
+					     [SCTP_PRIMARY_PATH_IDX].connection.
+					     lcl_ip.ip4, &ipv4->address);
 
 		break;
 	      }
@@ -492,10 +548,11 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 	      {
 		sctp_ipv6_addr_param_t *ipv6 =
 		  (sctp_ipv6_addr_param_t *) opt_params_hdr;
-		clib_memcpy (ip6_addr, &ipv6->address,
-			     sizeof (ip6_address_t));
 
-		sctp_sub_connection_add_ip6 (vlib_get_thread_index (), ipv6);
+		sctp_sub_connection_add_ip6 (vlib_get_main (),
+					     &sctp_conn->sub_conn
+					     [SCTP_PRIMARY_PATH_IDX].connection.
+					     lcl_ip.ip6, &ipv6->address);
 
 		break;
 	      }
@@ -531,11 +588,14 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 	}
     }
 
-  sctp_prepare_cookie_echo_chunk (sctp_conn, b0, &state_cookie);
+  clib_memcpy (&(sctp_conn->cookie_param), &state_cookie,
+	       sizeof (sctp_state_cookie_param_t));
+
+  sctp_prepare_cookie_echo_chunk (sctp_conn, idx, b0, 1);
 
   /* Start the T1_COOKIE timer */
-  sctp_timer_set (sctp_conn, sctp_pick_conn_idx_on_chunk (COOKIE_ECHO),
-		  SCTP_TIMER_T1_COOKIE, SCTP_RTO_INIT);
+  sctp_timer_set (sctp_conn, idx,
+		  SCTP_TIMER_T1_COOKIE, sctp_conn->sub_conn[idx].RTO);
 
   return SCTP_ERROR_NONE;
 }
@@ -649,14 +709,28 @@ sctp_session_enqueue_data (sctp_connection_t * sctp_conn, vlib_buffer_t * b,
 }
 
 always_inline u8
-sctp_is_sack_delayable (sctp_connection_t * sctp_conn, u8 gapping)
+sctp_is_sack_delayable (sctp_connection_t * sctp_conn, u8 idx, u8 is_gapping)
 {
-  if (gapping != 0)
+  if (sctp_conn->conn_config.never_delay_sack)
+    {
+      SCTP_CONN_TRACKING_DBG ("sctp_conn->conn_config.never_delay_sack = ON");
+      return 0;
+    }
+
+  /* Section 4.4 of the RFC4960 */
+  if (sctp_conn->state == SCTP_STATE_SHUTDOWN_SENT)
+    {
+      SCTP_CONN_TRACKING_DBG ("sctp_conn->state = %s; SACK not delayable",
+			      sctp_state_to_string (sctp_conn->state));
+      return 0;
+    }
+
+  if (is_gapping != 0)
     {
       SCTP_CONN_TRACKING_DBG
 	("gapping != 0: CONN_INDEX = %u, sctp_conn->ack_state = %u",
 	 sctp_conn->sub_conn[idx].connection.c_index, sctp_conn->ack_state);
-      return 1;
+      return 0;
     }
 
   if (sctp_conn->ack_state >= MAX_ENQUEABLE_SACKS)
@@ -664,12 +738,12 @@ sctp_is_sack_delayable (sctp_connection_t * sctp_conn, u8 gapping)
       SCTP_CONN_TRACKING_DBG
 	("sctp_conn->ack_state >= MAX_ENQUEABLE_SACKS: CONN_INDEX = %u, sctp_conn->ack_state = %u",
 	 sctp_conn->sub_conn[idx].connection.c_index, sctp_conn->ack_state);
-      return 1;
+      return 0;
     }
 
   sctp_conn->ack_state += 1;
 
-  return 0;
+  return 1;
 }
 
 always_inline void
@@ -680,7 +754,7 @@ sctp_is_connection_gapping (sctp_connection_t * sctp_conn, u32 tsn,
     {
       SCTP_CONN_TRACKING_DBG
 	("GAPPING: CONN_INDEX = %u, sctp_conn->next_tsn_expected = %u, tsn = %u, diff = %u",
-	 sctp_conn->sub_conn[idx].connection.c_index,
+	 sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.c_index,
 	 sctp_conn->next_tsn_expected, tsn,
 	 sctp_conn->next_tsn_expected - tsn);
 
@@ -690,11 +764,10 @@ sctp_is_connection_gapping (sctp_connection_t * sctp_conn, u32 tsn,
 
 always_inline u16
 sctp_handle_data (sctp_payload_data_chunk_t * sctp_data_chunk,
-		  sctp_connection_t * sctp_conn, vlib_buffer_t * b,
+		  sctp_connection_t * sctp_conn, u8 idx, vlib_buffer_t * b,
 		  u16 * next0)
 {
   u32 error = 0, n_data_bytes;
-  u8 idx = sctp_pick_conn_idx_on_state (sctp_conn->state);
   u8 is_gapping = 0;
 
   /* Check that the LOCALLY generated tag is being used by the REMOTE peer as the verification tag */
@@ -725,7 +798,11 @@ sctp_handle_data (sctp_payload_data_chunk_t * sctp_data_chunk,
     {
       /* In order data, enqueue. Fifo figures out by itself if any out-of-order
        * segments can be enqueued after fifo tail offset changes. */
-      error = sctp_session_enqueue_data (sctp_conn, b, n_data_bytes, idx);
+      if (PREDICT_FALSE (is_gapping == 1))
+	error =
+	  sctp_session_enqueue_data_ooo (sctp_conn, b, n_data_bytes, idx);
+      else
+	error = sctp_session_enqueue_data (sctp_conn, b, n_data_bytes, idx);
     }
   else if (bbit == 1 && ebit == 0)	/* First piece of a fragmented user message */
     {
@@ -749,12 +826,14 @@ sctp_handle_data (sctp_payload_data_chunk_t * sctp_data_chunk,
     }
   sctp_conn->last_rcvd_tsn = tsn;
 
-  *next0 = sctp_next_output (sctp_conn->sub_conn[idx].c_is_ip4);
+  *next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
 
   SCTP_ADV_DBG ("POINTER_WITH_DATA = %p", b->data);
 
-  if (sctp_is_sack_delayable (sctp_conn, is_gapping) != 0)
-    sctp_prepare_sack_chunk (sctp_conn, b);
+  if (!sctp_is_sack_delayable (sctp_conn, idx, is_gapping))
+    sctp_prepare_sack_chunk (sctp_conn, idx, b);
+
+  sctp_conn->sub_conn[idx].enqueue_state = error;
 
   return error;
 }
@@ -762,11 +841,10 @@ sctp_handle_data (sctp_payload_data_chunk_t * sctp_data_chunk,
 always_inline u16
 sctp_handle_cookie_echo (sctp_header_t * sctp_hdr,
 			 sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-			 sctp_connection_t * sctp_conn, vlib_buffer_t * b0)
+			 sctp_connection_t * sctp_conn, u8 idx,
+			 vlib_buffer_t * b0, u16 * next0)
 {
-
-  /* Build TCB */
-  u8 idx = sctp_pick_conn_idx_on_chunk (COOKIE_ECHO);
+  u32 now = sctp_time_now ();
 
   sctp_cookie_echo_chunk_t *cookie_echo =
     (sctp_cookie_echo_chunk_t *) sctp_hdr;
@@ -777,7 +855,8 @@ sctp_handle_cookie_echo (sctp_header_t * sctp_hdr,
       return SCTP_ERROR_INVALID_TAG;
     }
 
-  u32 now = sctp_time_now ();
+  sctp_calculate_rto (sctp_conn, idx);
+
   u32 creation_time =
     clib_net_to_host_u32 (cookie_echo->cookie.creation_time);
   u32 cookie_lifespan =
@@ -789,10 +868,15 @@ sctp_handle_cookie_echo (sctp_header_t * sctp_hdr,
       return SCTP_ERROR_COOKIE_ECHO_VIOLATION;
     }
 
-  sctp_prepare_cookie_ack_chunk (sctp_conn, b0);
+  sctp_prepare_cookie_ack_chunk (sctp_conn, idx, b0);
 
   /* Change state */
   sctp_conn->state = SCTP_STATE_ESTABLISHED;
+  sctp_conn->sub_conn[idx].state = SCTP_SUBCONN_STATE_UP;
+  *next0 = sctp_next_output (sctp_conn->sub_conn[idx].c_is_ip4);
+
+  sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T4_HEARTBEAT,
+		  sctp_conn->sub_conn[idx].RTO);
 
   stream_session_accept_notify (&sctp_conn->sub_conn[idx].connection);
 
@@ -803,25 +887,28 @@ sctp_handle_cookie_echo (sctp_header_t * sctp_hdr,
 always_inline u16
 sctp_handle_cookie_ack (sctp_header_t * sctp_hdr,
 			sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-			sctp_connection_t * sctp_conn, vlib_buffer_t * b0)
+			sctp_connection_t * sctp_conn, u8 idx,
+			vlib_buffer_t * b0, u16 * next0)
 {
-
-  /* Stop T1_COOKIE timer */
-  u8 idx = sctp_pick_conn_idx_on_chunk (COOKIE_ACK);
-
   /* Check that the LOCALLY generated tag is being used by the REMOTE peer as the verification tag */
   if (sctp_conn->local_tag != sctp_hdr->verification_tag)
     {
       return SCTP_ERROR_INVALID_TAG;
     }
 
+  sctp_calculate_rto (sctp_conn, idx);
+
   sctp_timer_reset (sctp_conn, idx, SCTP_TIMER_T1_COOKIE);
   /* Change state */
   sctp_conn->state = SCTP_STATE_ESTABLISHED;
+  sctp_conn->sub_conn[idx].state = SCTP_SUBCONN_STATE_UP;
+
+  *next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
+
+  sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T4_HEARTBEAT,
+		  sctp_conn->sub_conn[idx].RTO);
 
   stream_session_accept_notify (&sctp_conn->sub_conn[idx].connection);
-
-  sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T3_RXTX, SCTP_RTO_INIT);
 
   return SCTP_ERROR_NONE;
 
@@ -857,7 +944,7 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  ip6_header_t *ip6_hdr = 0;
 	  sctp_connection_t *sctp_conn, *new_sctp_conn;
 	  u16 sctp_implied_length = 0;
-	  u16 error0 = SCTP_ERROR_NONE, next0 = SCTP_RCV_PHASE_N_NEXT;
+	  u16 error0 = SCTP_ERROR_NONE, next0 = sctp_next_drop (is_ip4);
 	  u8 idx;
 
 	  bi0 = from[0];
@@ -878,12 +965,6 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  if (PREDICT_FALSE (sctp_conn == 0))
 	    {
-	      error0 = SCTP_ERROR_INVALID_CONNECTION;
-	      goto drop;
-	    }
-
-	  if (PREDICT_FALSE (sctp_conn == 0))
-	    {
 	      SCTP_ADV_DBG
 		("sctp_conn == NULL; return SCTP_ERROR_INVALID_CONNECTION");
 	      error0 = SCTP_ERROR_INVALID_CONNECTION;
@@ -893,35 +974,17 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      ip4_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip4_next_header (ip4_hdr);
+	      idx = sctp_sub_conn_id_via_ip4h (sctp_conn, ip4_hdr);
 	    }
 	  else
 	    {
 	      ip6_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip6_next_header (ip6_hdr);
+	      idx = sctp_sub_conn_id_via_ip6h (sctp_conn, ip6_hdr);
 	    }
-	  idx = sctp_pick_conn_idx_on_state (sctp_conn->state);
 
+	  sctp_conn->sub_conn[idx].subconn_idx = idx;
 	  sctp_full_hdr_t *full_hdr = (sctp_full_hdr_t *) sctp_hdr;
-
-	  transport_connection_t *trans_conn =
-	    &sctp_conn->sub_conn[idx].connection;
-
-	  trans_conn->lcl_port = sctp_hdr->dst_port;
-	  trans_conn->rmt_port = sctp_hdr->src_port;
-	  trans_conn->is_ip4 = is_ip4;
-
-	  if (is_ip4)
-	    {
-	      trans_conn->lcl_ip.ip4.as_u32 = ip4_hdr->dst_address.as_u32;
-	      trans_conn->rmt_ip.ip4.as_u32 = ip4_hdr->src_address.as_u32;
-	    }
-	  else
-	    {
-	      clib_memcpy (&trans_conn->lcl_ip.ip6, &ip6_hdr->dst_address,
-			   sizeof (ip6_address_t));
-	      clib_memcpy (&trans_conn->rmt_ip.ip6, &ip6_hdr->src_address,
-			   sizeof (ip6_address_t));
-	    }
 
 	  sctp_chunk_hdr =
 	    (sctp_chunks_common_hdr_t *) (&full_hdr->common_hdr);
@@ -947,7 +1010,9 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		    new_sctp_conn - tm->connections[my_thread_index];
 		  new_sctp_conn->sub_conn[idx].c_thread_index =
 		    my_thread_index;
-		  new_sctp_conn->sub_conn[idx].parent = new_sctp_conn;
+		  new_sctp_conn->sub_conn[idx].PMTU =
+		    sctp_conn->sub_conn[idx].PMTU;
+		  new_sctp_conn->sub_conn[idx].subconn_idx = idx;
 
 		  if (sctp_half_open_connection_cleanup (sctp_conn))
 		    {
@@ -959,11 +1024,10 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 		  error0 =
 		    sctp_handle_init_ack (sctp_hdr, sctp_chunk_hdr,
-					  new_sctp_conn, b0,
+					  new_sctp_conn, idx, b0,
 					  sctp_implied_length);
 
-		  sctp_init_mss (new_sctp_conn);
-		  //sctp_init_snd_vars (new_sctp_conn);
+		  sctp_init_cwnd (new_sctp_conn);
 
 		  if (session_stream_connect_notify
 		      (&new_sctp_conn->sub_conn[idx].connection, 0))
@@ -974,8 +1038,14 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		      sctp_connection_cleanup (new_sctp_conn);
 		      goto drop;
 		    }
+		  next0 = sctp_next_output (is_ip4);
 		}
-	      next0 = sctp_next_output (is_ip4);
+	      break;
+
+	    case OPERATION_ERROR:
+	      error0 =
+		sctp_handle_operation_err (sctp_hdr, sctp_conn, idx, b0,
+					   &next0);
 	      break;
 
 	      /* All UNEXPECTED scenarios (wrong chunk received per state-machine)
@@ -984,7 +1054,7 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       */
 	    default:
 	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
 
@@ -992,7 +1062,7 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      clib_warning ("error while parsing chunk");
 	      sctp_connection_cleanup (sctp_conn);
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
 
@@ -1093,8 +1163,9 @@ vlib_node_registration_t sctp6_shutdown_phase_node;
 always_inline u16
 sctp_handle_shutdown (sctp_header_t * sctp_hdr,
 		      sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-		      sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
-		      u16 sctp_implied_length)
+		      sctp_connection_t * sctp_conn, u8 idx,
+		      vlib_buffer_t * b0, u16 sctp_implied_length,
+		      u16 * next0)
 {
   sctp_shutdown_association_chunk_t *shutdown_chunk =
     (sctp_shutdown_association_chunk_t *) (sctp_hdr);
@@ -1116,12 +1187,15 @@ sctp_handle_shutdown (sctp_header_t * sctp_hdr,
     case SCTP_STATE_ESTABLISHED:
       if (sctp_check_outstanding_data_chunks (sctp_conn) == 0)
 	sctp_conn->state = SCTP_STATE_SHUTDOWN_RECEIVED;
+      sctp_send_shutdown_ack (sctp_conn, idx, b0);
       break;
 
     case SCTP_STATE_SHUTDOWN_SENT:
-      sctp_send_shutdown_ack (sctp_conn);
+      sctp_send_shutdown_ack (sctp_conn, idx, b0);
       break;
     }
+
+  *next0 = sctp_next_output (sctp_conn->sub_conn[idx].c_is_ip4);
 
   return SCTP_ERROR_NONE;
 }
@@ -1129,8 +1203,9 @@ sctp_handle_shutdown (sctp_header_t * sctp_hdr,
 always_inline u16
 sctp_handle_shutdown_ack (sctp_header_t * sctp_hdr,
 			  sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-			  sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
-			  u16 sctp_implied_length)
+			  sctp_connection_t * sctp_conn, u8 idx,
+			  vlib_buffer_t * b0, u16 sctp_implied_length,
+			  u16 * next0)
 {
   sctp_shutdown_ack_chunk_t *shutdown_ack_chunk =
     (sctp_shutdown_ack_chunk_t *) (sctp_hdr);
@@ -1152,9 +1227,11 @@ sctp_handle_shutdown_ack (sctp_header_t * sctp_hdr,
    * - STOP T2_SHUTDOWN timer
    * - SEND SHUTDOWN_COMPLETE chunk
    */
-  sctp_timer_reset (sctp_conn, MAIN_SCTP_SUB_CONN_IDX,
-		    SCTP_TIMER_T2_SHUTDOWN);
-  sctp_send_shutdown_complete (sctp_conn);
+  sctp_timer_reset (sctp_conn, SCTP_PRIMARY_PATH_IDX, SCTP_TIMER_T2_SHUTDOWN);
+
+  sctp_send_shutdown_complete (sctp_conn, idx, b0);
+
+  *next0 = sctp_next_output (sctp_conn->sub_conn[idx].c_is_ip4);
 
   return SCTP_ERROR_NONE;
 }
@@ -1162,8 +1239,9 @@ sctp_handle_shutdown_ack (sctp_header_t * sctp_hdr,
 always_inline u16
 sctp_handle_shutdown_complete (sctp_header_t * sctp_hdr,
 			       sctp_chunks_common_hdr_t * sctp_chunk_hdr,
-			       sctp_connection_t * sctp_conn,
-			       vlib_buffer_t * b0, u16 sctp_implied_length)
+			       sctp_connection_t * sctp_conn, u8 idx,
+			       vlib_buffer_t * b0, u16 sctp_implied_length,
+			       u16 * next0)
 {
   sctp_shutdown_complete_chunk_t *shutdown_complete =
     (sctp_shutdown_complete_chunk_t *) (sctp_hdr);
@@ -1180,13 +1258,13 @@ sctp_handle_shutdown_complete (sctp_header_t * sctp_hdr,
   if (sctp_is_bundling (sctp_implied_length, &shutdown_complete->chunk_hdr))
     return SCTP_ERROR_BUNDLING_VIOLATION;
 
-  sctp_timer_reset (sctp_conn, MAIN_SCTP_SUB_CONN_IDX,
-		    SCTP_TIMER_T2_SHUTDOWN);
+  sctp_timer_reset (sctp_conn, idx, SCTP_TIMER_T2_SHUTDOWN);
+
+  stream_session_disconnect_notify (&sctp_conn->sub_conn[idx].connection);
 
   sctp_conn->state = SCTP_STATE_CLOSED;
 
-  stream_session_disconnect_notify (&sctp_conn->sub_conn
-				    [MAIN_SCTP_SUB_CONN_IDX].connection);
+  *next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
 
   return SCTP_ERROR_NONE;
 }
@@ -1222,6 +1300,7 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	  sctp_connection_t *sctp_conn;
 	  u16 sctp_implied_length = 0;
 	  u16 error0 = SCTP_ERROR_NONE, next0 = SCTP_RCV_PHASE_N_NEXT;
+	  u8 idx = 0;
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -1247,11 +1326,13 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	    {
 	      ip4_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip4_next_header (ip4_hdr);
+	      idx = sctp_sub_conn_id_via_ip4h (sctp_conn, ip4_hdr);
 	    }
 	  else
 	    {
 	      ip6_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip6_next_header (ip6_hdr);
+	      idx = sctp_sub_conn_id_via_ip6h (sctp_conn, ip6_hdr);
 	    }
 
 	  sctp_full_hdr_t *full_hdr = (sctp_full_hdr_t *) sctp_hdr;
@@ -1260,30 +1341,29 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	  sctp_implied_length =
 	    sctp_calculate_implied_length (ip4_hdr, ip6_hdr, is_ip4);
 
-	  switch (vnet_sctp_get_chunk_type (sctp_chunk_hdr))
+	  u8 chunk_type = vnet_sctp_get_chunk_type (sctp_chunk_hdr);
+	  switch (chunk_type)
 	    {
 	    case SHUTDOWN:
 	      error0 =
-		sctp_handle_shutdown (sctp_hdr, sctp_chunk_hdr, sctp_conn, b0,
-				      sctp_implied_length);
-	      next0 = sctp_next_output (is_ip4);
+		sctp_handle_shutdown (sctp_hdr, sctp_chunk_hdr, sctp_conn,
+				      idx, b0, sctp_implied_length, &next0);
 	      break;
 
 	    case SHUTDOWN_ACK:
 	      error0 =
 		sctp_handle_shutdown_ack (sctp_hdr, sctp_chunk_hdr, sctp_conn,
-					  b0, sctp_implied_length);
-	      next0 = sctp_next_output (is_ip4);
+					  idx, b0, sctp_implied_length,
+					  &next0);
 	      break;
 
 	    case SHUTDOWN_COMPLETE:
 	      error0 =
 		sctp_handle_shutdown_complete (sctp_hdr, sctp_chunk_hdr,
-					       sctp_conn, b0,
-					       sctp_implied_length);
+					       sctp_conn, idx, b0,
+					       sctp_implied_length, &next0);
 
 	      sctp_connection_cleanup (sctp_conn);
-	      next0 = sctp_next_output (is_ip4);
 	      break;
 
 	      /*
@@ -1293,17 +1373,28 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	    case DATA:
 	      error0 =
 		sctp_handle_data ((sctp_payload_data_chunk_t *) sctp_hdr,
-				  sctp_conn, b0, &next0);
-	      next0 = sctp_next_output (is_ip4);
+				  sctp_conn, idx, b0, &next0);
 	      break;
 
+	    case OPERATION_ERROR:
+	      error0 =
+		sctp_handle_operation_err (sctp_hdr, sctp_conn, idx, b0,
+					   &next0);
+	      break;
+
+	    case COOKIE_ECHO:	/* Cookie Received While Shutting Down */
+	      sctp_prepare_operation_error (sctp_conn, idx, b0,
+					    COOKIE_RECEIVED_WHILE_SHUTTING_DOWN);
+	      error0 = SCTP_ERROR_NONE;
+	      next0 = sctp_next_output (is_ip4);
+	      break;
 	      /* All UNEXPECTED scenarios (wrong chunk received per state-machine)
 	       * are handled by the input-dispatcher function using the table-lookup
 	       * hence we should never get to the "default" case below.
 	       */
 	    default:
 	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
 
@@ -1311,7 +1402,7 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	    {
 	      clib_warning ("error while parsing chunk");
 	      sctp_connection_cleanup (sctp_conn);
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
 
@@ -1320,10 +1411,14 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	    {
 	      sctp_trace =
 		vlib_add_trace (vm, node, b0, sizeof (*sctp_trace));
-	      clib_memcpy (&sctp_trace->sctp_header, sctp_hdr,
-			   sizeof (sctp_trace->sctp_header));
-	      clib_memcpy (&sctp_trace->sctp_connection, sctp_conn,
-			   sizeof (sctp_trace->sctp_connection));
+
+	      if (sctp_hdr != NULL)
+		clib_memcpy (&sctp_trace->sctp_header, sctp_hdr,
+			     sizeof (sctp_trace->sctp_header));
+
+	      if (sctp_conn != NULL)
+		clib_memcpy (&sctp_trace->sctp_connection, sctp_conn,
+			     sizeof (sctp_trace->sctp_connection));
 	    }
 
 	  b0->error = node->errors[error0];
@@ -1416,7 +1511,43 @@ sctp_handle_sack (sctp_selective_ack_chunk_t * sack_chunk,
       return SCTP_ERROR_INVALID_TAG;
     }
 
-  sctp_timer_update (sctp_conn, idx, SCTP_TIMER_T3_RXTX, SCTP_RTO_INIT);
+  sctp_conn->sub_conn[idx].last_seen = sctp_time_now ();
+
+  /* Section 7.2.2; point (2) */
+  if (sctp_conn->sub_conn[idx].cwnd > sctp_conn->sub_conn[idx].ssthresh)
+    sctp_conn->sub_conn[idx].partially_acked_bytes =
+      sctp_conn->next_tsn - sack_chunk->cumulative_tsn_ack;
+
+  /* Section 7.2.2; point (5) */
+  if (sctp_conn->next_tsn - sack_chunk->cumulative_tsn_ack == 0)
+    sctp_conn->sub_conn[idx].partially_acked_bytes = 0;
+
+  sctp_conn->last_unacked_tsn = sack_chunk->cumulative_tsn_ack;
+
+  sctp_calculate_rto (sctp_conn, idx);
+
+  sctp_timer_update (sctp_conn, idx, SCTP_TIMER_T3_RXTX,
+		     sctp_conn->sub_conn[idx].RTO);
+
+  sctp_conn->sub_conn[idx].RTO_pending = 0;
+
+  *next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
+
+  return SCTP_ERROR_NONE;
+}
+
+always_inline u16
+sctp_handle_heartbeat (sctp_hb_req_chunk_t * sctp_hb_chunk,
+		       sctp_connection_t * sctp_conn, u8 idx,
+		       vlib_buffer_t * b0, u16 * next0)
+{
+  /* Check that the LOCALLY generated tag is being used by the REMOTE peer as the verification tag */
+  if (sctp_conn->local_tag != sctp_hb_chunk->sctp_hdr.verification_tag)
+    {
+      return SCTP_ERROR_INVALID_TAG;
+    }
+
+  sctp_prepare_heartbeat_ack_chunk (sctp_conn, idx, b0);
 
   *next0 = sctp_next_output (sctp_conn->sub_conn[idx].connection.is_ip4);
 
@@ -1424,32 +1555,33 @@ sctp_handle_sack (sctp_selective_ack_chunk_t * sack_chunk,
 }
 
 always_inline u16
-sctp_handle_heartbeat (sctp_hb_req_chunk_t * sctp_hb_chunk,
-		       sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
-		       u16 * next0)
-{
-  return SCTP_ERROR_NONE;
-}
-
-always_inline u16
 sctp_handle_heartbeat_ack (sctp_hb_ack_chunk_t * sctp_hb_ack_chunk,
-			   sctp_connection_t * sctp_conn, vlib_buffer_t * b0,
-			   u16 * next0)
+			   sctp_connection_t * sctp_conn, u8 idx,
+			   vlib_buffer_t * b0, u16 * next0)
 {
+  sctp_conn->sub_conn[idx].last_seen = sctp_time_now ();
+
+  sctp_conn->sub_conn[idx].unacknowledged_hb -= 1;
+
+  sctp_timer_update (sctp_conn, idx, SCTP_TIMER_T4_HEARTBEAT,
+		     sctp_conn->sub_conn[idx].RTO);
+
+  *next0 = sctp_next_drop (sctp_conn->sub_conn[idx].c_is_ip4);
+
   return SCTP_ERROR_NONE;
 }
 
 always_inline void
-sctp_node_inc_counter (vlib_main_t * vm, u32 tcp4_node, u32 tcp6_node,
+sctp_node_inc_counter (vlib_main_t * vm, u32 sctp4_node, u32 sctp6_node,
 		       u8 is_ip4, u8 evt, u8 val)
 {
   if (PREDICT_TRUE (!val))
     return;
 
   if (is_ip4)
-    vlib_node_increment_counter (vm, tcp4_node, evt, val);
+    vlib_node_increment_counter (vm, sctp4_node, evt, val);
   else
-    vlib_node_increment_counter (vm, tcp6_node, evt, val);
+    vlib_node_increment_counter (vm, sctp6_node, evt, val);
 }
 
 always_inline uword
@@ -1480,7 +1612,7 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 	  ip6_header_t *ip6_hdr;
 	  sctp_connection_t *child_conn;
 	  sctp_connection_t *sctp_listener;
-	  u16 next0 = SCTP_LISTEN_PHASE_N_NEXT, error0 = SCTP_ERROR_ENQUEUED;
+	  u16 next0 = sctp_next_drop (is_ip4), error0 = SCTP_ERROR_ENQUEUED;
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -1506,14 +1638,14 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 
 	  child_conn =
 	    sctp_lookup_connection (sctp_listener->sub_conn
-				    [MAIN_SCTP_SUB_CONN_IDX].c_fib_index, b0,
+				    [SCTP_PRIMARY_PATH_IDX].c_fib_index, b0,
 				    my_thread_index, is_ip4);
 
 	  if (PREDICT_FALSE (child_conn->state != SCTP_STATE_CLOSED))
 	    {
 	      SCTP_DBG
 		("conn_index = %u: child_conn->state != SCTP_STATE_CLOSED.... STATE=%s",
-		 child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].
+		 child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].
 		 connection.c_index,
 		 sctp_state_to_string (child_conn->state));
 	      error0 = SCTP_ERROR_CREATE_EXISTS;
@@ -1522,30 +1654,33 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 
 	  /* Create child session and send SYN-ACK */
 	  child_conn = sctp_connection_new (my_thread_index);
-	  child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].parent = child_conn;
-	  child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_lcl_port =
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
+	    SCTP_PRIMARY_PATH_IDX;
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_lcl_port =
 	    sctp_hdr->dst_port;
-	  child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_rmt_port =
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_rmt_port =
 	    sctp_hdr->src_port;
-	  child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_is_ip4 = is_ip4;
-	  child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].connection.proto =
-	    sctp_listener->sub_conn[MAIN_SCTP_SUB_CONN_IDX].connection.proto;
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_is_ip4 = is_ip4;
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.proto =
+	    sctp_listener->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.proto;
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].PMTU =
+	    sctp_listener->sub_conn[SCTP_PRIMARY_PATH_IDX].PMTU;
 	  child_conn->state = SCTP_STATE_CLOSED;
 
 	  if (is_ip4)
 	    {
-	      child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_lcl_ip4.as_u32 =
+	      child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_lcl_ip4.as_u32 =
 		ip4_hdr->dst_address.as_u32;
-	      child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_rmt_ip4.as_u32 =
+	      child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_rmt_ip4.as_u32 =
 		ip4_hdr->src_address.as_u32;
 	    }
 	  else
 	    {
 	      clib_memcpy (&child_conn->
-			   sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_lcl_ip6,
+			   sub_conn[SCTP_PRIMARY_PATH_IDX].c_lcl_ip6,
 			   &ip6_hdr->dst_address, sizeof (ip6_address_t));
 	      clib_memcpy (&child_conn->
-			   sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_rmt_ip6,
+			   sub_conn[SCTP_PRIMARY_PATH_IDX].c_rmt_ip6,
 			   &ip6_hdr->src_address, sizeof (ip6_address_t));
 	    }
 
@@ -1557,11 +1692,11 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 	    {
 	      SCTP_DBG
 		("conn_index = %u: chunk_type != INIT... chunk_type=%s",
-		 child_conn->sub_conn[MAIN_SCTP_SUB_CONN_IDX].
+		 child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].
 		 connection.c_index, sctp_chunk_to_string (chunk_type));
 
 	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
 
@@ -1579,23 +1714,23 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 		sctp_handle_init (sctp_hdr, sctp_chunk_hdr, child_conn, b0,
 				  sctp_implied_length);
 
-	      sctp_init_mss (child_conn);
+	      sctp_init_cwnd (child_conn);
 
 	      if (error0 == SCTP_ERROR_NONE)
 		{
 		  if (stream_session_accept
 		      (&child_conn->
-		       sub_conn[MAIN_SCTP_SUB_CONN_IDX].connection,
+		       sub_conn[SCTP_PRIMARY_PATH_IDX].connection,
 		       sctp_listener->
-		       sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_s_index, 0))
+		       sub_conn[SCTP_PRIMARY_PATH_IDX].c_s_index, 0))
 		    {
 		      clib_warning ("session accept fail");
 		      sctp_connection_cleanup (child_conn);
 		      error0 = SCTP_ERROR_CREATE_SESSION_FAIL;
 		      goto drop;
 		    }
+		  next0 = sctp_next_output (is_ip4);
 		}
-	      next0 = sctp_next_output (is_ip4);
 	      break;
 
 	      /* Reception of a DATA chunk whilst in the CLOSED state is called
@@ -1603,6 +1738,12 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 	       * as per RFC4960 section 8.4
 	       */
 	    case DATA:
+	      break;
+
+	    case OPERATION_ERROR:
+	      error0 =
+		sctp_handle_operation_err (sctp_hdr, child_conn,
+					   SCTP_PRIMARY_PATH_IDX, b0, &next0);
 	      break;
 	    }
 
@@ -1669,7 +1810,8 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  ip4_header_t *ip4_hdr = 0;
 	  ip6_header_t *ip6_hdr = 0;
 	  sctp_connection_t *sctp_conn;
-	  u16 error0 = SCTP_ERROR_NONE, next0 = SCTP_ESTABLISHED_PHASE_N_NEXT;
+	  u16 error0 = SCTP_ERROR_ENQUEUED, next0 =
+	    SCTP_ESTABLISHED_PHASE_N_NEXT;
 	  u8 idx;
 
 	  bi0 = from[0];
@@ -1695,39 +1837,18 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      ip4_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip4_next_header (ip4_hdr);
+	      idx = sctp_sub_conn_id_via_ip4h (sctp_conn, ip4_hdr);
 	    }
 	  else
 	    {
 	      ip6_hdr = vlib_buffer_get_current (b0);
 	      sctp_hdr = ip6_next_header (ip6_hdr);
+	      idx = sctp_sub_conn_id_via_ip6h (sctp_conn, ip6_hdr);
 	    }
 
-	  idx = sctp_pick_conn_idx_on_state (sctp_conn->state);
+	  sctp_conn->sub_conn[idx].subconn_idx = idx;
 
 	  sctp_full_hdr_t *full_hdr = (sctp_full_hdr_t *) sctp_hdr;
-
-	  transport_connection_t *trans_conn =
-	    &sctp_conn->sub_conn[idx].connection;
-
-	  trans_conn->lcl_port = sctp_hdr->dst_port;
-	  trans_conn->rmt_port = sctp_hdr->src_port;
-	  trans_conn->is_ip4 = is_ip4;
-
-	  sctp_conn->sub_conn[idx].parent = sctp_conn;
-
-	  if (is_ip4)
-	    {
-	      trans_conn->lcl_ip.ip4.as_u32 = ip4_hdr->dst_address.as_u32;
-	      trans_conn->rmt_ip.ip4.as_u32 = ip4_hdr->src_address.as_u32;
-	    }
-	  else
-	    {
-	      clib_memcpy (&trans_conn->lcl_ip.ip6, &ip6_hdr->dst_address,
-			   sizeof (ip6_address_t));
-	      clib_memcpy (&trans_conn->rmt_ip.ip6, &ip6_hdr->src_address,
-			   sizeof (ip6_address_t));
-	    }
-
 	  sctp_chunk_hdr =
 	    (sctp_chunks_common_hdr_t *) (&full_hdr->common_hdr);
 
@@ -1738,15 +1859,13 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    case COOKIE_ECHO:
 	      error0 =
 		sctp_handle_cookie_echo (sctp_hdr, sctp_chunk_hdr, sctp_conn,
-					 b0);
-	      next0 = sctp_next_output (is_ip4);
+					 idx, b0, &next0);
 	      break;
 
 	    case COOKIE_ACK:
 	      error0 =
 		sctp_handle_cookie_ack (sctp_hdr, sctp_chunk_hdr, sctp_conn,
-					b0);
-	      next0 = sctp_next_output (is_ip4);
+					idx, b0, &next0);
 	      break;
 
 	    case SACK:
@@ -1758,19 +1877,25 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    case HEARTBEAT:
 	      error0 =
 		sctp_handle_heartbeat ((sctp_hb_req_chunk_t *) sctp_hdr,
-				       sctp_conn, b0, &next0);
+				       sctp_conn, idx, b0, &next0);
 	      break;
 
 	    case HEARTBEAT_ACK:
 	      error0 =
 		sctp_handle_heartbeat_ack ((sctp_hb_ack_chunk_t *) sctp_hdr,
-					   sctp_conn, b0, &next0);
+					   sctp_conn, idx, b0, &next0);
 	      break;
 
 	    case DATA:
 	      error0 =
 		sctp_handle_data ((sctp_payload_data_chunk_t *) sctp_hdr,
-				  sctp_conn, b0, &next0);
+				  sctp_conn, idx, b0, &next0);
+	      break;
+
+	    case OPERATION_ERROR:
+	      error0 =
+		sctp_handle_operation_err (sctp_hdr, sctp_conn, idx, b0,
+					   &next0);
 	      break;
 
 	      /* All UNEXPECTED scenarios (wrong chunk received per state-machine)
@@ -1779,7 +1904,7 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       */
 	    default:
 	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
-	      next0 = SCTP_NEXT_DROP;
+	      next0 = sctp_next_drop (is_ip4);
 	      goto done;
 	    }
 
@@ -1978,7 +2103,7 @@ sctp46_input_dispatcher (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  n_left_to_next -= 1;
 
 	  b0 = vlib_get_buffer (vm, bi0);
-	  vnet_buffer (b0)->tcp.flags = 0;
+	  vnet_buffer (b0)->sctp.flags = 0;
 	  fib_index0 = vnet_buffer (b0)->ip.fib_index;
 
 	  /* Checksum computed by ipx_local no need to compute again */
@@ -2040,11 +2165,20 @@ sctp46_input_dispatcher (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sctp_conn = sctp_get_connection_from_transport (trans_conn);
 	  vnet_sctp_common_hdr_params_net_to_host (sctp_chunk_hdr);
 
-	  u8 type = vnet_sctp_get_chunk_type (sctp_chunk_hdr);
+	  u8 chunk_type = vnet_sctp_get_chunk_type (sctp_chunk_hdr);
+	  if (chunk_type >= UNKNOWN)
+	    {
+	      clib_warning
+		("Received an unrecognized chunk; sending back OPERATION_ERROR chunk");
 
-#if SCTP_DEBUG_STATE_MACHINE
-	  u8 idx = sctp_pick_conn_idx_on_state (sctp_conn->state);
-#endif
+	      sctp_prepare_operation_error (sctp_conn, SCTP_PRIMARY_PATH_IDX,
+					    b0, UNRECOGNIZED_CHUNK_TYPE);
+
+	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      next0 = sctp_next_output (is_ip4);
+	      goto done;
+	    }
+
 	  vnet_buffer (b0)->sctp.hdr_offset =
 	    (u8 *) sctp_hdr - (u8 *) vlib_buffer_get_current (b0);
 
@@ -2056,20 +2190,20 @@ sctp46_input_dispatcher (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      vnet_buffer (b0)->sctp.data_offset = n_advance_bytes0;
 	      vnet_buffer (b0)->sctp.data_len = n_data_bytes0;
 
-	      next0 = tm->dispatch_table[sctp_conn->state][type].next;
-	      error0 = tm->dispatch_table[sctp_conn->state][type].error;
+	      next0 = tm->dispatch_table[sctp_conn->state][chunk_type].next;
+	      error0 = tm->dispatch_table[sctp_conn->state][chunk_type].error;
 
-	      SCTP_DBG_STATE_MACHINE ("CONNECTION_INDEX = %u: "
-				      "CURRENT_CONNECTION_STATE = %s,"
-				      "CHUNK_TYPE_RECEIVED = %s "
-				      "NEXT_PHASE = %s",
-				      sctp_conn->sub_conn
-				      [idx].connection.c_index,
-				      sctp_state_to_string (sctp_conn->state),
-				      sctp_chunk_to_string (type),
-				      phase_to_string (next0));
+	      SCTP_DBG_STATE_MACHINE
+		("S_INDEX = %u, C_INDEX = %u, TRANS_CONN = %p, SCTP_CONN = %p, CURRENT_CONNECTION_STATE = %s,"
+		 "CHUNK_TYPE_RECEIVED = %s " "NEXT_PHASE = %s",
+		 sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].
+		 connection.s_index,
+		 sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].
+		 connection.c_index, trans_conn, sctp_conn,
+		 sctp_state_to_string (sctp_conn->state),
+		 sctp_chunk_to_string (chunk_type), phase_to_string (next0));
 
-	      if (type == DATA)
+	      if (chunk_type == DATA)
 		SCTP_ADV_DBG ("n_advance_bytes0 = %u, n_data_bytes0 = %u",
 			      n_advance_bytes0, n_data_bytes0);
 
@@ -2222,8 +2356,9 @@ do {                                                       	\
   _(CLOSED, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(CLOSED, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(CLOSED, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(CLOSED, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE, SCTP_ERROR_NONE);
 
-  _(COOKIE_WAIT, DATA, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_NONE);
+  _(COOKIE_WAIT, DATA, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_NONE);	/* UNEXPECTED DATA chunk which requires special handling */
   _(COOKIE_WAIT, INIT, SCTP_INPUT_NEXT_RCV_PHASE, SCTP_ERROR_NONE);	/* UNEXPECTED INIT chunk which requires special handling */
   _(COOKIE_WAIT, INIT_ACK, SCTP_INPUT_NEXT_RCV_PHASE, SCTP_ERROR_NONE);
   _(COOKIE_WAIT, SACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SACK_CHUNK_VIOLATION);	/* UNEXPECTED SACK chunk */
@@ -2238,6 +2373,8 @@ do {                                                       	\
   _(COOKIE_WAIT, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(COOKIE_WAIT, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(COOKIE_WAIT, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(COOKIE_WAIT, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(COOKIE_ECHOED, DATA, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_NONE);
   _(COOKIE_ECHOED, INIT, SCTP_INPUT_NEXT_RCV_PHASE, SCTP_ERROR_NONE);	/* UNEXPECTED INIT chunk which requires special handling */
@@ -2255,6 +2392,8 @@ do {                                                       	\
   _(COOKIE_ECHOED, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(COOKIE_ECHOED, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(COOKIE_ECHOED, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(COOKIE_ECHOED, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(ESTABLISHED, DATA, SCTP_INPUT_NEXT_ESTABLISHED_PHASE, SCTP_ERROR_NONE);
   _(ESTABLISHED, INIT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_INIT_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
@@ -2273,6 +2412,8 @@ do {                                                       	\
   _(ESTABLISHED, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(ESTABLISHED, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(ESTABLISHED, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(ESTABLISHED, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(SHUTDOWN_PENDING, DATA, SCTP_INPUT_NEXT_SHUTDOWN_PHASE, SCTP_ERROR_NONE);
   _(SHUTDOWN_PENDING, INIT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_INIT_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
@@ -2287,11 +2428,14 @@ do {                                                       	\
     SCTP_ERROR_NONE);
   _(SHUTDOWN_PENDING, SHUTDOWN_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_ACK_CHUNK_VIOLATION);	/* UNEXPECTED SHUTDOWN_ACK chunk */
   _(SHUTDOWN_PENDING, OPERATION_ERROR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_OPERATION_ERROR_VIOLATION);	/* UNEXPECTED OPERATION_ERROR chunk */
-  _(SHUTDOWN_PENDING, COOKIE_ECHO, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_COOKIE_ECHO_VIOLATION);	/* UNEXPECTED COOKIE_ECHO chunk */
+  _(SHUTDOWN_PENDING, COOKIE_ECHO, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
+    SCTP_ERROR_NONE);
   _(SHUTDOWN_PENDING, COOKIE_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ACK_DUP);	/* UNEXPECTED COOKIE_ACK chunk */
   _(SHUTDOWN_PENDING, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(SHUTDOWN_PENDING, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(SHUTDOWN_PENDING, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(SHUTDOWN_PENDING, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(SHUTDOWN_SENT, DATA, SCTP_INPUT_NEXT_SHUTDOWN_PHASE, SCTP_ERROR_NONE);
   _(SHUTDOWN_SENT, INIT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_INIT_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
@@ -2303,11 +2447,14 @@ do {                                                       	\
   _(SHUTDOWN_SENT, SHUTDOWN, SCTP_INPUT_NEXT_SHUTDOWN_PHASE, SCTP_ERROR_NONE);
   _(SHUTDOWN_SENT, SHUTDOWN_ACK, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
     SCTP_ERROR_NONE);
-  _(SHUTDOWN_SENT, COOKIE_ECHO, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_COOKIE_ECHO_VIOLATION);	/* UNEXPECTED COOKIE_ECHO chunk */
+  _(SHUTDOWN_SENT, COOKIE_ECHO, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
+    SCTP_ERROR_NONE);
   _(SHUTDOWN_SENT, COOKIE_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ACK_DUP);	/* UNEXPECTED COOKIE_ACK chunk */
   _(SHUTDOWN_SENT, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(SHUTDOWN_SENT, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(SHUTDOWN_SENT, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(SHUTDOWN_SENT, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(SHUTDOWN_RECEIVED, DATA, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_DATA_CHUNK_VIOLATION);	/* UNEXPECTED DATA chunk */
   _(SHUTDOWN_RECEIVED, INIT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_INIT_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
@@ -2319,14 +2466,17 @@ do {                                                       	\
   _(SHUTDOWN_RECEIVED, SHUTDOWN, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_CHUNK_VIOLATION);	/* UNEXPECTED SHUTDOWN chunk */
   _(SHUTDOWN_RECEIVED, SHUTDOWN_ACK, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
     SCTP_ERROR_NONE);
-  _(SHUTDOWN_RECEIVED, COOKIE_ECHO, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_COOKIE_ECHO_VIOLATION);	/* UNEXPECTED COOKIE_ECHO chunk */
+  _(SHUTDOWN_RECEIVED, COOKIE_ECHO, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
+    SCTP_ERROR_NONE);
   _(SHUTDOWN_RECEIVED, COOKIE_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ACK_DUP);	/* UNEXPECTED COOKIE_ACK chunk */
   _(SHUTDOWN_RECEIVED, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(SHUTDOWN_RECEIVED, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(SHUTDOWN_RECEIVED, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_COMPLETE_VIOLATION);	/* UNEXPECTED SHUTDOWN_COMPLETE chunk */
+  _(SHUTDOWN_RECEIVED, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
+    SCTP_ERROR_NONE);
 
   _(SHUTDOWN_ACK_SENT, DATA, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_DATA_CHUNK_VIOLATION);	/* UNEXPECTED DATA chunk */
-  _(SHUTDOWN_ACK_SENT, INIT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_INIT_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
+  _(SHUTDOWN_ACK_SENT, INIT, SCTP_INPUT_NEXT_RCV_PHASE, SCTP_ERROR_NONE);	/* UNEXPECTED INIT chunk */
   _(SHUTDOWN_ACK_SENT, INIT_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ACK_DUP);	/* UNEXPECTED INIT_ACK chunk */
   _(SHUTDOWN_ACK_SENT, SACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SACK_CHUNK_VIOLATION);	/* UNEXPECTED INIT chunk */
   _(SHUTDOWN_ACK_SENT, HEARTBEAT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_HEARTBEAT_CHUNK_VIOLATION);	/* UNEXPECTED HEARTBEAT chunk */
@@ -2334,11 +2484,14 @@ do {                                                       	\
   _(SHUTDOWN_ACK_SENT, ABORT, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ABORT_CHUNK_VIOLATION);	/* UNEXPECTED ABORT chunk */
   _(SHUTDOWN_ACK_SENT, SHUTDOWN, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_CHUNK_VIOLATION);	/* UNEXPECTED SHUTDOWN chunk */
   _(SHUTDOWN_ACK_SENT, SHUTDOWN_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_SHUTDOWN_ACK_CHUNK_VIOLATION);	/* UNEXPECTED SHUTDOWN_ACK chunk */
-  _(SHUTDOWN_ACK_SENT, COOKIE_ECHO, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_COOKIE_ECHO_VIOLATION);	/* UNEXPECTED COOKIE_ECHO chunk */
+  _(SHUTDOWN_ACK_SENT, COOKIE_ECHO, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
+    SCTP_ERROR_NONE);
   _(SHUTDOWN_ACK_SENT, COOKIE_ACK, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ACK_DUP);	/* UNEXPECTED COOKIE_ACK chunk */
   _(SHUTDOWN_ACK_SENT, ECNE, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_ECNE_VIOLATION);	/* UNEXPECTED ECNE chunk */
   _(SHUTDOWN_ACK_SENT, CWR, SCTP_INPUT_NEXT_DROP, SCTP_ERROR_CWR_VIOLATION);	/* UNEXPECTED CWR chunk */
   _(SHUTDOWN_ACK_SENT, SHUTDOWN_COMPLETE, SCTP_INPUT_NEXT_SHUTDOWN_PHASE,
+    SCTP_ERROR_NONE);
+  _(SHUTDOWN_ACK_SENT, OPERATION_ERROR, SCTP_INPUT_NEXT_LISTEN_PHASE,
     SCTP_ERROR_NONE);
 
   /* TODO: Handle COOKIE ECHO when a TCB Exists */

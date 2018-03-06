@@ -221,6 +221,9 @@ memif_connect (memif_if_t * mif)
       {
 	template.file_descriptor = mq->int_fd;
 	template.private_data = (mif->dev_instance << 16) | (i & 0xFFFF);
+	template.description = format (0, "%U rx %u int",
+				       format_memif_device_name,
+				       mif->dev_instance, i);
 	memif_file_add (&mq->int_clib_file_index, &template);
       }
     vnet_hw_interface_assign_rx_thread (vnm, mif->hw_if_index, i, ~0);
@@ -338,6 +341,7 @@ memif_init_regions_and_queues (memif_if_t * mif)
     mq->region = 0;
     mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
     mq->last_head = 0;
+    mq->type = MEMIF_RING_S2M;
   }
 
   ASSERT (mif->rx_queues == 0);
@@ -354,6 +358,7 @@ memif_init_regions_and_queues (memif_if_t * mif)
     mq->region = 0;
     mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
     mq->last_head = 0;
+    mq->type = MEMIF_RING_M2S;
   }
 
   return 0;
@@ -440,6 +445,9 @@ memif_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		  t.file_descriptor = sock->fd;
 		  t.private_data = mif->dev_instance;
 		  memif_file_add (&sock->private_data, &t);
+	          t.description = format (0, "%U ctl",
+					  format_memif_device_name,
+					  mif->dev_instance);
 		  hash_set (msf->dev_instance_by_fd, sock->fd, mif->dev_instance);
 
 		  mif->flags |= MEMIF_IF_FLAG_CONNECTING;
@@ -586,12 +594,15 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
   memif_disconnect (mif, err);
   clib_error_free (err);
 
-  /* remove the interface */
-  if (mif->mode == MEMIF_INTERFACE_MODE_IP)
-    vnet_delete_hw_interface (vnm, mif->hw_if_index);
-  else
-    ethernet_delete_interface (vnm, mif->hw_if_index);
-  mif->hw_if_index = ~0;
+  if (mif->hw_if_index != ~0)
+    {
+      /* remove the interface */
+      if (mif->mode == MEMIF_INTERFACE_MODE_IP)
+	vnet_delete_hw_interface (vnm, mif->hw_if_index);
+      else
+	ethernet_delete_interface (vnm, mif->hw_if_index);
+      mif->hw_if_index = ~0;
+    }
 
   /* free interface data structures */
   clib_spinlock_free (&mif->lockp);
@@ -805,6 +816,7 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
       template.read_function = memif_conn_fd_accept_ready;
       template.file_descriptor = msf->sock->fd;
       template.private_data = mif->socket_file_index;
+      template.description = format (0, "memif listener %s", msf->filename);
       memif_file_add (&msf->sock->private_data, &template);
     }
 

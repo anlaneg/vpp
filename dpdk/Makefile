@@ -17,6 +17,7 @@ SHELL := /bin/bash
 DPDK_BUILD_DIR        ?= $(CURDIR)/_build
 DPDK_INSTALL_DIR      ?= $(CURDIR)/_install
 DPDK_PKTMBUF_HEADROOM ?= 128
+DPDK_CACHE_LINE_SIZE  ?= 64
 DPDK_DOWNLOAD_DIR     ?= $(HOME)/Downloads
 DPDK_DEBUG            ?= n
 DPDK_MLX4_PMD         ?= n
@@ -24,13 +25,13 @@ DPDK_MLX5_PMD         ?= n
 
 B := $(DPDK_BUILD_DIR)
 I := $(DPDK_INSTALL_DIR)
-DPDK_VERSION ?= 17.11
+DPDK_VERSION ?= 18.02
 PKG_SUFFIX ?= vpp1
 DPDK_BASE_URL ?= http://fast.dpdk.org/rel
 DPDK_TARBALL := dpdk-$(DPDK_VERSION).tar.xz
 DPDK_TAR_URL := $(DPDK_BASE_URL)/$(DPDK_TARBALL)
-DPDK_17.08_TARBALL_MD5_CKSUM := 0641f59ea8ea98afefa7cfa2699f6241
 DPDK_17.11_TARBALL_MD5_CKSUM := 53ee9e054a8797c9e67ffa0eb5d0c701
+DPDK_18.02_TARBALL_MD5_CKSUM := ca13077a014a2102c6e10153dfa3b920
 DPDK_SOURCE := $(B)/dpdk-$(DPDK_VERSION)
 MACHINE=$(shell uname -m)
 
@@ -40,23 +41,14 @@ NASM_TARBALL := nasm-$(NASM_VER).tar.xz
 NASM_TAR_URL := $(NASM_BASE_URL)/$(NASM_VER)/$(NASM_TARBALL)
 NASM_SOURCE := $(B)/nasm-$(NASM_VER)
 
-ISA_L_CRYPTO_LIB := n
-
-ifeq ($(DPDK_VERSION),17.08)
-IPSEC_MB_VER ?= 0.46
-else
+ifeq ($(DPDK_VERSION),17.11)
 IPSEC_MB_VER ?= 0.47
+else
+IPSEC_MB_VER ?= 0.48
 endif
-ISA_L_CRYPTO_VER := 2.18.0
 
 ifeq ($(MACHINE),$(filter $(MACHINE),x86_64))
   AESNI ?= y
-# DPDK pre 17.08 depends on ISA-L Crypto library for GCM PMD
-  ifneq ($(firstword $(sort $(DPDK_VERSION), 17.08)), 17.08)
-  ISA_L_CRYPTO_LIB = y
-  IPSEC_MB_VER = 0.45
-  $(info Building ISA-L Crypto $(ISA_L_CRYPTO_VER) library)
-  endif
 $(info Building IPSec-MB $(IPSEC_MB_VER) library)
 else
   AESNI ?= N
@@ -65,11 +57,6 @@ endif
 AESNIMB_LIB_TARBALL := v$(IPSEC_MB_VER).tar.gz
 AESNIMB_LIB_TARBALL_URL := http://github.com/01org/intel-ipsec-mb/archive/$(AESNIMB_LIB_TARBALL)
 AESNIMB_LIB_SOURCE := $(B)/intel-ipsec-mb-$(IPSEC_MB_VER)
-
-ISA_L_CRYPTO_LIB_TARBALL := v$(ISA_L_CRYPTO_VER).tar.gz
-ISA_L_CRYPTO_LIB_TARBALL_URL := http://github.com/01org/isa-l_crypto/archive/$(ISA_L_CRYPTO_LIB_TARBALL)
-ISA_L_CRYPTO_LIB_SOURCE := $(B)/isa-l_crypto-$(ISA_L_CRYPTO_VER)
-ISA_L_CRYPTO_INSTALL_DIR := $(ISA_L_CRYPTO_LIB_SOURCE)/install
 
 ifneq (,$(findstring clang,$(CC)))
 DPDK_CC=clang
@@ -163,10 +150,6 @@ else
 DPDK_EXTRA_CFLAGS := -g -O0
 endif
 
-ifeq ($(ISA_L_CRYPTO_LIB),y)
-DPDK_EXTRA_CFLAGS += -I$(ISA_L_CRYPTO_INSTALL_DIR)/include -Wl,-z,muldefs
-DPDK_EXTRA_LDFLAGS += -L$(I)/lib
-endif
 DPDK_MAKE_EXTRA_ARGS += AESNI_MULTI_BUFFER_LIB_PATH=$(AESNIMB_LIB_SOURCE)
 
 # assemble DPDK make arguments
@@ -195,6 +178,7 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	@# modify options
 	$(call set,RTE_MAX_LCORE,256)
 	$(call set,RTE_PKTMBUF_HEADROOM,$(DPDK_PKTMBUF_HEADROOM))
+	$(call set,RTE_CACHE_LINE_SIZE,$(DPDK_CACHE_LINE_SIZE))
 	$(call set,RTE_LIBEAL_USE_HPET,y)
 	$(call set,RTE_BUILD_COMBINE_LIBS,y)
 	$(call set,RTE_PCI_CONFIG,y)
@@ -213,6 +197,8 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_PMD_AESNI_GCM,$(AESNI))
 	$(call set,RTE_LIBRTE_MLX4_PMD,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_PMD,$(DPDK_MLX5_PMD))
+	$(call set,RTE_LIBRTE_MLX4_DLOPEN_DEPS,$(DPDK_MLX4_PMD))
+	$(call set,RTE_LIBRTE_MLX5_DLOPEN_DEPS,$(DPDK_MLX5_PMD))
 	@# not needed
 	$(call set,RTE_LIBRTE_PMD_TAP,n)
 	$(call set,RTE_LIBRTE_TIMER,n)
@@ -227,6 +213,12 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_FLOW_CLASSIFY,n)
 	$(call set,RTE_KNI_KMOD,n)
 	$(call set,RTE_EAL_IGB_UIO,n)
+	@# currently broken in 18.02
+	$(call set,RTE_LIBRTE_DPAA_BUS,n)
+	$(call set,RTE_LIBRTE_DPAA_MEMPOOL,n)
+	$(call set,RTE_LIBRTE_DPAA_PMD,n)
+	$(call set,RTE_LIBRTE_PMD_DPAA_SEC,n)
+	$(call set,RTE_LIBRTE_PMD_DPAA_EVENTDEV,n)
 	@rm -f .config.ok
 
 $(CURDIR)/$(DPDK_TARBALL):
@@ -248,19 +240,10 @@ $(CURDIR)/$(AESNIMB_LIB_TARBALL):
 		else curl -o $@ -LO $(AESNIMB_LIB_TARBALL_URL) ; \
 	fi
 
-$(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL):
-	@if [ -e $(DPDK_DOWNLOAD_DIR)/$(ISA_L_CRYPTO_LIB_TARBALL) ] ; \
-		then cp $(DPDK_DOWNLOAD_DIR)/$(ISA_L_CRYPTO_LIB_TARBALL) $(CURDIR) ; \
-		else curl -o $@ -LO $(ISA_L_CRYPTO_LIB_TARBALL_URL) ; \
-	fi
-
 DPDK_DOWNLOADS = $(CURDIR)/$(DPDK_TARBALL)
 ifeq ($(AESNI),y)
 DPDK_DOWNLOADS += $(CURDIR)/$(NASM_TARBALL)
 DPDK_DOWNLOADS += $(CURDIR)/$(AESNIMB_LIB_TARBALL)
-endif
-ifeq ($(ISA_L_CRYPTO_LIB),y)
-DPDK_DOWNLOADS += $(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL)
 endif
 
 $(B)/.download.ok: $(DPDK_DOWNLOADS)
@@ -282,10 +265,6 @@ ifeq ($(AESNI),y)
 	@tar --directory $(B) --extract --file $(CURDIR)/$(NASM_TARBALL)
 	@echo --- extracting $(AESNIMB_LIB_TARBALL) ---
 	@tar --directory $(B) --extract --file $(CURDIR)/$(AESNIMB_LIB_TARBALL)
-endif
-ifeq ($(ISA_L_CRYPTO_LIB),y)
-	@echo --- extracting $(ISA_L_CRYPTO_LIB_TARBALL) ---
-	@tar --directory $(B) --extract --file $(CURDIR)/$(ISA_L_CRYPTO_LIB_TARBALL)
 endif
 	@touch $@
 
@@ -320,18 +299,9 @@ build-nasm:
 build-ipsec-mb:
 	mkdir -p $(I)/lib/
 	# Do not build GCM stuff if we are building ISA_L
-	make -C $(AESNIMB_LIB_SOURCE) -j NO_GCM=$(ISA_L_CRYPTO_LIB) \
-	  DEBUG=$(DPDK_DEBUG) EXTRA_CFLAGS=-fPIC NASM=$(NASM_SOURCE)/nasm
+	make -C $(AESNIMB_LIB_SOURCE) -j \
+	  EXTRA_CFLAGS=-fPIC NASM=$(NASM_SOURCE)/nasm
 	cp $(AESNIMB_LIB_SOURCE)/libIPSec_MB.a $(I)/lib/
-
-.PHONY: build-isal-crypto
-build-isal-crypto:
-	mkdir -p $(I)/lib/
-	cd $(ISA_L_CRYPTO_LIB_SOURCE) && ./autogen.sh && \
-	  ./configure --prefix=$(ISA_L_CRYPTO_INSTALL_DIR) \
-	  --libdir=$(ISA_L_CRYPTO_INSTALL_DIR)/lib CFLAGS='-fPIC -DPIC -O2'
-	make -C $(ISA_L_CRYPTO_LIB_SOURCE) -j install
-	cp $(ISA_L_CRYPTO_INSTALL_DIR)/lib/libisal_crypto.a $(I)/lib/
 
 .PHONY: build-dpdk
 build-dpdk:
@@ -342,9 +312,6 @@ build-dpdk:
 ifeq ($(AESNI),y)
 BUILD_TARGETS += build-nasm
 BUILD_TARGETS += build-ipsec-mb
-endif
-ifeq ($(ISA_L_CRYPTO_LIB),y)
-BUILD_TARGETS += build-isal-crypto
 endif
 BUILD_TARGETS += build-dpdk
 

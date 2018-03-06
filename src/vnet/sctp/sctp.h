@@ -41,6 +41,27 @@ typedef enum _sctp_timers
 
 #define SCTP_TIMER_HANDLE_INVALID ((u32) ~0)
 
+always_inline char *
+sctp_timer_to_string (u8 timer_id)
+{
+  switch (timer_id)
+    {
+    case SCTP_TIMER_T1_INIT:
+      return "SCTP_TIMER_T1_INIT";
+    case SCTP_TIMER_T1_COOKIE:
+      return "SCTP_TIMER_T1_COOKIE";
+    case SCTP_TIMER_T2_SHUTDOWN:
+      return "SCTP_TIMER_T2_SHUTDOWN";
+    case SCTP_TIMER_T3_RXTX:
+      return "SCTP_TIMER_T3_RXTX";
+    case SCTP_TIMER_T4_HEARTBEAT:
+      return "SCTP_TIMER_T4_HEARTBEAT";
+    case SCTP_TIMER_T5_SHUTDOWN_GUARD:
+      return "SCTP_TIMER_T5_SHUTDOWN_GUARD";
+    }
+  return NULL;
+}
+
 typedef enum _sctp_error
 {
 #define sctp_error(n,s) SCTP_ERROR_##n,
@@ -56,8 +77,8 @@ typedef enum _sctp_error
 #define IS_B_BIT_SET(var) ((var) & (1<<1))
 #define IS_U_BIT_SET(var) ((var) & (1<<2))
 
-#define MAX_SCTP_CONNECTIONS 32
-#define MAIN_SCTP_SUB_CONN_IDX 0
+#define MAX_SCTP_CONNECTIONS 8
+#define SCTP_PRIMARY_PATH_IDX 0
 
 #if (VLIB_BUFFER_TRACE_TRAJECTORY)
 #define sctp_trajectory_add_start(b, start)			\
@@ -68,20 +89,32 @@ typedef enum _sctp_error
 #define sctp_trajectory_add_start(b, start)
 #endif
 
+enum _sctp_subconn_state
+{
+  SCTP_SUBCONN_STATE_DOWN = 0,
+  SCTP_SUBCONN_STATE_UP,
+  SCTP_SUBCONN_STATE_ALLOW_HB
+};
+
+#define SCTP_INITIAL_SSHTRESH 65535
 typedef struct _sctp_sub_connection
 {
   transport_connection_t connection;	      /**< Common transport data. First! */
-  void *parent;								/**< Link to the parent-super connection */
 
+  u8 subconn_idx; /**< This indicates the position of this sub-connection in the super-set container of connections pool */
   u32 error_count; /**< The current error count for this destination. */
   u32 error_threshold; /**< Current error threshold for this destination,
 				i.e. what value marks the destination down if error count reaches this value. */
-  u32 cwnd; /**< The current congestion window. */
-  u32 ssthresh;	/**< The current ssthresh value. */
+  u32 cwnd; /**< Congestion control window (cwnd, in bytes), which is adjusted by
+      the sender based on observed network conditions. */
+  u32 ssthresh;	/**< Slow-start threshold (in bytes), which is used by the
+      sender to distinguish slow-start and congestion avoidance phases. */
+
+  u32 rtt_ts;	/**< USED to hold the timestamp of when the packet has been sent */
 
   u32 RTO; /**< The current retransmission timeout value. */
   u32 SRTT; /**< The current smoothed round-trip time. */
-  u32 RTTVAR; /**< The current RTT variation. */
+  f32 RTTVAR; /**< The current RTT variation. */
 
   u32 partially_acked_bytes; /**< The tracking method for increase of cwnd when in
   	  	  	  	  congestion avoidance mode (see Section 7.2.2).*/
@@ -99,8 +132,17 @@ typedef struct _sctp_sub_connection
   	  	  	  	  Every time the RTT calculation completes (i.e., the DATA chunk is SACK'd),
   	  	  	  	  clear this flag. */
 
-  u32 last_time; /**< The time to which this destination was last sent a packet to.
+  u32 last_seen; /**< The time to which this destination was last sent a packet to.
   	  	  	  	  This can be used to determine if a HEARTBEAT is needed. */
+
+  u32 last_data_ts; /**< Used to hold the timestamp value of last time we sent a DATA chunk */
+
+  u8 unacknowledged_hb;	/**< Used to track how many unacknowledged heartbeats we had;
+  	  	  	  	  If more than SCTP_PATH_MAX_RETRANS then connection is considered unreachable. */
+
+  u8 is_retransmitting;	/**< A flag (0 = no, 1 = yes) indicating whether the connection is retransmitting a previous packet */
+
+  u8 enqueue_state; /**< if set to 1 indicates that DATA is still being handled hence cannot shutdown this connection yet */
 
 } sctp_sub_connection_t;
 
@@ -139,9 +181,17 @@ _bytes_swap (void *pv, size_t n)
  */
 #define SUGGESTED_COOKIE_LIFE_SPAN_INCREMENT 1000
 
+typedef struct _sctp_user_configuration
+{
+  u8 never_delay_sack;
+  u8 never_bundle;
+
+} sctp_user_configuration_t;
+
 typedef struct _sctp_connection
 {
   sctp_sub_connection_t sub_conn[MAX_SCTP_CONNECTIONS];	/**< Common transport data. First! */
+  sctp_user_configuration_t conn_config; /**< Allows tuning of some SCTP behaviors */
 
   u8 state;			/**< SCTP state as per sctp_state_t */
   u16 flags;		/**< Chunk flag (see sctp_chunks_common_hdr_t) */
@@ -158,6 +208,8 @@ typedef struct _sctp_connection
   u32 overall_err_treshold; /**< The threshold for this association that if the Overall Error Count
   	  	  	  	  reaches will cause this association to be torn down. */
 
+  u8 init_retransmit_err; /**< Error counter for the INIT transmission phase */
+
   u32 peer_rwnd; /**< Current calculated value of the peer's rwnd. */
 
   u32 next_tsn;	/**< The next TSN number to be assigned to a new DATA chunk.
@@ -166,6 +218,7 @@ typedef struct _sctp_connection
                  TSN (normally just prior to transmit or during
                  fragmentation). */
 
+  u32 last_unacked_tsn;	/** < Last TSN number still unacked */
   u32 next_tsn_expected; /**< The next TSN number expected to be received. */
 
   u32 last_rcvd_tsn; /**< This is the last TSN received in sequence. This value
@@ -184,48 +237,58 @@ typedef struct _sctp_connection
   	  	  	  	Note: This is used only when no DATA chunks are received out-of-order.
   	  	  	  	When DATA chunks are out-of-order, SACKs are not delayed (see Section 6). */
 
-  u32 a_rwnd; /** This value represents the dedicated buffer space, in number of bytes,
-				the sender of the INIT has reserved in association with this window.
-				During the life of the association, this buffer space SHOULD NOT be lessened
-				(i.e., dedicated buffers taken away from this association);
-				however, an endpoint MAY change the value of a_rwnd it sends in SACK chunks. */
-
-  u32 smallest_PMTU; /** The smallest PMTU discovered for all of the peer's transport addresses. */
-
-  u32 rcv_a_rwnd;		/**< LOCAL max seg size that includes options. To be updated by congestion algos, etc. */
-  u32 snd_a_rwnd;		/**< REMOTE max seg size that includes options. To be updated if peer pushes back on window, etc.*/
-
-  u32 rtt_ts;
-  u32 rtt_seq;
+  u8 smallest_PMTU_idx;	/** The index of the sub-connection with the smallest PMTU discovered across all peer's transport addresses. */
 
   u8 overall_sending_status; /**< 0 indicates first fragment of a user message
   	  	  	  	  	  	  	  	  1 indicates normal stream
   	  	  	  	  	  	  	  	  2 indicates last fragment of a user message */
 
-  sctp_options_t rcv_opts;
-  sctp_options_t snd_opts;
+  u8 forming_association_changed; /**< This is a flag indicating whether the original association has been modified during
+  	  	  	  	  the life-span of the association itself. For instance, a new sub-connection might have been added. */
 
-  u32 snd_hdr_length;	/**< BASE HEADER LENGTH for the DATA chunk when sending */
-  u8 next_avail_sub_conn; /**< Represent the index of the next free slot in sub_conn */
+  sctp_state_cookie_param_t cookie_param; /**< Temporary location to save cookie information; it can be used to
+  	  	  	  	  when timeout expires and sending again a COOKIE is require. */
 
 } sctp_connection_t;
 
 typedef void (sctp_timer_expiration_handler) (u32 conn_index, u32 timer_id);
 
 sctp_connection_t *sctp_connection_new (u8 thread_index);
-void sctp_sub_connection_add_ip4 (u8 thread_index,
-				  sctp_ipv4_addr_param_t * ipv4_addr);
-void sctp_sub_connection_add_ip6 (u8 thread_index,
-				  sctp_ipv6_addr_param_t * ipv6_addr);
-void sctp_connection_close (sctp_connection_t * tc);
-void sctp_connection_cleanup (sctp_connection_t * tc);
-void sctp_connection_del (sctp_connection_t * tc);
+
+u8
+sctp_sub_connection_add_ip4 (vlib_main_t * vm,
+			     ip4_address_t * lcl_addr,
+			     ip4_address_t * rmt_addr);
+
+u8
+sctp_sub_connection_add_ip6 (vlib_main_t * vm,
+			     ip6_address_t * lcl_addr,
+			     ip6_address_t * rmt_addr);
+
+u8
+sctp_sub_connection_del_ip4 (ip4_address_t * lcl_addr,
+			     ip4_address_t * rmt_addr);
+
+u8
+sctp_sub_connection_del_ip6 (ip6_address_t * lcl_addr,
+			     ip6_address_t * rmt_addr);
+
+u8 sctp_configure (sctp_user_configuration_t config);
+
+void sctp_connection_close (sctp_connection_t * sctp_conn);
+void sctp_connection_cleanup (sctp_connection_t * sctp_conn);
+void sctp_connection_del (sctp_connection_t * sctp_conn);
 
 u32 sctp_push_header (transport_connection_t * tconn, vlib_buffer_t * b);
-void sctp_send_init (sctp_connection_t * tc);
-void sctp_send_shutdown (sctp_connection_t * tc);
-void sctp_send_shutdown_ack (sctp_connection_t * tc);
-void sctp_send_shutdown_complete (sctp_connection_t * tc);
+void sctp_send_init (sctp_connection_t * sctp_conn);
+void sctp_send_cookie_echo (sctp_connection_t * sctp_conn);
+void sctp_send_shutdown (sctp_connection_t * sctp_conn);
+void sctp_send_shutdown_ack (sctp_connection_t * sctp_conn, u8 idx,
+			     vlib_buffer_t * b);
+void sctp_send_shutdown_complete (sctp_connection_t * sctp_conn, u8 idx,
+				  vlib_buffer_t * b0);
+void sctp_send_heartbeat (sctp_connection_t * sctp_conn);
+void sctp_data_retransmit (sctp_connection_t * sctp_conn);
 void sctp_flush_frame_to_output (vlib_main_t * vm, u8 thread_index,
 				 u8 is_ip4);
 void sctp_flush_frames_to_output (u8 thread_index);
@@ -240,36 +303,38 @@ u8 *format_sctp_header (u8 * s, va_list * args);
 u8 *format_sctp_tx_trace (u8 * s, va_list * args);
 
 clib_error_t *sctp_init (vlib_main_t * vm);
-void sctp_connection_timers_init (sctp_connection_t * tc);
-void sctp_connection_timers_reset (sctp_connection_t * tc);
-void sctp_init_snd_vars (sctp_connection_t * tc);
-void sctp_init_mss (sctp_connection_t * tc);
+void sctp_connection_timers_init (sctp_connection_t * sctp_conn);
+void sctp_connection_timers_reset (sctp_connection_t * sctp_conn);
+void sctp_init_snd_vars (sctp_connection_t * sctp_conn);
+void sctp_init_mss (sctp_connection_t * sctp_conn);
 
-void sctp_prepare_initack_chunk (sctp_connection_t * ts, vlib_buffer_t * b,
-				 ip4_address_t * ip4_addr,
+void sctp_prepare_initack_chunk (sctp_connection_t * sctp_conn, u8 idx,
+				 vlib_buffer_t * b, ip4_address_t * ip4_addr,
 				 ip6_address_t * ip6_addr);
-void sctp_prepare_cookie_echo_chunk (sctp_connection_t * tc,
-				     vlib_buffer_t * b,
-				     sctp_state_cookie_param_t * sc);
-void sctp_prepare_cookie_ack_chunk (sctp_connection_t * tc,
+void
+sctp_prepare_initack_chunk_for_collision (sctp_connection_t * sctp_conn,
+					  u8 idx, vlib_buffer_t * b,
+					  ip4_address_t * ip4_addr,
+					  ip6_address_t * ip6_addr);
+void sctp_prepare_abort_for_collision (sctp_connection_t * sctp_conn, u8 idx,
+				       vlib_buffer_t * b,
+				       ip4_address_t * ip4_addr,
+				       ip6_address_t * ip6_addr);
+void
+sctp_prepare_operation_error (sctp_connection_t * sctp_conn, u8 idx,
+			      vlib_buffer_t * b, u8 err_cause);
+void sctp_prepare_cookie_echo_chunk (sctp_connection_t * sctp_conn, u8 idx,
+				     vlib_buffer_t * b, u8 reuse_buffer);
+void sctp_prepare_cookie_ack_chunk (sctp_connection_t * sctp_conn, u8 idx,
 				    vlib_buffer_t * b);
-void sctp_prepare_sack_chunk (sctp_connection_t * tc, vlib_buffer_t * b);
+void sctp_prepare_sack_chunk (sctp_connection_t * sctp_conn, u8 idx,
+			      vlib_buffer_t * b);
+void sctp_prepare_heartbeat_ack_chunk (sctp_connection_t * sctp_conn, u8 idx,
+				       vlib_buffer_t * b);
 
-u16 sctp_check_outstanding_data_chunks (sctp_connection_t * tc);
+u16 sctp_check_outstanding_data_chunks (sctp_connection_t * sctp_conn);
 
-#define SCTP_TICK 0.001			/**< SCTP tick period (s) */
-#define STHZ (u32) (1/SCTP_TICK)		/**< SCTP tick frequency */
-#define SCTP_TSTAMP_RESOLUTION SCTP_TICK	/**< Time stamp resolution */
-#define SCTP_PAWS_IDLE 24 * 24 * 60 * 60 * THZ /**< 24 days */
-#define SCTP_FIB_RECHECK_PERIOD	1 * THZ	/**< Recheck every 1s */
-#define SCTP_MAX_OPTION_SPACE 40
-
-#define SCTP_DUPACK_THRESHOLD 	3
-#define SCTP_MAX_RX_FIFO_SIZE 	4 << 20
-#define SCTP_MIN_RX_FIFO_SIZE	4 << 10
-#define SCTP_IW_N_SEGMENTS 	10
-#define SCTP_ALWAYS_ACK		1	/**< On/off delayed acks */
-#define SCTP_USE_SACKS		1	/**< Disable only for testing */
+void sctp_api_reference (void);
 
 #define IP_PROTOCOL_SCTP	132
 
@@ -381,16 +446,23 @@ sctp_optparam_type_to_string (u8 type)
 
 #define SCTP_TICK 0.001			/**< SCTP tick period (s) */
 #define SHZ (u32) (1/SCTP_TICK)		/**< SCTP tick frequency */
+#define SCTP_TSTAMP_RESOLUTION SCTP_TICK	/**< Time stamp resolution */
 
 /* As per RFC4960, page 83 */
 #define SCTP_RTO_INIT 3 * SHZ	/* 3 seconds */
 #define SCTP_RTO_MIN 1 * SHZ	/* 1 second */
 #define SCTP_RTO_MAX 60 * SHZ	/* 60 seconds */
-#define SCTP_RTO_BURST	4
+#define SCTP_RTO_BURST 4
 #define SCTP_RTO_ALPHA 1/8
 #define SCTP_RTO_BETA 1/4
 #define SCTP_VALID_COOKIE_LIFE 60 * SHZ	/* 60 seconds */
-#define SCTP_ASSOCIATION_MAX_RETRANS 10
+#define SCTP_ASSOCIATION_MAX_RETRANS 10	// the overall connection
+#define SCTP_PATH_MAX_RETRANS 5	// number of attempts per destination address
+#define SCTP_MAX_INIT_RETRANS 8	// number of attempts
+#define SCTP_HB_INTERVAL 30 * SHZ
+#define SCTP_HB_MAX_BURST 1
+
+#define SCTP_DATA_IDLE_INTERVAL 15 * SHZ	/* 15 seconds; the time-interval after which the connetion is considered IDLE */
 
 #define SCTP_TO_TIMER_TICK       SCTP_TICK*10	/* Period for converting from SCTP_TICK */
 
@@ -484,7 +556,7 @@ sctp_half_open_connection_get (u32 conn_index)
   clib_spinlock_lock_if_init (&sctp_main.half_open_lock);
   if (!pool_is_free_index (sctp_main.half_open_connections, conn_index))
     tc = pool_elt_at_index (sctp_main.half_open_connections, conn_index);
-  tc->sub_conn[MAIN_SCTP_SUB_CONN_IDX].parent = tc;
+  tc->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx = SCTP_PRIMARY_PATH_IDX;
   clib_spinlock_unlock_if_init (&sctp_main.half_open_lock);
   return tc;
 }
@@ -496,13 +568,13 @@ sctp_half_open_connection_get (u32 conn_index)
 always_inline void
 sctp_half_open_connection_del (sctp_connection_t * tc)
 {
-  sctp_main_t *tm = vnet_get_sctp_main ();
-  clib_spinlock_lock_if_init (&tm->half_open_lock);
-  pool_put_index (tm->half_open_connections,
-		  tc->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_c_index);
+  sctp_main_t *sctp_main = vnet_get_sctp_main ();
+  clib_spinlock_lock_if_init (&sctp_main->half_open_lock);
+  pool_put_index (sctp_main->half_open_connections,
+		  tc->sub_conn[SCTP_PRIMARY_PATH_IDX].c_c_index);
   if (CLIB_DEBUG)
     memset (tc, 0xFA, sizeof (*tc));
-  clib_spinlock_unlock_if_init (&tm->half_open_lock);
+  clib_spinlock_unlock_if_init (&sctp_main->half_open_lock);
 }
 
 always_inline u32
@@ -523,7 +595,7 @@ sctp_timer_set (sctp_connection_t * tc, u8 conn_idx, u8 timer_id,
 	  SCTP_TIMER_HANDLE_INVALID);
 
   sctp_sub_connection_t *sub = &tc->sub_conn[conn_idx];
-  tc->sub_conn[conn_idx].timers[timer_id] =
+  sub->timers[timer_id] =
     tw_timer_start_16t_2w_512sl (&sctp_main.timer_wheels[sub->c_thread_index],
 				 sub->c_c_index, timer_id, interval);
 }
@@ -542,15 +614,6 @@ sctp_timer_reset (sctp_connection_t * tc, u8 conn_idx, u8 timer_id)
   sub->timers[timer_id] = SCTP_TIMER_HANDLE_INVALID;
 }
 
-always_inline void
-sctp_update_time (f64 now, u32 thread_index)
-{
-  sctp_set_time_now (thread_index);
-  tw_timer_expire_timers_16t_2w_512sl (&sctp_main.timer_wheels[thread_index],
-				       now);
-  sctp_flush_frames_to_output (thread_index);
-}
-
 /**
  * Try to cleanup half-open connection
  *
@@ -564,10 +627,10 @@ always_inline int
 sctp_half_open_connection_cleanup (sctp_connection_t * tc)
 {
   /* Make sure this is the owning thread */
-  if (tc->sub_conn[MAIN_SCTP_SUB_CONN_IDX].c_thread_index !=
+  if (tc->sub_conn[SCTP_PRIMARY_PATH_IDX].c_thread_index !=
       vlib_get_thread_index ())
     return 1;
-  sctp_timer_reset (tc, MAIN_SCTP_SUB_CONN_IDX, SCTP_TIMER_T1_INIT);
+  sctp_timer_reset (tc, SCTP_PRIMARY_PATH_IDX, SCTP_TIMER_T1_INIT);
   sctp_half_open_connection_del (tc);
   return 0;
 }
@@ -590,13 +653,72 @@ sctp_get_connection_from_transport (transport_connection_t * tconn)
   if (sub->parent == NULL)
     SCTP_ADV_DBG ("sub->parent == NULL");
 #endif
-  return (sctp_connection_t *) sub->parent;
+  if (sub->subconn_idx > 0)
+    return (sctp_connection_t *) sub -
+      (sizeof (sctp_sub_connection_t) * (sub->subconn_idx - 1));
+
+  return (sctp_connection_t *) sub;
 }
 
 always_inline u32
 sctp_time_now (void)
 {
   return sctp_main.time_now[vlib_get_thread_index ()];
+}
+
+#define ABS(x) ((x) > 0) ? (x) : -(x);
+
+always_inline void
+sctp_calculate_rto (sctp_connection_t * sctp_conn, u8 conn_idx)
+{
+  /* See RFC4960, 6.3.1.  RTO Calculation */
+  u32 RTO = 0;
+  f32 RTTVAR = 0;
+  u32 now = sctp_time_now ();
+  u32 prev_ts = sctp_conn->sub_conn[conn_idx].rtt_ts;
+  u32 R = prev_ts - now;
+
+  if (sctp_conn->sub_conn[conn_idx].RTO == 0)	// C1: Let's initialize our RTO
+    {
+      sctp_conn->sub_conn[conn_idx].RTO = SCTP_RTO_MIN;
+      return;
+    }
+
+  if (sctp_conn->sub_conn[conn_idx].RTO == SCTP_RTO_MIN && sctp_conn->sub_conn[conn_idx].SRTT == 0)	// C2: First RTT calculation
+    {
+      sctp_conn->sub_conn[conn_idx].SRTT = R;
+      RTTVAR = R / 2;
+
+      if (RTTVAR == 0)
+	RTTVAR = 100e-3;	/* 100 ms */
+
+      sctp_conn->sub_conn[conn_idx].RTTVAR = RTTVAR;
+    }
+  else				// C3: RTT already exists; let's recalculate
+    {
+      RTTVAR = (1 - SCTP_RTO_BETA) * sctp_conn->sub_conn[conn_idx].RTTVAR +
+	SCTP_RTO_BETA * ABS (sctp_conn->sub_conn[conn_idx].SRTT - R);
+
+      if (RTTVAR == 0)
+	RTTVAR = 100e-3;	/* 100 ms */
+
+      sctp_conn->sub_conn[conn_idx].RTTVAR = RTTVAR;
+
+      sctp_conn->sub_conn[conn_idx].SRTT =
+	(1 - SCTP_RTO_ALPHA) * sctp_conn->sub_conn[conn_idx].SRTT +
+	SCTP_RTO_ALPHA * R;
+    }
+
+  RTO =
+    sctp_conn->sub_conn[conn_idx].SRTT +
+    4 * sctp_conn->sub_conn[conn_idx].RTTVAR;
+  if (RTO < SCTP_RTO_MIN)	// C6
+    RTO = SCTP_RTO_MIN;
+
+  if (RTO > SCTP_RTO_MAX)	// C7
+    RTO = SCTP_RTO_MAX;
+
+  sctp_conn->sub_conn[conn_idx].RTO = RTO;
 }
 
 always_inline void
@@ -633,53 +755,65 @@ sctp_connection_get (u32 conn_index, u32 thread_index)
   return pool_elt_at_index (sctp_main.connections[thread_index], conn_index);
 }
 
-always_inline u8
-sctp_pick_conn_idx_on_chunk (sctp_chunk_type chunk_type)
-{
-  u8 idx = MAIN_SCTP_SUB_CONN_IDX;
+#define SELECT_MAX_RETRIES 8
 
-  switch (chunk_type)
+always_inline u8
+sctp_data_subconn_select (sctp_connection_t * sctp_conn)
+{
+  u32 sub = SCTP_PRIMARY_PATH_IDX;
+  u8 i, cwnd = sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].cwnd;
+  for (i = 1; i < MAX_SCTP_CONNECTIONS; i++)
     {
-    case DATA:
-    case INIT:
-    case INIT_ACK:
-    case SACK:
-    case HEARTBEAT:
-    case HEARTBEAT_ACK:
-    case ABORT:
-    case SHUTDOWN:
-    case SHUTDOWN_ACK:
-    case OPERATION_ERROR:
-    case COOKIE_ECHO:
-    case COOKIE_ACK:
-    case ECNE:
-    case CWR:
-    case SHUTDOWN_COMPLETE:
-      idx = MAIN_SCTP_SUB_CONN_IDX;
+      if (sctp_conn->sub_conn[i].state == SCTP_SUBCONN_STATE_DOWN)
+	continue;
+
+      if (sctp_conn->sub_conn[i].cwnd > cwnd)
+	{
+	  sub = i;
+	  cwnd = sctp_conn->sub_conn[i].cwnd;
+	}
     }
-  return idx;
+  return sub;
 }
 
 always_inline u8
-sctp_pick_conn_idx_on_state (sctp_state_t state)
+sctp_sub_conn_id_via_ip6h (sctp_connection_t * sctp_conn, ip6_header_t * ip6h)
 {
-  u8 idx = MAIN_SCTP_SUB_CONN_IDX;
+  u8 i;
 
-  switch (state)
+  for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
     {
-    case SCTP_STATE_CLOSED:
-    case SCTP_STATE_COOKIE_WAIT:
-    case SCTP_STATE_COOKIE_ECHOED:
-    case SCTP_STATE_ESTABLISHED:
-    case SCTP_STATE_SHUTDOWN_PENDING:
-    case SCTP_STATE_SHUTDOWN_SENT:
-    case SCTP_STATE_SHUTDOWN_RECEIVED:
-    case SCTP_STATE_SHUTDOWN_ACK_SENT:
-      idx = MAIN_SCTP_SUB_CONN_IDX;
-    default:
-      idx = MAIN_SCTP_SUB_CONN_IDX;
+      if (sctp_conn->sub_conn[i].connection.lcl_ip.ip6.as_u64[0] ==
+	  ip6h->dst_address.as_u64[0] &&
+	  sctp_conn->sub_conn[i].connection.lcl_ip.ip6.as_u64[1] ==
+	  ip6h->dst_address.as_u64[1] &&
+	  sctp_conn->sub_conn[i].connection.rmt_ip.ip6.as_u64[0] ==
+	  ip6h->src_address.as_u64[0] &&
+	  sctp_conn->sub_conn[i].connection.rmt_ip.ip6.as_u64[1] ==
+	  ip6h->src_address.as_u64[1])
+	return i;
     }
-  return idx;
+  clib_warning ("Did not find a sub-connection; defaulting to %u",
+		SCTP_PRIMARY_PATH_IDX);
+  return SCTP_PRIMARY_PATH_IDX;
+}
+
+always_inline u8
+sctp_sub_conn_id_via_ip4h (sctp_connection_t * sctp_conn, ip4_header_t * ip4h)
+{
+  u8 i;
+
+  for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
+    {
+      if (sctp_conn->sub_conn[i].connection.lcl_ip.ip4.as_u32 ==
+	  ip4h->dst_address.as_u32
+	  && sctp_conn->sub_conn[i].connection.rmt_ip.ip4.as_u32 ==
+	  ip4h->src_address.as_u32)
+	return i;
+    }
+  clib_warning ("Did not find a sub-connection; defaulting to %u",
+		SCTP_PRIMARY_PATH_IDX);
+  return SCTP_PRIMARY_PATH_IDX;
 }
 
 /**
@@ -723,6 +857,110 @@ vlib_buffer_push_sctp (vlib_buffer_t * b, u16 sp_net, u16 dp_net,
 {
   return vlib_buffer_push_sctp_net_order (b, sp_net, dp_net,
 					  sctp_hdr_opts_len);
+}
+
+always_inline u8
+sctp_next_avail_subconn (sctp_connection_t * sctp_conn)
+{
+  u8 i;
+
+  for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
+    {
+      if (sctp_conn->sub_conn[i].state == SCTP_SUBCONN_STATE_DOWN)
+	return i;
+    }
+  return MAX_SCTP_CONNECTIONS;
+}
+
+always_inline void
+update_smallest_pmtu_idx (sctp_connection_t * sctp_conn)
+{
+  u8 i;
+  u8 smallest_pmtu_index = SCTP_PRIMARY_PATH_IDX;
+
+  for (i = 1; i < MAX_SCTP_CONNECTIONS; i++)
+    {
+      if (sctp_conn->sub_conn[i].state != SCTP_SUBCONN_STATE_DOWN)
+	{
+	  if (sctp_conn->sub_conn[i].PMTU <
+	      sctp_conn->sub_conn[smallest_pmtu_index].PMTU)
+	    smallest_pmtu_index = i;
+	}
+    }
+
+  sctp_conn->smallest_PMTU_idx = smallest_pmtu_index;
+}
+
+/* As per RFC4960; section 7.2.1: Slow-Start */
+always_inline void
+sctp_init_cwnd (sctp_connection_t * sctp_conn)
+{
+  u8 i;
+  for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
+    {
+      /* Section 7.2.1; point (1) */
+      sctp_conn->sub_conn[i].cwnd =
+	clib_min (4 * sctp_conn->sub_conn[i].PMTU,
+		  clib_max (2 * sctp_conn->sub_conn[i].PMTU, 4380));
+
+      /* Section 7.2.1; point (3) */
+      sctp_conn->sub_conn[i].ssthresh = SCTP_INITIAL_SSHTRESH;
+
+      /* Section 7.2.2; point (1) */
+      sctp_conn->sub_conn[i].partially_acked_bytes = 0;
+    }
+}
+
+always_inline u8
+sctp_in_cong_recovery (sctp_connection_t * sctp_conn, u8 idx)
+{
+  return 0;
+}
+
+always_inline u8
+cwnd_fully_utilized (sctp_connection_t * sctp_conn, u8 idx)
+{
+  return 0;
+}
+
+/* As per RFC4960; section 7.2.1: Slow-Start */
+always_inline void
+update_cwnd (sctp_connection_t * sctp_conn)
+{
+  u8 i;
+
+  for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
+    {
+      /* Section 7.2.1; point (2) */
+      if (sctp_conn->sub_conn[i].is_retransmitting)
+	{
+	  sctp_conn->sub_conn[i].cwnd = 1 * sctp_conn->sub_conn[i].PMTU;
+	  continue;
+	}
+
+      /* Section 7.2.2; point (4) */
+      if (sctp_conn->sub_conn[i].last_data_ts >
+	  sctp_time_now () + SCTP_DATA_IDLE_INTERVAL)
+	{
+	  sctp_conn->sub_conn[i].cwnd =
+	    clib_max (sctp_conn->sub_conn[i].cwnd / 2,
+		      4 * sctp_conn->sub_conn[i].PMTU);
+	  continue;
+	}
+
+      /* Section 7.2.1; point (5) */
+      if (sctp_conn->sub_conn[i].cwnd <= sctp_conn->sub_conn[i].ssthresh)
+	{
+	  if (!cwnd_fully_utilized (sctp_conn, i))
+	    continue;
+
+	  if (sctp_in_cong_recovery (sctp_conn, i))
+	    continue;
+
+	  sctp_conn->sub_conn[i].cwnd =
+	    clib_min (sctp_conn->sub_conn[i].PMTU, 1);
+	}
+    }
 }
 
 /*

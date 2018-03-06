@@ -91,6 +91,8 @@ typedef struct
 typedef struct
 {
   u32 flags;
+  clib_spinlock_t lockp;
+
   u32 id;
   u32 dev_instance;
   u32 hw_if_index;
@@ -131,6 +133,8 @@ clib_error_t *virtio_vring_init (vlib_main_t * vm, virtio_if_t * vif, u16 idx,
 clib_error_t *virtio_vring_free (vlib_main_t * vm, virtio_if_t * vif,
 				 u32 idx);
 extern void virtio_free_used_desc (vlib_main_t * vm, virtio_vring_t * vring);
+
+format_function_t format_virtio_device_name;
 
 #endif /* _VNET_DEVICES_VIRTIO_VIRTIO_H_ */
 

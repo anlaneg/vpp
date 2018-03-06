@@ -311,6 +311,43 @@ icmp_get_ed_key(ip4_header_t *ip0, nat_ed_ses_key_t *p_key0)
   return 0;
 }
 
+static void
+create_bypass_for_fwd(snat_main_t * sm, ip4_header_t * ip)
+{
+  nat_ed_ses_key_t key;
+  clib_bihash_kv_16_8_t kv;
+  udp_header_t *udp;
+
+  if (ip->protocol == IP_PROTOCOL_ICMP)
+    {
+      if (icmp_get_ed_key (ip, &key))
+        return;
+    }
+  else if (ip->protocol == IP_PROTOCOL_UDP || ip->protocol == IP_PROTOCOL_TCP)
+    {
+      udp = ip4_next_header(ip);
+      key.r_addr = ip->src_address;
+      key.l_addr = ip->dst_address;
+      key.proto = ip->protocol;
+      key.l_port = udp->dst_port;
+      key.r_port = udp->src_port;
+    }
+  else
+    {
+      key.r_addr = ip->src_address;
+      key.l_addr = ip->dst_address;
+      key.proto = ip->protocol;
+      key.l_port = key.r_port = 0;
+    }
+  key.fib_index = 0;
+  kv.key[0] = key.as_u64[0];
+  kv.key[1] = key.as_u64[1];
+  kv.value = ~0ULL;
+
+  if (clib_bihash_add_del_16_8 (&sm->in2out_ed, &kv, 1))
+    clib_warning ("in2out_ed key add failed");
+}
+
 /**
  * Get address and port values to be used for ICMP packet translation
  * and create session if needed
@@ -382,6 +419,7 @@ u32 icmp_match_out2in_slow(snat_main_t *sm, vlib_node_runtime_t *node,
             }
           else
             {
+              create_bypass_for_fwd(sm, ip0);
               dont_translate = 1;
               goto out;
             }
@@ -1065,8 +1103,9 @@ snat_out2in_node_fn (vlib_main_t * vm,
             {
               s0 = snat_out2in_unknown_proto(sm, b0, ip0, rx_fib_index0,
                                              thread_index, now, vm, node);
-              if (!s0)
-                next0 = SNAT_OUT2IN_NEXT_DROP;
+	      if (!sm->forwarding_enabled)
+		if (!s0)
+		  next0 = SNAT_OUT2IN_NEXT_DROP;
               goto trace0;
             }
 
@@ -1105,14 +1144,21 @@ snat_out2in_node_fn (vlib_main_t * vm,
                        * Send DHCP packets to the ipv4 stack, or we won't
                        * be able to use dhcp client on the outside interface
                        */
-                      if (proto0 != SNAT_PROTOCOL_UDP
+                      if (PREDICT_TRUE (proto0 != SNAT_PROTOCOL_UDP
                           || (udp0->dst_port
-                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client)))
+                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client))))
                         next0 = SNAT_OUT2IN_NEXT_DROP;
+                      else
+                        vnet_feature_next
+                          (vnet_buffer (b0)->sw_if_index[VLIB_RX],
+                           &next0, b0);
                       goto trace0;
                     }
                   else
-                    goto trace0;
+                    {
+                      create_bypass_for_fwd(sm, ip0);
+                      goto trace0;
+                    }
                 }
 
               /* Create session initiated by host from external network */
@@ -1228,8 +1274,9 @@ snat_out2in_node_fn (vlib_main_t * vm,
             {
               s1 = snat_out2in_unknown_proto(sm, b1, ip1, rx_fib_index1,
                                              thread_index, now, vm, node);
-              if (!s1)
-                next1 = SNAT_OUT2IN_NEXT_DROP;
+	      if (!sm->forwarding_enabled)
+		if (!s1)
+		  next1 = SNAT_OUT2IN_NEXT_DROP;
               goto trace1;
             }
 
@@ -1268,14 +1315,21 @@ snat_out2in_node_fn (vlib_main_t * vm,
                        * Send DHCP packets to the ipv4 stack, or we won't
                        * be able to use dhcp client on the outside interface
                        */
-                      if (proto1 != SNAT_PROTOCOL_UDP
+                      if (PREDICT_TRUE (proto1 != SNAT_PROTOCOL_UDP
                           || (udp1->dst_port
-                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client)))
+                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client))))
                         next1 = SNAT_OUT2IN_NEXT_DROP;
+                      else
+                        vnet_feature_next
+                          (vnet_buffer (b1)->sw_if_index[VLIB_RX],
+                           &next1, b1);
                       goto trace1;
                     }
                   else
-                    goto trace1;
+                    {
+                      create_bypass_for_fwd(sm, ip1);
+                      goto trace1;
+                    }
                 }
 
               /* Create session initiated by host from external network */
@@ -1417,8 +1471,9 @@ snat_out2in_node_fn (vlib_main_t * vm,
             {
               s0 = snat_out2in_unknown_proto(sm, b0, ip0, rx_fib_index0,
                                              thread_index, now, vm, node);
-              if (!s0)
-                next0 = SNAT_OUT2IN_NEXT_DROP;
+	      if (!sm->forwarding_enabled)
+		if (!s0)
+		  next0 = SNAT_OUT2IN_NEXT_DROP;
               goto trace00;
             }
 
@@ -1467,14 +1522,21 @@ snat_out2in_node_fn (vlib_main_t * vm,
                        * Send DHCP packets to the ipv4 stack, or we won't
                        * be able to use dhcp client on the outside interface
                        */
-                      if (proto0 != SNAT_PROTOCOL_UDP
+                      if (PREDICT_TRUE (proto0 != SNAT_PROTOCOL_UDP
                           || (udp0->dst_port
-                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client)))
+                              != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client))))
                         next0 = SNAT_OUT2IN_NEXT_DROP;
+                      else
+                        vnet_feature_next
+                          (vnet_buffer (b0)->sw_if_index[VLIB_RX],
+                           &next0, b0);
                       goto trace00;
                     }
                   else
-                    goto trace00;
+                    {
+                      create_bypass_for_fwd(sm, ip0);
+                      goto trace00;
+                    }
                 }
 
               /* Create session initiated by host from external network */
@@ -1707,14 +1769,21 @@ nat44_out2in_reass_node_fn (vlib_main_t * vm,
                            * Send DHCP packets to the ipv4 stack, or we won't
                            * be able to use dhcp client on the outside interface
                            */
-                          if (proto0 != SNAT_PROTOCOL_UDP
+                          if (PREDICT_TRUE (proto0 != SNAT_PROTOCOL_UDP
                               || (udp0->dst_port
-                                  != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client)))
+                                  != clib_host_to_net_u16(UDP_DST_PORT_dhcp_to_client))))
                             next0 = SNAT_OUT2IN_NEXT_DROP;
+                          else
+                            vnet_feature_next
+                              (vnet_buffer (b0)->sw_if_index[VLIB_RX],
+                               &next0, b0);
                           goto trace0;
                         }
                       else
-                        goto trace0;
+                        {
+                          create_bypass_for_fwd(sm, ip0);
+                          goto trace0;
+                        }
                     }
 
                   /* Create session initiated by host from external network */

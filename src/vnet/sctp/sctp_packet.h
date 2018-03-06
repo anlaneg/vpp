@@ -163,7 +163,8 @@ typedef enum
   COOKIE_ACK,
   ECNE,
   CWR,
-  SHUTDOWN_COMPLETE
+  SHUTDOWN_COMPLETE,
+  UNKNOWN
 } sctp_chunk_type;
 
 /*
@@ -267,13 +268,13 @@ typedef struct
 #define CHUNK_FLAGS_MASK 0x00FF0000
 #define CHUNK_FLAGS_SHIFT 16
 
-#define CHUNK_UBIT_MASK 0x000F0000
+#define CHUNK_UBIT_MASK 0x00040000
 #define CHUNK_UBIT_SHIFT 18
 
-#define CHUNK_BBIT_MASK 0x000F0000
+#define CHUNK_BBIT_MASK 0x00020000
 #define CHUNK_BBIT_SHIFT 17
 
-#define CHUNK_EBIT_MASK 0x000F0000
+#define CHUNK_EBIT_MASK 0x00010000
 #define CHUNK_EBIT_SHIFT 16
 
 #define CHUNK_LENGTH_MASK 0x0000FFFF
@@ -512,7 +513,6 @@ vnet_sctp_calculate_padding (u16 base_length)
   return (4 - base_length % 4);
 }
 
-#define DEFAULT_A_RWND 1480
 #define INBOUND_STREAMS_COUNT 1
 #define OUTBOUND_STREAMS_COUNT 1
 
@@ -1314,6 +1314,32 @@ typedef struct
   u64 cause_info;
 
 } sctp_err_cause_param_t;
+
+
+/*
+ * An end-point sends this chunk to its peer end-point to notify it of
+ * certain error conditions.  It contains one or more error causes.
+ * An Operation Error is not considered fatal in and of itself, but may be
+ * used with an ABORT chunk to report a fatal condition.  It has the
+ * following parameters:
+ *
+ * 0                   1                   2                   3
+ * 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |   Type = 9    | Chunk  Flags  |           Length              |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * \                                                               \
+ * /                    one or more Error Causes                   /
+ * \                                                               \
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ */
+typedef struct
+{
+  sctp_header_t sctp_hdr;
+  sctp_chunks_common_hdr_t chunk_hdr;
+  sctp_err_cause_param_t err_causes[];
+
+} sctp_operation_error_t;
 
 /*
  * Abort Association (ABORT)

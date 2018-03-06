@@ -39,6 +39,8 @@
 #include "vom/vxlan_tunnel_cmds.hpp"
 #include "vom/sub_interface.hpp"
 #include "vom/sub_interface_cmds.hpp"
+#include "vom/acl_ethertype.hpp"
+#include "vom/acl_ethertype_cmds.hpp"
 #include "vom/acl_list.hpp"
 #include "vom/acl_binding.hpp"
 #include "vom/acl_list_cmds.hpp"
@@ -172,6 +174,10 @@ public:
                     {
                         rc = handle_derived<interface_cmds::loopback_create_cmd>(f_exp, f_act);
                     }
+                    else if (typeid(*f_exp) == typeid(interface_cmds::vhost_create_cmd))
+                    {
+                        rc = handle_derived<interface_cmds::vhost_create_cmd>(f_exp, f_act);
+                    }
                     else if (typeid(*f_exp) == typeid(interface_cmds::loopback_delete_cmd))
                     {
                         rc = handle_derived<interface_cmds::loopback_delete_cmd>(f_exp, f_act);
@@ -179,6 +185,10 @@ public:
                     else if (typeid(*f_exp) == typeid(interface_cmds::af_packet_delete_cmd))
                     {
                         rc = handle_derived<interface_cmds::af_packet_delete_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(interface_cmds::vhost_delete_cmd))
+                    {
+                       rc = handle_derived<interface_cmds::vhost_delete_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(interface_cmds::state_change_cmd))
                     {
@@ -279,6 +289,10 @@ public:
                     else if (typeid(*f_exp) == typeid(sub_interface_cmds::delete_cmd))
                     {
                         rc = handle_derived<sub_interface_cmds::delete_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(ACL::acl_ethertype_cmds::bind_cmd))
+                    {
+                        rc = handle_derived<ACL::acl_ethertype_cmds::bind_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(ACL::list_cmds::l3_update_cmd))
                     {
@@ -599,12 +613,15 @@ BOOST_AUTO_TEST_CASE(test_interface) {
     TRY_CHECK(OM::mark(go));
 
     std::string itf2_name = "afpacket2";
+    std::string itf2_tag = "uuid-of-afpacket2-interface";
     interface itf2(itf2_name,
                    interface::type_t::AFPACKET,
-                   interface::admin_state_t::UP);
+                   interface::admin_state_t::UP,
+                   itf2_tag);
     HW::item<handle_t> hw_ifh2(3, rc_t::OK);
 
     ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::set_tag(hw_ifh2, itf2_tag));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh2));
     TRY_CHECK_RC(OM::write(go, itf2));
 
@@ -617,6 +634,23 @@ BOOST_AUTO_TEST_CASE(test_interface) {
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh2));
     ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh2, itf2_name));
     TRY_CHECK(OM::sweep(go));
+
+
+    std::string itf3_name = "/PATH/TO/vhost_user1.sock";
+    std::string itf3_tag = "uuid-of-vhost_user1-interface";
+    interface itf3(itf3_name,
+                   interface::type_t::VHOST,
+                   interface::admin_state_t::UP,
+                   itf3_tag);
+    HW::item<handle_t> hw_ifh3(4, rc_t::OK);
+
+    ADD_EXPECT(interface_cmds::vhost_create_cmd(hw_ifh3, itf3_name, itf3_tag));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh3));
+    TRY_CHECK_RC(OM::write(go, itf3));
+
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh3));
+    ADD_EXPECT(interface_cmds::vhost_delete_cmd(hw_ifh3, itf3_name));
+    TRY_CHECK(OM::remove(go));
 }
 
 BOOST_AUTO_TEST_CASE(test_bvi) {
@@ -984,6 +1018,15 @@ BOOST_AUTO_TEST_CASE(test_acl) {
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
     TRY_CHECK_RC(OM::write(fyodor, itf1));
 
+    ACL::ethertype_rule_t e1(ethertype_t::ARP, direction_t::INPUT);
+    ACL::ethertype_rule_t e2(ethertype_t::ARP, direction_t::OUTPUT);
+    ACL::ethertype_rule_t e3(ethertype_t::IPV4, direction_t::INPUT);
+    ACL::acl_ethertype::ethertype_rules_t l_e = {e1, e2, e3};
+    ACL::acl_ethertype *a_e = new ACL::acl_ethertype(itf1, l_e);
+    HW::item<bool> ae_binding(true, rc_t::OK);
+    ADD_EXPECT(ACL::acl_ethertype_cmds::bind_cmd(ae_binding, hw_ifh.data(), l_e));
+    TRY_CHECK_RC(OM::write(fyodor, *a_e));
+
     route::prefix_t src("10.10.10.10", 32);
     ACL::l3_rule r1(10, ACL::action_t::PERMIT, src, route::prefix_t::ZERO);
     ACL::l3_rule r2(20, ACL::action_t::DENY, route::prefix_t::ZERO, route::prefix_t::ZERO);
@@ -997,6 +1040,13 @@ BOOST_AUTO_TEST_CASE(test_acl) {
     HW::item<handle_t> hw_acl(2, rc_t::OK);
     ADD_EXPECT(ACL::list_cmds::l3_update_cmd(hw_acl, acl_name, rules));
     TRY_CHECK_RC(OM::write(fyodor, acl1));
+
+    ACL::l3_rule r3(30, ACL::action_t::PERMIT, route::prefix_t::ZERO, route::prefix_t::ZERO);
+    ACL::l3_list acl2(acl_name);
+    acl2.insert(r3);
+    ACL::l3_list::rules_t rules2 = {r3};
+    ADD_EXPECT(ACL::list_cmds::l3_update_cmd(hw_acl, acl_name, rules2));
+    TRY_CHECK_RC(OM::write(fyodor, acl2));
 
     ACL::l3_binding *l3b = new ACL::l3_binding(direction_t::INPUT, itf1, acl1);
     HW::item<bool> hw_binding(true, rc_t::OK);
@@ -1038,6 +1088,7 @@ BOOST_AUTO_TEST_CASE(test_acl) {
     TRY_CHECK(OM::remove(leo));
 
     delete l3b;
+    delete a_e;
     HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN,
                                                   rc_t::OK);
     STRICT_ORDER_OFF();

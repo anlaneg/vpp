@@ -159,11 +159,12 @@ del_free_list (vlib_main_t * vm, vlib_buffer_free_list_t * f)
 
 /* Add buffer free list. */
 static void
-dpdk_buffer_delete_free_list (vlib_main_t * vm, u32 free_list_index)
+dpdk_buffer_delete_free_list (vlib_main_t * vm,
+			      vlib_buffer_free_list_index_t free_list_index)
 {
   vlib_buffer_main_t *bm = vm->buffer_main;
   vlib_buffer_free_list_t *f;
-  u32 merge_index;
+  vlib_buffer_free_list_index_t merge_index;
   int i;
 
   ASSERT (vlib_get_thread_index () == 0);
@@ -171,7 +172,8 @@ dpdk_buffer_delete_free_list (vlib_main_t * vm, u32 free_list_index)
   f = vlib_buffer_get_free_list (vm, free_list_index);
 
   merge_index = vlib_buffer_get_free_list_with_size (vm, f->n_data_bytes);
-  if (merge_index != ~0 && merge_index != free_list_index)
+  if (merge_index != (vlib_buffer_free_list_index_t) ~ 0 &&
+      merge_index != free_list_index)
     {
       vlib_buffer_merge_free_lists (pool_elt_at_index
 				    (bm->buffer_free_list_pool, merge_index),
@@ -321,7 +323,7 @@ recycle_or_free (vlib_main_t * vm, vlib_buffer_main_t * bm, u32 bi,
 {
   vlib_buffer_free_list_t *fl;
   u32 thread_index = vlib_get_thread_index ();
-  u32 fi;
+  vlib_buffer_free_list_index_t fi;
   fl = vlib_buffer_get_buffer_free_list (vm, b, &fi);
 
   /* The only current use of this callback: multicast recycle */
@@ -469,14 +471,12 @@ dpdk_pool_create (vlib_main_t * vm, u8 * pool_name, u32 elt_size,
   i32 ret;
 
   obj_size = rte_mempool_calc_obj_size (elt_size, 0, 0);
-#if RTE_VERSION < RTE_VERSION_NUM(17, 11, 0, 0)
-  size = rte_mempool_xmem_size (num_elts, obj_size, 21);
-#else
   size = rte_mempool_xmem_size (num_elts, obj_size, 21, 0);
-#endif
 
   error =
-    vlib_physmem_region_alloc (vm, (i8 *) pool_name, size, numa, 0, pri);
+    vlib_physmem_region_alloc (vm, (i8 *) pool_name, size, numa,
+			       VLIB_PHYSMEM_F_HUGETLB | VLIB_PHYSMEM_F_SHARED,
+			       pri);
   if (error)
     return error;
 
@@ -490,15 +490,9 @@ dpdk_pool_create (vlib_main_t * vm, u8 * pool_name, u32 elt_size,
 
   rte_mempool_set_ops_byname (mp, RTE_MBUF_DEFAULT_MEMPOOL_OPS, NULL);
 
-#if RTE_VERSION < RTE_VERSION_NUM(17, 11, 0, 0)
-  ret =
-    rte_mempool_populate_phys_tab (mp, pr->mem, pr->page_table, pr->n_pages,
-				   pr->log2_page_size, NULL, NULL);
-#else
   ret =
     rte_mempool_populate_iova_tab (mp, pr->mem, pr->page_table, pr->n_pages,
 				   pr->log2_page_size, NULL, NULL);
-#endif
   if (ret != (i32) mp->size)
     {
       rte_mempool_free (mp);
