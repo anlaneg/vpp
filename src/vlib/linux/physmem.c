@@ -163,7 +163,7 @@ unix_physmem_region_alloc (vlib_main_t * vm, char *name, u32 size,
 
   for (i = 0; i < pr->n_pages; i++)
     {
-      void *ptr = pr->mem + (i << pr->log2_page_size);
+      void *ptr = pr->mem + ((u64) i << pr->log2_page_size);
       int node;
       if ((move_pages (0, 1, &ptr, 0, &node, 0) == 0) && (numa_node != node))
 	{
@@ -174,14 +174,8 @@ unix_physmem_region_alloc (vlib_main_t * vm, char *name, u32 size,
 	}
     }
 
-  if ((vpm->flags & VLIB_PHYSMEM_MAIN_F_HAVE_IOMMU) ||
-      (vpm->flags & VLIB_PHYSMEM_MAIN_F_HAVE_PAGEMAP) == 0)
-    for (i = 0; i < pr->n_pages; i++)
-      vec_add1 (pr->page_table, pointer_to_uword (pr->mem) +
-		i * (1 << pr->log2_page_size));
-  else
-    pr->page_table = clib_mem_vm_get_paddr (pr->mem, pr->log2_page_size,
-					    pr->n_pages);
+  pr->page_table = clib_mem_vm_get_paddr (pr->mem, pr->log2_page_size,
+					  pr->n_pages);
 
   linux_vfio_dma_map_regions (vm);
 
@@ -222,7 +216,6 @@ clib_error_t *
 unix_physmem_init (vlib_main_t * vm)
 {
   vlib_physmem_main_t *vpm = &physmem_main;
-  linux_vfio_main_t *lvm = &vfio_main;
   clib_error_t *error = 0;
   u64 *pt = 0;
 
@@ -238,9 +231,6 @@ unix_physmem_init (vlib_main_t * vm)
 
   if ((error = linux_vfio_init (vm)))
     return error;
-
-  if (lvm->flags & LINUX_VFIO_F_HAVE_IOMMU)
-    vpm->flags |= VLIB_PHYSMEM_MAIN_F_HAVE_IOMMU;
 
   vm->os_physmem_alloc_aligned = unix_physmem_alloc_aligned;
   vm->os_physmem_free = unix_physmem_free;

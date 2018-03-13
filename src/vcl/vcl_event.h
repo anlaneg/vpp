@@ -51,7 +51,9 @@ typedef struct vce_event_handler_reg_
   pthread_mutex_t handler_lock;
   pthread_cond_t handler_cond;
   u32 ev_idx;
+  u64 evk; //Event key
   u32 replaced_handler_idx;
+  void *handler_fn_args;
 } vce_event_handler_reg_t;
 
 typedef struct vce_event_thread_
@@ -100,6 +102,16 @@ void vce_clear_event (vce_event_thread_t *evt, vce_event_t *ev);
 vce_event_t * vce_get_event_from_index(vce_event_thread_t *evt, u32 ev_idx);
 
 /**
+ * @brief vce_get_event_handler()
+ * - returns handler if exists or 0
+ * @param evt - vce_event_thread_t - event system state
+ * @param evk - event key
+ * @return vce_event_handler_reg_t *
+ */
+vce_event_handler_reg_t * vce_get_event_handler (vce_event_thread_t *evt,
+						 vce_event_key_t *evk);
+
+/**
  * @brief vce_register_handler
  * - used by functions who need to be notified that an event has occurred
  *   on a vce_event_key_t (i.e. event type (enum) and sessionID)
@@ -110,12 +122,14 @@ vce_event_t * vce_get_event_from_index(vce_event_thread_t *evt, u32 ev_idx);
  * @param evk - vce_event_key_t current an eventID from enum in consumer and
  * 		sessionID
  * @param cb  - vce_event_callback_t function to handle event
+ * @param cb_args - args that the callback needs passed back to it.
  * @return vce_handler_reg_t - the function that needs event notification
  *   needs to block on a condvar mutex to reduce spin. That is in here.
  */
 vce_event_handler_reg_t * vce_register_handler (vce_event_thread_t *evt,
 						vce_event_key_t *evk,
-						vce_event_callback_t cb);
+						vce_event_callback_t cb,
+						void *cb_args);
 
 /**
  * @brief vce_unregister_handler
@@ -124,10 +138,11 @@ vce_event_handler_reg_t * vce_register_handler (vce_event_thread_t *evt,
  * - if this handler replaced an existing one, re-instate it.
  *
  * @param evt - vce_event_thread_t - event system state
- * @param ev  - vce_event_t - event to remove
+ * @param handler - handler to be unregistered
  * @return success/failure rv
  */
-int vce_unregister_handler (vce_event_thread_t *evt, vce_event_t *ev);
+int vce_unregister_handler (vce_event_thread_t *evt,
+			    vce_event_handler_reg_t *handler);
 
 /**
  * @brief vce_event_thread_fn

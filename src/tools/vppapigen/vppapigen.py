@@ -9,6 +9,9 @@ import logging
 import binascii
 import os
 
+# Ensure we don't leave temporary files around
+sys.dont_write_bytecode = True
+
 #
 # VPP API language
 #
@@ -41,6 +44,7 @@ class VPPAPILexer(object):
         'service': 'SERVICE',
         'rpc': 'RPC',
         'returns': 'RETURNS',
+        'null': 'NULL',
         'stream': 'STREAM',
         'events': 'EVENTS',
         'define': 'DEFINE',
@@ -114,12 +118,6 @@ class VPPAPILexer(object):
 
     # A string containing ignored characters (spaces and tabs)
     t_ignore = ' \t'
-
-
-class Iterator(type):
-    def __iter__(self):
-        return self.iter()
-
 
 class Service():
     def __init__(self, caller, reply, events=[], stream=False):
@@ -346,9 +344,14 @@ class VPPAPIParser(object):
             p[0] = p[1] + [p[2]]
 
     def p_service_statement(self, p):
-        '''service_statement : RPC ID RETURNS ID ';'
+        '''service_statement : RPC ID RETURNS NULL ';'
+                             | RPC ID RETURNS ID ';'
                              | RPC ID RETURNS STREAM ID ';'
                              | RPC ID RETURNS ID EVENTS event_list ';' '''
+        if p[2] == p[4]:
+            # Verify that caller and reply differ
+            self._parse_error('Reply ID ({}) should not be equal to Caller ID'.format(p[2]),
+                              self._token_coord(p, 1))
         if len(p) == 8:
             p[0] = Service(p[2], p[4], p[6])
         elif len(p) == 7:
@@ -527,7 +530,7 @@ class VPPAPI(object):
     def __init__(self, debug=False, filename='', logger=None):
         self.lexer = lex.lex(module=VPPAPILexer(filename), debug=debug)
         self.parser = yacc.yacc(module=VPPAPIParser(filename, logger),
-                                tabmodule='vppapigentab', debug=debug)
+                                write_tables=False, debug=debug)
         self.logger = logger
 
     def parse_string(self, code, debug=0, lineno=1):
@@ -571,35 +574,42 @@ class VPPAPI(object):
                     if isinstance(o2, Service):
                         s['services'].append(o2)
 
-        # Create services implicitly
+
         msgs = {d.name: d for d in s['defines']}
         svcs = {s.caller: s for s in s['services']}
+        replies = {s.reply: s for s in s['services']}
+        seen_services = {}
 
         for service in svcs:
             if service not in msgs:
                 raise ValueError('Service definition refers to unknown message'
                                  ' definition: {}'.format(service))
-            if svcs[service].reply not in msgs:
+            if svcs[service].reply != 'null' and svcs[service].reply not in msgs:
                 raise ValueError('Service definition refers to unknown message'
                                  ' definition in reply: {}'
                                  .format(svcs[service].reply))
+            if service in replies:
+                raise ValueError('Service definition refers to message'
+                                 ' marked as reply: {}'.format(service))
             for event in svcs[service].events:
                 if event not in msgs:
                     raise ValueError('Service definition refers to unknown '
                                      'event: {} in message: {}'
                                      .format(event, service))
+                seen_services[event] = True
 
+        # Create services implicitly
         for d in msgs:
-            if msgs[d].singular is True:
+            if d in seen_services:
                 continue
-            if d.endswith('_counters'):
+            if msgs[d].singular is True:
                 continue
             if d.endswith('_reply'):
                 if d[:-6] in svcs:
                     continue
                 if d[:-6] not in msgs:
-                    self.logger.warning('{} missing calling message'
-                                        .format(d))
+                    raise ValueError('{} missing calling message'
+                                     .format(d))
                 continue
             if d.endswith('_dump'):
                 if d in svcs:
@@ -608,14 +618,14 @@ class VPPAPI(object):
                     s['services'].append(Service(d, d[:-5]+'_details',
                                                  stream=True))
                 else:
-                    self.logger.error('{} missing details message'
-                                      .format(d))
+                    raise ValueError('{} missing details message'
+                                     .format(d))
                 continue
 
             if d.endswith('_details'):
                 if d[:-8]+'_dump' not in msgs:
-                    self.logger.error('{} missing dump message'
-                                      .format(d))
+                    raise ValueError('{} missing dump message'
+                                     .format(d))
                 continue
 
             if d in svcs:
@@ -623,16 +633,21 @@ class VPPAPI(object):
             if d+'_reply' in msgs:
                 s['services'].append(Service(d, d+'_reply'))
             else:
-                self.logger.warning('{} missing reply message ({})'
-                                    .format(d, d+'_reply'))
-                s['services'].append(Service(d, None))
+                raise ValueError('{} missing reply message ({}) or service definition'
+                                 .format(d, d+'_reply'))
 
         return s
 
-    def process_imports(self, objs):
+    def process_imports(self, objs, in_import):
+        imported_objs = []
         for o in objs:
             if isinstance(o, Import):
-                return objs + self.process_imports(o.result)
+                return objs + self.process_imports(o.result, True)
+            if in_import:
+                if isinstance(o, Define) and o.typeonly:
+                    imported_objs.append(o)
+        if in_import:
+            return imported_objs
         return objs
 
 
@@ -664,9 +679,6 @@ def dirlist_get():
 # Main
 #
 def main():
-    logging.basicConfig()
-    log = logging.getLogger('vppapigen')
-
     cliparser = argparse.ArgumentParser(description='VPP API generator')
     cliparser.add_argument('--pluginpath', default=""),
     cliparser.add_argument('--includedir', action='append'),
@@ -692,11 +704,18 @@ def main():
     else:
         filename = ''
 
+    if args.debug:
+        logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+    else:
+        logging.basicConfig()
+    log = logging.getLogger('vppapigen')
+
+
     parser = VPPAPI(debug=args.debug, filename=filename, logger=log)
     result = parser.parse_file(args.input, log)
 
     # Build a list of objects. Hash of lists.
-    result = parser.process_imports(result)
+    result = parser.process_imports(result, False)
     s = parser.process(result)
 
     # Add msg_id field

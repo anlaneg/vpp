@@ -211,6 +211,7 @@ AC_SUBST(AR_FLAGS)
 
 # Please keep alphabetical order
 PLUGIN_ENABLED(acl)
+PLUGIN_ENABLED(cdp)
 PLUGIN_ENABLED(dpdk)
 PLUGIN_ENABLED(flowprobe)
 PLUGIN_ENABLED(gbp)
@@ -230,10 +231,12 @@ PLUGIN_ENABLED(srv6ad)
 PLUGIN_ENABLED(srv6am)
 PLUGIN_ENABLED(srv6as)
 PLUGIN_ENABLED(stn)
+PLUGIN_ENABLED(tlsmbedtls)
 
 ###############################################################################
 # Dependency checks
 ###############################################################################
+AC_CHECK_FUNC([memfd_create], [AC_DEFINE([HAVE_MEMFD_CREATE], [1], [Define if memfd exists])])
 
 AM_COND_IF([ENABLE_DPDK_SHARED],
 [
@@ -287,19 +290,23 @@ AM_COND_IF([ENABLE_MARVELL_PLUGIN],
     ])
 ])
 
-AM_COND_IF([WITH_MBEDTLS],
+AM_COND_IF([WITH_MBEDTLS], [],
+[
+  AC_MSG_WARN([mbedtls not enabled. Disabling tlsmbedtls plugin])
+  enable_tlsmbedtls_plugin=no
+  AM_CONDITIONAL(ENABLE_TLSMBEDTLS_PLUGIN, false)
+])
+
+AM_COND_IF([ENABLE_TLSMBEDTLS_PLUGIN],
 [
   AC_CHECK_HEADERS([mbedtls/ssl.h], [],
     [
-      AC_MSG_WARN([mbedtls headers not found. TLS app disabled])
-      AM_CONDITIONAL(WITH_MBEDTLS, false)
+      AC_MSG_WARN([mbedtls headers not found. TLS engine implementation disabled])
+      enable_tlsmbedtls_plugin=no
+      AM_CONDITIONAL(ENABLE_TLSMBEDTLS_PLUGIN, false)
     ], [])
 ])
 
-AC_PATH_PROG([VPPAPIGEN], [vppapigen], [no])
-if test "$VPPAPIGEN" = "no"; then
-   VPPAPIGEN=\$\(top_srcdir\)/tools/vppapigen/vppapigen
-fi
 
 ###############################################################################
 # JAVA
