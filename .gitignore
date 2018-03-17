@@ -8,7 +8,6 @@
 /build-root/dpdk-includes/
 /build-root/packages-vpp/
 /build-root/path_setup
-/build-root/build-config.mk
 /build-root/deb/debian/vpp-plugins/
 /build-root/deb/.pybuild/
 /build-root/*.deb
@@ -56,7 +55,7 @@ ylwrap
 test-driver
 
 *.iml
-.bootstrap.ok
+.deps.ok
 .settings
 .autotools
 # stop autotools ignore

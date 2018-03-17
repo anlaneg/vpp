@@ -13,32 +13,27 @@
  * limitations under the License.
  */
 
-option version = "2.0.0";
+#ifndef __QOS_MARK_H__
+#define __QOS_MARK_H__
 
-define sixrd_add_tunnel
-{
-  u32 client_index;
-  u32 context;
-  u32 fib_index;
-  u8 ip6_prefix[16];
-  u8 ip4_prefix[4];
-  u8 ip4_src[4];
-  u8 ip6_prefix_len;
-  u8 ip4_prefix_len;
-  u16 mtu;
-  u8 security_check;
-};
+#include <vnet/qos/qos_egress_map.h>
 
-define sixrd_add_tunnel_reply
-{
-  u32 context;
-  u32 sw_if_index;
-  i32 retval;
-};
+/**
+ * enable QoS marking by associating a MAP with an interface.
+ * The output_source specifies which protocol/header the QoS value
+ * will be written into
+ */
+extern int qos_mark_enable (u32 sw_if_index,
+			    qos_source_t output_source,
+			    qos_egress_map_id_t tid);
+extern int qos_mark_disable (u32 sw_if_index, qos_source_t output_source);
 
-autoreply define sixrd_del_tunnel
-{
-  u32 client_index;
-  u32 context;
-  u32 sw_if_index;
-};
+#endif
+
+/*
+ * fd.io coding-style-patch-verification: ON
+ *
+ * Local Variables:
+ * eval: (c-set-style "gnu")
+ * End:
+ */

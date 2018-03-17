@@ -81,6 +81,7 @@ typedef CLIB_PACKED (union {
 #define ip46_address_is_zero(ip46)	(((ip46)->as_u64[0] == 0) && ((ip46)->as_u64[1] == 0))
 #define ip46_address_is_equal(a1, a2)	(((a1)->as_u64[0] == (a2)->as_u64[0]) \
                                          && ((a1)->as_u64[1] == (a2)->as_u64[1]))
+#define ip46_address_initializer {{{ 0 }}}
 
 always_inline ip46_address_t
 to_ip46 (u32 is_ipv6, u8 * buf)
@@ -359,6 +360,7 @@ ip6_set_traffic_class_network_order (ip6_header_t * ip6, u8 dscp)
 {
   u32 tmp =
     clib_net_to_host_u32 (ip6->ip_version_traffic_class_and_flow_label);
+  tmp &= 0xf00fffff;
   tmp |= (dscp << 20);
   ip6->ip_version_traffic_class_and_flow_label = clib_host_to_net_u32 (tmp);
 }

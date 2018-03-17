@@ -34,12 +34,14 @@
 #include <vnet/devices/virtio/vhost_user.api.h>
 #include <vnet/devices/tap/tapv2.api.h>
 #include <vnet/gre/gre.api.h>
+#include <vnet/ipip/ipip.api.h>
 #include <vnet/interface.api.h>
 #include <vnet/map/map.api.h>
 #include <vnet/l2/l2.api.h>
 #include <vnet/l2tp/l2tp.api.h>
 #include <vnet/span/span.api.h>
 #include <vnet/ip/ip.api.h>
+#include <vnet/ip/rd_cp.api.h>
 #include <vnet/unix/tap.api.h>
 #include <vnet/vxlan/vxlan.api.h>
 #include <vnet/geneve/geneve.api.h>
@@ -69,6 +71,7 @@
 #include <vnet/pg/pg.api.h>
 #include <vnet/feature/feature.api.h>
 #include <vnet/sctp/sctp.api.h>
+#include <vnet/qos/qos.api.h>
 
 /*
  * fd.io coding-style-patch-verification: ON

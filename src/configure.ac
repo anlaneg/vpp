@@ -226,12 +226,12 @@ PLUGIN_ENABLED(marvell)
 PLUGIN_ENABLED(memif)
 PLUGIN_ENABLED(pppoe)
 PLUGIN_ENABLED(nat)
-PLUGIN_ENABLED(sixrd)
 PLUGIN_ENABLED(srv6ad)
 PLUGIN_ENABLED(srv6am)
 PLUGIN_ENABLED(srv6as)
 PLUGIN_ENABLED(stn)
 PLUGIN_ENABLED(tlsmbedtls)
+PLUGIN_ENABLED(tlsopenssl)
 
 ###############################################################################
 # Dependency checks
@@ -307,6 +307,12 @@ AM_COND_IF([ENABLE_TLSMBEDTLS_PLUGIN],
     ], [])
 ])
 
+AM_COND_IF([WITH_LIBSSL], [],
+[
+  AC_MSG_WARN([openssl not enabled. Disabling tlsopenssl plugin])
+  enable_tlsopenssl_plugin=no
+  AM_CONDITIONAL(ENABLE_TLSOPENSSL_PLUGIN, false)
+])
 
 ###############################################################################
 # JAVA

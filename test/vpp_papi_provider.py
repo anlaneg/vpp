@@ -36,6 +36,13 @@ class L2_VTR_OP:
     L2_TRANSLATE_2_2 = 8
 
 
+class QOS_SOURCE:
+    EXT = 0
+    VLAN = 1
+    MPLS = 2
+    IP = 3
+
+
 class UnexpectedApiReturnValueError(Exception):
     """ exception raised when the API return value is unexpected """
     pass
@@ -465,6 +472,27 @@ class VppPapiProvider(object):
                         {'enable_disable': enable_disable,
                          'address': address,
                          'pid': os.getpid(), })
+
+    def want_ip6_ra_events(self, enable_disable=1):
+        return self.api(self.papi.want_ip6_ra_events,
+                        {'enable_disable': enable_disable,
+                         'pid': os.getpid(), })
+
+    def ip6nd_send_router_solicitation(self, sw_if_index, irt=1, mrt=120,
+                                       mrc=0, mrd=0):
+        return self.api(self.papi.ip6nd_send_router_solicitation,
+                        {'irt': irt,
+                         'mrt': mrt,
+                         'mrc': mrc,
+                         'mrd': mrd,
+                         'sw_if_index': sw_if_index})
+
+    def ip6_nd_address_autoconfig(self, sw_if_index, enable,
+                                  install_default_routes):
+        return self.api(self.papi.ip6_nd_address_autoconfig,
+                        {'sw_if_index': sw_if_index,
+                         'enable': enable,
+                         'install_default_routes': install_default_routes})
 
     def want_macs_learn_events(self, enable_disable=1, scan_delay=0,
                                max_macs_in_event=0, learn_limit=0):
@@ -3202,21 +3230,64 @@ class VppPapiProvider(object):
         """ GBP contract Dump """
         return self.api(self.papi.gbp_contract_dump, {})
 
-    def sixrd_add_tunnel(self, fib_index, ip6_prefix, ip6_prefix_len,
-                         ip4_prefix, ip4_prefix_len, ip4_src, mtu,
-                         security_check):
+    def ipip_6rd_add_tunnel(self, fib_index, ip6_prefix, ip6_prefix_len,
+                            ip4_prefix, ip4_prefix_len, ip4_src,
+                            security_check):
         """ 6RD tunnel Add """
-        return self.api(self.papi.sixrd_add_tunnel,
+        return self.api(self.papi.ipip_6rd_add_tunnel,
                         {'fib_index': fib_index,
                          'ip6_prefix': ip6_prefix,
                          'ip6_prefix_len': ip6_prefix_len,
                          'ip4_prefix': ip4_prefix,
                          'ip4_prefix_len': ip4_prefix_len,
                          'ip4_src': ip4_src,
-                         'mtu': mtu,
                          'security_check': security_check})
 
-    def sixrd_del_tunnel(self, sw_if_index):
+    def ipip_6rd_del_tunnel(self, sw_if_index):
         """ 6RD tunnel Delete """
-        return self.api(self.papi.sixrd_del_tunnel,
+        return self.api(self.papi.ipip_6rd_del_tunnel,
                         {'sw_if_index': sw_if_index})
+
+    def ipip_add_tunnel(self, src_address, dst_address, is_ipv6=1,
+                        instance=0xFFFFFFFF, fib_index=0):
+        """ IPIP tunnel Add/Del """
+        return self.api(self.papi.ipip_add_tunnel,
+                        {'is_ipv6': is_ipv6,
+                         'instance': instance,
+                         'src_address': src_address,
+                         'dst_address': dst_address,
+                         'fib_index': fib_index})
+
+    def ipip_del_tunnel(self, sw_if_index):
+        """ IPIP tunnel Delete """
+        return self.api(self.papi.ipip_del_tunnel,
+                        {'sw_if_index': sw_if_index})
+
+    def qos_egress_map_update(self, id, outputs):
+        """ QOS egress map update """
+        return self.api(self.papi.qos_egress_map_update,
+                        {'map_id': id,
+                         'rows': outputs})
+
+    def qos_egress_map_delete(self, id):
+        """ QOS egress map delete """
+        return self.api(self.papi.qos_egress_map_delete,
+                        {'map_id': id})
+
+    def qos_mark_enable_disable(self, sw_if_index,
+                                output_source,
+                                map_id,
+                                enable):
+        """ QOS Mark Enable/Disable """
+        return self.api(self.papi.qos_mark_enable_disable,
+                        {'map_id': map_id,
+                         'sw_if_index': sw_if_index,
+                         'output_source': output_source,
+                         'enable': enable})
+
+    def qos_record_enable_disable(self, sw_if_index, input_source, enable):
+        """ IP QoS recording Enble/Disable """
+        return self.api(self.papi.qos_record_enable_disable,
+                        {'sw_if_index': sw_if_index,
+                         'input_source': input_source,
+                         'enable': enable})

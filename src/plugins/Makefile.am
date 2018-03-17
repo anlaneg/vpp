@@ -83,10 +83,6 @@ if ENABLE_PPPOE_PLUGIN
 include pppoe.am
 endif
 
-if ENABLE_SIXRD_PLUGIN
-include sixrd.am
-endif
-
 if ENABLE_SRV6AD_PLUGIN
 include srv6_ad.am
 endif
@@ -117,6 +113,10 @@ endif
 
 if ENABLE_TLSMBEDTLS_PLUGIN
 include tlsmbedtls.am
+endif
+
+if ENABLE_TLSOPENSSL_PLUGIN
+include tlsopenssl.am
 endif
 
 include ../suffix-rules.mk

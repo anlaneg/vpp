@@ -342,12 +342,13 @@ libvnet_la_SOURCES +=				\
  vnet/ip/ip6_neighbor.c				\
  vnet/ip/ip6_pg.c				\
  vnet/ip/ip6_reassembly.c                       \
+ vnet/ip/rd_cp.c                                \
  vnet/ip/ip_api.c				\
  vnet/ip/ip_checksum.c				\
  vnet/ip/ip_frag.c				\
  vnet/ip/ip.c					\
  vnet/ip/ip_init.c				\
- vnet/ip/ip_in_out_acl.c				\
+ vnet/ip/ip_in_out_acl.c			\
  vnet/ip/lookup.c				\
  vnet/ip/ping.c					\
  vnet/ip/punt_api.c				\
@@ -360,6 +361,7 @@ nobase_include_HEADERS +=			\
  vnet/ip/icmp6.h				\
  vnet/ip/igmp_packet.h				\
  vnet/ip/ip.api.h				\
+ vnet/ip/rd_cp.api.h                            \
  vnet/ip/ip4_error.h				\
  vnet/ip/ip4.h					\
  vnet/ip/ip4_mtrie.h				\
@@ -382,6 +384,7 @@ nobase_include_HEADERS +=			\
 
 API_FILES += 					\
  vnet/ip/ip.api 				\
+ vnet/ip/rd_cp.api                              \
  vnet/ip/punt.api
 
 ########################################
@@ -566,6 +569,22 @@ nobase_include_HEADERS +=			\
  vnet/gre/gre.api.h
 
 API_FILES += vnet/gre/gre.api
+
+########################################
+# Tunnel protocol: ipip
+########################################
+libvnet_la_SOURCES +=				\
+ vnet/ipip/ipip.c				\
+ vnet/ipip/node.c				\
+ vnet/ipip/sixrd.c				\
+ vnet/ipip/ipip_api.c				\
+ vnet/ipip/ipip_cli.c
+
+nobase_include_HEADERS +=			\
+ vnet/ipip/ipip.api.h				\
+ vnet/ipip/ipip.h
+
+API_FILES += vnet/ipip/ipip.api
 
 ########################################
 # Tunnel protocol: l2tpv3
@@ -1076,6 +1095,7 @@ libvnet_la_SOURCES +=				\
   vnet/fib/fib_path_ext.c			\
   vnet/fib/fib_urpf_list.c			\
   vnet/fib/fib_attached_export.c		\
+  vnet/fib/fib_api.c				\
   vnet/fib/fib_bfd.c
 
 nobase_include_HEADERS +=			\
@@ -1176,6 +1196,19 @@ libvnet_la_SOURCES +=                    \
   vnet/util/radix.c			     \
   vnet/util/refcount.c			 \
   vnet/util/trajectory.c
+
+########################################
+# QoS
+########################################
+
+libvnet_la_SOURCES +=      	                \
+  vnet/qos/qos_types.c				\
+  vnet/qos/qos_api.c				\
+  vnet/qos/qos_egress_map.c			\
+  vnet/qos/qos_record.c				\
+  vnet/qos/qos_mark.c
+
+API_FILES += vnet/qos/qos.api
 
 ########################################
 # BIER
