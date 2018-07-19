@@ -45,6 +45,10 @@
 #define VRING_USED_F_NO_NOTIFY  1
 #define VRING_AVAIL_F_NO_INTERRUPT 1
 
+//定义virtio_net支持的功能
+//支持merge buffer;支持控制vq;支持link状态通告；
+//支持多队列;;;支持indirect_desc;;支持virtio 1.0
+
 #define foreach_virtio_net_feature      \
  _ (VIRTIO_NET_F_MRG_RXBUF, 15)         \
  _ (VIRTIO_NET_F_CTRL_VQ, 17)           \
@@ -56,7 +60,7 @@
  _ (VHOST_USER_F_PROTOCOL_FEATURES, 30) \
  _ (VIRTIO_F_VERSION_1, 32)
 
-
+//定义功能枚举
 typedef enum
 {
 #define _(f,n) FEAT_##f = (n),
