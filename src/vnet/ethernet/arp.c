@@ -934,6 +934,7 @@ arp_learn (vnet_main_t * vnm,
   return (ETHERNET_ARP_ERROR_l3_src_address_learned);
 }
 
+//处理arp报文
 static uword
 arp_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {

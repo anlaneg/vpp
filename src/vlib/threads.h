@@ -227,6 +227,7 @@ void vlib_worker_thread_barrier_sync_int (vlib_main_t * vm);
 void vlib_worker_thread_barrier_release (vlib_main_t * vm);
 void vlib_worker_thread_node_refork (void);
 
+//取当前线程的线程索引
 static_always_inline uword
 vlib_get_thread_index (void)
 {

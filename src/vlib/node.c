@@ -560,10 +560,11 @@ vlib_register_all_static_nodes (vlib_main_t * vm)
   //注册blackholed packets
   register_node (vm, &null_node_reg);
 
-  //注册next_registration链上其它node
+  //注册next_registration链上其它静态的node，这些node在main运行前已载入
   r = vm->node_main.node_registrations;
   while (r)
     {
+	  //实现node注册
       register_node (vm, r);
       r = r->next_registration;
     }

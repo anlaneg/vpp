@@ -79,13 +79,16 @@ typedef struct vlib_config_function_runtime_t
   char name[32];
 } vlib_config_function_runtime_t;
 
+//自first链上移除元素p,链表first的元素成员next,可指向下一个成员
 #define VLIB_REMOVE_FROM_LINKED_LIST(first,p,next)              \
 {                                                               \
   ASSERT (first);                                               \
+  /*处理p是首个元素的情况*/\
   if (first == p)                                               \
       first = (p)->next;                                        \
   else                                                          \
     {                                                           \
+	  /*非首个元素时，通过申明临时变量向下一个元素移动*/\
       __typeof__ (p) current = first;                           \
       while (current->next)                                     \
 	{                                                       \

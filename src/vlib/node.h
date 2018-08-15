@@ -91,7 +91,7 @@ typedef struct _vlib_node_registration
   vlib_node_fn_registration_t *node_fn_registrations;
 
   /* Node name. */
-  char *name;
+  char *name;//node名称
 
   /* Name of sibling (if applicable). */
   char *sibling_of;
@@ -156,23 +156,30 @@ typedef struct _vlib_node_registration
  * 此宏接着会要求对x进行初始化
  */
 #define VLIB_REGISTER_NODE(x,...)                                       \
+	/*声明node注册变量*/                                                  \
     __VA_ARGS__ vlib_node_registration_t x;                             \
+    /*声明并实现函数__vlib_add_node_registration_##x在main之前执行*/\
 static void __vlib_add_node_registration_##x (void)                     \
     __attribute__((__constructor__)) ;                                  \
 static void __vlib_add_node_registration_##x (void)                     \
 {																	   \
+    /*取当前线程的vlib_main*/\
     vlib_main_t * vm = vlib_get_main();                                 \
+    /*将x挂接在node_main.node_registrations链表的头部*/\
     x.next_registration = vm->node_main.node_registrations;             \
     vm->node_main.node_registrations = &x;                              \
 }                                                                       \
+/*声明并实现__vlib_rm_node_registration_##x在退出时执行，用于移除node*/\
 static void __vlib_rm_node_registration_##x (void)                      \
     __attribute__((__destructor__)) ;                                   \
 static void __vlib_rm_node_registration_##x (void)                      \
 {                                                                       \
     vlib_main_t * vm = vlib_get_main();                                 \
+    /*自链表vm->node_main.node_registrations中移除x节点*/\
     VLIB_REMOVE_FROM_LINKED_LIST (vm->node_main.node_registrations,     \
                                   &x, next_registration);               \
 }                                                                       \
+/*用于对变量进行初始化*/\
 __VA_ARGS__ vlib_node_registration_t x
 #else
 #define VLIB_REGISTER_NODE(x,...)                                       \
@@ -682,7 +689,7 @@ vlib_timing_wheel_data_get_index (u32 d)
 typedef struct
 {
   /* Public nodes. */
-  vlib_node_t **nodes;
+  vlib_node_t **nodes;//存放node
 
   /* Node index hashed by node name. */
   uword *node_by_name;//hash表，按名称查找node
@@ -747,7 +754,8 @@ typedef struct
   f64 time_last_runtime_stats_clear;
 
   /* Node registrations added by constructors */
-  vlib_node_registration_t *node_registrations;//在main运行前，各node会挂在此链上
+  //在main运行前，各node会挂在此链上
+  vlib_node_registration_t *node_registrations;
 } vlib_node_main_t;
 
 
