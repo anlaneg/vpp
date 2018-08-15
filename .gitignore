@@ -36,7 +36,6 @@ aclocal.m4
 app.info
 compile
 config.h
-config.h.in
 config.log
 config.guess
 config.sub
@@ -65,6 +64,7 @@ test-driver
 .idea/
 .project
 .cproject
+.pydevproject
 .vscode/
 CMakeLists.txt
 cmake-build*/
@@ -82,6 +82,9 @@ GTAGS
 /build-root/docs
 /build-root/.doxygen-bootstrap.ok
 /build-root/.doxygen-siphon.dep
+/docs/_build
+/env
+!/docs/Makefile
 
 # indent backup files
 *.BAK
@@ -93,8 +96,6 @@ GTAGS
 /src/vpp-api/python/build
 /src/vpp-api/python/dist
 /src/vpp-api/python/vpp_papi.egg-info
-/src/vpp-api/python/vpp_papi/memclnt.py
-/src/vpp-api/python/vpp_papi/vpe.py
 
 # Build files in the test directory
 /test/*.ok

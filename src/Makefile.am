@@ -78,14 +78,6 @@ include vpp-api.am
 SUBDIRS += vpp-api/python
 endif
 
-if ENABLE_JAPI
-SUBDIRS += vpp-api/java
-endif
-
-if ENABLE_VOM
-SUBDIRS += vpp-api/vom
-endif
-
 ###############################################################################
 # API
 ###############################################################################

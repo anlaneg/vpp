@@ -20,6 +20,7 @@
 #include <nat/nat64.h>
 #include <nat/nat64_db.h>
 #include <nat/nat_reass.h>
+#include <nat/nat_inlines.h>
 #include <vnet/fib/ip4_fib.h>
 #include <vppinfra/crc32.h>
 
@@ -572,7 +573,7 @@ nat64_static_bib_worker_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 			    vlib_frame_t * f)
 {
   nat64_main_t *nm = &nat64_main;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   nat64_db_t *db = &nm->db[thread_index];
   nat64_static_bib_to_update_t *static_bib;
   nat64_db_bib_entry_t *bibe;
@@ -1154,7 +1155,7 @@ nat64_expire_worker_walk_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 			     vlib_frame_t * f)
 {
   nat64_main_t *nm = &nat64_main;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   nat64_db_t *db = &nm->db[thread_index];
   u32 now = (u32) vlib_time_now (vm);
 

@@ -41,6 +41,7 @@
 #include <vnet/pg/pg.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/ethernet/p2p_ethernet.h>
+#include <vnet/devices/pipe/pipe.h>
 #include <vppinfra/sparse_vec.h>
 #include <vnet/l2/l2_bvi.h>
 
@@ -229,8 +230,6 @@ determine_next_node (ethernet_main_t * em,
 		     u32 is_l20,
 		     u32 type0, vlib_buffer_t * b0, u8 * error0, u8 * next0)
 {
-  u32 eth_start = vnet_buffer (b0)->l2_hdr_offset;
-  vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
   if (PREDICT_FALSE (*error0 != ETHERNET_ERROR_NONE))
     {
       // some error occurred
@@ -238,8 +237,10 @@ determine_next_node (ethernet_main_t * em,
     }
   else if (is_l20)
     {
-      *next0 = em->l2_next;
       // record the L2 len and reset the buffer so the L2 header is preserved
+      u32 eth_start = vnet_buffer (b0)->l2_hdr_offset;
+      vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
+      *next0 = em->l2_next;
       ASSERT (vnet_buffer (b0)->l2.l2_len ==
 	      ethernet_buffer_header_size (b0));
       vlib_buffer_advance (b0, -ethernet_buffer_header_size (b0));
@@ -296,7 +297,7 @@ ethernet_input_inline (vlib_main_t * vm,
   vlib_node_runtime_t *error_node;
   u32 n_left_from, next_index, *from, *to_next;
   u32 stats_sw_if_index, stats_n_packets, stats_n_bytes;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   u32 cached_sw_if_index = ~0;
   u32 cached_is_l2 = 0;		/* shut up gcc */
   vnet_hw_interface_t *hi = NULL;	/* used for main interface only */
@@ -430,12 +431,12 @@ ethernet_input_inline (vlib_main_t * vm,
 		      (hi->hw_address != 0) &&
 		      !eth_mac_equal ((u8 *) e1, hi->hw_address))
 		    error1 = ETHERNET_ERROR_L3_MAC_MISMATCH;
+		  vlib_buffer_advance (b0, sizeof (ethernet_header_t));
 		  determine_next_node (em, variant, 0, type0, b0,
 				       &error0, &next0);
-		  vlib_buffer_advance (b0, sizeof (ethernet_header_t));
+		  vlib_buffer_advance (b1, sizeof (ethernet_header_t));
 		  determine_next_node (em, variant, 0, type1, b1,
 				       &error1, &next1);
-		  vlib_buffer_advance (b1, sizeof (ethernet_header_t));
 		}
 	      goto ship_it01;
 	    }
@@ -838,6 +839,14 @@ ethernet_sw_interface_get_config (vnet_main_t * vnm,
 	subint = vec_elt_at_index (p2pm->p2p_subif_pool, si->p2p.pool_index);
       *flags = SUBINT_CONFIG_P2P;
     }
+  else if (si->type == VNET_SW_INTERFACE_TYPE_PIPE)
+    {
+      pipe_t *pipe;
+
+      pipe = pipe_get (sw_if_index);
+      subint = &pipe->subint;
+      *flags = SUBINT_CONFIG_P2P;
+    }
   else if (si->sub.eth.flags.default_sub)
     {
       subint = &main_intf->default_subint;
@@ -1127,7 +1136,7 @@ ethernet_sw_interface_add_del (vnet_main_t * vnm,
     }
   else
     {
-      // Note that config is L3 by defaulty
+      // Note that config is L3 by default
       subint->flags = SUBINT_CONFIG_VALID | match_flags;
       subint->sw_if_index = ~0;	// because interfaces are initially down
     }

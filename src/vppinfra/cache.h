@@ -41,7 +41,7 @@
 #include <vppinfra/error_bootstrap.h>
 
 /*
- * Allow CFLAGS to override the arch-specific cache line size
+ * Allow CFLAGS to override the configured / deduced cache line size
  */
 #ifndef CLIB_LOG2_CACHE_LINE_BYTES
 

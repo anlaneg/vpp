@@ -21,16 +21,23 @@ dhcp_client_main_t dhcp_client_main;
 static u8 *format_dhcp_client_state (u8 * s, va_list * va);
 static vlib_node_registration_t dhcp_client_process_node;
 
-#define foreach_dhcp_client_process_stat        \
+#define foreach_dhcp_sent_packet_stat           \
 _(DISCOVER, "DHCP discover packets sent")       \
 _(OFFER, "DHCP offer packets sent")             \
 _(REQUEST, "DHCP request packets sent")         \
 _(ACK, "DHCP ack packets sent")
 
+#define foreach_dhcp_error_counter                                      \
+_(NOT_FOR_US, "DHCP packets for other hosts, dropped")                  \
+_(NAK, "DHCP nak packets received")                                     \
+_(NON_OFFER_DISCOVER, "DHCP non-offer packets in discover state")       \
+_(ODDBALL, "DHCP non-ack, non-offer packets received")                  \
+_(BOUND, "DHCP bind success")
+
 typedef enum
 {
 #define _(sym,str) DHCP_STAT_##sym,
-  foreach_dhcp_client_process_stat
+  foreach_dhcp_sent_packet_stat foreach_dhcp_error_counter
 #undef _
     DHCP_STAT_UNKNOWN,
   DHCP_STAT_N_STAT,
@@ -38,7 +45,7 @@ typedef enum
 
 static char *dhcp_client_process_stat_strings[] = {
 #define _(sym,string) string,
-  foreach_dhcp_client_process_stat
+  foreach_dhcp_sent_packet_stat foreach_dhcp_error_counter
 #undef _
     "DHCP unknown packets sent",
 };
@@ -93,13 +100,19 @@ static void
 dhcp_client_addr_callback (dhcp_client_t * c)
 {
   dhcp_client_main_t *dcm = &dhcp_client_main;
-  void (*fp) (u32, u32, u8 *, u8, u8, u8 *, u8 *, u8 *) = c->event_callback;
 
-  /* add the advertised subnet and disable the feature */
-  dhcp_client_acquire_address (dcm, c);
+  /* disable the feature */
   vnet_feature_enable_disable ("ip4-unicast",
 			       "ip4-dhcp-client-detect",
-			       c->sw_if_index, 0, 0, 0);
+			       c->sw_if_index, 0 /* disable */ , 0, 0);
+  c->client_detect_feature_enabled = 0;
+
+  /* if renewing the lease, the address and route have already been added */
+  if (c->state == DHCP_BOUND)
+    return;
+
+  /* add the address to the interface */
+  dhcp_client_acquire_address (dcm, c);
 
   /*
    * Configure default IP route:
@@ -133,12 +146,8 @@ dhcp_client_addr_callback (dhcp_client_t * c)
   /*
    * Call the user's event callback to report DHCP information
    */
-  if (fp)
-    (*fp) (c->client_index,	/* clinet index */
-	   c->pid, c->hostname, c->subnet_mask_width, 0,	/* is_ipv6 */
-	   (u8 *) & c->leased_address,	/* host IP address */
-	   (u8 *) & c->router_address,	/* router IP address */
-	   (u8 *) (c->l2_rewrite + 6));	/* host MAC address */
+  if (c->event_callback)
+    c->event_callback (c->client_index, c);
 }
 
 /*
@@ -177,6 +186,15 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
   if (c->state == DHCP_BOUND && c->retry_count == 0)
     return 0;
 
+  /* Packet not for us? Turf it... */
+  if (memcmp (dhcp->client_hardware_address, c->client_hardware_address,
+	      sizeof (c->client_hardware_address)))
+    {
+      vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+				   DHCP_STAT_NOT_FOR_US, 1);
+      return 0;
+    }
+
   /* parse through the packet, learn what we can */
   if (dhcp->your_ip_address.as_u32)
     c->leased_address.as_u32 = dhcp->your_ip_address.as_u32;
@@ -198,6 +216,7 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
 	  {
 	    u32 lease_time_in_seconds =
 	      clib_host_to_net_u32 (o->data_as_u32[0]);
+	    // for debug: lease_time_in_seconds = 20; /*$$$$*/
 	    c->lease_expires = now + (f64) lease_time_in_seconds;
 	    c->lease_lifetime = lease_time_in_seconds;
 	    /* Set a sensible default, in case we don't get opt 58 */
@@ -252,9 +271,8 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
     case DHCP_DISCOVER:
       if (dhcp_message_type != DHCP_PACKET_OFFER)
 	{
-	  clib_warning ("sw_if_index %d state %U message type %d",
-			c->sw_if_index, format_dhcp_client_state,
-			c->state, dhcp_message_type);
+	  vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+				       DHCP_STAT_NON_OFFER_DISCOVER, 1);
 	  c->next_transmit = now + 5.0;
 	  break;
 	}
@@ -271,8 +289,40 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
 
     case DHCP_BOUND:
     case DHCP_REQUEST:
-      if (dhcp_message_type != DHCP_PACKET_ACK)
+      if (dhcp_message_type == DHCP_PACKET_NAK)
 	{
+	  vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+				       DHCP_STAT_NAK, 1);
+	  /* Probably never happens in bound state, but anyhow... */
+	  if (c->state == DHCP_BOUND)
+	    {
+	      ip4_add_del_interface_address (dcm->vlib_main, c->sw_if_index,
+					     (void *) &c->leased_address,
+					     c->subnet_mask_width,
+					     1 /*is_del */ );
+	      vnet_feature_enable_disable ("ip4-unicast",
+					   "ip4-dhcp-client-detect",
+					   c->sw_if_index, 1 /* enable */ ,
+					   0, 0);
+	      c->client_detect_feature_enabled = 1;
+	    }
+	  /* Wipe out any memory of the address we had... */
+	  c->state = DHCP_DISCOVER;
+	  c->next_transmit = now;
+	  c->retry_count = 0;
+	  c->leased_address.as_u32 = 0;
+	  c->subnet_mask_width = 0;
+	  c->router_address.as_u32 = 0;
+	  c->lease_renewal_interval = 0;
+	  c->dhcp_server.as_u32 = 0;
+	  break;
+	}
+
+      if (dhcp_message_type != DHCP_PACKET_ACK &&
+	  dhcp_message_type != DHCP_PACKET_OFFER)
+	{
+	  vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+				       DHCP_STAT_NON_OFFER_DISCOVER, 1);
 	  clib_warning ("sw_if_index %d state %U message type %d",
 			c->sw_if_index, format_dhcp_client_state,
 			c->state, dhcp_message_type);
@@ -280,14 +330,15 @@ dhcp_client_for_us (u32 bi, vlib_buffer_t * b,
 	  break;
 	}
       /* OK, we own the address (etc), add to the routing table(s) */
-      if (c->state == DHCP_REQUEST)
-	vl_api_rpc_call_main_thread (dhcp_client_addr_callback,
-				     (u8 *) c, sizeof (*c));
+      vl_api_rpc_call_main_thread (dhcp_client_addr_callback,
+				   (u8 *) c, sizeof (*c));
 
       c->state = DHCP_BOUND;
       c->retry_count = 0;
       c->next_transmit = now + (f64) c->lease_renewal_interval;
       c->lease_expires = now + (f64) c->lease_lifetime;
+      vlib_node_increment_counter (vm, dhcp_client_process_node.index,
+				   DHCP_STAT_BOUND, 1);
       break;
 
     default:
@@ -394,6 +445,10 @@ send_dhcp_pkt (dhcp_client_main_t * dcm, dhcp_client_t * c,
 
   /* Send the interface MAC address */
   clib_memcpy (dhcp->client_hardware_address, c->l2_rewrite + 6, 6);
+
+  /* And remember it for rx-packet-for-us checking */
+  clib_memcpy (c->client_hardware_address, dhcp->client_hardware_address,
+	       sizeof (c->client_hardware_address));
 
   /* Lease renewal, set up client_ip_address */
   if (is_broadcast == 0)
@@ -502,7 +557,7 @@ send_dhcp_pkt (dhcp_client_main_t * dcm, dhcp_client_t * c,
   switch (type)
     {
 #define _(a,b) case DHCP_PACKET_##a: {counter_index = DHCP_STAT_##a; break;}
-      foreach_dhcp_client_process_stat
+      foreach_dhcp_sent_packet_stat
 #undef _
     default:
       counter_index = DHCP_STAT_UNKNOWN;
@@ -520,6 +575,15 @@ dhcp_discover_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
    * State machine "DISCOVER" state. Send a dhcp discover packet,
    * eventually back off the retry rate.
    */
+
+  if (c->client_detect_feature_enabled == 0)
+    {
+      vnet_feature_enable_disable ("ip4-unicast",
+				   "ip4-dhcp-client-detect",
+				   c->sw_if_index, 1 /* enable */ , 0, 0);
+      c->client_detect_feature_enabled = 1;
+    }
+
   send_dhcp_pkt (dcm, c, DHCP_PACKET_DISCOVER, 1 /* is_broadcast */ );
 
   c->retry_count++;
@@ -555,10 +619,25 @@ static int
 dhcp_bound_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
 {
   /*
-   * State machine "BOUND" state. Send a dhcp request packet,
-   * eventually, when the lease expires, forget the dhcp data
+   * State machine "BOUND" state. Send a dhcp request packet to renew
+   * the lease.
+   * Eventually, when the lease expires, forget the dhcp data
    * and go back to the stone age.
    */
+
+  /*
+   * We disable the client detect feature when we bind a
+   * DHCP address. Turn it back on again on first renew attempt.
+   * Otherwise, if the DHCP server replies we'll never see it.
+   */
+  if (c->client_detect_feature_enabled == 0)
+    {
+      vnet_feature_enable_disable ("ip4-unicast",
+				   "ip4-dhcp-client-detect",
+				   c->sw_if_index, 1 /* enable */ , 0, 0);
+      c->client_detect_feature_enabled = 1;
+    }
+
   send_dhcp_pkt (dcm, c, DHCP_PACKET_REQUEST, 0 /* is_broadcast */ );
 
   c->retry_count++;
@@ -598,15 +677,6 @@ dhcp_bound_state (dhcp_client_main_t * dcm, dhcp_client_t * c, f64 now)
       c->router_address.as_u32 = 0;
       c->lease_renewal_interval = 0;
       c->dhcp_server.as_u32 = 0;
-      /*
-       * We disable the client detect feature when we bind a
-       * DHCP address. Turn it back on again here.
-       * Otherwise, if the DHCP server replies after an outage,
-       * we'll never see it.
-       */
-      vnet_feature_enable_disable ("ip4-unicast",
-				   "ip4-dhcp-client-detect",
-				   c->sw_if_index, 1, 0, 0);
       return 1;
     }
   return 0;
@@ -867,7 +937,8 @@ dhcp_client_add_del (dhcp_client_add_del_args_t * a)
        */
       vnet_feature_enable_disable ("ip4-unicast",
 				   "ip4-dhcp-client-detect",
-				   c->sw_if_index, 1, 0, 0);
+				   c->sw_if_index, 1 /* enable */ , 0, 0);
+      c->client_detect_feature_enabled = 1;
 
       vlib_process_signal_event (vm, dhcp_client_process_node.index,
 				 EVENT_DHCP_CLIENT_WAKEUP, c - dcm->clients);
@@ -901,13 +972,14 @@ dhcp_client_add_del (dhcp_client_add_del_args_t * a)
 }
 
 int
-dhcp_client_config (vlib_main_t * vm,
+dhcp_client_config (u32 is_add,
+		    u32 client_index,
+		    vlib_main_t * vm,
 		    u32 sw_if_index,
 		    u8 * hostname,
 		    u8 * client_id,
-		    u32 is_add,
-		    u32 client_index,
-		    void *event_callback, u8 set_broadcast_flag, u32 pid)
+		    dhcp_event_cb_t event_callback,
+		    u8 set_broadcast_flag, u32 pid)
 {
   dhcp_client_add_del_args_t _a, *a = &_a;
   int rv;
@@ -983,6 +1055,22 @@ dhcp_client_config (vlib_main_t * vm,
     }
 
   return rv;
+}
+
+void
+dhcp_client_walk (dhcp_client_walk_cb_t cb, void *ctx)
+{
+  dhcp_client_main_t *dcm = &dhcp_client_main;
+  dhcp_client_t *c;
+
+  /* *INDENT-OFF* */
+  pool_foreach (c, dcm->clients,
+  ({
+    if (!cb(c, ctx))
+      break;
+  }));
+  /* *INDENT-ON* */
+
 }
 
 static clib_error_t *

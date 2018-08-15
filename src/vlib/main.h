@@ -58,6 +58,7 @@
 
 typedef struct vlib_main_t
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Instruction level timing state. */
   clib_time_t clib_time;
 
@@ -99,8 +100,13 @@ typedef struct vlib_main_t
   /* Name for e.g. syslog. */
   char *name;
 
-  /* Start and size of CLIB heap. */
+  /* Start of the heap. */
   void *heap_base;
+
+  /* Truncated version, to create frame indices */
+  void *heap_aligned_base;
+
+  /* Size of the heap */
   uword heap_size;
 
   /* Pool of buffer free lists. */
@@ -173,8 +179,6 @@ typedef struct vlib_main_t
 
   /* to compare with node runtime */
   u32 thread_index;
-
-  void **mbuf_alloc_list;
 
   /* List of init functions to call, setup by constructors */
   _vlib_init_function_list_elt_t *init_function_registrations;

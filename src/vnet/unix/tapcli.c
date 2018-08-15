@@ -175,7 +175,7 @@ tapcli_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
   tapcli_main_t *tm = &tapcli_main;
   tapcli_interface_t *ti;
   int i;
-  u16 thread_index = vlib_get_thread_index ();
+  u16 thread_index = vm->thread_index;
 
   for (i = 0; i < n_packets; i++)
     {
@@ -271,11 +271,11 @@ tapcli_rx_iface (vlib_main_t * vm,
   const uword buffer_size = VLIB_BUFFER_DATA_SIZE;
   u32 n_trace = vlib_get_trace_count (vm, node);
   u8 set_trace = 0;
-  u16 thread_index = vlib_get_thread_index ();
+  u16 thread_index = vm->thread_index;
   vnet_main_t *vnm;
   vnet_sw_interface_t *si;
   u8 admin_down;
-  u32 next = node->cached_next_index;
+  u32 next = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
   u32 n_left_to_next, next_index;
   u32 *to_next;
 
@@ -1068,8 +1068,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
     hw = vnet_get_hw_interface (tm->vnet_main, ti->hw_if_index);
     hw->min_supported_packet_bytes = TAP_MTU_MIN;
     hw->max_supported_packet_bytes = TAP_MTU_MAX;
-    hw->max_l3_packet_bytes[VLIB_RX] = hw->max_l3_packet_bytes[VLIB_TX] =
-      hw->max_supported_packet_bytes - sizeof (ethernet_header_t);
+    vnet_sw_interface_set_mtu (tm->vnet_main, hw->sw_if_index, 9000);
     ti->sw_if_index = hw->sw_if_index;
     if (ap->sw_if_indexp)
       *(ap->sw_if_indexp) = hw->sw_if_index;

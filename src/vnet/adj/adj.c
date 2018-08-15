@@ -35,6 +35,13 @@ ip_adjacency_t *adj_pool;
  */
 int adj_per_adj_counters;
 
+const ip46_address_t ADJ_BCAST_ADDR = {
+    .ip6 = {
+        .as_u64[0] = 0xffffffffffffffff,
+        .as_u64[1] = 0xffffffffffffffff,
+    },
+};
+
 always_inline void
 adj_poison (ip_adjacency_t * adj)
 {
@@ -132,13 +139,17 @@ format_ip_adjacency (u8 * s, va_list * args)
         vlib_counter_t counts;
 
         vlib_get_combined_counter(&adjacency_counters, adj_index, &counts);
-        s = format (s, "\n counts:[%Ld:%Ld]", counts.packets, counts.bytes);
-	s = format (s, "\n locks:%d", adj->ia_node.fn_locks);
+        s = format (s, "\n   counts:[%Ld:%Ld]", counts.packets, counts.bytes);
+	s = format (s, "\n   locks:%d", adj->ia_node.fn_locks);
 	s = format(s, "\n delegates:\n  ");
         adj_delegate_format(s, adj);
 
-	s = format(s, "\n children:\n  ");
-	s = fib_node_children_format(adj->ia_node.fn_children, s);
+	s = format(s, "\n children:");
+        if (fib_node_list_get_size(adj->ia_node.fn_children))
+        {
+            s = format(s, "\n  ");
+            s = fib_node_children_format(adj->ia_node.fn_children, s);
+        }
     }
 
     return s;
@@ -168,6 +179,7 @@ adj_last_lock_gone (ip_adjacency_t *adj)
         /* FALL THROUGH */
     case IP_LOOKUP_NEXT_ARP:
     case IP_LOOKUP_NEXT_REWRITE:
+    case IP_LOOKUP_NEXT_BCAST:
 	/*
 	 * complete and incomplete nbr adjs
 	 */
@@ -343,34 +355,19 @@ adj_mtu_update_walk_cb (adj_index_t ai,
 
     adj = adj_get(ai);
 
-    vnet_rewrite_update_mtu (vnet_get_main(),
+    vnet_rewrite_update_mtu (vnet_get_main(), adj->ia_link,
                              &adj->rewrite_header);
 
     return (ADJ_WALK_RC_CONTINUE);
 }
 
 static void
-adj_sw_mtu_update (vnet_main_t * vnm,
-                   u32 sw_if_index,
-                   void *ctx)
+adj_mtu_update (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
 {
-    /*
-     * Walk all the adjacencies on the interface to update the cached MTU
-     */
-    adj_walk (sw_if_index, adj_mtu_update_walk_cb, NULL);
+  adj_walk (sw_if_index, adj_mtu_update_walk_cb, NULL);
 }
 
-void
-adj_mtu_update (u32 hw_if_index)
-{
-    /*
-     * Walk all the SW interfaces on the HW interface to update the cached MTU
-     */
-    vnet_hw_interface_walk_sw(vnet_get_main(),
-                              hw_if_index,
-                              adj_sw_mtu_update,
-                              NULL);
-}
+VNET_SW_INTERFACE_MTU_CHANGE_FUNCTION(adj_mtu_update);
 
 /**
  * @brief Walk the Adjacencies on a given interface

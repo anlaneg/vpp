@@ -1083,6 +1083,7 @@ init_replay_buffers_inline (vlib_main_t * vm,
       vnet_buffer (b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 
       d0 = vec_elt (s->replay_packet_templates, i);
+      vnet_buffer2 (b0)->pg_replay_timestamp = s->replay_packet_timestamps[i];
 
       n0 = n_data;
       if (data_offset + n_data >= vec_len (d0))
@@ -1519,11 +1520,8 @@ pg_generate_packets (vlib_node_runtime_t * node,
 	  {
 	    vlib_buffer_t *b;
 	    b = vlib_get_buffer (vm, to_next[i]);
-	    vnet_buffer (b)->device_input_feat.saved_next_index =
-	      s->next_index;
-	    vnet_buffer (b)->device_input_feat.buffer_advance = 0;
 	    b->current_config_index = current_config_index;
-	    b->feature_arc_index = feature_arc_index;
+	    vnet_buffer (b)->feature_arc_index = feature_arc_index;
 	  }
 
       n_trace = vlib_get_trace_count (vm, node);

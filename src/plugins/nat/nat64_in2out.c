@@ -19,6 +19,7 @@
 
 #include <nat/nat64.h>
 #include <nat/nat_reass.h>
+#include <nat/nat_inlines.h>
 #include <vnet/ip/ip6_to_ip4.h>
 #include <vnet/fib/fib_table.h>
 
@@ -114,6 +115,26 @@ typedef struct nat64_in2out_set_ctx_t_
   vlib_main_t *vm;
   u32 thread_index;
 } nat64_in2out_set_ctx_t;
+
+static inline u8
+nat64_not_translate (u32 sw_if_index, ip6_address_t ip6_addr)
+{
+  ip6_address_t *addr;
+  ip6_main_t *im6 = &ip6_main;
+  ip_lookup_main_t *lm6 = &im6->lookup_main;
+  ip_interface_address_t *ia = 0;
+
+  /* *INDENT-OFF* */
+  foreach_ip_interface_address (lm6, ia, sw_if_index, 0,
+  ({
+	addr = ip_interface_address_get_address (lm6, ia);
+	if (0 == ip6_address_compare (addr, &ip6_addr))
+		return 1;
+  }));
+  /* *INDENT-ON* */
+
+  return 0;
+}
 
 /**
  * @brief Check whether is a hairpinning.
@@ -901,7 +922,7 @@ nat64_in2out_node_fn_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   nat64_in2out_next_t next_index;
   u32 pkts_processed = 0;
   u32 stats_node_index;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
 
   stats_node_index =
     is_slow_path ? nat64_in2out_slowpath_node.index : nat64_in2out_node.index;
@@ -926,6 +947,7 @@ nat64_in2out_node_fn_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  u8 l4_protocol0;
 	  u32 proto0;
 	  nat64_in2out_set_ctx_t ctx0;
+	  u32 sw_if_index0;
 
 	  /* speculatively enqueue b0 to the current next frame */
 	  bi0 = from[0];
@@ -951,6 +973,14 @@ nat64_in2out_node_fn_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      next0 = NAT64_IN2OUT_NEXT_DROP;
 	      b0->error = node->errors[NAT64_IN2OUT_ERROR_UNKNOWN];
+	      goto trace0;
+	    }
+
+	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
+
+	  if (nat64_not_translate (sw_if_index0, ip60->dst_address))
+	    {
+	      next0 = NAT64_IN2OUT_NEXT_IP6_LOOKUP;
 	      goto trace0;
 	    }
 
@@ -1286,7 +1316,7 @@ nat64_in2out_reass_node_fn (vlib_main_t * vm,
   u32 *fragments_to_drop = 0;
   u32 *fragments_to_loopback = 0;
   nat64_main_t *nm = &nat64_main;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -1614,7 +1644,7 @@ nat64_in2out_handoff_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 n_left_to_next_worker = 0, *to_next_worker = 0;
   u32 next_worker_index = 0;
   u32 current_worker_index = ~0;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   u32 fq_index;
   u32 to_node_index;
 

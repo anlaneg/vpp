@@ -31,17 +31,18 @@ extern "C"
 /*
  * VPPCOM Public API Definitions, Enums, and Data Structures
  */
-#define INVALID_SESSION_ID                   (~0)
-#define VPPCOM_CONF_DEFAULT                  "/etc/vpp/vcl.conf"
-#define VPPCOM_ENV_CONF                      "VCL_CONFIG"
-#define VPPCOM_ENV_DEBUG                     "VCL_DEBUG"
-#define VPPCOM_ENV_API_PREFIX                "VCL_API_PREFIX"
-#define VPPCOM_ENV_APP_PROXY_TRANSPORT_TCP   "VCL_APP_PROXY_TRANSPORT_TCP"
-#define VPPCOM_ENV_APP_PROXY_TRANSPORT_UDP   "VCL_APP_PROXY_TRANSPORT_UDP"
-#define VPPCOM_ENV_APP_NAMESPACE_ID          "VCL_APP_NAMESPACE_ID"
-#define VPPCOM_ENV_APP_NAMESPACE_SECRET      "VCL_APP_NAMESPACE_SECRET"
-#define VPPCOM_ENV_APP_SCOPE_LOCAL           "VCL_APP_SCOPE_LOCAL"
-#define VPPCOM_ENV_APP_SCOPE_GLOBAL          "VCL_APP_SCOPE_GLOBAL"
+#define INVALID_SESSION_ID                  	(~0)
+#define VPPCOM_CONF_DEFAULT                  	"/etc/vpp/vcl.conf"
+#define VPPCOM_ENV_CONF                      	"VCL_CONFIG"
+#define VPPCOM_ENV_DEBUG                     	"VCL_DEBUG"
+#define VPPCOM_ENV_API_PREFIX                	"VCL_API_PREFIX"
+#define VPPCOM_ENV_APP_PROXY_TRANSPORT_TCP   	"VCL_APP_PROXY_TRANSPORT_TCP"
+#define VPPCOM_ENV_APP_PROXY_TRANSPORT_UDP   	"VCL_APP_PROXY_TRANSPORT_UDP"
+#define VPPCOM_ENV_APP_NAMESPACE_ID          	"VCL_APP_NAMESPACE_ID"
+#define VPPCOM_ENV_APP_NAMESPACE_SECRET      	"VCL_APP_NAMESPACE_SECRET"
+#define VPPCOM_ENV_APP_SCOPE_LOCAL           	"VCL_APP_SCOPE_LOCAL"
+#define VPPCOM_ENV_APP_SCOPE_GLOBAL          	"VCL_APP_SCOPE_GLOBAL"
+#define VPPCOM_ENV_VPP_API_SOCKET           	"VCL_VPP_API_SOCKET"
 
 typedef enum
 {
@@ -87,6 +88,7 @@ typedef enum
 {
   VPPCOM_OK = 0,
   VPPCOM_EAGAIN = -EAGAIN,
+  VPPCOM_EWOULDBLOCK = -EWOULDBLOCK,
   VPPCOM_EFAULT = -EFAULT,
   VPPCOM_ENOMEM = -ENOMEM,
   VPPCOM_EINVAL = -EINVAL,
@@ -210,46 +212,6 @@ vppcom_retval_str (int retval)
   return st;
 }
 
-/**
- * User registered callback for when connection arrives on listener created
- * with vppcom_session_register_listener()
- * @param uint32_t - newly accepted session_index
- * @param vppcom_endpt_t* - ip/port information of remote
- * @param void* - user passed arg to pass back
- */
-typedef void (*vppcom_session_listener_cb) (uint32_t, vppcom_endpt_t *,
-					    void *);
-
-/**
- * User registered ERROR callback for any errors associated with
- * handling vppcom_session_register_listener() and connections
- * @param void* - user passed arg to pass back
- */
-typedef void (*vppcom_session_listener_errcb) (void *);
-
-/**
- * @brief vppcom_session_register_listener accepts a bound session_index, and
- * listens for connections.
- *
- * On successful connection, calls registered callback (cb) with new
- * session_index.
- *
- * On error, calls registered error callback (errcb).
- *
- * @param session_index - bound session_index to create listener on
- * @param cb  - on new accepted session callback
- * @param errcb  - on failure callback
- * @param flags - placeholder for future use. Must be ZERO
- * @param q_len - max listener connection backlog
- * @param ptr - user data
- * @return
- */
-extern int vppcom_session_register_listener (uint32_t session_index,
-					     vppcom_session_listener_cb cb,
-					     vppcom_session_listener_errcb
-					     errcb, uint8_t flags, int q_len,
-					     void *ptr);
-
 /* TBD: make these constructor/destructor function */
 extern int vppcom_app_create (char *app_name);
 extern void vppcom_app_destroy (void);
@@ -289,6 +251,12 @@ extern int vppcom_session_sendto (uint32_t session_index, void *buffer,
 				  vppcom_endpt_t * ep);
 extern int vppcom_poll (vcl_poll_t * vp, uint32_t n_sids,
 			double wait_for_time);
+extern int vppcom_mq_epoll_fd (void);
+
+/*
+ * VPPCOM Event Functions
+ */
+extern void vce_poll_wait_connect_request_handler_fn (void *arg);
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus

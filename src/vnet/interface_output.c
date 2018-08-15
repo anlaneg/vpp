@@ -328,10 +328,10 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 
 	  if (PREDICT_FALSE (current_config_index != ~0))
 	    {
-	      b0->feature_arc_index = arc;
-	      b1->feature_arc_index = arc;
-	      b2->feature_arc_index = arc;
-	      b3->feature_arc_index = arc;
+	      vnet_buffer (b0)->feature_arc_index = arc;
+	      vnet_buffer (b1)->feature_arc_index = arc;
+	      vnet_buffer (b2)->feature_arc_index = arc;
+	      vnet_buffer (b3)->feature_arc_index = arc;
 	      b0->current_config_index = current_config_index;
 	      b1->current_config_index = current_config_index;
 	      b2->current_config_index = current_config_index;
@@ -415,7 +415,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 
 	  if (PREDICT_FALSE (current_config_index != ~0))
 	    {
-	      b0->feature_arc_index = arc;
+	      vnet_buffer (b0)->feature_arc_index = arc;
 	      b0->current_config_index = current_config_index;
 	    }
 
@@ -443,7 +443,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
   return n_buffers;
 }
 
-static_always_inline uword
+static uword
 vnet_interface_output_node (vlib_main_t * vm, vlib_node_runtime_t * node,
 			    vlib_frame_t * frame)
 {
@@ -1086,6 +1086,12 @@ VNET_FEATURE_ARC_INIT (interface_output, static) =
 VNET_FEATURE_INIT (span_tx, static) = {
   .arc_name = "interface-output",
   .node_name = "span-output",
+  .runs_before = VNET_FEATURES ("interface-tx"),
+};
+
+VNET_FEATURE_INIT (ipsec_if_tx, static) = {
+  .arc_name = "interface-output",
+  .node_name = "ipsec-if-output",
   .runs_before = VNET_FEATURES ("interface-tx"),
 };
 

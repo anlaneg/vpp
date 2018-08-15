@@ -22,18 +22,26 @@ DPDK_DOWNLOAD_DIR     ?= $(HOME)/Downloads
 DPDK_DEBUG            ?= n
 DPDK_MLX4_PMD         ?= n
 DPDK_MLX5_PMD         ?= n
+DPDK_TAP_PMD          ?= n
+DPDK_FAILSAFE_PMD     ?= n
 
 B := $(DPDK_BUILD_DIR)
 I := $(DPDK_INSTALL_DIR)
-DPDK_VERSION ?= 18.02
-PKG_SUFFIX ?= vpp1
+DPDK_VERSION ?= 18.05
+PKG_SUFFIX ?= vpp2
 DPDK_BASE_URL ?= http://fast.dpdk.org/rel
 DPDK_TARBALL := dpdk-$(DPDK_VERSION).tar.xz
 DPDK_TAR_URL := $(DPDK_BASE_URL)/$(DPDK_TARBALL)
-DPDK_17.11_TARBALL_MD5_CKSUM := 53ee9e054a8797c9e67ffa0eb5d0c701
-DPDK_18.02_TARBALL_MD5_CKSUM := ca13077a014a2102c6e10153dfa3b920
-DPDK_SOURCE := $(B)/dpdk-$(DPDK_VERSION)
+DPDK_18.05_TARBALL_MD5_CKSUM := 9fc86367cd9407ff6a8dfea56c4eddc4
+DPDK_18.08_TARBALL_MD5_CKSUM := da5e7fb25ab063c47e53929fb8c58be5
 MACHINE=$(shell uname -m)
+
+# replace dot with space, and if 3rd word exists we deal with stable dpdk rel
+ifeq ($(word 3,$(subst ., ,$(DPDK_VERSION))),)
+DPDK_SOURCE := $(B)/dpdk-$(DPDK_VERSION)
+else
+DPDK_SOURCE := $(B)/dpdk-stable-$(DPDK_VERSION)
+endif
 
 NASM_BASE_URL := http://www.nasm.us/pub/nasm/releasebuilds
 NASM_VER := 2.13.01
@@ -41,10 +49,10 @@ NASM_TARBALL := nasm-$(NASM_VER).tar.xz
 NASM_TAR_URL := $(NASM_BASE_URL)/$(NASM_VER)/$(NASM_TARBALL)
 NASM_SOURCE := $(B)/nasm-$(NASM_VER)
 
-ifeq ($(DPDK_VERSION),17.11)
-IPSEC_MB_VER ?= 0.47
-else
+ifneq (,$(findstring 18.02,$(DPDK_VERSION)))
 IPSEC_MB_VER ?= 0.48
+else
+IPSEC_MB_VER ?= 0.49
 endif
 
 ifeq ($(MACHINE),$(filter $(MACHINE),x86_64))
@@ -78,7 +86,8 @@ DPDK_TUNE             ?= core-avx2
 # ARM64
 ##############################################################################
 else ifeq ($(MACHINE),aarch64)
-export CROSS=""
+CROSS :=
+export CROSS
 DPDK_TARGET           ?= arm64-armv8a-linuxapp-$(DPDK_CC)
 DPDK_MACHINE          ?= armv8a
 DPDK_TUNE             ?= generic
@@ -121,6 +130,7 @@ ifneq (,$(findstring $(MIDR_PARTNUM),$(CPU_PART_CAVIUM_THUNDERX) \
 	$(CPU_PART_CAVIUM_THUNDERX_81XX) $(CPU_PART_CAVIUM_THUNDERX_83XX)))
 DPDK_TARGET           = arm64-thunderx-linuxapp-$(DPDK_CC)
 DPDK_MACHINE          = thunderx
+DPDK_CACHE_LINE_SIZE := 128
 else
 $(warning Unknown Cavium CPU)
 endif
@@ -142,12 +152,21 @@ JOBS := $(if $(shell [ -f /proc/cpuinfo ] && head /proc/cpuinfo),\
 	$(shell grep -c ^processor /proc/cpuinfo), 2)
 
 # compiler/linker custom arguments
+ifeq ($(DPDK_CC),clang)
+DPDK_CPU_CFLAGS := -fPIE -fPIC
+else
 DPDK_CPU_CFLAGS := -pie -fPIC
+endif
 
 ifeq ($(DPDK_DEBUG),n)
 DPDK_EXTRA_CFLAGS := -g -mtune=$(DPDK_TUNE)
 else
 DPDK_EXTRA_CFLAGS := -g -O0
+endif
+
+ifeq ($(AESNI),y)
+IPSEC_MB_BUILD_PATH := $(B)/intel-ipsec-mb-$(IPSEC_MB_VER)
+DPDK_EXTRA_CFLAGS += -L$(IPSEC_MB_BUILD_PATH) -I$(IPSEC_MB_BUILD_PATH)
 endif
 
 DPDK_MAKE_EXTRA_ARGS += AESNI_MULTI_BUFFER_LIB_PATH=$(AESNIMB_LIB_SOURCE)
@@ -197,11 +216,12 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_PMD_AESNI_GCM,$(AESNI))
 	$(call set,RTE_LIBRTE_MLX4_PMD,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_PMD,$(DPDK_MLX5_PMD))
+	$(call set,RTE_LIBRTE_PMD_SOFTNIC,n)
 	$(call set,RTE_LIBRTE_MLX4_DLOPEN_DEPS,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_DLOPEN_DEPS,$(DPDK_MLX5_PMD))
+	$(call set,RTE_LIBRTE_PMD_TAP,$(DPDK_TAP_PMD))
+	$(call set,RTE_LIBRTE_PMD_FAILSAFE,$(DPDK_FAILSAFE_PMD))
 	@# not needed
-	$(call set,RTE_LIBRTE_PMD_TAP,n)
-	$(call set,RTE_LIBRTE_TIMER,n)
 	$(call set,RTE_LIBRTE_CFGFILE,n)
 	$(call set,RTE_LIBRTE_LPM,n)
 	$(call set,RTE_LIBRTE_ACL,n)
@@ -299,7 +319,7 @@ build-nasm:
 build-ipsec-mb:
 	mkdir -p $(I)/lib/
 	# Do not build GCM stuff if we are building ISA_L
-	make -C $(AESNIMB_LIB_SOURCE) -j \
+	make -C $(AESNIMB_LIB_SOURCE) -j SHARED=n \
 	  EXTRA_CFLAGS=-fPIC NASM=$(NASM_SOURCE)/nasm
 	cp $(AESNIMB_LIB_SOURCE)/libIPSec_MB.a $(I)/lib/
 

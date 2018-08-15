@@ -88,7 +88,7 @@ segment_manager_del_segment (segment_manager_t * sm,
 /**
  * Removes segment after acquiring writer lock
  */
-always_inline void
+static inline void
 segment_manager_lock_and_del_segment (segment_manager_t * sm, u32 fs_index)
 {
   svm_fifo_segment_private_t *fs;
@@ -153,7 +153,7 @@ int
 segment_manager_add_segment (segment_manager_t * sm, u32 segment_size)
 {
   segment_manager_main_t *smm = &segment_manager_main;
-  u32 rnd_margin = 128 << 10, seg_index;
+  u32 rnd_margin = 128 << 10, seg_index, page_size;
   segment_manager_properties_t *props;
   uword baseva = (u64) ~ 0, alloc_size;
   svm_fifo_segment_private_t *seg;
@@ -187,6 +187,8 @@ segment_manager_add_segment (segment_manager_t * sm, u32 segment_size)
    * Initialize ssvm segment and svm fifo private header
    */
   segment_size = segment_size ? segment_size : props->add_segment_size;
+  page_size = clib_mem_get_page_size ();
+  segment_size = (segment_size + page_size - 1) & ~(page_size - 1);
   if (props->segment_type != SSVM_SEGMENT_PRIVATE)
     {
       seg_name = format (0, "%d-%d%c", getpid (), segment_name_counter++, 0);
@@ -288,8 +290,7 @@ segment_manager_init (segment_manager_t * sm, u32 first_seg_size,
 
 	  segment = segment_manager_get_segment (sm, seg_index);
 	  if (i == 0)
-	    sm->event_queue = segment_manager_alloc_queue (segment,
-							   props->evt_q_size);
+	    sm->event_queue = segment_manager_alloc_queue (segment, props);
 
 	  svm_fifo_segment_preallocate_fifo_pairs (segment,
 						   props->rx_fifo_size,
@@ -309,8 +310,7 @@ segment_manager_init (segment_manager_t * sm, u32 first_seg_size,
 	  return seg_index;
 	}
       segment = segment_manager_get_segment (sm, seg_index);
-      sm->event_queue = segment_manager_alloc_queue (segment,
-						     props->evt_q_size);
+      sm->event_queue = segment_manager_alloc_queue (segment, props);
     }
 
   return 0;
@@ -366,6 +366,14 @@ segment_manager_del_sessions (segment_manager_t * sm)
      */
     while (fifo)
       {
+	if (fifo->master_thread_index == 255)
+	  {
+	    svm_fifo_t *next = fifo->next;
+	    application_local_session_disconnect_w_index (sm->app_index,
+	                                                  fifo->master_session_index);
+	    fifo = next;
+	    continue;
+	  }
 	session = session_get (fifo->master_session_index,
 	                       fifo->master_thread_index);
 	stream_session_disconnect (session);
@@ -589,26 +597,59 @@ segment_manager_dealloc_fifos (u32 segment_index, svm_fifo_t * rx_fifo,
     segment_manager_segment_reader_unlock (sm);
 }
 
+u32
+segment_manager_evt_q_expected_size (u32 q_len)
+{
+  u32 fifo_evt_size, notif_q_size, q_hdrs;
+  u32 msg_q_sz, fifo_evt_ring_sz, session_ntf_ring_sz;
+
+  fifo_evt_size = 1 << max_log2 (sizeof (session_event_t));
+  notif_q_size = clib_max (16, q_len >> 4);
+
+  msg_q_sz = q_len * sizeof (svm_msg_q_msg_t);
+  fifo_evt_ring_sz = q_len * fifo_evt_size;
+  session_ntf_ring_sz = notif_q_size * 256;
+  q_hdrs = sizeof (svm_queue_t) + sizeof (svm_msg_q_t);
+
+  return (msg_q_sz + fifo_evt_ring_sz + session_ntf_ring_sz + q_hdrs);
+}
+
 /**
  * Allocates shm queue in the first segment
  *
  * Must be called with lock held
  */
-svm_queue_t *
+svm_msg_q_t *
 segment_manager_alloc_queue (svm_fifo_segment_private_t * segment,
-			     u32 queue_size)
+			     segment_manager_properties_t * props)
 {
-  ssvm_shared_header_t *sh;
-  svm_queue_t *q;
+  u32 fifo_evt_size, session_evt_size = 256, notif_q_size;
+  svm_msg_q_cfg_t _cfg, *cfg = &_cfg;
+  svm_msg_q_t *q;
   void *oldheap;
 
-  sh = segment->ssvm.sh;
+  fifo_evt_size = sizeof (session_event_t);
+  notif_q_size = clib_max (16, props->evt_q_size >> 4);
+  /* *INDENT-OFF* */
+  svm_msg_q_ring_cfg_t rc[SESSION_MQ_N_RINGS] = {
+    {props->evt_q_size, fifo_evt_size, 0},
+    {notif_q_size, session_evt_size, 0}
+  };
+  /* *INDENT-ON* */
+  cfg->consumer_pid = 0;
+  cfg->n_rings = 2;
+  cfg->q_nitems = props->evt_q_size;
+  cfg->ring_cfgs = rc;
 
-  oldheap = ssvm_push_heap (sh);
-  q = svm_queue_init (queue_size, sizeof (session_fifo_event_t),
-		      0 /* consumer pid */ ,
-		      0 /* signal when queue non-empty */ );
+  oldheap = ssvm_push_heap (segment->ssvm.sh);
+  q = svm_msg_q_alloc (cfg);
   ssvm_pop_heap (oldheap);
+
+  if (props->use_mq_eventfd)
+    {
+      if (svm_msg_q_alloc_producer_eventfd (q))
+	clib_warning ("failed to alloc eventfd");
+    }
   return q;
 }
 

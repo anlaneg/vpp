@@ -4,7 +4,7 @@ import socket
 import sys
 from abc import abstractmethod, ABCMeta
 from cStringIO import StringIO
-from scapy.layers.inet6 import in6_mactoifaceid
+from scapy.utils6 import in6_mactoifaceid
 
 from scapy.layers.l2 import Ether
 from scapy.packet import Raw
@@ -68,6 +68,21 @@ def mk_ll_addr(mac):
 def ip6_normalize(ip6):
     return socket.inet_ntop(socket.AF_INET6,
                             socket.inet_pton(socket.AF_INET6, ip6))
+
+
+def check_core_path(logger, core_path):
+    with open("/proc/sys/kernel/core_pattern", "r") as f:
+        corefmt = f.read()
+        if corefmt.startswith("|"):
+            logger.error(
+                "WARNING: redirecting the core dump through a"
+                " filter may result in truncated dumps.")
+            logger.error(
+                "   You may want to check the filter settings"
+                " or uninstall it and edit the"
+                " /proc/sys/kernel/core_pattern accordingly.")
+            logger.error(
+                "   current core pattern is: %s" % corefmt)
 
 
 class NumericConstant(object):

@@ -53,7 +53,13 @@ extern replicate_main_t replicate_main;
  */
 typedef struct replicate_t_ {
     /**
-     * number of buckets in the load-balance. always a power of 2.
+     * required for pool_get_aligned.
+     *  memebers used in the switch path come first!
+     */
+    CLIB_CACHE_LINE_ALIGN_MARK(cacheline0);
+
+    /**
+     * number of buckets in the replicate.
      */
     u16 rep_n_buckets;
 
@@ -104,14 +110,16 @@ extern void replicate_multipath_update(
     load_balance_path_t *next_hops);
 
 extern void replicate_set_bucket(index_t repi,
-				    u32 bucket,
-				    const dpo_id_t *next);
+                                 u32 bucket,
+                                 const dpo_id_t *next);
 
 extern u8* format_replicate(u8 * s, va_list * args);
 
 extern const dpo_id_t *replicate_get_bucket(index_t repi,
-					       u32 bucket);
+                                            u32 bucket);
 extern int replicate_is_drop(const dpo_id_t *dpo);
+
+extern u16 replicate_n_buckets(index_t repi);
 
 /**
  * The encapsulation breakages are for fast DP access

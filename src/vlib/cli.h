@@ -152,6 +152,7 @@ typedef struct
   vlib_cli_command_t *cli_command_registrations;//指向注册的命令
 } vlib_cli_main_t;
 
+#ifndef CLIB_MARCH_VARIANT
 /**
  * 定义一个vlib_cli_command_t类型的x，并定义一个x的注册
  * 函数，在注册函数中，将x变量挂接在cli_command_registrations上（此值来自于vm->cli_main)
@@ -169,7 +170,23 @@ static void __vlib_cli_command_registration_##x (void)                  \
     x.next_cli_command = cm->cli_command_registrations;                 \
     cm->cli_command_registrations = &x;                                 \
 }                                                                       \
+static void __vlib_cli_command_unregistration_##x (void)                \
+    __attribute__((__destructor__)) ;                                   \
+static void __vlib_cli_command_unregistration_##x (void)                \
+{                                                                       \
+    vlib_main_t * vm = vlib_get_main();                                 \
+    vlib_cli_main_t *cm = &vm->cli_main;                                \
+    VLIB_REMOVE_FROM_LINKED_LIST (cm->cli_command_registrations, &x,    \
+                                  next_cli_command);                    \
+}                                                                       \
 __VA_ARGS__ vlib_cli_command_t x
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VLIB_CLI_COMMAND(x,...)                                         \
+static __clib_unused vlib_cli_command_t __clib_unused_##x
+#endif
+
 #define VLIB_CLI_PARSE_RULE(x) \
   vlib_cli_parse_rule_t x
 /* Output to current CLI connection. */

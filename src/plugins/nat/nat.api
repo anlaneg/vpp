@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-option version = "2.4.1";
+option version = "3.0.0";
 
 /**
  * @file nat.api
@@ -352,6 +352,9 @@ define nat44_interface_output_feature_details {
     @param vfr_id - VRF ID
     @param twice_nat - if 1 translate external host address and port, only for
                        1:1 NAPT (addr_only must be 0)
+    @param self_twice_nat - if 1 translate external host address and port
+                            whenever external host address equals
+                            local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
 */
@@ -368,6 +371,7 @@ autoreply define nat44_add_del_static_mapping {
   u32 external_sw_if_index;
   u32 vrf_id;
   u8 twice_nat;
+  u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
 };
@@ -392,6 +396,9 @@ define nat44_static_mapping_dump {
     @param external_sw_if_index - external interface
     @param vfr_id - VRF ID
     @param twice_nat - if 1 translate external host address and port
+    @param self_twice_nat - if 1 translate external host address and port
+                            whenever external host address equals
+                            local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
 */
@@ -406,6 +413,7 @@ define nat44_static_mapping_details {
   u32 external_sw_if_index;
   u32 vrf_id;
   u8 twice_nat;
+  u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
 };
@@ -550,6 +558,14 @@ define nat44_user_session_dump {
     @param last_heard - last heard timer
     @param total_bytes - count of bytes sent through session
     @param total_pkts - count of pakets sent through session
+    @param is_twicenat - 1 if session is twice-nat
+    @param ext_host_valid - 1 if external host address and port are valid
+    @param ext_host_address - external host IPv4 address
+    @param ext_host_port - external host port
+    @param ext_host_nat_address - post-NAT external host IPv4 address (valid
+                                  only if twice-nat session)
+    @param ext_host_nat_port - post-NAT external host port (valid only if
+                               twice-nat session)
 */
 define nat44_user_session_details {
   u32 context;
@@ -562,6 +578,12 @@ define nat44_user_session_details {
   u64 last_heard;
   u64 total_bytes;
   u32 total_pkts;
+  u8 is_twicenat;
+  u8 ext_host_valid;
+  u8 ext_host_address[4];
+  u16 ext_host_port;
+  u8 ext_host_nat_address[4];
+  u16 ext_host_nat_port;
 };
 
 /** \brief NAT44 load-balancing address and port pair
@@ -573,6 +595,7 @@ typeonly manual_endian define nat44_lb_addr_port {
   u8 addr[4];
   u16 port;
   u8 probability;
+  u32 vrf_id;
 };
 
 /** \brief Add/delete NAT44 load-balancing static mapping rule
@@ -582,8 +605,10 @@ typeonly manual_endian define nat44_lb_addr_port {
     @param external_addr - external IPv4 address of the service
     @param external_port - external L4 port number of the service
     @param protocol - IP protocol number of the service
-    @param vrf_id - internal network VRF ID
     @param twice_nat - if 1 translate external host address and port
+    @param self_twice_nat - if 1 translate external host address and port
+                            whenever external host address equals
+                            local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
     @param local_num - number of local network nodes
@@ -596,8 +621,8 @@ autoreply manual_endian define nat44_add_del_lb_static_mapping {
   u8 external_addr[4];
   u16 external_port;
   u8 protocol;
-  u32 vrf_id;
   u8 twice_nat;
+  u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
   u8 local_num;
@@ -619,8 +644,10 @@ define nat44_lb_static_mapping_dump {
     @param external_addr - external IPv4 address of the service
     @param external_port - external L4 port number of the service
     @param protocol - IP protocol number of the service
-    @param vrf_id - internal network VRF ID
     @param twice_nat - if 1 translate external host address and port
+    @param self_twice_nat - if 1 translate external host address and port
+                            whenever external host address equals
+                            local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
     @param local_num - number of local network nodes
@@ -631,8 +658,8 @@ manual_endian define nat44_lb_static_mapping_details {
   u8 external_addr[4];
   u16 external_port;
   u8 protocol;
-  u32 vrf_id;
   u8 twice_nat;
+  u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
   u8 local_num;
@@ -647,6 +674,9 @@ manual_endian define nat44_lb_static_mapping_details {
     @param protocol - IP protocol
     @param port - port number
     @param vfr_id - VRF ID
+    @param ext_host_valid - 1 if external host address and port are valid
+    @param ext_host_address - external host IPv4 address
+    @param ext_host_port - external host port
 */
 autoreply define nat44_del_session {
   u32 client_index;
@@ -656,6 +686,9 @@ autoreply define nat44_del_session {
   u8 protocol;
   u16 port;
   u32 vrf_id;
+  u8 ext_host_valid;
+  u8 ext_host_address[4];
+  u16 ext_host_port;
 };
 
 /** \brief Enable/disable forwarding for NAT44
@@ -1209,6 +1242,24 @@ autoreply define dslite_add_del_pool_addr_range {
   u8 start_addr[4];
   u8 end_addr[4];
   u8 is_add;
+};
+
+/** \brief Dump DS-Lite addresses
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+*/
+define dslite_address_dump {
+  u32 client_index;
+  u32 context;
+};
+
+/** \brief DS-Lite address details response
+    @param context - sender context, to match reply w/ request
+    @param ip_address - IPv4 address
+*/
+define dslite_address_details {
+  u32 context;
+  u8 ip_address[4];
 };
 
 /** \brief Set AFTR IPv6 and IPv4 addresses

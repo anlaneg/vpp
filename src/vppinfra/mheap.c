@@ -315,7 +315,7 @@ mheap_small_object_cache_mask (mheap_small_object_cache_t * c, uword bin)
 
   ASSERT (bin < 256);
 
-#define _(i) ((uword) u8x16_compare_byte_mask (u8x16_is_equal (b, c->bins.as_u8x16[i])) << (uword) ((i)*16))
+#define _(i) ((uword) u8x16_compare_byte_mask ((b == c->bins.as_u8x16[i])) << (uword) ((i)*16))
   mask = _(0) | _(1);
   if (BITS (uword) > 32)
     mask |= _(2) | _(3);
@@ -668,12 +668,28 @@ mheap_get_aligned (void *v,
       return v;
     }
 
-  /* Round requested size. */
+  /*
+   * Round requested size.
+   *
+   * Step 1: round up to the minimum object size.
+   * Step 2: round up to a multiple of the user data size (e.g. 4)
+   * Step 3: if non-trivial alignment requested, round up
+   *         so that the object precisely fills a chunk
+   *         as big as the alignment request.
+   *
+   * Step 3 prevents the code from going into "bin search hyperspace":
+   * looking at a huge number of fractional remainder chunks, none of which
+   * will satisfy the alignment constraint. This fixes an allocator
+   * performance issue when one requests a large number of 16 byte objects
+   * aligned to 64 bytes, to name one variation on the theme.
+   */
   n_user_data_bytes = clib_max (n_user_data_bytes, MHEAP_MIN_USER_DATA_BYTES);
   n_user_data_bytes =
     round_pow2 (n_user_data_bytes,
 		STRUCT_SIZE_OF (mheap_elt_t, user_data[0]));
-
+  if (align > MHEAP_ELT_OVERHEAD_BYTES)
+    n_user_data_bytes = clib_max (n_user_data_bytes,
+				  align - MHEAP_ELT_OVERHEAD_BYTES);
   if (!v)
     v = mheap_alloc (0, 64 << 20);
 
@@ -965,6 +981,29 @@ mheap_alloc (void *memory, uword size)
 #endif
 
   return mheap_alloc_with_flags (memory, size, flags);
+}
+
+void *
+mheap_alloc_with_lock (void *memory, uword size, int locked)
+{
+  uword flags = 0;
+  void *rv;
+
+  if (memory != 0)
+    flags |= MHEAP_FLAG_DISABLE_VM;
+
+#ifdef CLIB_HAVE_VEC128
+  flags |= MHEAP_FLAG_SMALL_OBJECT_CACHE;
+#endif
+
+  rv = mheap_alloc_with_flags (memory, size, flags);
+
+  if (rv && locked)
+    {
+      mheap_t *h = mheap_header (rv);
+      h->flags |= MHEAP_FLAG_THREAD_SAFE;
+    }
+  return rv;
 }
 
 void *
@@ -1521,7 +1560,7 @@ mheap_get_trace (void *v, uword offset, uword size)
 
   if (!tm->trace_by_callers)
     tm->trace_by_callers =
-      hash_create_mem (0, sizeof (trace.callers), sizeof (uword));
+      hash_create_shmem (0, sizeof (trace.callers), sizeof (uword));
 
   p = hash_get_mem (tm->trace_by_callers, &trace.callers);
   if (p)

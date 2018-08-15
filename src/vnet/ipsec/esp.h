@@ -44,6 +44,14 @@ typedef CLIB_PACKED (struct {
 
 /* *INDENT-OFF* */
 typedef CLIB_PACKED (struct {
+  ip4_header_t ip4;
+  udp_header_t udp;
+  esp_header_t esp;
+}) ip4_and_udp_and_esp_header_t;
+/* *INDENT-ON* */
+
+/* *INDENT-OFF* */
+typedef CLIB_PACKED (struct {
   ip6_header_t ip6;
   esp_header_t esp;
 }) ip6_and_esp_header_t;
@@ -305,7 +313,7 @@ ipsec_proto_init ()
 			CLIB_CACHE_LINE_BYTES);
   int thread_id;
 
-  for (thread_id = 0; thread_id < tm->n_vlib_mains - 1; thread_id++)
+  for (thread_id = 0; thread_id < tm->n_vlib_mains; thread_id++)
     {
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
       em->per_thread_data[thread_id].encrypt_ctx = EVP_CIPHER_CTX_new ();

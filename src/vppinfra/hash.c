@@ -282,6 +282,10 @@ key_sum (hash_t * h, uword key)
       sum = string_key_sum (h, key);
       break;
 
+    case KEY_FUNC_MEM:
+      sum = mem_key_sum (h, key);
+      break;
+
     default:
       sum = h->key_sum (h, key);
       break;
@@ -310,6 +314,10 @@ key_equal1 (hash_t * h, uword key1, uword key2, uword e)
 
     case KEY_FUNC_STRING:
       e = string_key_equal (h, key1, key2);
+      break;
+
+    case KEY_FUNC_MEM:
+      e = mem_key_equal (h, key1, key2);
       break;
 
     default:
@@ -685,7 +693,7 @@ _hash_create (uword elts, hash_t * h_user)
   if (h_user)
     log2_pair_size = h_user->log2_pair_size;
 
-  v = _vec_resize (0,
+  v = _vec_resize ((void *) 0,
 		   /* vec len: */ elts,
 		   /* data bytes: */
 		   (elts << log2_pair_size) * sizeof (hash_pair_t),

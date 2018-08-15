@@ -190,6 +190,8 @@ do {                                                                    \
   pool_header_t * _pool_var (p) = pool_header (P);                      \
   uword _pool_var (l);                                                  \
                                                                         \
+  STATIC_ASSERT(A==0 || ((A % sizeof(P[0]))==0) || ((sizeof(P[0]) % A) == 0), \
+                "Pool aligned alloc of incorrectly sized object");      \
   _pool_var (l) = 0;                                                    \
   if (P)                                                                \
     _pool_var (l) = vec_len (_pool_var (p)->free_indices);              \
@@ -199,8 +201,9 @@ do {                                                                    \
       /* Return free element from free list. */                         \
       uword _pool_var (i) = _pool_var (p)->free_indices[_pool_var (l) - 1]; \
       (E) = (P) + _pool_var (i);                                        \
-      _pool_var (p)->free_bitmap =                                      \
-	clib_bitmap_andnoti (_pool_var (p)->free_bitmap, _pool_var (i)); \
+      _pool_var (p)->free_bitmap =					\
+	clib_bitmap_andnoti_notrim (_pool_var (p)->free_bitmap,        \
+	                             _pool_var (i));	               	\
       _vec_len (_pool_var (p)->free_indices) = _pool_var (l) - 1;       \
     }                                                                   \
   else                                                                  \
@@ -218,7 +221,7 @@ do {                                                                    \
 		       pool_aligned_header_bytes,                       \
 		       /* align */ (A));                                \
       E = vec_end (P) - 1;                                              \
-    }                                                                   \
+    }									\
 } while (0)
 
 /** Allocate an object E from a pool P (unspecified alignment). */
@@ -277,7 +280,9 @@ do {									\
 									\
   /* Add element to free bitmap and to free list. */			\
   _pool_var (p)->free_bitmap =						\
-    clib_bitmap_ori (_pool_var (p)->free_bitmap, _pool_var (l));	\
+    clib_bitmap_ori_notrim (_pool_var (p)->free_bitmap,              	\
+                             _pool_var (l));	                        \
+                                                                        \
   /* Preallocated pool? */                                              \
   if (_pool_var (p)->max_elts)                                          \
     {                                                                   \
@@ -473,6 +478,9 @@ do {									\
     (_pool_var (rv) < vec_len (P) ?                                     \
      clib_bitmap_next_clear (_pool_var (p)->free_bitmap, _pool_var(rv)) \
      : ~0);                                                             \
+  _pool_var(rv) =                                                       \
+    (_pool_var (rv) < vec_len (P) ?                                     \
+     _pool_var (rv) : ~0);						\
   _pool_var(rv);                                                        \
 })
 

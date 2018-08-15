@@ -32,7 +32,7 @@
   if (_lvl <= TLS_DEBUG) 				\
     clib_warning (_fmt, ##_args)
 #else
-#define TLS_DBG(_fmt, _args...)
+#define TLS_DBG(_lvl, _fmt, _args...)
 #endif
 
 /* *INDENT-OFF* */
@@ -68,6 +68,7 @@ typedef struct tls_ctx_
 #define parent_app_api_context c_s_index
 
   u8 is_passive_close;
+  u8 resume;
   u8 *srv_hostname;
 } tls_ctx_t;
 

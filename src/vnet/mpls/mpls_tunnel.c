@@ -52,7 +52,7 @@ static const char *mpls_tunnel_attribute_names[] = MPLS_TUNNEL_ATTRIBUTES;
 static mpls_tunnel_t*
 mpls_tunnel_get_from_sw_if_index (u32 sw_if_index)
 {
-    if ((vec_len(mpls_tunnel_db) < sw_if_index) ||
+    if ((vec_len(mpls_tunnel_db) <= sw_if_index) ||
         (~0 == mpls_tunnel_db[sw_if_index]))
         return (NULL);
 
@@ -129,23 +129,14 @@ mpls_tunnel_collect_forwarding (fib_node_index_t pl_index,
      */
     path_ext->fpe_mpls_flags |= FIB_PATH_EXT_MPLS_FLAG_NO_IP_TTL_DECR;
 
-    if (NULL != path_ext)
-    {
-        /*
-         * found a matching extension. stack it to obtain the forwarding
-         * info for this path.
-         */
-        ctx->next_hops = fib_path_ext_stack(path_ext,
-                                            ctx->fct,
-                                            ctx->fct,
-                                            ctx->next_hops);
-    }
-    else
-        ASSERT(0);
     /*
-     * else
-     *   There should be a path-extenios associated with each path
+     * found a matching extension. stack it to obtain the forwarding
+     * info for this path.
      */
+    ctx->next_hops = fib_path_ext_stack(path_ext,
+                                        ctx->fct,
+                                        ctx->fct,
+                                        ctx->next_hops);
 
     return (FIB_PATH_LIST_WALK_CONTINUE);
 }
@@ -408,6 +399,7 @@ mpls_tunnel_update_adj (vnet_main_t * vnm,
     {
     case IP_LOOKUP_NEXT_ARP:
     case IP_LOOKUP_NEXT_GLEAN:
+    case IP_LOOKUP_NEXT_BCAST:
         adj_nbr_midchain_update_rewrite(ai, mpls_tunnel_fixup,
                                         NULL,
                                         ADJ_FLAG_NONE,
@@ -651,6 +643,9 @@ vnet_mpls_tunnel_create (u8 l2_only,
                                  mti);
         hi = vnet_get_hw_interface (vnm, mt->mt_hw_if_index);
     }
+
+    /* Standard default MPLS tunnel MTU. */
+    vnet_sw_interface_set_mtu (vnm, hi->sw_if_index, 9000);
 
     /*
      * Add the new tunnel to the tunnel DB - key:SW if index

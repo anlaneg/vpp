@@ -230,8 +230,6 @@ ip_lookup_init (ip_lookup_main_t * lm, u32 is_ip6)
       }
 
     lm->local_next_by_ip_protocol[IP_PROTOCOL_UDP] = IP_LOCAL_NEXT_UDP_LOOKUP;
-    lm->local_next_by_ip_protocol[IP_PROTOCOL_VPP_FRAGMENTATION] =
-      IP_LOCAL_NEXT_REASSEMBLY;
     lm->local_next_by_ip_protocol[is_ip6 ? IP_PROTOCOL_ICMP6 :
 				  IP_PROTOCOL_ICMP] = IP_LOCAL_NEXT_ICMP;
     lm->builtin_protocol_by_ip_protocol[IP_PROTOCOL_UDP] =
@@ -763,7 +761,7 @@ ip6_table_bind_cmd (vlib_main_t * vm,
 
 /*?
  * Place the indicated interface into the supplied IPv4 FIB table (also known
- * as a VRF). If the FIB table does not exist, this command creates it. To
+ * as a VRF). The FIB table must be created using "ip table add" already. To
  * display the current IPv4 FIB table, use the command '<em>show ip fib</em>'.
  * FIB table will only be displayed if a route has been added to the table, or
  * an IP Address is assigned to an interface in the table (which adds a route
@@ -791,7 +789,7 @@ VLIB_CLI_COMMAND (set_interface_ip_table_command, static) =
 
 /*?
  * Place the indicated interface into the supplied IPv6 FIB table (also known
- * as a VRF). If the FIB table does not exist, this command creates it. To
+ * as a VRF). The FIB table must be created using "ip6 table add" already. To
  * display the current IPv6 FIB table, use the command '<em>show ip6 fib</em>'.
  * FIB table will only be displayed if a route has been added to the table, or
  * an IP Address is assigned to an interface in the table (which adds a route
@@ -901,17 +899,37 @@ vnet_ip_mroute_cmd (vlib_main_t * vm,
 	  pfx.fp_proto = FIB_PROTOCOL_IP6;
 	  pfx.fp_len = 128;
 	}
-      else if (unformat (line_input, "via %U",
+      else if (unformat (line_input, "via %U %U",
+			 unformat_ip4_address, &rpath.frp_addr.ip4,
 			 unformat_vnet_sw_interface, vnm,
 			 &rpath.frp_sw_if_index))
 	{
 	  rpath.frp_weight = 1;
 	}
+      else if (unformat (line_input, "via %U %U",
+			 unformat_ip6_address, &rpath.frp_addr.ip6,
+			 unformat_vnet_sw_interface, vnm,
+			 &rpath.frp_sw_if_index))
+	{
+	  rpath.frp_weight = 1;
+	}
+      else if (unformat (line_input, "via %U",
+			 unformat_vnet_sw_interface, vnm,
+			 &rpath.frp_sw_if_index))
+	{
+	  memset (&rpath.frp_addr, 0, sizeof (rpath.frp_addr));
+	  rpath.frp_weight = 1;
+	}
       else if (unformat (line_input, "via local"))
 	{
+	  memset (&rpath.frp_addr, 0, sizeof (rpath.frp_addr));
 	  rpath.frp_sw_if_index = ~0;
 	  rpath.frp_weight = 1;
 	  rpath.frp_flags |= FIB_ROUTE_PATH_LOCAL;
+	  /*
+	   * set the path proto appropriately for the prefix
+	   */
+	  rpath.frp_proto = fib_proto_to_dpo (pfx.fp_proto);
 	}
       else if (unformat (line_input, "%U", unformat_mfib_itf_flags, &iflags))
 	;
@@ -1083,7 +1101,7 @@ ip6_probe_neighbor_wait (vlib_main_t * vm, ip6_address_t * a, u32 sw_if_index,
   for (i = 0; i < retry_count; i++)
     {
       /* The interface may be down, etc. */
-      e = ip6_probe_neighbor (vm, a, sw_if_index);
+      e = ip6_probe_neighbor (vm, a, sw_if_index, 0);
 
       if (e)
 	return e;
@@ -1135,7 +1153,7 @@ ip4_probe_neighbor_wait (vlib_main_t * vm, ip4_address_t * a, u32 sw_if_index,
   for (i = 0; i < retry_count; i++)
     {
       /* The interface may be down, etc. */
-      e = ip4_probe_neighbor (vm, a, sw_if_index);
+      e = ip4_probe_neighbor (vm, a, sw_if_index, 0);
 
       if (e)
 	return e;

@@ -314,7 +314,7 @@ clib_bitmap_set_multiple (uword * bitmap, uword i, uword value, uword n_bits)
 }
 
 always_inline uword *
-clfib_bitmap_set_region (uword * bitmap, uword i, uword value, uword n_bits)
+clib_bitmap_set_region (uword * bitmap, uword i, uword value, uword n_bits)
 {
   uword a0, a1, b0;
   uword i_end, mask;
@@ -384,8 +384,29 @@ do {									\
 always_inline uword
 clib_bitmap_first_set (uword * ai)
 {
-  uword i;
-  for (i = 0; i < vec_len (ai); i++)
+  uword i = 0;
+#if uword_bits == 64
+#if defined(CLIB_HAVE_VEC256)
+  while (i + 7 < vec_len (ai))
+    {
+      u64x4 v;
+      v = u64x4_load_unaligned (ai + i) | u64x4_load_unaligned (ai + i + 4);
+      if (!u64x4_is_all_zero (v))
+	break;
+      i += 8;
+    }
+#elif defined(CLIB_HAVE_VEC128) && defined(CLIB_HAVE_VEC128_UNALIGNED_LOAD_STORE)
+  while (i + 3 < vec_len (ai))
+    {
+      u64x2 v;
+      v = u64x2_load_unaligned (ai + i) | u64x2_load_unaligned (ai + i + 2);
+      if (!u64x2_is_all_zero (v))
+	break;
+      i += 4;
+    }
+#endif
+#endif
+  for (; i < vec_len (ai); i++)
     {
       uword x = ai[i];
       if (x != 0)
@@ -409,7 +430,7 @@ clib_bitmap_last_set (uword * ai)
       if (x != 0)
 	{
 	  uword first_bit;
-	  count_leading_zeros (first_bit, x);
+	  first_bit = count_leading_zeros (x);
 	  return (i) * BITS (ai[0]) - first_bit - 1;
 	}
     }
@@ -512,8 +533,12 @@ clib_bitmap_##name (uword * ai, uword * bi)			\
 }
 
 /* ALU functions: */
+/* *INDENT-OFF* */
 _(and, a = a & b, 1)
-_(andnot, a = a & ~b, 1) _(or, a = a | b, 0) _(xor, a = a ^ b, 1)
+_(andnot, a = a & ~b, 1)
+_(or, a = a | b, 0)
+_(xor, a = a ^ b, 1)
+/* *INDENT-ON* */
 #undef _
 /** Logical operator across two bitmaps which duplicates the first bitmap
 
@@ -521,8 +546,7 @@ _(andnot, a = a & ~b, 1) _(or, a = a | b, 0) _(xor, a = a ^ b, 1)
     @param bi - pointer to the source bitmap
     @returns aiDup = ai and bi. Neither ai nor bi are modified
 */
-     always_inline uword *
-     clib_bitmap_dup_and (uword * ai, uword * bi);
+always_inline uword *clib_bitmap_dup_and (uword * ai, uword * bi);
 
 /** Logical operator across two bitmaps which duplicates the first bitmap
 
@@ -530,8 +554,7 @@ _(andnot, a = a & ~b, 1) _(or, a = a | b, 0) _(xor, a = a ^ b, 1)
     @param bi - pointer to the source bitmap
     @returns aiDup = ai & ~bi. Neither ai nor bi are modified
 */
-     always_inline uword *
-     clib_bitmap_dup_andnot (uword * ai, uword * bi);
+always_inline uword *clib_bitmap_dup_andnot (uword * ai, uword * bi);
 
 /** Logical operator across two bitmaps which duplicates the first bitmap
 
@@ -539,8 +562,7 @@ _(andnot, a = a & ~b, 1) _(or, a = a | b, 0) _(xor, a = a ^ b, 1)
     @param bi - pointer to the source bitmap
     @returns aiDup = ai or bi. Neither ai nor bi are modified
 */
-     always_inline uword *
-     clib_bitmap_dup_or (uword * ai, uword * bi);
+always_inline uword *clib_bitmap_dup_or (uword * ai, uword * bi);
 
 /** Logical operator across two bitmaps which duplicates the first bitmap
 
@@ -548,22 +570,23 @@ _(andnot, a = a & ~b, 1) _(or, a = a | b, 0) _(xor, a = a ^ b, 1)
     @param bi - pointer to the source bitmap
     @returns aiDup = ai xor bi. Neither ai nor bi are modified
 */
-     always_inline uword *
-     clib_bitmap_dup_xor (uword * ai, uword * bi);
+always_inline uword *clib_bitmap_dup_xor (uword * ai, uword * bi);
 
 #define _(name)						\
   always_inline uword *					\
   clib_bitmap_dup_##name (uword * ai, uword * bi)	\
 { return clib_bitmap_##name (clib_bitmap_dup (ai), bi); }
 
+/* *INDENT-OFF* */
 _(and);
 _(andnot);
 _(or);
 _(xor);
-
+/* *INDENT-ON* */
 #undef _
 
-/* ALU function definition macro for functions taking one bitmap and an immediate. */
+/* ALU function definition macro for functions taking one bitmap and an
+ * immediate. */
 #define _(name, body, check_zero)			\
 always_inline uword *					\
 clib_bitmap_##name (uword * ai, uword i)		\
@@ -582,17 +605,48 @@ clib_bitmap_##name (uword * ai, uword i)		\
 }
 
 /* ALU functions immediate: */
+/* *INDENT-OFF* */
 _(andi, a = a & b, 1)
-_(andnoti, a = a & ~b, 1) _(ori, a = a | b, 0) _(xori, a = a ^ b, 1)
+_(andnoti, a = a & ~b, 1)
+_(ori, a = a | b, 0)
+_(xori, a = a ^ b, 1)
+/* *INDENT-ON* */
 #undef _
+
+/* ALU function definition macro for functions taking one bitmap and an
+ * immediate. No tail trimming */
+#define _(name, body)					\
+always_inline uword *					\
+clib_bitmap_##name##_notrim (uword * ai, uword i)	\
+{							\
+  uword i0 = i / BITS (ai[0]);				\
+  uword i1 = i % BITS (ai[0]);				\
+  uword a, b;						\
+  clib_bitmap_vec_validate (ai, i0);			\
+  a = ai[i0];						\
+  b = (uword) 1 << i1;					\
+  do { body; } while (0);				\
+  ai[i0] = a;						\
+  return ai;						\
+}
+
+/* ALU functions immediate: */
+/* *INDENT-OFF* */
+_(andi, a = a & b)
+_(andnoti, a = a & ~b)
+_(ori, a = a | b)
+_(xori, a = a ^ b)
+#undef _
+/* *INDENT-ON* */
+
 /** Return a random bitmap of the requested length
     @param ai - pointer to the destination bitmap
     @param n_bits - number of bits to allocate
     @param [in,out] seed - pointer to the random number seed
     @returns a reasonably random bitmap based. See random.h.
 */
-     always_inline uword *
-     clib_bitmap_random (uword * ai, uword n_bits, u32 * seed)
+always_inline uword *
+clib_bitmap_random (uword * ai, uword n_bits, u32 * seed)
 {
   vec_reset_length (ai);
 
@@ -674,8 +728,47 @@ clib_bitmap_next_clear (uword * ai, uword i)
 	  if (t)
 	    return log2_first_set (t) + i0 * BITS (ai[0]);
 	}
+
+      /* no clear bit left in bitmap, return bit just beyond bitmap */
+      return (i0 + 1) * BITS (ai[0]);
     }
   return i;
+}
+
+/** unformat an any sized hexadecimal bitmask into a bitmap
+
+    uword * bitmap;
+    rv = unformat ("%U", unformat_bitmap_mask, &bitmap);
+
+    Standard unformat_function_t arguments
+
+    @param input - pointer an unformat_input_t
+    @param va - varargs list comprising a single uword **
+    @returns 1 on success, 0 on failure
+*/
+static inline uword
+unformat_bitmap_mask (unformat_input_t * input, va_list * va)
+{
+  u8 *v = 0;			/* hexadecimal vector */
+  uword **bitmap_return = va_arg (*va, uword **);
+  uword *bitmap = 0;
+
+  if (unformat (input, "%U", unformat_hex_string, &v))
+    {
+      int i, s = vec_len (v) - 1;	/* 's' for significance or shift */
+
+      /* v[0] holds the most significant byte */
+      for (i = 0; s >= 0; i++, s--)
+	bitmap = clib_bitmap_set_multiple (bitmap,
+					   s * BITS (v[i]), v[i],
+					   BITS (v[i]));
+
+      vec_free (v);
+      *bitmap_return = bitmap;
+      return 1;
+    }
+
+  return 0;
 }
 
 /** unformat a list of bit ranges into a bitmap (eg "0-3,5-7,11" )

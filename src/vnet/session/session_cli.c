@@ -20,17 +20,22 @@ format_stream_session_fifos (u8 * s, va_list * args)
 {
   stream_session_t *ss = va_arg (*args, stream_session_t *);
   int verbose = va_arg (*args, int);
-  session_fifo_event_t _e, *e = &_e;
+  session_event_t _e, *e = &_e;
   u8 found;
 
-  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->server_rx_fifo, 1);
+  if (!ss->server_rx_fifo || !ss->server_tx_fifo)
+    return s;
+
+  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->server_rx_fifo,
+	      verbose);
   if (verbose > 2 && ss->server_rx_fifo->has_event)
     {
       found = session_node_lookup_fifo_event (ss->server_rx_fifo, e);
       s = format (s, " session node event: %s\n",
 		  found ? "found" : "not found");
     }
-  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->server_tx_fifo, 1);
+  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->server_tx_fifo,
+	      verbose);
   if (verbose > 2 && ss->server_tx_fifo->has_event)
     {
       found = session_node_lookup_fifo_event (ss->server_tx_fifo, e);
@@ -61,7 +66,7 @@ format_stream_session (u8 * s, va_list * args)
     str = format (0, "%-10u%-10u%-10lld",
 		  svm_fifo_max_dequeue (ss->server_rx_fifo),
 		  svm_fifo_max_enqueue (ss->server_tx_fifo),
-		  stream_session_get_index (ss));
+		  session_get_index (ss));
 
   if (ss->session_state >= SESSION_STATE_ACCEPTING)
     {
@@ -76,6 +81,8 @@ format_stream_session (u8 * s, va_list * args)
     {
       s = format (s, "%-40U%v", tp_vft->format_listener, ss->connection_index,
 		  str);
+      if (verbose > 1)
+	s = format (s, "\n%U", format_stream_session_fifos, ss, verbose);
     }
   else if (ss->session_state == SESSION_STATE_CONNECTING)
     {
@@ -237,21 +244,18 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (do_listeners)
     {
       sst = session_type_from_proto_and_ip (transport_proto, 1);
-      vlib_cli_output (vm, "There are %d active %U listeners",
-		       pool_elts (smm->listen_sessions[sst]),
-		       format_transport_proto, transport_proto);
-      if (verbose)
-	{
-	  vlib_cli_output (vm, "%-40s%-24s%-10s", "Listener", "App", "S-idx");
-          /* *INDENT-OFF* */
-          pool_foreach (s, smm->listen_sessions[sst], ({
-            app_name = application_name_from_index (s->app_index);
-            vlib_cli_output (vm, "%U%-25v%-10u", format_stream_session, s, 1,
-                             app_name, s->session_index);
-            vec_free (app_name);
-          }));
-          /* *INDENT-ON* */
-	}
+      vlib_cli_output (vm, "%-40s%-24s%-10s", "Listener", "App", "S-idx");
+      /* *INDENT-OFF* */
+      pool_foreach (s, smm->sessions[0], ({
+	if (s->session_state != SESSION_STATE_LISTENING
+	    || s->session_type != sst)
+	  continue;
+	app_name = application_name_from_index (s->app_index);
+	vlib_cli_output (vm, "%U%-25v%-10u", format_stream_session, s, 1,
+			 app_name, s->session_index);
+	vec_free (app_name);
+      }));
+      /* *INDENT-ON* */
       return 0;
     }
 

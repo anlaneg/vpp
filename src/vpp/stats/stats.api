@@ -18,9 +18,10 @@
     This file defines the stats API 
 */
 
-option version = "1.0.0";
+option version = "1.0.2";
 
 import "vnet/interface.api";
+import "vnet/bier/bier.api";
 
 service {
   rpc want_stats
@@ -55,6 +56,12 @@ service {
   rpc want_ip6_nbr_stats
     returns want_ip6_nbr_stats_reply
     events vnet_ip6_nbr_counters;
+  rpc want_udp_encap_stats
+    returns want_udp_encap_stats_reply
+    events vnet_udp_encap_counters;
+  rpc want_bier_neighbor_stats
+    returns want_bier_neighbor_stats_reply
+    events vnet_bier_neighbor_counters;
 };
 
 /** \brief Want Stats, enable/disable ALL stats updates
@@ -401,16 +408,18 @@ define vnet_get_summary_stats
 /** \brief Reply for vnet_get_summary_stats request
     @param context - sender context, to match reply w/ request
     @param retval - return code for request
-    @param total_pkts -  
-    @param total_bytes -
+    @param total_pkts - length of the array must match the length of 
+                        the combined counter part of the enum in interface.h
+    @param total_bytes - length of the array must match the length of 
+                         the combined counter part of the enum in interface.h
     @param vector_rate - 
 */
 define vnet_get_summary_stats_reply
 {
   u32 context;
   i32 retval;
-  u64 total_pkts[2];
-  u64 total_bytes[2];
+  u64 total_pkts[8];
+  u64 total_bytes[8];
   f64 vector_rate;
 };
 
@@ -434,6 +443,75 @@ define stats_get_poller_delay_reply
   u32 context;
   i32 retval;
   u32 delay;
+};
+
+/** \brief Want UDP encap Stats, register for continuous stats
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param enable - 1 = enable stats, 0 = disable
+    @param pid - pid of process requesting stats updates
+*/
+autoreply define want_udp_encap_stats
+{
+  u32 client_index;
+  u32 context;
+  u32 enable;
+  u32 pid;
+};
+
+/** \brief Stat for one UDP encap object
+    @param id - The ID of the object, same as passed for the create
+    @param packets - number of packets sent
+    @param bytes - number of bytes sent
+*/
+typeonly manual_print manual_endian define udp_encap_counter
+{
+  u32 id;
+  u64 packets;
+  u64 bytes;
+};
+
+manual_print manual_endian define vnet_udp_encap_counters
+{
+  u32 timestamp;
+  u32 count;
+  vl_api_udp_encap_counter_t c[count];
+};
+
+/** \brief Want BIER neighbor Stats, register for continuous stats
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param enable - 1 = enable stats, 0 = disable
+    @param pid - pid of process requesting stats updates
+*/
+autoreply define want_bier_neighbor_stats
+{
+  u32 client_index;
+  u32 context;
+  u32 enable;
+  u32 pid;
+};
+
+/** \brief Stat for one BIER neighbor object
+    @param tbl_id - The BIER Table ID the neighbour belongs to.
+    @param path - The path describing the negihbor (this is the data
+                  given during a BIER route add)
+    @param packets - number of packets sent
+    @param bytes - number of bytes sent
+*/
+typeonly manual_print manual_endian define bier_neighbor_counter
+{
+  vl_api_bier_table_id_t tbl_id;
+  vl_api_fib_path_t path;
+  u64 packets;
+  u64 bytes;
+};
+
+manual_print manual_endian define vnet_bier_neighbor_counters
+{
+  u32 timestamp;
+  u32 count;
+  vl_api_bier_neighbor_counter_t c[count];
 };
 
 /*

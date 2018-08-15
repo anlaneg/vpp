@@ -12,6 +12,7 @@
 # limitations under the License.
 
 lib_LTLIBRARIES += libvnet.la
+noinst_LTLIBRARIES =
 
 libvnet_la_SOURCES =
 libvnet_la_DEPENDENCIES = \
@@ -20,6 +21,7 @@ libvnet_la_DEPENDENCIES = \
 	libsvmdb.la		\
 	libsvm.la 		\
 	libvlibmemory.la
+libvnet_multiversioning_sources =
 
 libvnet_la_LIBADD = $(libvnet_la_DEPENDENCIES) -lm -lpthread -ldl -lrt
 
@@ -35,12 +37,15 @@ libvnet_la_SOURCES +=				\
   vnet/config.c					\
   vnet/devices/devices.c			\
   vnet/devices/netlink.c			\
+  vnet/flow/flow.c				\
+  vnet/flow/flow_cli.c				\
   vnet/handoff.c				\
   vnet/interface.c				\
   vnet/interface_api.c				\
   vnet/interface_cli.c				\
   vnet/interface_format.c			\
   vnet/interface_output.c			\
+  vnet/interface_stats.c			\
   vnet/misc.c					\
   vnet/replication.c
 
@@ -50,6 +55,7 @@ nobase_include_HEADERS +=			\
   vnet/config.h					\
   vnet/devices/devices.h			\
   vnet/devices/netlink.h			\
+  vnet/flow/flow.h				\
   vnet/global_funcs.h				\
   vnet/handoff.h				\
   vnet/interface.h				\
@@ -121,6 +127,9 @@ libvnet_la_SOURCES +=				\
  vnet/ethernet/p2p_ethernet.c			\
  vnet/ethernet/p2p_ethernet_input.c		\
  vnet/ethernet/p2p_ethernet_api.c
+
+libvnet_multiversioning_sources +=		\
+ vnet/l2/l2_output.c
 
 nobase_include_HEADERS +=			\
  vnet/ethernet/arp_packet.h			\
@@ -273,6 +282,24 @@ nobase_include_HEADERS +=			\
 API_FILES += vnet/geneve/geneve.api
 
 ########################################
+# Layer 2 / Bonding
+########################################
+libvnet_la_SOURCES +=				\
+  vnet/bonding/cli.c    			\
+  vnet/bonding/node.c    			\
+  vnet/bonding/device.c    			\
+  vnet/bonding/bond_api.c
+
+nobase_include_HEADERS +=			\
+  vnet/bonding/node.h                           \
+  vnet/bonding/bond.api.h
+
+libvnet_multiversioning_sources +=		\
+  vnet/bonding/node.c
+
+API_FILES += vnet/bonding/bond.api
+
+########################################
 # Layer 2 / LLDP
 ########################################
 libvnet_la_SOURCES +=				\
@@ -323,10 +350,12 @@ libvnet_la_SOURCES +=				\
  vnet/ip/icmp4.c				\
  vnet/ip/icmp6.c				\
  vnet/ip/ip46_cli.c				\
+ vnet/ip/ip_types_api.c				\
  vnet/ip/ip4_format.c				\
  vnet/ip/ip4_forward.c				\
  vnet/ip/ip4_punt_drop.c			\
  vnet/ip/ip4_input.c				\
+ vnet/ip/ip4_options.c				\
  vnet/ip/ip4_mtrie.c				\
  vnet/ip/ip4_pg.c				\
  vnet/ip/ip4_source_and_port_range_check.c	\
@@ -343,6 +372,7 @@ libvnet_la_SOURCES +=				\
  vnet/ip/ip6_pg.c				\
  vnet/ip/ip6_reassembly.c                       \
  vnet/ip/rd_cp.c                                \
+ vnet/ip/ip_neighbor.c				\
  vnet/ip/ip_api.c				\
  vnet/ip/ip_checksum.c				\
  vnet/ip/ip_frag.c				\
@@ -375,6 +405,7 @@ nobase_include_HEADERS +=			\
  vnet/ip/ip.h					\
  vnet/ip/ip_packet.h				\
  vnet/ip/ip_source_and_port_range_check.h	\
+ vnet/ip/ip_neighbor.h				\
  vnet/ip/lookup.h				\
  vnet/ip/ports.def				\
  vnet/ip/protocols.def				\
@@ -386,6 +417,10 @@ API_FILES += 					\
  vnet/ip/ip.api 				\
  vnet/ip/rd_cp.api                              \
  vnet/ip/punt.api
+
+libvnet_multiversioning_sources +=		\
+ vnet/ip/ip4_forward.c				\
+ vnet/ip/ip4_input.c
 
 ########################################
 # Bidirectional Forwarding Detection
@@ -419,7 +454,6 @@ libvnet_la_SOURCES +=				\
  vnet/ipsec/ipsec_input.c			\
  vnet/ipsec/ipsec_if.c				\
  vnet/ipsec/ipsec_if_in.c			\
- vnet/ipsec/ipsec_if_out.c			\
  vnet/ipsec/esp_format.c			\
  vnet/ipsec/esp_encrypt.c			\
  vnet/ipsec/esp_decrypt.c			\
@@ -458,37 +492,6 @@ nobase_include_HEADERS +=			\
  vnet/osi/osi.h
 
 ########################################
-# Layer 3 protocol: MAP
-########################################
-libvnet_la_SOURCES +=				\
- vnet/map/map.c					\
- vnet/map/map_dpo.c				\
- vnet/map/ip4_map.c				\
- vnet/map/ip6_map.c				\
- vnet/map/ip4_map_t.c				\
- vnet/map/ip6_map_t.c				\
- vnet/map/map_api.c
-
-nobase_include_HEADERS +=			\
- vnet/map/map.h					\
- vnet/map/map_dpo.h				\
- vnet/map/map.api.h
-
-API_FILES += vnet/map/map.api
-
-if ENABLE_TESTS
-TESTS += test_map
-test_map_SOURCES =                             \
- vnet/map/test.c
-test_map_CPPFLAGS = $(AM_CPPFLAGS) -DCLIB_DEBUG
-
-test_map_LDADD = libvnet.la libvppinfra.la libvlib.la	\
-  -lpthread -lvlibmemory -ldl -lsvm -lrt
-
-test_map_LDFLAGS = -static
-endif
-
-########################################
 # Layer 4 protocol: tcp
 ########################################
 libvnet_la_SOURCES +=				\
@@ -499,7 +502,6 @@ libvnet_la_SOURCES +=				\
  vnet/tcp/tcp_output.c				\
  vnet/tcp/tcp_input.c				\
  vnet/tcp/tcp_newreno.c				\
- vnet/tcp/tcp_test.c				\
  vnet/tcp/tcp.c
 
 nobase_include_HEADERS +=			\
@@ -751,13 +753,26 @@ API_FILES += vnet/lisp-gpe/lisp_gpe.api
 libvnet_la_SOURCES +=				\
  vnet/dhcp/client.c				\
  vnet/dhcp/dhcp_client_detect.c			\
+ vnet/dhcp/dhcp6_client_common_dp.c		\
+ vnet/dhcp/dhcp6_pd_client_dp.c			\
+ vnet/dhcp/dhcp6_pd_client_cp.c			\
+ vnet/dhcp/dhcp6_ia_na_client_dp.c		\
+ vnet/dhcp/dhcp6_ia_na_client_cp.c		\
  vnet/dhcp/dhcp_api.c
 
 nobase_include_HEADERS +=			\
  vnet/dhcp/client.h				\
- vnet/dhcp/dhcp.api.h
+ vnet/dhcp/dhcp6_client_common_dp.h		\
+ vnet/dhcp/dhcp6_pd_client_dp.h			\
+ vnet/dhcp/dhcp6_ia_na_client_dp.h		\
+ vnet/dhcp/dhcp.api.h				\
+ vnet/dhcp/dhcp6_pd_client_cp.api.h		\
+ vnet/dhcp/dhcp6_ia_na_client_cp.api.h
 
-API_FILES += vnet/dhcp/dhcp.api
+API_FILES +=					\
+ vnet/dhcp/dhcp.api				\
+ vnet/dhcp/dhcp6_pd_client_cp.api		\
+ vnet/dhcp/dhcp6_ia_na_client_cp.api
 
 ########################################
 # DHCP proxy
@@ -812,26 +827,26 @@ API_FILES += vnet/srmpls/sr_mpls.api
 # IPFIX / netflow v10
 ########################################
 libvnet_la_SOURCES +=				\
- vnet/flow/flow_report.c			\
- vnet/flow/flow_api.c
+ vnet/ipfix-export/flow_report.c			\
+ vnet/ipfix-export/flow_api.c
 
 nobase_include_HEADERS +=			\
- vnet/flow/flow_report.h			\
- vnet/flow/ipfix_info_elements.h		\
- vnet/flow/ipfix_packet.h			\
- vnet/flow/flow.api.h
+ vnet/ipfix-export/flow_report.h			\
+ vnet/ipfix-export/ipfix_info_elements.h		\
+ vnet/ipfix-export/ipfix_packet.h			\
+ vnet/ipfix-export/ipfix_export.api.h
 
-API_FILES += vnet/flow/flow.api
+API_FILES += vnet/ipfix-export/ipfix_export.api
 
 ########################################
 # IPFIX classify code
 ########################################
 
 libvnet_la_SOURCES +=				\
-  vnet/flow/flow_report_classify.c
+  vnet/ipfix-export/flow_report_classify.c
 
 nobase_include_HEADERS +=			\
-  vnet/flow/flow_report_classify.h
+  vnet/ipfix-export/flow_report_classify.h
 
 ########################################
 # lawful intercept
@@ -903,15 +918,21 @@ API_FILES += vnet/pg/pg.api
 libvnet_la_SOURCES +=				\
   vnet/devices/virtio/device.c			\
   vnet/devices/virtio/node.c			\
-  vnet/devices/virtio/vhost-user.c		\
+  vnet/devices/virtio/vhost_user.c		\
+  vnet/devices/virtio/vhost_user_input.c	\
+  vnet/devices/virtio/vhost_user_output.c	\
   vnet/devices/virtio/vhost_user_api.c		\
   vnet/devices/virtio/virtio.c
 
 
 nobase_include_HEADERS +=			\
   vnet/devices/virtio/virtio.h			\
-  vnet/devices/virtio/vhost-user.h		\
+  vnet/devices/virtio/vhost_user.h		\
   vnet/devices/virtio/vhost_user.api.h
+
+libvnet_multiversioning_sources +=		\
+  vnet/devices/virtio/vhost_user_input.c	\
+  vnet/devices/virtio/vhost_user_output.c
 
 API_FILES += vnet/devices/virtio/vhost_user.api
 
@@ -929,6 +950,20 @@ nobase_include_HEADERS += 			\
   vnet/devices/tap/tapv2.api.h
 
 API_FILES += vnet/devices/tap/tapv2.api
+
+########################################
+# tap interface (with virtio backend)
+########################################
+
+libvnet_la_SOURCES += 				\
+  vnet/devices/pipe/pipe_api.c			\
+  vnet/devices/pipe/pipe.c
+
+nobase_include_HEADERS += 			\
+  vnet/devices/pipe/pipe.h			\
+  vnet/devices/pipe/pipe.api.h
+
+API_FILES += vnet/devices/pipe/pipe.api
 
 ########################################
 # session managmeent
@@ -1082,6 +1117,7 @@ libvnet_la_SOURCES +=				\
   vnet/fib/fib_entry_src.c                      \
   vnet/fib/fib_entry_src_rr.c                   \
   vnet/fib/fib_entry_src_interface.c            \
+  vnet/fib/fib_entry_src_interpose.c            \
   vnet/fib/fib_entry_src_default_route.c        \
   vnet/fib/fib_entry_src_special.c              \
   vnet/fib/fib_entry_src_api.c                  \
@@ -1210,6 +1246,9 @@ libvnet_la_SOURCES +=      	                \
 
 API_FILES += vnet/qos/qos.api
 
+nobase_include_HEADERS +=                       \
+ vnet/qos/qos.api.h
+
 ########################################
 # BIER
 ########################################
@@ -1244,6 +1283,32 @@ nobase_include_HEADERS +=			\
   vnet/bier/bier_table.h
 
 API_FILES += vnet/bier/bier.api
+
+if CPU_X86_64
+if CC_SUPPORTS_AVX2
+###############################################################
+# AVX2
+###############################################################
+libvnet_avx2_la_SOURCES = $(libvnet_multiversioning_sources)
+libvnet_avx2_la_CFLAGS =			\
+	$(AM_CFLAGS)  @CPU_AVX2_FLAGS@		\
+	-DCLIB_MARCH_VARIANT=avx2
+noinst_LTLIBRARIES += libvnet_avx2.la
+libvnet_la_LIBADD += libvnet_avx2.la
+endif
+
+if CC_SUPPORTS_AVX512
+###############################################################
+# AVX512
+###############################################################
+libvnet_avx512_la_SOURCES = $(libvnet_multiversioning_sources)
+libvnet_avx512_la_CFLAGS =			\
+	$(AM_CFLAGS) @CPU_AVX512_FLAGS@		\
+	-DCLIB_MARCH_VARIANT=avx512
+noinst_LTLIBRARIES += libvnet_avx512.la
+libvnet_la_LIBADD += libvnet_avx512.la
+endif
+endif
 
 ########################################
 # Test apps

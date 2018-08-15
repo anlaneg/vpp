@@ -473,8 +473,7 @@ show_sr_localsid_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	  vlib_cli_output (vm,
 			   "\tAddress: \t%U\n\tBehavior: \tT (Endpoint with specific IPv6 table lookup)"
 			   "\n\tTable:  \t%u",
-			   format_ip6_address, &ls->localsid,
-			   format_vnet_sw_if_index_name, vnm, ls->vrf_index);
+			   format_ip6_address, &ls->localsid, ls->vrf_index);
 	  break;
 	case SR_BEHAVIOR_DX4:
 	  vlib_cli_output (vm,
@@ -888,7 +887,7 @@ sr_localsid_d_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
   next_index = node->cached_next_index;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
 
   while (n_left_from > 0)
     {
@@ -947,13 +946,13 @@ sr_localsid_d_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
 	  ls1 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b1)->ip.adj_index[VLIB_TX]);
 	  ls2 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b2)->ip.adj_index[VLIB_TX]);
 	  ls3 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
 
 	  ip0 = vlib_buffer_get_current (b0);
 	  ip1 = vlib_buffer_get_current (b1);
@@ -1191,7 +1190,7 @@ sr_localsid_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
   next_index = node->cached_next_index;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
 
   while (n_left_from > 0)
     {
@@ -1260,13 +1259,13 @@ sr_localsid_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
 	  ls1 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b1)->ip.adj_index[VLIB_TX]);
 	  ls2 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b2)->ip.adj_index[VLIB_TX]);
 	  ls3 =
 	    pool_elt_at_index (sm->localsids,
-			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
+			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
 
 	  end_srh_processing (node, b0, ip0, sr0, ls0, &next0, ls0->end_psp,
 			      prev0);

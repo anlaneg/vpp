@@ -13,12 +13,10 @@
  * limitations under the License.
  */
 #undef BIHASH_TYPE
-#undef BIHASH_KVP_CACHE_SIZE
 #undef BIHASH_KVP_PER_PAGE
 
 #define BIHASH_TYPE _24_8
 #define BIHASH_KVP_PER_PAGE 4
-#define BIHASH_KVP_CACHE_SIZE 0
 
 #ifndef __included_bihash_24_8_h__
 #define __included_bihash_24_8_h__
@@ -66,9 +64,18 @@ format_bihash_kvp_24_8 (u8 * s, va_list * args)
 }
 
 static inline int
-clib_bihash_key_compare_24_8 (const u64 * a, const u64 * b)
+clib_bihash_key_compare_24_8 (u64 * a, u64 * b)
 {
+#if defined (CLIB_HAVE_VEC512)
+  u64x8 v = u64x8_load_unaligned (a) ^ u64x8_load_unaligned (b);
+  return (u64x8_is_zero_mask (v) & 0x7) == 0;
+#elif defined(CLIB_HAVE_VEC128) && defined(CLIB_HAVE_VEC128_UNALIGNED_LOAD_STORE)
+  u64x2 v = { a[2] ^ b[2], 0 };
+  v |= u64x2_load_unaligned (a) ^ u64x2_load_unaligned (b);
+  return u64x2_is_all_zero (v);
+#else
   return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2])) == 0;
+#endif
 }
 
 #undef __included_bihash_template_h__

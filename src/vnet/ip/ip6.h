@@ -66,6 +66,9 @@ typedef struct
 
 typedef struct
 {
+  /* required for pool_get_aligned. */
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+
   /* Table ID (hash key) for this FIB. */
   u32 table_id;
 
@@ -216,7 +219,15 @@ typedef struct ip6_main_t
 
   /* HBH processing enabled? */
   u8 hbh_enabled;
+
+  /** ND throttling */
+  uword **nd_throttle_bitmaps;
+  u64 *nd_throttle_seeds;
+  f64 *nd_throttle_last_seed_change_time;
+
 } ip6_main_t;
+
+#define ND_THROTTLE_BITS 512
 
 /* Global ip6 main structure. */
 extern ip6_main_t ip6_main;
@@ -351,7 +362,7 @@ ip6_address_t *ip6_interface_first_address (ip6_main_t * im, u32 sw_if_index);
 int ip6_address_compare (ip6_address_t * a1, ip6_address_t * a2);
 
 clib_error_t *ip6_probe_neighbor (vlib_main_t * vm, ip6_address_t * dst,
-				  u32 sw_if_index);
+				  u32 sw_if_index, u8 refresh);
 
 uword
 ip6_udp_register_listener (vlib_main_t * vm,
@@ -404,7 +415,9 @@ int vnet_ip6_nd_term (vlib_main_t * vm,
 		      ethernet_header_t * eth,
 		      ip6_header_t * ip, u32 sw_if_index, u16 bd_index);
 
-void send_ip6_na (vlib_main_t * vm, vnet_hw_interface_t * hi);
+void send_ip6_na (vlib_main_t * vm, u32 sw_if_index);
+void send_ip6_na_w_addr (vlib_main_t * vm,
+			 const ip6_address_t * addr, u32 sw_if_index);
 
 u8 *format_ip6_forward_next_trace (u8 * s, va_list * args);
 

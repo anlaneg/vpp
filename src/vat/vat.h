@@ -129,7 +129,7 @@ typedef struct
 
   /* Graph node table */
   uword *graph_node_index_by_name;
-  vlib_node_t **graph_nodes;
+  vlib_node_t ***graph_nodes;
 
   /* ip tables */
   ip_details_t *ip_details_by_sw_if_index[2];
@@ -208,6 +208,9 @@ typedef struct
   u32 *ip6_fib_counters_vrf_id_by_index;
   ip4_nbr_counter_t **ip4_nbr_counters;
   ip6_nbr_counter_t **ip6_nbr_counters;
+
+  ssvm_private_t stat_segment;
+  clib_spinlock_t *stat_segment_lockp;
 
   socket_client_main_t *socket_client_main;
   u8 *socket_name;

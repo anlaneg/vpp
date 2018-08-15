@@ -200,8 +200,8 @@ mrvl_pp2_create_if (mrvl_pp2_create_if_args_t * args)
   n_outqs = tm->n_vlib_mains;
 
   /* defaults */
-  args->tx_q_sz = args->tx_q_sz ? args->tx_q_sz : 2048;
-  args->rx_q_sz = args->rx_q_sz ? args->rx_q_sz : 2048;
+  args->tx_q_sz = args->tx_q_sz ? args->tx_q_sz : 2 * VLIB_FRAME_SIZE;
+  args->rx_q_sz = args->rx_q_sz ? args->rx_q_sz : 2 * VLIB_FRAME_SIZE;
 
   if (vec_len (ppm->per_thread_data) == 0)
     {
@@ -255,7 +255,7 @@ mrvl_pp2_create_if (mrvl_pp2_create_if_args_t * args)
   s = format (s, "ppio-%d:%d%c", pp2_id, port_id, 0);
   ppio_params.match = (char *) s;
   ppio_params.type = PP2_PPIO_T_NIC;
-  inq_params.size = 2048;
+  inq_params.size = args->rx_q_sz;
   ppio_params.inqs_params.num_tcs = 1;
   ppio_params.inqs_params.tcs_params[0].pkt_offset = 0;
   ppio_params.inqs_params.tcs_params[0].num_in_qs = n_inqs;

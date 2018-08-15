@@ -216,7 +216,7 @@ always_inline vlib_frame_t *
 vlib_get_frame_no_check (vlib_main_t * vm, uword frame_index)
 {
   vlib_frame_t *f;
-  f = vm->heap_base + (frame_index * VLIB_FRAME_ALIGN);
+  f = vm->heap_aligned_base + (frame_index * VLIB_FRAME_ALIGN);
   return f;
 }
 
@@ -227,7 +227,7 @@ vlib_frame_index_no_check (vlib_main_t * vm, vlib_frame_t * f)
 
   ASSERT (((uword) f & (VLIB_FRAME_ALIGN - 1)) == 0);
 
-  i = ((u8 *) f - (u8 *) vm->heap_base);
+  i = ((u8 *) f - (u8 *) vm->heap_aligned_base);
   ASSERT ((i / VLIB_FRAME_ALIGN) <= 0xFFFFFFFFULL);
 
   return i / VLIB_FRAME_ALIGN;
@@ -818,7 +818,15 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
     {
       /* Waiting for both event and clock? */
       if (p_flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT)
-	delete_from_wheel = 1;
+	{
+	  if (!TW (tw_timer_handle_is_free)
+	      ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+	       p->stop_timer_handle))
+	    delete_from_wheel = 1;
+	  else
+	    /* timer just popped so process should already be on the list */
+	    add_to_pending = 0;
+	}
       else
 	/* Waiting only for clock.  Event will be queue and may be
 	   handled when timer expires. */
@@ -1127,8 +1135,10 @@ vlib_node_add_named_next (vlib_main_t * vm, uword node, char *name)
 /**
  * Get list of nodes
  */
-vlib_node_t ***vlib_node_get_nodes (vlib_main_t * vm, u32 max_threads,
-				    int include_stats);
+void
+vlib_node_get_nodes (vlib_main_t * vm, u32 max_threads, int include_stats,
+		     int barrier_sync, vlib_node_t **** node_dupsp,
+		     vlib_main_t *** stat_vmsp);
 
 /* Query node given name. */
 vlib_node_t *vlib_get_node_by_name (vlib_main_t * vm, u8 * name);

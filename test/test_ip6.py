@@ -9,7 +9,7 @@ from vpp_sub_interface import VppSubInterface, VppDot1QSubint
 from vpp_pg_interface import is_ipv6_misc
 from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
-    VppMplsRoute, DpoProto, VppMplsTable
+    VppMplsRoute, DpoProto, VppMplsTable, VppIpTable
 from vpp_neighbor import find_nbr, VppNeighbor
 
 from scapy.packet import Raw
@@ -18,7 +18,7 @@ from scapy.layers.inet6 import IPv6, UDP, TCP, ICMPv6ND_NS, ICMPv6ND_RS, \
     ICMPv6ND_RA, ICMPv6NDOptSrcLLAddr, getmacbyip6, ICMPv6MRD_Solicitation, \
     ICMPv6NDOptMTU, ICMPv6NDOptSrcLLAddr, ICMPv6NDOptPrefixInfo, \
     ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types, \
-    ICMPv6TimeExceeded
+    ICMPv6TimeExceeded, ICMPv6EchoRequest, ICMPv6EchoReply
 from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
     in6_mactoifaceid, in6_ismaddr
 from scapy.utils import inet_pton, inet_ntop
@@ -84,7 +84,7 @@ class TestIPv6ND(VppTestCase):
         dst_ip = inet_ntop(AF_INET6, nsma)
 
         # NS is broadcast
-        self.assertEqual(rx[Ether].dst, "ff:ff:ff:ff:ff:ff")
+        self.assertEqual(rx[Ether].dst, in6_getnsmac(nsma))
 
         # and from the router's MAC
         self.assertEqual(rx[Ether].src, intf.local_mac)
@@ -172,7 +172,6 @@ class TestIPv6(TestIPv6ND):
 
         :ivar list interfaces: pg interfaces and subinterfaces.
         :ivar dict flows: IPv4 packet flows in test.
-        :ivar list pg_if_packet_sizes: packet sizes in test.
 
         *TODO:* Create AD sub interface
         """
@@ -195,8 +194,7 @@ class TestIPv6(TestIPv6ND):
         self.flows[self.pg2.sub_if] = [self.pg0, self.pg1.sub_if]
 
         # packet sizes
-        self.pg_if_packet_sizes = [64, 512, 1518, 9018]
-        self.sub_if_packet_sizes = [64, 512, 1518 + 4, 9018 + 4]
+        self.pg_if_packet_sizes = [64, 1500, 9020]
 
         self.interfaces = list(self.pg_interfaces)
         self.interfaces.extend(self.sub_interfaces)
@@ -212,10 +210,11 @@ class TestIPv6(TestIPv6ND):
 
     def tearDown(self):
         """Run standard test teardown and log ``show ip6 neighbors``."""
-        for i in self.sub_interfaces:
+        for i in self.interfaces:
             i.unconfig_ip6()
             i.ip6_disable()
             i.admin_down()
+        for i in self.sub_interfaces:
             i.remove_vpp_config()
 
         super(TestIPv6, self).tearDown()
@@ -249,27 +248,45 @@ class TestIPv6(TestIPv6ND):
                                      (count, percent))
                     percent += 1
 
-    def create_stream(self, src_if, packet_sizes):
+    def modify_packet(self, src_if, packet_size, pkt):
+        """Add load, set destination IP and extend packet to required packet
+        size for defined interface.
+
+        :param VppInterface src_if: Interface to create packet for.
+        :param int packet_size: Required packet size.
+        :param Scapy pkt: Packet to be modified.
+        """
+        dst_if_idx = packet_size / 10 % 2
+        dst_if = self.flows[src_if][dst_if_idx]
+        info = self.create_packet_info(src_if, dst_if)
+        payload = self.info_to_payload(info)
+        p = pkt/Raw(payload)
+        p[IPv6].dst = dst_if.remote_ip6
+        info.data = p.copy()
+        if isinstance(src_if, VppSubInterface):
+            p = src_if.add_dot1_layer(p)
+        self.extend_packet(p, packet_size)
+
+        return p
+
+    def create_stream(self, src_if):
         """Create input packet stream for defined interface.
 
         :param VppInterface src_if: Interface to create packet stream for.
-        :param list packet_sizes: Required packet sizes.
         """
-        pkts = []
-        for i in range(0, 257):
-            dst_if = self.flows[src_if][i % 2]
-            info = self.create_packet_info(src_if, dst_if)
-            payload = self.info_to_payload(info)
-            p = (Ether(dst=src_if.local_mac, src=src_if.remote_mac) /
-                 IPv6(src=src_if.remote_ip6, dst=dst_if.remote_ip6) /
-                 UDP(sport=1234, dport=1234) /
-                 Raw(payload))
-            info.data = p.copy()
-            if isinstance(src_if, VppSubInterface):
-                p = src_if.add_dot1_layer(p)
-            size = packet_sizes[(i // 2) % len(packet_sizes)]
-            self.extend_packet(p, size)
-            pkts.append(p)
+        hdr_ext = 4 if isinstance(src_if, VppSubInterface) else 0
+        pkt_tmpl = (Ether(dst=src_if.local_mac, src=src_if.remote_mac) /
+                    IPv6(src=src_if.remote_ip6) /
+                    UDP(sport=1234, dport=1234))
+
+        pkts = [self.modify_packet(src_if, i, pkt_tmpl)
+                for i in xrange(self.pg_if_packet_sizes[0],
+                                self.pg_if_packet_sizes[1], 10)]
+        pkts_b = [self.modify_packet(src_if, i, pkt_tmpl)
+                  for i in xrange(self.pg_if_packet_sizes[1] + hdr_ext,
+                                  self.pg_if_packet_sizes[2] + hdr_ext, 50)]
+        pkts.extend(pkts_b)
+
         return pkts
 
     def verify_capture(self, dst_if, capture):
@@ -332,11 +349,11 @@ class TestIPv6(TestIPv6ND):
             - Send and verify received packets on each interface.
         """
 
-        pkts = self.create_stream(self.pg0, self.pg_if_packet_sizes)
+        pkts = self.create_stream(self.pg0)
         self.pg0.add_stream(pkts)
 
         for i in self.sub_interfaces:
-            pkts = self.create_stream(i, self.sub_if_packet_sizes)
+            pkts = self.create_stream(i)
             i.parent.add_stream(pkts)
 
         self.pg_enable_capture(self.pg_interfaces)
@@ -897,6 +914,68 @@ class TestIPv6(TestIPv6ND):
         self.pg0.ip6_ra_config(no=1, suppress=1, send_unicast=0)
 
 
+class TestICMPv6Echo(VppTestCase):
+    """ ICMPv6 Echo Test Case """
+
+    def setUp(self):
+        super(TestICMPv6Echo, self).setUp()
+
+        # create 1 pg interface
+        self.create_pg_interfaces(range(1))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_ndp()
+
+    def tearDown(self):
+        super(TestICMPv6Echo, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip6()
+            i.ip6_disable()
+            i.admin_down()
+
+    def test_icmpv6_echo(self):
+        """ VPP replies to ICMPv6 Echo Request
+
+        Test scenario:
+
+            - Receive ICMPv6 Echo Request message on pg0 interface.
+            - Check outgoing ICMPv6 Echo Reply message on pg0 interface.
+        """
+
+        icmpv6_id = 0xb
+        icmpv6_seq = 5
+        icmpv6_data = '\x0a' * 18
+        p_echo_request = (Ether(src=self.pg0.remote_mac,
+                                dst=self.pg0.local_mac) /
+                          IPv6(src=self.pg0.remote_ip6,
+                               dst=self.pg0.local_ip6) /
+                          ICMPv6EchoRequest(id=icmpv6_id, seq=icmpv6_seq,
+                                            data=icmpv6_data))
+
+        self.pg0.add_stream(p_echo_request)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg0.get_capture(1)
+        rx = rx[0]
+        ether = rx[Ether]
+        ipv6 = rx[IPv6]
+        icmpv6 = rx[ICMPv6EchoReply]
+
+        self.assertEqual(ether.src, self.pg0.local_mac)
+        self.assertEqual(ether.dst, self.pg0.remote_mac)
+
+        self.assertEqual(ipv6.src, self.pg0.local_ip6)
+        self.assertEqual(ipv6.dst, self.pg0.remote_ip6)
+
+        self.assertEqual(icmp6types[icmpv6.type], "Echo Reply")
+        self.assertEqual(icmpv6.id, icmpv6_id)
+        self.assertEqual(icmpv6.seq, icmpv6_seq)
+        self.assertEqual(icmpv6.data, icmpv6_data)
+
+
 class TestIPv6RD(TestIPv6ND):
     """ IPv6 Router Discovery Test Case """
 
@@ -918,6 +997,9 @@ class TestIPv6RD(TestIPv6ND):
             i.config_ip6()
 
     def tearDown(self):
+        for i in self.interfaces:
+            i.unconfig_ip6()
+            i.admin_down()
         super(TestIPv6RD, self).tearDown()
 
     def test_rd_send_router_solicitation(self):
@@ -1873,6 +1955,125 @@ class TestIP6Punt(VppTestCase):
                                    nh_addr,
                                    is_add=0,
                                    is_ip6=1)
+
+
+class TestIPDeag(VppTestCase):
+    """ IPv6 Deaggregate Routes """
+
+    def setUp(self):
+        super(TestIPDeag, self).setUp()
+
+        self.create_pg_interfaces(range(3))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_ndp()
+
+    def tearDown(self):
+        super(TestIPDeag, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip6()
+            i.admin_down()
+
+    def test_ip_deag(self):
+        """ IP Deag Routes """
+
+        #
+        # Create a table to be used for:
+        #  1 - another destination address lookup
+        #  2 - a source address lookup
+        #
+        table_dst = VppIpTable(self, 1, is_ip6=1)
+        table_src = VppIpTable(self, 2, is_ip6=1)
+        table_dst.add_vpp_config()
+        table_src.add_vpp_config()
+
+        #
+        # Add a route in the default table to point to a deag/
+        # second lookup in each of these tables
+        #
+        route_to_dst = VppIpRoute(self, "1::1", 128,
+                                  [VppRoutePath("::",
+                                                0xffffffff,
+                                                nh_table_id=1,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1)
+        route_to_src = VppIpRoute(self, "1::2", 128,
+                                  [VppRoutePath("::",
+                                                0xffffffff,
+                                                nh_table_id=2,
+                                                is_source_lookup=1,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1)
+        route_to_dst.add_vpp_config()
+        route_to_src.add_vpp_config()
+
+        #
+        # packets to these destination are dropped, since they'll
+        # hit the respective default routes in the second table
+        #
+        p_dst = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IPv6(src="5::5", dst="1::1") /
+                 TCP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+        p_src = (Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 IPv6(src="2::2", dst="1::2") /
+                 TCP(sport=1234, dport=1234) /
+                 Raw('\xa5' * 100))
+        pkts_dst = p_dst * 257
+        pkts_src = p_src * 257
+
+        self.send_and_assert_no_replies(self.pg0, pkts_dst,
+                                        "IP in dst table")
+        self.send_and_assert_no_replies(self.pg0, pkts_src,
+                                        "IP in src table")
+
+        #
+        # add a route in the dst table to forward via pg1
+        #
+        route_in_dst = VppIpRoute(self, "1::1", 128,
+                                  [VppRoutePath(self.pg1.remote_ip6,
+                                                self.pg1.sw_if_index,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1,
+                                  table_id=1)
+        route_in_dst.add_vpp_config()
+
+        self.send_and_expect(self.pg0, pkts_dst, self.pg1)
+
+        #
+        # add a route in the src table to forward via pg2
+        #
+        route_in_src = VppIpRoute(self, "2::2", 128,
+                                  [VppRoutePath(self.pg2.remote_ip6,
+                                                self.pg2.sw_if_index,
+                                                proto=DpoProto.DPO_PROTO_IP6)],
+                                  is_ip6=1,
+                                  table_id=2)
+        route_in_src.add_vpp_config()
+        self.send_and_expect(self.pg0, pkts_src, self.pg2)
+
+        #
+        # loop in the lookup DP
+        #
+        route_loop = VppIpRoute(self, "3::3", 128,
+                                [VppRoutePath("::",
+                                              0xffffffff,
+                                              proto=DpoProto.DPO_PROTO_IP6)],
+                                is_ip6=1)
+        route_loop.add_vpp_config()
+
+        p_l = (Ether(src=self.pg0.remote_mac,
+                     dst=self.pg0.local_mac) /
+               IPv6(src="3::4", dst="3::3") /
+               TCP(sport=1234, dport=1234) /
+               Raw('\xa5' * 100))
+
+        self.send_and_assert_no_replies(self.pg0, p_l * 257,
+                                        "IP lookup loop")
 
 
 class TestIP6Input(VppTestCase):

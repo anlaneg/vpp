@@ -1276,6 +1276,7 @@ dispatch_process (vlib_main_t * vm,
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_runtime_t *node_runtime = &p->node_runtime;
   vlib_node_t *node = vlib_get_node (vm, node_runtime->node_index);
+  u32 old_process_index;
   u64 t;
   uword n_vectors, is_suspend;
 
@@ -1291,11 +1292,12 @@ dispatch_process (vlib_main_t * vm,
 			     f ? f->n_vectors : 0, /* is_after */ 0);
 
   /* Save away current process for suspend. */
+  old_process_index = nm->current_process_index;
   nm->current_process_index = node->runtime_index;
 
   n_vectors = vlib_process_startup (vm, p, f);
 
-  nm->current_process_index = ~0;
+  nm->current_process_index = old_process_index;
 
   ASSERT (n_vectors != VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
@@ -1547,6 +1549,13 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	      }
 	  }
       }
+      /* Input nodes may have added work to the pending vector.
+         Process pending vector until there is nothing left.
+         All pending vectors will be processed from input -> output. */
+      for (i = 0; i < _vec_len (nm->pending_frames); i++)
+	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
+      /* Reset pending vector for next iteration. */
+      _vec_len (nm->pending_frames) = 0;
 
       if (is_main)
 	{
@@ -1565,7 +1574,6 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	    {
 	      uword i;
 
-	    processes_timing_wheel_data:
 	      for (i = 0; i < _vec_len (nm->data_from_advancing_timing_wheel);
 		   i++)
 		{
@@ -1608,19 +1616,6 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	      _vec_len (nm->data_from_advancing_timing_wheel) = 0;
 	    }
 	}
-
-      /* Input nodes may have added work to the pending vector.
-         Process pending vector until there is nothing left.
-         All pending vectors will be processed from input -> output. */
-      for (i = 0; i < _vec_len (nm->pending_frames); i++)
-	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
-      /* Reset pending vector for next iteration. */
-      _vec_len (nm->pending_frames) = 0;
-
-      /* Pending internal nodes may resume processes. */
-      if (is_main && _vec_len (nm->data_from_advancing_timing_wheel) > 0)
-	goto processes_timing_wheel_data;
-
       vlib_increment_main_loop_counter (vm);
 
       /* Record time stamp in case there are no enabled nodes and above
@@ -1678,6 +1673,18 @@ dummy_queue_signal_callback (vlib_main_t * vm)
 {
 }
 
+#define foreach_weak_reference_stub             \
+_(vlib_map_stat_segment_init)                   \
+_(vpe_api_init)                                 \
+_(vlibmemory_init)                              \
+_(map_api_segment_init)
+
+#define _(name)                                                 \
+clib_error_t *name (vlib_main_t *vm) __attribute__((weak));     \
+clib_error_t *name (vlib_main_t *vm) { return 0; }
+foreach_weak_reference_stub;
+#undef _
+
 /* Main function. */
 int
 vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
@@ -1717,6 +1724,12 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
     }
 
+  if ((error = vlib_map_stat_segment_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
   /* Register static nodes so that init functions may use them. */
   vlib_register_all_static_nodes (vm);
 
@@ -1734,6 +1747,25 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 	clib_error_report (error);
       else
 	goto done;
+    }
+
+  /* Direct call / weak reference, for vlib standalone use-cases */
+  if ((error = vpe_api_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
+  if ((error = vlibmemory_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
+  if ((error = map_api_segment_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
     }
 
   /* See unix/main.c; most likely already set up */

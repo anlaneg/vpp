@@ -26,25 +26,25 @@ vpp_uses_dpdk = yes
 # Uncoment to enable building unit tests
 # vpp_enable_tests = yes
 
-vpp_root_packages = vpp
+vpp_root_packages = vpp vom japi
 
 # DPDK configuration parameters
+# vpp_uses_dpdk_mlx4_pmd = yes
 # vpp_uses_dpdk_mlx5_pmd = yes
 # vpp_uses_external_dpdk = yes
 # vpp_dpdk_inc_dir = /usr/include/dpdk
 # vpp_dpdk_lib_dir = /usr/lib
 # vpp_dpdk_shared_lib = yes
 
-vpp_configure_args_vpp =
+# Use '--without-libnuma' for non-numa aware architecture
+# Use '--enable-dlmalloc' to use dlmalloc instead of mheap
+vpp_configure_args_vpp = --enable-dlmalloc
+sample-plugin_configure_args_vpp = --enable-dlmalloc
 
 # load balancer plugin is not portable on 32 bit platform
 ifeq ($(MACHINE),i686)
 vpp_configure_args_vpp += --disable-lb-plugin
 endif
-
-# To disable the VPP object model build - and save about half the build time -
-# uncomment the following...
-# vpp_configure_args_vpp += --disable-vom
 
 vpp_debug_TAG_CFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 \
 	-fstack-protector-all -fPIC -Werror
@@ -55,7 +55,7 @@ vpp_debug_TAG_LDFLAGS = -g -O0 -DCLIB_DEBUG -DFORTIFY_SOURCE=2 \
 
 vpp_TAG_CFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror
 vpp_TAG_CXXFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror
-vpp_TAG_LDFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror
+vpp_TAG_LDFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror -pie -Wl,-z,now
 
 vpp_clang_TAG_CFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror
 vpp_clang_TAG_LDFLAGS = -g -O2 -DFORTIFY_SOURCE=2 -fstack-protector -fPIC -Werror

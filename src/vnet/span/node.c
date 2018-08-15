@@ -70,9 +70,14 @@ span_mirror (vlib_main_t * vm, vlib_node_runtime_t * node, u32 sw_if_index0,
   vnet_main_t *vnm = &vnet_main;
   u32 *to_mirror_next = 0;
   u32 i;
+  span_interface_t *si0;
+  span_mirror_t *sm0;
 
-  span_interface_t *si0 = vec_elt_at_index (sm->interfaces, sw_if_index0);
-  span_mirror_t *sm0 = &si0->mirror_rxtx[sf][rxtx];
+  if (sw_if_index0 >= vec_len (sm->interfaces))
+    return;
+
+  si0 = vec_elt_at_index (sm->interfaces, sw_if_index0);
+  sm0 = &si0->mirror_rxtx[sf][rxtx];
 
   if (sm0->num_mirror_ports == 0)
     return;
@@ -196,8 +201,8 @@ span_node_inline_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      break;
 	    case SPAN_FEAT_DEVICE:
 	    default:
-	      vnet_feature_next (sw_if_index0, &next0, b0);
-	      vnet_feature_next (sw_if_index1, &next1, b1);
+	      vnet_feature_next (&next0, b0);
+	      vnet_feature_next (&next1, b1);
 	      break;
 	    }
 
@@ -237,7 +242,7 @@ span_node_inline_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      break;
 	    case SPAN_FEAT_DEVICE:
 	    default:
-	      vnet_feature_next (sw_if_index0, &next0, b0);
+	      vnet_feature_next (&next0, b0);
 	      break;
 	    }
 

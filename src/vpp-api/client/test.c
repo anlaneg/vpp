@@ -62,29 +62,42 @@ volatile u16 result_msg_id;
 
 
 
-int
-wrap_vac_callback (char *data, int len)
+void
+wrap_vac_callback (unsigned char *data, int len)
 {
   //printf("Callback %d\n", len);
   result_ready = 1;
   result_msg_id = ntohs(*((u16 *)data));
-  return (0);
 }
 
-int main (int argc, char ** argv)
+static void
+test_connect ()
+{
+  static int i;
+  int rv = vac_connect("vac_client", NULL, wrap_vac_callback, 32 /* rx queue-length*/);
+  if (rv != 0) {
+    printf("Connect failed: %d\n", rv);
+    exit(rv);
+  }
+  printf(".");
+  vac_disconnect();
+  i++;
+}
+
+static void
+test_messages (void)
 {
   api_main_t * am = &api_main;
   vl_api_show_version_t message;
   vl_api_show_version_t *mp;
   int async = 1;
-  int rv = vac_connect("vac_client", NULL, NULL, 32 /* rx queue-length*/);
 
+  int rv = vac_connect("vac_client", NULL, wrap_vac_callback, 32 /* rx queue-length*/);
   if (rv != 0) {
     printf("Connect failed: %d\n", rv);
     exit(rv);
   }
- 
- struct timeb timer_msec;
+  struct timeb timer_msec;
   long long int timestamp_msec_start; /* timestamp in millisecond. */
   if (!ftime(&timer_msec)) {
     timestamp_msec_start = ((long long int) timer_msec.time) * 1000ll + 
@@ -136,5 +149,15 @@ int main (int argc, char ** argv)
 	 no_msgs/(timestamp_msec_end - timestamp_msec_start));
   printf("Exiting...\n");
   vac_disconnect();
+}
+
+int main (int argc, char ** argv)
+{
+  int i;
+
+  for (i = 0; i < 1000; i++) {
+    test_connect();
+  }
+  test_messages();
   exit (0);
 }

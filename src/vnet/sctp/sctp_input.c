@@ -319,8 +319,10 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 		  u16 sctp_implied_length)
 {
   sctp_init_chunk_t *init_chunk = (sctp_init_chunk_t *) (sctp_hdr);
-  ip4_address_t *ip4_addr = 0;
-  ip6_address_t *ip6_addr = 0;
+  ip4_address_t ip4_addr;
+  ip6_address_t ip6_addr;
+  u8 add_ip4 = 0;
+  u8 add_ip6 = 0;
   char hostname[FQDN_MAX_LENGTH];
 
   /* Check the current state of the connection
@@ -338,7 +340,7 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 	  SCTP_ADV_DBG ("Received INIT chunk while in COOKIE_WAIT state");
 	  sctp_prepare_initack_chunk_for_collision (sctp_conn,
 						    SCTP_PRIMARY_PATH_IDX,
-						    b0, ip4_addr, ip6_addr);
+						    b0, &ip4_addr, &ip6_addr);
 	  return SCTP_ERROR_NONE;
 	case SCTP_STATE_COOKIE_ECHOED:
 	case SCTP_STATE_SHUTDOWN_ACK_SENT:
@@ -346,11 +348,12 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 	  if (sctp_conn->forming_association_changed == 0)
 	    sctp_prepare_initack_chunk_for_collision (sctp_conn,
 						      SCTP_PRIMARY_PATH_IDX,
-						      b0, ip4_addr, ip6_addr);
+						      b0, &ip4_addr,
+						      &ip6_addr);
 	  else
 	    sctp_prepare_abort_for_collision (sctp_conn,
 					      SCTP_PRIMARY_PATH_IDX, b0,
-					      ip4_addr, ip6_addr);
+					      &ip4_addr, &ip6_addr);
 	  return SCTP_ERROR_NONE;
 	}
     }
@@ -395,13 +398,16 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 	      {
 		sctp_ipv4_addr_param_t *ipv4 =
 		  (sctp_ipv4_addr_param_t *) opt_params_hdr;
-		clib_memcpy (ip4_addr, &ipv4->address,
+		clib_memcpy (&ip4_addr, &ipv4->address,
 			     sizeof (ip4_address_t));
 
-		sctp_sub_connection_add_ip4 (vlib_get_main (),
-					     &sctp_conn->sub_conn
-					     [SCTP_PRIMARY_PATH_IDX].connection.
-					     lcl_ip.ip4, &ipv4->address);
+		if (sctp_sub_connection_add_ip4 (vlib_get_main (),
+						 &sctp_conn->sub_conn
+						 [SCTP_PRIMARY_PATH_IDX].connection.
+						 lcl_ip.ip4,
+						 &ipv4->address) ==
+		    SCTP_ERROR_NONE)
+		  add_ip4 = 1;
 
 		break;
 	      }
@@ -409,13 +415,16 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
 	      {
 		sctp_ipv6_addr_param_t *ipv6 =
 		  (sctp_ipv6_addr_param_t *) opt_params_hdr;
-		clib_memcpy (ip6_addr, &ipv6->address,
+		clib_memcpy (&ip6_addr, &ipv6->address,
 			     sizeof (ip6_address_t));
 
-		sctp_sub_connection_add_ip6 (vlib_get_main (),
-					     &sctp_conn->sub_conn
-					     [SCTP_PRIMARY_PATH_IDX].connection.
-					     lcl_ip.ip6, &ipv6->address);
+		if (sctp_sub_connection_add_ip6 (vlib_get_main (),
+						 &sctp_conn->sub_conn
+						 [SCTP_PRIMARY_PATH_IDX].connection.
+						 lcl_ip.ip6,
+						 &ipv6->address) ==
+		    SCTP_ERROR_NONE)
+		  add_ip6 = 1;
 
 		break;
 	      }
@@ -446,8 +455,8 @@ sctp_handle_init (sctp_header_t * sctp_hdr,
     }
 
   /* Reuse buffer to make init-ack and send */
-  sctp_prepare_initack_chunk (sctp_conn, SCTP_PRIMARY_PATH_IDX, b0, ip4_addr,
-			      ip6_addr);
+  sctp_prepare_initack_chunk (sctp_conn, SCTP_PRIMARY_PATH_IDX, b0, &ip4_addr,
+			      add_ip4, &ip6_addr, add_ip6);
   return SCTP_ERROR_NONE;
 }
 
@@ -483,7 +492,6 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 {
   sctp_init_ack_chunk_t *init_ack_chunk =
     (sctp_init_ack_chunk_t *) (sctp_hdr);
-  sctp_state_cookie_param_t state_cookie;
 
   char hostname[FQDN_MAX_LENGTH];
 
@@ -560,8 +568,9 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 		sctp_state_cookie_param_t *state_cookie_param =
 		  (sctp_state_cookie_param_t *) opt_params_hdr;
 
-		clib_memcpy (&state_cookie, state_cookie_param,
+		clib_memcpy (&(sctp_conn->cookie_param), state_cookie_param,
 			     sizeof (sctp_state_cookie_param_t));
+
 		break;
 	      }
 	    case SCTP_HOSTNAME_ADDRESS_TYPE:
@@ -586,9 +595,6 @@ sctp_handle_init_ack (sctp_header_t * sctp_hdr,
 	  pointer_offset += increment;
 	}
     }
-
-  clib_memcpy (&(sctp_conn->cookie_param), &state_cookie,
-	       sizeof (sctp_state_cookie_param_t));
 
   sctp_prepare_cookie_echo_chunk (sctp_conn, idx, b0, 1);
 
@@ -1054,7 +1060,7 @@ sctp46_rcv_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       * hence we should never get to the "default" case below.
 	       */
 	    default:
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
@@ -1394,7 +1400,7 @@ sctp46_shutdown_phase_inline (vlib_main_t * vm,
 	       * hence we should never get to the "default" case below.
 	       */
 	    default:
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
@@ -1670,6 +1676,9 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].PMTU =
 	    sctp_listener->sub_conn[SCTP_PRIMARY_PATH_IDX].PMTU;
 	  child_conn->state = SCTP_STATE_CLOSED;
+	  child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.fib_index =
+	    sctp_listener->sub_conn[SCTP_PRIMARY_PATH_IDX].
+	    connection.fib_index;
 
 	  if (is_ip4)
 	    {
@@ -1692,14 +1701,15 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 	  sctp_chunks_common_hdr_t *sctp_chunk_hdr = &full_hdr->common_hdr;
 
 	  u8 chunk_type = vnet_sctp_get_chunk_type (sctp_chunk_hdr);
-	  if (chunk_type != INIT)
+	  if (chunk_type != INIT && chunk_type != DATA
+	      && chunk_type != OPERATION_ERROR)
 	    {
 	      SCTP_DBG
 		("conn_index = %u: chunk_type != INIT... chunk_type=%s",
 		 child_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].
 		 connection.c_index, sctp_chunk_to_string (chunk_type));
 
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = sctp_next_drop (is_ip4);
 	      goto drop;
 	    }
@@ -1907,7 +1917,7 @@ sctp46_established_phase_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       * hence we should never get to the "default" case below.
 	       */
 	    default:
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = sctp_next_drop (is_ip4);
 	      goto done;
 	    }
@@ -2178,7 +2188,7 @@ sctp46_input_dispatcher (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      sctp_prepare_operation_error (sctp_conn, SCTP_PRIMARY_PATH_IDX,
 					    b0, UNRECOGNIZED_CHUNK_TYPE);
 
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = sctp_next_output (is_ip4);
 	      goto done;
 	    }

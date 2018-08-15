@@ -755,8 +755,8 @@ format_ip4_fib_mtrie_ply (u8 * s, va_list * va)
     {
       if (ip4_fib_mtrie_leaf_is_non_empty (p, i))
 	{
-	  FORMAT_PLY (s, p, i, base_address,
-		      p->dst_address_bits_base + 8, indent);
+	  s = FORMAT_PLY (s, p, i, base_address,
+			  p->dst_address_bits_base + 8, indent);
 	}
     }
 
@@ -791,7 +791,7 @@ format_ip4_fib_mtrie (u8 * s, va_list * va)
 
 	  if (p->dst_address_bits_of_leaves[slot] > 0)
 	    {
-	      FORMAT_PLY (s, p, slot, base_address, 16, 2);
+	      s = FORMAT_PLY (s, p, slot, base_address, 16, 2);
 	    }
 	}
     }
@@ -812,7 +812,11 @@ ip4_mtrie_module_init (vlib_main_t * vm)
 
   if (0 == im->mtrie_heap_size)
     im->mtrie_heap_size = IP4_FIB_DEFAULT_MTRIE_HEAP_SIZE;
+#if USE_DLMALLOC == 0
   im->mtrie_mheap = mheap_alloc (0, im->mtrie_heap_size);
+#else
+  im->mtrie_mheap = create_mspace (im->mtrie_heap_size, 1 /* locked */ );
+#endif
 
   /* Burn one ply so index 0 is taken */
   old_heap = clib_mem_set_heap (ip4_main.mtrie_mheap);

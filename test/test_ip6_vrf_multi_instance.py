@@ -18,8 +18,10 @@
 
 **verify 1**
     - check VRF data by parsing output of ip6_fib_dump API command
-    - all packets received correctly in case of pg-ip6 interfaces in VRF
+    - all packets received correctly in case of pg-ip6 interfaces in the same
+    VRF
     - no packet received in case of pg-ip6 interfaces not in VRF
+    - no packet received in case of pg-ip6 interfaces in different VRFs
 
 **config 2**
     - reset 2 VRFs
@@ -29,8 +31,10 @@
 
 **verify 2**
     - check VRF data by parsing output of ip6_fib_dump API command
-    - all packets received correctly in case of pg-ip6 interfaces in VRF
+    - all packets received correctly in case of pg-ip6 interfaces in the same
+    VRF
     - no packet received in case of pg-ip6 interfaces not in VRF
+    - no packet received in case of pg-ip6 interfaces in different VRFs
 
 **config 3**
     - add 1 of reset VRFs and 1 new VRF
@@ -40,8 +44,10 @@
 
 **verify 3**
     - check VRF data by parsing output of ip6_fib_dump API command
-    - all packets received correctly in case of pg-ip6 interfaces in VRF
+    - all packets received correctly in case of pg-ip6 interfaces in the same
+    VRF
     - no packet received in case of pg-ip6 interfaces not in VRF
+    - no packet received in case of pg-ip6 interfaces in different VRFs
 
 **config 4**
     - reset all VRFs (i.e. no VRF except VRF=0 created)
@@ -51,8 +57,10 @@
 
 **verify 4**
     - check VRF data by parsing output of ip6_fib_dump API command
-    - all packets received correctly in case of pg-ip6 interfaces in VRF
+    - all packets received correctly in case of pg-ip6 interfaces in the same
+    VRF
     - no packet received in case of pg-ip6 interfaces not in VRF
+    - no packet received in case of pg-ip6 interfaces in different VRFs
 """
 
 import unittest
@@ -65,15 +73,10 @@ from scapy.layers.inet6 import UDP, IPv6, ICMPv6ND_NS, ICMPv6ND_RA, \
     RouterAlert, IPv6ExtHdrHopByHop
 from scapy.utils6 import in6_ismaddr, in6_isllsnmaddr, in6_getAddrType
 from scapy.pton_ntop import inet_ntop
-from scapy.data import IPV6_ADDR_UNICAST
 
 from framework import VppTestCase, VppTestRunner
 from util import ppp
-
-# VRF status constants
-VRF_NOT_CONFIGURED = 0
-VRF_CONFIGURED = 1
-VRF_RESET = 2
+from vrf import VRFState
 
 
 def is_ipv6_misc_ext(p):
@@ -141,7 +144,7 @@ class TestIP6VrfMultiInst(VppTestCase):
             # Create list of pg_interfaces in VRFs
             cls.pg_in_vrf = list()
 
-            # Create list of pg_interfaces not in BDs
+            # Create list of pg_interfaces not in VRFs
             cls.pg_not_in_vrf = [pg_if for pg_if in cls.pg_interfaces]
 
             # Create mapping of pg_interfaces to VRF IDs
@@ -175,7 +178,7 @@ class TestIP6VrfMultiInst(VppTestCase):
 
     def create_vrf_and_assign_interfaces(self, count, start=1):
         """
-        Create required number of FIB tables / VRFs, put 3 l2-pg interfaces
+        Create required number of FIB tables / VRFs, put 3 pg-ip6 interfaces
         to every FIB table / VRF.
 
         :param int count: Number of FIB tables / VRFs to be created.
@@ -185,12 +188,9 @@ class TestIP6VrfMultiInst(VppTestCase):
         for i in range(count):
             vrf_id = i + start
             pg_if = self.pg_if_by_vrf_id[vrf_id][0]
-            dest_addr = pg_if.remote_hosts[0].ip6n
+            dest_addr = pg_if.local_ip6n
             dest_addr_len = 64
             self.vapi.ip_table_add_del(vrf_id, is_add=1, is_ipv6=1)
-            self.vapi.ip_add_del_route(
-                dest_addr, dest_addr_len, pg_if.local_ip6n, is_ipv6=1,
-                table_id=vrf_id, is_multipath=1)
             self.logger.info("IPv6 VRF ID %d created" % vrf_id)
             if vrf_id not in self.vrf_list:
                 self.vrf_list.append(vrf_id)
@@ -211,9 +211,9 @@ class TestIP6VrfMultiInst(VppTestCase):
         self.logger.debug(self.vapi.ppcli("show ip6 fib"))
         self.logger.debug(self.vapi.ppcli("show ip6 neighbors"))
 
-    def reset_vrf(self, vrf_id):
+    def reset_vrf_and_remove_from_vrf_list(self, vrf_id):
         """
-        Reset required FIB table / VRF.
+        Reset required FIB table / VRF and remove it from VRF list.
 
         :param int vrf_id: The FIB table / VRF ID to be reset.
         """
@@ -230,7 +230,7 @@ class TestIP6VrfMultiInst(VppTestCase):
                 self.pg_in_vrf.remove(pg_if)
             if pg_if not in self.pg_not_in_vrf:
                 self.pg_not_in_vrf.append(pg_if)
-        self.logger.info("IPv6 VRF ID %d reset" % vrf_id)
+        self.logger.info("IPv6 VRF ID %d reset finished" % vrf_id)
         self.logger.debug(self.vapi.ppcli("show ip6 fib"))
         self.logger.debug(self.vapi.ppcli("show ip6 neighbors"))
         self.vapi.ip_table_add_del(vrf_id, is_add=0, is_ipv6=1)
@@ -258,6 +258,38 @@ class TestIP6VrfMultiInst(VppTestCase):
                 size = random.choice(packet_sizes)
                 self.extend_packet(p, size)
                 pkts.append(p)
+        self.logger.debug("Input stream created for port %s. Length: %u pkt(s)"
+                          % (src_if.name, len(pkts)))
+        return pkts
+
+    def create_stream_crosswise_vrf(self, src_if, vrf_id, packet_sizes):
+        """
+        Create input packet stream for negative test for leaking across
+        different VRFs for defined interface using hosts list.
+
+        :param object src_if: Interface to create packet stream for.
+        :param int vrf_id: The FIB table / VRF ID where src_if is assigned.
+        :param list packet_sizes: List of required packet sizes.
+        :return: Stream of packets.
+        """
+        pkts = []
+        src_hosts = src_if.remote_hosts
+        vrf_lst = list(self.vrf_list)
+        vrf_lst.remove(vrf_id)
+        for vrf in vrf_lst:
+            for dst_if in self.pg_if_by_vrf_id[vrf]:
+                for dst_host in dst_if.remote_hosts:
+                    src_host = random.choice(src_hosts)
+                    pkt_info = self.create_packet_info(src_if, dst_if)
+                    payload = self.info_to_payload(pkt_info)
+                    p = (Ether(dst=src_if.local_mac, src=src_host.mac) /
+                         IPv6(src=src_host.ip6, dst=dst_host.ip6) /
+                         UDP(sport=1234, dport=1234) /
+                         Raw(payload))
+                    pkt_info.data = p.copy()
+                    size = random.choice(packet_sizes)
+                    self.extend_packet(p, size)
+                    pkts.append(p)
         self.logger.debug("Input stream created for port %s. Length: %u pkt(s)"
                           % (src_if.name, len(pkts)))
         return pkts
@@ -320,30 +352,36 @@ class TestIP6VrfMultiInst(VppTestCase):
                 if not vrf_exist:
                     vrf_exist = True
                 addr = inet_ntop(socket.AF_INET6, ip6_fib_details.address)
-                addrtype = in6_getAddrType(addr)
-                vrf_count += 1 if addrtype == IPV6_ADDR_UNICAST else 0
+                found = False
+                for pg_if in self.pg_if_by_vrf_id[vrf_id]:
+                    if found:
+                        break
+                    for host in pg_if.remote_hosts:
+                        if str(addr) == str(host.ip6):
+                            vrf_count += 1
+                            found = True
+                            break
         if not vrf_exist and vrf_count == 0:
             self.logger.info("IPv6 VRF ID %d is not configured" % vrf_id)
-            return VRF_NOT_CONFIGURED
+            return VRFState.not_configured
         elif vrf_exist and vrf_count == 0:
             self.logger.info("IPv6 VRF ID %d has been reset" % vrf_id)
-            return VRF_RESET
+            return VRFState.reset
         else:
             self.logger.info("IPv6 VRF ID %d is configured" % vrf_id)
-            return VRF_CONFIGURED
+            return VRFState.configured
 
     def run_verify_test(self):
         """
-        Create packet streams for all configured l2-pg interfaces, send all \
+        Create packet streams for all configured pg interfaces, send all \
         prepared packet streams and verify that:
-            - all packets received correctly on all pg-l2 interfaces assigned
-              to bridge domains
-            - no packet received on all pg-l2 interfaces not assigned to bridge
-              domains
+            - all packets received correctly on all pg-ip6 interfaces assigned
+              to VRFs
+            - no packet received on all pg-ip6 interfaces not assigned to VRFs
 
-        :raise RuntimeError: If no packet captured on l2-pg interface assigned
-            to the bridge domain or if any packet is captured on l2-pg
-            interface not assigned to the bridge domain.
+        :raise RuntimeError: If no packet captured on pg-ip6 interface assigned
+            to VRF or if any packet is captured on pg-ip6 interface not
+            assigned to VRF.
         """
         # Test
         # Create incoming packet streams for packet-generator interfaces
@@ -368,6 +406,34 @@ class TestIP6VrfMultiInst(VppTestCase):
             else:
                 raise Exception("Unknown interface: %s" % pg_if.name)
 
+    def run_crosswise_vrf_test(self):
+        """
+        Create packet streams for every pg-ip6 interface in VRF towards all
+        pg-ip6 interfaces in other VRFs, send all prepared packet streams and \
+        verify that:
+             - no packet received on all configured pg-ip6 interfaces
+
+        :raise RuntimeError: If any packet is captured on any pg-ip6 interface.
+        """
+        # Test
+        # Create incoming packet streams for packet-generator interfaces
+        for vrf_id in self.vrf_list:
+            for pg_if in self.pg_if_by_vrf_id[vrf_id]:
+                pkts = self.create_stream_crosswise_vrf(
+                    pg_if, vrf_id, self.pg_if_packet_sizes)
+                pg_if.add_stream(pkts)
+
+        # Enable packet capture and start packet sending
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        # Verify
+        # Verify outgoing packet streams per packet-generator interface
+        for pg_if in self.pg_interfaces:
+            pg_if.assert_nothing_captured(remark="interface is in other VRF",
+                                          filter_out_fn=is_ipv6_misc_ext)
+            self.logger.debug("No capture for interface %s" % pg_if.name)
+
     def test_ip6_vrf_01(self):
         """ IP6 VRF  Multi-instance test 1 - create 4 VRFs
         """
@@ -377,31 +443,36 @@ class TestIP6VrfMultiInst(VppTestCase):
 
         # Verify 1
         for vrf_id in self.vrf_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_CONFIGURED)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.configured, VRFState)
 
         # Test 1
         self.run_verify_test()
+        self.run_crosswise_vrf_test()
 
     def test_ip6_vrf_02(self):
         """ IP6 VRF  Multi-instance test 2 - reset 2 VRFs
         """
         # Config 2
         # Delete 2 VRFs
-        self.reset_vrf(1)
-        self.reset_vrf(2)
+        self.reset_vrf_and_remove_from_vrf_list(1)
+        self.reset_vrf_and_remove_from_vrf_list(2)
 
         # Verify 2
         for vrf_id in self.vrf_reset_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_RESET)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.reset, VRFState)
         for vrf_id in self.vrf_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_CONFIGURED)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.configured, VRFState)
 
         # Test 2
         self.run_verify_test()
+        self.run_crosswise_vrf_test()
 
         # Reset routes learned from ICMPv6 Neighbor Discovery
         for vrf_id in self.vrf_reset_list:
-            self.reset_vrf(vrf_id)
+            self.reset_vrf_and_remove_from_vrf_list(vrf_id)
 
     def test_ip6_vrf_03(self):
         """ IP6 VRF  Multi-instance 3 - add 2 VRFs
@@ -413,33 +484,40 @@ class TestIP6VrfMultiInst(VppTestCase):
 
         # Verify 3
         for vrf_id in self.vrf_reset_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_RESET)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.reset, VRFState)
         for vrf_id in self.vrf_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_CONFIGURED)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.configured, VRFState)
 
         # Test 3
         self.run_verify_test()
+        self.run_crosswise_vrf_test()
 
         # Reset routes learned from ICMPv6 Neighbor Discovery
         for vrf_id in self.vrf_reset_list:
-            self.reset_vrf(vrf_id)
+            self.reset_vrf_and_remove_from_vrf_list(vrf_id)
 
     def test_ip6_vrf_04(self):
         """ IP6 VRF  Multi-instance test 4 - reset 4 VRFs
         """
         # Config 4
-        # Reset all VRFs (i.e. no VRF except VRF=0 created)
+        # Reset all VRFs (i.e. no VRF except VRF=0 configured)
         for i in range(len(self.vrf_list)):
-            self.reset_vrf(self.vrf_list[0])
+            self.reset_vrf_and_remove_from_vrf_list(self.vrf_list[0])
 
         # Verify 4
         for vrf_id in self.vrf_reset_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_RESET)
-        for vrf_id in self.vrf_list:
-            self.assertEqual(self.verify_vrf(vrf_id), VRF_CONFIGURED)
+            self.assert_equal(self.verify_vrf(vrf_id),
+                              VRFState.reset, VRFState)
+        vrf_list_length = len(self.vrf_list)
+        self.assertEqual(
+            vrf_list_length, 0,
+            "List of configured VRFs is not empty: %s != 0" % vrf_list_length)
 
         # Test 4
         self.run_verify_test()
+        self.run_crosswise_vrf_test()
 
 
 if __name__ == '__main__':

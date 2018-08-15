@@ -16,7 +16,6 @@
 #ifndef SRC_VNET_SESSION_APPLICATION_H_
 #define SRC_VNET_SESSION_APPLICATION_H_
 
-#include <vnet/vnet.h>
 #include <vnet/session/session.h>
 #include <vnet/session/segment_manager.h>
 #include <vnet/session/application_namespace.h>
@@ -59,6 +58,9 @@ typedef struct _application
   /** Flags */
   u32 flags;
 
+  /** Name registered by builtin apps */
+  u8 *name;
+
   /*
    * Binary API interface to external app
    */
@@ -70,7 +72,7 @@ typedef struct _application
   u32 ns_index;
 
   /** Application listens for events on this svm queue */
-  svm_queue_t *event_queue;
+  svm_msg_q_t *event_queue;
 
   /*
    * Callbacks: shoulder-taps for the server/client
@@ -136,11 +138,12 @@ typedef struct _application
 
 application_t *application_new ();
 int application_init (application_t * app, u32 api_client_index,
-		      u64 * options, session_cb_vft_t * cb_fns);
+		      u8 * name, u64 * options, session_cb_vft_t * cb_fns);
 void application_del (application_t * app);
 application_t *application_get (u32 index);
 application_t *application_get_if_valid (u32 index);
 application_t *application_lookup (u32 api_client_index);
+application_t *application_lookup_name (const u8 * name);
 u32 application_get_index (application_t * app);
 
 int application_start_listen (application_t * app,
@@ -200,7 +203,14 @@ int application_local_session_connect (u32 table_index,
 int application_local_session_connect_notify (local_session_t * ls);
 int application_local_session_disconnect (u32 app_index,
 					  local_session_t * ls);
+int application_local_session_disconnect_w_index (u32 app_index,
+						  u32 ls_index);
 void application_local_sessions_del (application_t * app);
+
+int application_send_event (application_t * app, stream_session_t * s,
+			    u8 evt);
+int application_lock_and_send_event (application_t * app,
+				     stream_session_t * s, u8 evt_type);
 
 always_inline u32
 local_session_id (local_session_t * ll)
@@ -257,8 +267,8 @@ application_local_session_listener_has_transport (local_session_t * ls)
   return (tp != TRANSPORT_PROTO_NONE);
 }
 
-void send_local_session_disconnect_callback (u32 app_index,
-					     local_session_t * ls);
+void mq_send_local_session_disconnected_cb (u32 app_index,
+					    local_session_t * ls);
 
 int application_connect (u32 client_index, u32 api_context,
 			 session_endpoint_t * sep);

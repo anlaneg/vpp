@@ -51,7 +51,7 @@
   _( 3, VLAN_2_DEEP, "vlan-2-deep")			\
   _( 4, VLAN_1_DEEP, "vlan-1-deep")			\
   _( 5, SPAN_CLONE, "span-clone")			\
-  _( 6, HANDOFF_NEXT_VALID, "handoff-next-valid")	\
+  _( 6, LOOP_COUNTER_VALID, 0)                          \
   _( 7, LOCALLY_ORIGINATED, "local")			\
   _( 8, IS_IP4, "ip4")					\
   _( 9, IS_IP6, "ip6")					\
@@ -85,12 +85,9 @@ enum
 
 #define foreach_buffer_opaque_union_subtype     \
 _(ip)                                           \
-_(swt)                                          \
 _(l2)                                           \
 _(l2t)                                          \
-_(gre)                                          \
 _(l2_classify)                                  \
-_(handoff)                                      \
 _(policer)                                      \
 _(ipsec)					\
 _(map)						\
@@ -116,7 +113,8 @@ typedef struct
   i16 l2_hdr_offset;
   i16 l3_hdr_offset;
   i16 l4_hdr_offset;
-  u16 dont_waste_me;
+  u8 feature_arc_index;
+  u8 dont_waste_me;
 
   union
   {
@@ -161,15 +159,24 @@ typedef struct
 	} icmp;
 
 	/* reassembly */
-	struct
+	union
 	{
-	  u16 fragment_first;
-	  u16 fragment_last;
-	  u16 range_first;
-	  u16 range_last;
-	  u32 next_range_bi;
-	  u16 ip6_frag_hdr_offset;
-	  u16 estimated_mtu;
+	  /* in/out variables */
+	  struct
+	  {
+	    u32 next_index;	/* index of next node - ignored if "feature" node */
+	    u16 estimated_mtu;	/* estimated MTU calculated during reassembly */
+	  };
+	  /* internal variables used during reassembly */
+	  struct
+	  {
+	    u16 fragment_first;
+	    u16 fragment_last;
+	    u16 range_first;
+	    u16 range_last;
+	    u32 next_range_bi;
+	    u16 ip6_frag_hdr_offset;
+	  };
 	} reass;
       };
 
@@ -200,13 +207,6 @@ typedef struct
       } bier;
     } mpls;
 
-    /* ip4-in-ip6 softwire termination, only valid there */
-    struct
-    {
-      u8 swt_disable;
-      u32 mapping_index;
-    } swt;
-
     /* l2 bridging path, only valid there */
     struct opaque_l2
     {
@@ -226,11 +226,6 @@ typedef struct
       u32 session_index;
     } l2t;
 
-    struct
-    {
-      u32 src, dst;
-    } gre;
-
     /* L2 classify */
     struct
     {
@@ -242,12 +237,6 @@ typedef struct
       };
       u64 hash;
     } l2_classify;
-
-    /* IO - worker thread handoff */
-    struct
-    {
-      u32 next_index;
-    } handoff;
 
     /* vnet policer */
     struct
@@ -307,13 +296,6 @@ typedef struct
       /* overlay address family */
       u16 overlay_afi;
     } lisp;
-
-    /* Driver rx feature */
-    struct
-    {
-      u32 saved_next_index;		/**< saved by drivers for short-cut */
-      u16 buffer_advance;
-    } device_input_feat;
 
     /* TCP */
     struct
@@ -376,7 +358,14 @@ typedef struct
     u8 source;
   } qos;
 
-  u8 __unused[2];
+  u8 loop_counter;
+  u8 __unused[1];
+
+  /* Group Based Policy */
+  struct
+  {
+    u32 src_epg;
+  } gbp;
 
   union
   {
@@ -387,7 +376,12 @@ typedef struct
       u16 *trajectory_trace;
 #endif
     };
-    u32 unused[11];
+    struct
+    {
+      u64 pad[1];
+      u64 pg_replay_timestamp;
+    };
+    u32 unused[10];
   };
 } vnet_buffer_opaque2_t;
 

@@ -12,11 +12,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include <unistd.h>
+#include <fcntl.h>
+
 #include <vnet/vnet.h>
 #include <vppinfra/vec.h>
 #include <vppinfra/error.h>
 #include <vppinfra/format.h>
 #include <vppinfra/xxhash.h>
+#include <vppinfra/linux/sysfs.c>
 
 #include <vnet/ethernet/ethernet.h>
 #include <dpdk/device/dpdk.h>
@@ -41,6 +46,7 @@ get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
   dpdk_main_t *dm = &dpdk_main;
   vnet_hw_interface_t *hw;
   struct rte_eth_dev_info dev_info;
+  struct rte_pci_device *pci_dev;
   uword *p = 0;
   clib_error_t *error = NULL;
 
@@ -60,15 +66,18 @@ get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
   hw = vnet_get_hw_interface (dm->vnet_main, hw_if_index);
   *xd = vec_elt_at_index (dm->devices, hw->dev_instance);
 
-  rte_eth_dev_info_get ((*xd)->device_index, &dev_info);
-  if (dev_info.pci_dev)
+  rte_eth_dev_info_get ((*xd)->port_id, &dev_info);
+
+  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+
+  if (pci_dev)
     {				/* bonded interface has no pci info */
       vlib_pci_addr_t pci_addr;
 
-      pci_addr.domain = dev_info.pci_dev->addr.domain;
-      pci_addr.bus = dev_info.pci_dev->addr.bus;
-      pci_addr.slot = dev_info.pci_dev->addr.devid;
-      pci_addr.function = dev_info.pci_dev->addr.function;
+      pci_addr.domain = pci_dev->addr.domain;
+      pci_addr.bus = pci_dev->addr.bus;
+      pci_addr.slot = pci_dev->addr.devid;
+      pci_addr.function = pci_dev->addr.function;
 
       p =
 	hash_get (dm->conf->device_config_index_by_pci_addr, pci_addr.as_u32);
@@ -83,9 +92,10 @@ done:
   return error;
 }
 
-static clib_error_t *
-pcap_trace_command_fn (vlib_main_t * vm,
-		       unformat_input_t * input, vlib_cli_command_t * cmd)
+static inline clib_error_t *
+pcap_trace_command_internal (vlib_main_t * vm,
+			     unformat_input_t * input,
+			     vlib_cli_command_t * cmd, int rx_tx)
 {
 #define PCAP_DEF_PKT_TO_CAPTURE (100)
 
@@ -106,7 +116,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
     {
       if (unformat (line_input, "on"))
 	{
-	  if (dm->tx_pcap_enable == 0)
+	  if (dm->pcap[rx_tx].pcap_enable == 0)
 	    {
 	      enabled = 1;
 	    }
@@ -119,22 +129,24 @@ pcap_trace_command_fn (vlib_main_t * vm,
 	}
       else if (unformat (line_input, "off"))
 	{
-	  if (dm->tx_pcap_enable)
+	  if (dm->pcap[rx_tx].pcap_enable)
 	    {
-	      vlib_cli_output (vm, "captured %d pkts...",
-			       dm->pcap_main.n_packets_captured + 1);
-	      if (dm->pcap_main.n_packets_captured)
+	      vlib_cli_output
+		(vm, "captured %d pkts...",
+		 dm->pcap[rx_tx].pcap_main.n_packets_captured);
+	      if (dm->pcap[rx_tx].pcap_main.n_packets_captured)
 		{
-		  dm->pcap_main.n_packets_to_capture =
-		    dm->pcap_main.n_packets_captured;
-		  error = pcap_write (&dm->pcap_main);
+		  dm->pcap[rx_tx].pcap_main.n_packets_to_capture =
+		    dm->pcap[rx_tx].pcap_main.n_packets_captured;
+		  error = pcap_write (&dm->pcap[rx_tx].pcap_main);
 		  if (error)
 		    clib_error_report (error);
 		  else
-		    vlib_cli_output (vm, "saved to %s...", dm->pcap_filename);
+		    vlib_cli_output (vm, "saved to %s...",
+				     dm->pcap[rx_tx].pcap_main.file_name);
 		}
 
-	      dm->tx_pcap_enable = 0;
+	      dm->pcap[rx_tx].pcap_enable = 0;
 	    }
 	  else
 	    {
@@ -145,29 +157,31 @@ pcap_trace_command_fn (vlib_main_t * vm,
 	}
       else if (unformat (line_input, "max %d", &max))
 	{
-	  if (dm->tx_pcap_enable)
+	  if (dm->pcap[rx_tx].pcap_enable)
 	    {
-	      vlib_cli_output (vm,
-			       "can't change max value while pcap tx capture active...");
+	      vlib_cli_output
+		(vm,
+		 "can't change max value while pcap tx capture active...");
 	      errorFlag = 1;
 	      break;
 	    }
+	  dm->pcap[rx_tx].pcap_main.n_packets_to_capture = max;
 	}
       else if (unformat (line_input, "intfc %U",
 			 unformat_vnet_sw_interface, dm->vnet_main,
-			 &dm->pcap_sw_if_index))
+			 &dm->pcap[rx_tx].pcap_sw_if_index))
 	;
 
       else if (unformat (line_input, "intfc any"))
 	{
-	  dm->pcap_sw_if_index = 0;
+	  dm->pcap[rx_tx].pcap_sw_if_index = 0;
 	}
       else if (unformat (line_input, "file %s", &filename))
 	{
-	  if (dm->tx_pcap_enable)
+	  if (dm->pcap[rx_tx].pcap_enable)
 	    {
-	      vlib_cli_output (vm,
-			       "can't change file while pcap tx capture active...");
+	      vlib_cli_output
+		(vm, "can't change file while pcap tx capture active...");
 	      errorFlag = 1;
 	      break;
 	    }
@@ -178,8 +192,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
 	    {
 	      vlib_cli_output (vm, "illegal characters in filename '%s'",
 			       filename);
-	      vlib_cli_output (vm,
-			       "Hint: Only filename, do not enter directory structure.");
+	      vlib_cli_output (vm, "Hint: .. and / are not allowed.");
 	      vec_free (filename);
 	      errorFlag = 1;
 	      break;
@@ -190,38 +203,43 @@ pcap_trace_command_fn (vlib_main_t * vm,
 	}
       else if (unformat (line_input, "status"))
 	{
-	  if (dm->pcap_sw_if_index == 0)
+	  if (dm->pcap[rx_tx].pcap_sw_if_index == 0)
 	    {
-	      vlib_cli_output (vm, "max is %d for any interface to file %s",
-			       dm->
-			       pcap_pkts_to_capture ? dm->pcap_pkts_to_capture
-			       : PCAP_DEF_PKT_TO_CAPTURE,
-			       dm->
-			       pcap_filename ? dm->pcap_filename : (u8 *)
-			       "/tmp/vpe.pcap");
+	      vlib_cli_output
+		(vm, "max is %d for any interface to file %s",
+		 dm->pcap[rx_tx].pcap_main.n_packets_to_capture ?
+		 dm->pcap[rx_tx].pcap_main.n_packets_to_capture
+		 : PCAP_DEF_PKT_TO_CAPTURE,
+		 dm->pcap[rx_tx].pcap_main.file_name ?
+		 (u8 *) dm->pcap[rx_tx].pcap_main.file_name :
+		 (u8 *) "/tmp/vpe.pcap");
 	    }
 	  else
 	    {
 	      vlib_cli_output (vm, "max is %d for interface %U to file %s",
-			       dm->
-			       pcap_pkts_to_capture ? dm->pcap_pkts_to_capture
-			       : PCAP_DEF_PKT_TO_CAPTURE,
+			       dm->pcap[rx_tx].pcap_main.n_packets_to_capture
+			       ? dm->pcap[rx_tx].
+			       pcap_main.n_packets_to_capture :
+			       PCAP_DEF_PKT_TO_CAPTURE,
 			       format_vnet_sw_if_index_name, dm->vnet_main,
 			       dm->pcap_sw_if_index,
-			       dm->
-			       pcap_filename ? dm->pcap_filename : (u8 *)
-			       "/tmp/vpe.pcap");
+			       dm->pcap[rx_tx].
+			       pcap_main.file_name ? (u8 *) dm->pcap[rx_tx].
+			       pcap_main.file_name : (u8 *) "/tmp/vpe.pcap");
 	    }
 
-	  if (dm->tx_pcap_enable == 0)
+	  if (dm->pcap[rx_tx].pcap_enable == 0)
 	    {
-	      vlib_cli_output (vm, "pcap tx capture is off...");
+	      vlib_cli_output (vm, "pcap %s capture is off...",
+			       (rx_tx == VLIB_RX) ? "rx" : "tx");
 	    }
 	  else
 	    {
-	      vlib_cli_output (vm, "pcap tx capture is on: %d of %d pkts...",
-			       dm->pcap_main.n_packets_captured,
-			       dm->pcap_main.n_packets_to_capture);
+	      vlib_cli_output (vm, "pcap %s capture is on: %d of %d pkts...",
+			       (rx_tx == VLIB_RX) ? "rx" : "tx",
+			       dm->pcap[rx_tx].pcap_main.n_packets_captured,
+			       dm->pcap[rx_tx].
+			       pcap_main.n_packets_to_capture);
 	    }
 	  break;
 	}
@@ -242,42 +260,56 @@ pcap_trace_command_fn (vlib_main_t * vm,
       /* Since no error, save configured values. */
       if (chroot_filename)
 	{
-	  if (dm->pcap_filename)
-	    vec_free (dm->pcap_filename);
+	  if (dm->pcap[rx_tx].pcap_main.file_name)
+	    vec_free (dm->pcap[rx_tx].pcap_main.file_name);
 	  vec_add1 (chroot_filename, 0);
-	  dm->pcap_filename = chroot_filename;
+	  dm->pcap[rx_tx].pcap_main.file_name = (char *) chroot_filename;
 	}
 
       if (max)
-	dm->pcap_pkts_to_capture = max;
-
+	dm->pcap[rx_tx].pcap_main.n_packets_to_capture = max;
 
       if (enabled)
 	{
-	  if (dm->pcap_filename == 0)
-	    dm->pcap_filename = format (0, "/tmp/vpe.pcap%c", 0);
+	  if (dm->pcap[rx_tx].pcap_main.file_name == 0)
+	    dm->pcap[rx_tx].pcap_main.file_name
+	      = (char *) format (0, "/tmp/vpe.pcap%c", 0);
 
-	  memset (&dm->pcap_main, 0, sizeof (dm->pcap_main));
-	  dm->pcap_main.file_name = (char *) dm->pcap_filename;
-	  dm->pcap_main.n_packets_to_capture = PCAP_DEF_PKT_TO_CAPTURE;
-	  if (dm->pcap_pkts_to_capture)
-	    dm->pcap_main.n_packets_to_capture = dm->pcap_pkts_to_capture;
-
-	  dm->pcap_main.packet_type = PCAP_PACKET_TYPE_ethernet;
-	  dm->tx_pcap_enable = 1;
-	  vlib_cli_output (vm, "pcap tx capture on...");
+	  dm->pcap[rx_tx].pcap_main.n_packets_captured = 0;
+	  dm->pcap[rx_tx].pcap_main.packet_type = PCAP_PACKET_TYPE_ethernet;
+	  if (dm->pcap[rx_tx].pcap_main.lock == 0)
+	    clib_spinlock_init (&(dm->pcap[rx_tx].pcap_main.lock));
+	  dm->pcap[rx_tx].pcap_enable = 1;
+	  vlib_cli_output (vm, "pcap %s capture on...",
+			   rx_tx == VLIB_RX ? "rx" : "tx");
 	}
     }
   else if (chroot_filename)
     vec_free (chroot_filename);
 
-
   return error;
 }
 
+static clib_error_t *
+pcap_rx_trace_command_fn (vlib_main_t * vm,
+			  unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  return pcap_trace_command_internal (vm, input, cmd, VLIB_RX);
+}
+
+static clib_error_t *
+pcap_tx_trace_command_fn (vlib_main_t * vm,
+			  unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  return pcap_trace_command_internal (vm, input, cmd, VLIB_TX);
+}
+
+
 /*?
  * This command is used to start or stop a packet capture, or show
- * the status of packet capture.
+ * the status of packet capture. Note that both "pcap rx trace" and
+ * "pcap tx trace" are implemented. The command syntax is identical,
+ * simply substitute rx for tx as needed.
  *
  * This command has the following optional parameters:
  *
@@ -329,11 +361,18 @@ pcap_trace_command_fn (vlib_main_t * vm,
  * @cliexend
 ?*/
 /* *INDENT-OFF* */
-VLIB_CLI_COMMAND (pcap_trace_command, static) = {
+
+VLIB_CLI_COMMAND (pcap_tx_trace_command, static) = {
     .path = "pcap tx trace",
     .short_help =
     "pcap tx trace [on|off] [max <nn>] [intfc <interface>|any] [file <name>] [status]",
-    .function = pcap_trace_command_fn,
+    .function = pcap_tx_trace_command_fn,
+};
+VLIB_CLI_COMMAND (pcap_rx_trace_command, static) = {
+    .path = "pcap rx trace",
+    .short_help =
+    "pcap rx trace [on|off] [max <nn>] [intfc <interface>|any] [file <name>] [status]",
+    .function = pcap_rx_trace_command_fn,
 };
 /* *INDENT-ON* */
 
@@ -376,10 +415,95 @@ show_dpdk_buffer (vlib_main_t * vm, unformat_input_t * input,
  * @cliexend
 ?*/
 /* *INDENT-OFF* */
-VLIB_CLI_COMMAND (cmd_show_dpdk_bufferr,static) = {
+VLIB_CLI_COMMAND (cmd_show_dpdk_buffer,static) = {
     .path = "show dpdk buffer",
     .short_help = "show dpdk buffer",
     .function = show_dpdk_buffer,
+    .is_mp_safe = 1,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+show_dpdk_physmem (vlib_main_t * vm, unformat_input_t * input,
+		   vlib_cli_command_t * cmd)
+{
+  clib_error_t *err = 0;
+  u32 pipe_max_size;
+  int fds[2];
+  u8 *s = 0;
+  int n, n_try;
+  FILE *f;
+
+  err = clib_sysfs_read ("/proc/sys/fs/pipe-max-size", "%u", &pipe_max_size);
+
+  if (err)
+    return err;
+
+  if (pipe (fds) == -1)
+    return clib_error_return_unix (0, "pipe");
+
+#ifndef F_SETPIPE_SZ
+#define F_SETPIPE_SZ	(1024 + 7)
+#endif
+
+  if (fcntl (fds[1], F_SETPIPE_SZ, pipe_max_size) == -1)
+    {
+      err = clib_error_return_unix (0, "fcntl(F_SETPIPE_SZ)");
+      goto error;
+    }
+
+  if (fcntl (fds[0], F_SETFL, O_NONBLOCK) == -1)
+    {
+      err = clib_error_return_unix (0, "fcntl(F_SETFL)");
+      goto error;
+    }
+
+  if ((f = fdopen (fds[1], "a")) == 0)
+    {
+      err = clib_error_return_unix (0, "fdopen");
+      goto error;
+    }
+
+  rte_dump_physmem_layout (f);
+  fflush (f);
+
+  n = n_try = 4096;
+  while (n == n_try)
+    {
+      uword len = vec_len (s);
+      vec_resize (s, len + n_try);
+
+      n = read (fds[0], s + len, n_try);
+      if (n < 0 && errno != EAGAIN)
+	{
+	  err = clib_error_return_unix (0, "read");
+	  goto error;
+	}
+      _vec_len (s) = len + (n < 0 ? 0 : n);
+    }
+
+  vlib_cli_output (vm, "%v", s);
+
+error:
+  close (fds[0]);
+  close (fds[1]);
+  vec_free (s);
+  return err;
+}
+
+/*?
+ * This command displays DPDK physmem layout
+ *
+ * @cliexpar
+ * Example of how to display DPDK physmem layout:
+ * @cliexstart{show dpdk physmem}
+ * @cliexend
+?*/
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (cmd_show_dpdk_physmem,static) = {
+    .path = "show dpdk physmem",
+    .short_help = "show dpdk physmem",
+    .function = show_dpdk_physmem,
     .is_mp_safe = 1,
 };
 /* *INDENT-ON* */
@@ -1094,6 +1218,7 @@ set_dpdk_if_hqos_pktfield (vlib_main_t * vm, unformat_input_t * input,
 
   /* Device specific data */
   struct rte_eth_dev_info dev_info;
+  struct rte_pci_device *pci_dev;
   dpdk_device_config_t *devconf = 0;
   vnet_hw_interface_t *hw;
   dpdk_device_t *xd;
@@ -1159,15 +1284,18 @@ set_dpdk_if_hqos_pktfield (vlib_main_t * vm, unformat_input_t * input,
   hw = vnet_get_hw_interface (dm->vnet_main, hw_if_index);
   xd = vec_elt_at_index (dm->devices, hw->dev_instance);
 
-  rte_eth_dev_info_get (xd->device_index, &dev_info);
-  if (dev_info.pci_dev)
+  rte_eth_dev_info_get (xd->port_id, &dev_info);
+
+  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+
+  if (pci_dev)
     {				/* bonded interface has no pci info */
       vlib_pci_addr_t pci_addr;
 
-      pci_addr.domain = dev_info.pci_dev->addr.domain;
-      pci_addr.bus = dev_info.pci_dev->addr.bus;
-      pci_addr.slot = dev_info.pci_dev->addr.devid;
-      pci_addr.function = dev_info.pci_dev->addr.function;
+      pci_addr.domain = pci_dev->addr.domain;
+      pci_addr.bus = pci_dev->addr.bus;
+      pci_addr.slot = pci_dev->addr.devid;
+      pci_addr.function = pci_dev->addr.function;
 
       p =
 	hash_get (dm->conf->device_config_index_by_pci_addr, pci_addr.as_u32);
@@ -1233,20 +1361,20 @@ set_dpdk_if_hqos_pktfield (vlib_main_t * vm, unformat_input_t * input,
 	xd->hqos_wt[worker_thread_first + i].hqos_field0_slabpos = offset;
 	xd->hqos_wt[worker_thread_first + i].hqos_field0_slabmask = mask;
 	xd->hqos_wt[worker_thread_first + i].hqos_field0_slabshr =
-	  __builtin_ctzll (mask);
+	  count_trailing_zeros (mask);
 	break;
       case 1:
 	xd->hqos_wt[worker_thread_first + i].hqos_field1_slabpos = offset;
 	xd->hqos_wt[worker_thread_first + i].hqos_field1_slabmask = mask;
 	xd->hqos_wt[worker_thread_first + i].hqos_field1_slabshr =
-	  __builtin_ctzll (mask);
+	  count_trailing_zeros (mask);
 	break;
       case 2:
       default:
 	xd->hqos_wt[worker_thread_first + i].hqos_field2_slabpos = offset;
 	xd->hqos_wt[worker_thread_first + i].hqos_field2_slabmask = mask;
 	xd->hqos_wt[worker_thread_first + i].hqos_field2_slabshr =
-	  __builtin_ctzll (mask);
+	  count_trailing_zeros (mask);
       }
 
 done:
@@ -1319,6 +1447,7 @@ show_dpdk_if_hqos (vlib_main_t * vm, unformat_input_t * input,
   u32 hw_if_index = (u32) ~ 0;
   u32 profile_id, subport_id, i;
   struct rte_eth_dev_info dev_info;
+  struct rte_pci_device *pci_dev;
   dpdk_device_config_t *devconf = 0;
   vlib_thread_registration_t *tr;
   uword *p = 0;
@@ -1350,15 +1479,18 @@ show_dpdk_if_hqos (vlib_main_t * vm, unformat_input_t * input,
   hw = vnet_get_hw_interface (dm->vnet_main, hw_if_index);
   xd = vec_elt_at_index (dm->devices, hw->dev_instance);
 
-  rte_eth_dev_info_get (xd->device_index, &dev_info);
-  if (dev_info.pci_dev)
+  rte_eth_dev_info_get (xd->port_id, &dev_info);
+
+  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+
+  if (pci_dev)
     {				/* bonded interface has no pci info */
       vlib_pci_addr_t pci_addr;
 
-      pci_addr.domain = dev_info.pci_dev->addr.domain;
-      pci_addr.bus = dev_info.pci_dev->addr.bus;
-      pci_addr.slot = dev_info.pci_dev->addr.devid;
-      pci_addr.function = dev_info.pci_dev->addr.function;
+      pci_addr.domain = pci_dev->addr.domain;
+      pci_addr.bus = pci_dev->addr.bus;
+      pci_addr.slot = pci_dev->addr.devid;
+      pci_addr.function = pci_dev->addr.function;
 
       p =
 	hash_get (dm->conf->device_config_index_by_pci_addr, pci_addr.as_u32);
@@ -1760,7 +1892,7 @@ show_dpdk_hqos_queue_stats (vlib_main_t * vm, unformat_input_t * input,
   hw = vnet_get_hw_interface (dm->vnet_main, hw_if_index);
   xd = vec_elt_at_index (dm->devices, hw->dev_instance);
 
-  rte_eth_dev_info_get (xd->device_index, &dev_info);
+  rte_eth_dev_info_get (xd->port_id, &dev_info);
   if (dev_info.pci_dev)
     {				/* bonded interface has no pci info */
       vlib_pci_addr_t pci_addr;

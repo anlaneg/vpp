@@ -50,6 +50,7 @@ vpe_api_main_t vpe_api_main;
 
 #define foreach_vpe_api_msg                                     \
 _(SW_INTERFACE_SET_FLAGS, sw_interface_set_flags)               \
+_(HW_INTERFACE_SET_MTU, hw_interface_set_mtu)                   \
 _(SW_INTERFACE_SET_MTU, sw_interface_set_mtu)                   \
 _(WANT_INTERFACE_EVENTS, want_interface_events)                 \
 _(SW_INTERFACE_DUMP, sw_interface_dump)                         \
@@ -68,7 +69,10 @@ _(DELETE_SUBIF, delete_subif)                                   \
 _(CREATE_LOOPBACK, create_loopback)				\
 _(CREATE_LOOPBACK_INSTANCE, create_loopback_instance)		\
 _(DELETE_LOOPBACK, delete_loopback)                             \
-_(INTERFACE_NAME_RENUMBER, interface_name_renumber)
+_(INTERFACE_NAME_RENUMBER, interface_name_renumber)             \
+_(COLLECT_DETAILED_INTERFACE_STATS, collect_detailed_interface_stats) \
+_(SW_INTERFACE_SET_IP_DIRECTED_BROADCAST,                            \
+  sw_interface_set_ip_directed_broadcast)
 
 static void
 vl_api_sw_interface_set_flags_t_handler (vl_api_sw_interface_set_flags_t * mp)
@@ -95,9 +99,9 @@ vl_api_sw_interface_set_flags_t_handler (vl_api_sw_interface_set_flags_t * mp)
 }
 
 static void
-vl_api_sw_interface_set_mtu_t_handler (vl_api_sw_interface_set_mtu_t * mp)
+vl_api_hw_interface_set_mtu_t_handler (vl_api_hw_interface_set_mtu_t * mp)
 {
-  vl_api_sw_interface_set_mtu_reply_t *rmp;
+  vl_api_hw_interface_set_mtu_reply_t *rmp;
   vnet_main_t *vnm = vnet_get_main ();
   u32 sw_if_index = ntohl (mp->sw_if_index);
   u16 mtu = ntohs (mp->mtu);
@@ -137,7 +141,45 @@ vl_api_sw_interface_set_mtu_t_handler (vl_api_sw_interface_set_mtu_t * mp)
   vnet_hw_interface_set_mtu (vnm, si->hw_if_index, mtu);
 
   BAD_SW_IF_INDEX_LABEL;
+  REPLY_MACRO (VL_API_HW_INTERFACE_SET_MTU_REPLY);
+}
+
+static void
+vl_api_sw_interface_set_mtu_t_handler (vl_api_sw_interface_set_mtu_t * mp)
+{
+  vl_api_sw_interface_set_mtu_reply_t *rmp;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  int rv = 0;
+  int i;
+  u32 per_protocol_mtu[VNET_N_MTU];
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  for (i = 0; i < VNET_N_MTU; i++)
+    per_protocol_mtu[i] = ntohl (mp->mtu[i]);
+
+  vnet_sw_interface_set_protocol_mtu (vnm, sw_if_index, per_protocol_mtu);
+
+  BAD_SW_IF_INDEX_LABEL;
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_MTU_REPLY);
+}
+
+static void
+  vl_api_sw_interface_set_ip_directed_broadcast_t_handler
+  (vl_api_sw_interface_set_ip_directed_broadcast_t * mp)
+{
+  vl_api_sw_interface_set_ip_directed_broadcast_reply_t *rmp;
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  vnet_sw_interface_ip_directed_broadcast (vnet_get_main (),
+					   sw_if_index, mp->enable);
+
+  BAD_SW_IF_INDEX_LABEL;
+  REPLY_MACRO (VL_API_SW_INTERFACE_SET_IP_DIRECTED_BROADCAST_REPLY);
 }
 
 static void
@@ -161,6 +203,11 @@ send_sw_interface_details (vpe_api_main_t * am,
   mp->link_speed = ((hi->flags & VNET_HW_INTERFACE_FLAG_SPEED_MASK) >>
 		    VNET_HW_INTERFACE_FLAG_SPEED_SHIFT);
   mp->link_mtu = ntohs (hi->max_packet_bytes);
+  mp->mtu[VNET_MTU_L3] = ntohl (swif->mtu[VNET_MTU_L3]);
+  mp->mtu[VNET_MTU_IP4] = ntohl (swif->mtu[VNET_MTU_IP4]);
+  mp->mtu[VNET_MTU_IP6] = ntohl (swif->mtu[VNET_MTU_IP6]);
+  mp->mtu[VNET_MTU_MPLS] = ntohl (swif->mtu[VNET_MTU_MPLS]);
+
   mp->context = context;
 
   strncpy ((char *) mp->interface_name,
@@ -381,30 +428,15 @@ ip_table_bind (fib_protocol_t fproto,
     }
 
   /*
-   * This is temporary whilst I do the song and dance with the CSIT version
-   */
-  if (0 != table_id)
-    {
-      fib_index = fib_table_find_or_create_and_lock (fproto, table_id, src);
-      mfib_index =
-	mfib_table_find_or_create_and_lock (fproto, table_id, msrc);
-    }
-  else
-    {
-      fib_index = 0;
-      mfib_index = 0;
-    }
-
-  /*
    * This if table does not exist = error is what we want in the end.
    */
-  /* fib_index = fib_table_find (fproto, table_id); */
-  /* mfib_index = mfib_table_find (fproto, table_id); */
+  fib_index = fib_table_find (fproto, table_id);
+  mfib_index = mfib_table_find (fproto, table_id);
 
-  /* if (~0 == fib_index || ~0 == mfib_index) */
-  /*   { */
-  /*     return (VNET_API_ERROR_NO_SUCH_FIB); */
-  /*   } */
+  if (~0 == fib_index || ~0 == mfib_index)
+    {
+      return (VNET_API_ERROR_NO_SUCH_FIB);
+    }
 
   if (FIB_PROTOCOL_IP6 == fproto)
     {
@@ -512,15 +544,6 @@ ip_table_bind (fib_protocol_t fproto,
       ip4_main.mfib_index_by_sw_if_index[sw_if_index] = mfib_index;
     }
 
-  /*
-   * Temporary. undo the locks from the find and create at the staart
-   */
-  if (0 != table_id)
-    {
-      fib_table_unlock (fib_index, fproto, src);
-      mfib_table_unlock (mfib_index, fproto, msrc);
-    }
-
   return (0);
 }
 
@@ -582,7 +605,6 @@ static void vl_api_sw_interface_set_unnumbered_t_handler
   vnet_main_t *vnm = vnet_get_main ();
   u32 sw_if_index = ntohl (mp->sw_if_index);
   u32 unnumbered_sw_if_index = ntohl (mp->unnumbered_sw_if_index);
-  u32 was_unnum;
 
   /*
    * The API message field names are backwards from
@@ -602,42 +624,8 @@ static void vl_api_sw_interface_set_unnumbered_t_handler
       goto done;
     }
 
-  vnet_sw_interface_t *si =
-    vnet_get_sw_interface (vnm, unnumbered_sw_if_index);
-  was_unnum = (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED);
-
-  if (mp->is_add)
-    {
-      si->flags |= VNET_SW_INTERFACE_FLAG_UNNUMBERED;
-      si->unnumbered_sw_if_index = sw_if_index;
-
-      ip4_main.lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] =
-	ip4_main.
-	lookup_main.if_address_pool_index_by_sw_if_index[sw_if_index];
-      ip6_main.
-	lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] =
-	ip6_main.
-	lookup_main.if_address_pool_index_by_sw_if_index[sw_if_index];
-    }
-  else
-    {
-      si->flags &= ~(VNET_SW_INTERFACE_FLAG_UNNUMBERED);
-      si->unnumbered_sw_if_index = (u32) ~ 0;
-
-      ip4_main.lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] = ~0;
-      ip6_main.lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] = ~0;
-    }
-
-  if (was_unnum != (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED))
-    {
-      ip4_sw_interface_enable_disable (unnumbered_sw_if_index, mp->is_add);
-      ip6_sw_interface_enable_disable (unnumbered_sw_if_index, mp->is_add);
-    }
-
+  vnet_sw_interface_update_unnumbered (unnumbered_sw_if_index,
+				       sw_if_index, mp->is_add);
 done:
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_UNNUMBERED_REPLY);
 }
@@ -1202,6 +1190,20 @@ vl_api_delete_loopback_t_handler (vl_api_delete_loopback_t * mp)
   rv = vnet_delete_loopback_interface (sw_if_index);
 
   REPLY_MACRO (VL_API_DELETE_LOOPBACK_REPLY);
+}
+
+static void
+  vl_api_collect_detailed_interface_stats_t_handler
+  (vl_api_collect_detailed_interface_stats_t * mp)
+{
+  vl_api_collect_detailed_interface_stats_reply_t *rmp;
+  int rv = 0;
+
+  rv =
+    vnet_sw_interface_stats_collect_enable_disable (ntohl (mp->sw_if_index),
+						    mp->enable_disable);
+
+  REPLY_MACRO (VL_API_COLLECT_DETAILED_INTERFACE_STATS_REPLY);
 }
 
 /*

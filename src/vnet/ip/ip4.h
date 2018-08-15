@@ -154,7 +154,15 @@ typedef struct ip4_main_t
 
   /** The memory heap for the mtries */
   void *mtrie_mheap;
+
+  /** ARP throttling */
+  uword **arp_throttle_bitmaps;
+  u32 *arp_throttle_seeds;
+  f64 *arp_throttle_last_seed_change_time;
+
 } ip4_main_t;
+
+#define ARP_THROTTLE_BITS	(512)
 
 /** Global ip4 main structure. */
 extern ip4_main_t ip4_main;
@@ -245,13 +253,15 @@ clib_error_t *ip4_add_del_interface_address (vlib_main_t * vm,
 					     ip4_address_t * address,
 					     u32 address_length, u32 is_del);
 
+void ip4_directed_broadcast (u32 sw_if_index, u8 enable);
+
 void ip4_sw_interface_enable_disable (u32 sw_if_index, u32 is_enable);
 
 int ip4_address_compare (ip4_address_t * a1, ip4_address_t * a2);
 
 /* Send an ARP request to see if given destination is reachable on given interface. */
 clib_error_t *ip4_probe_neighbor (vlib_main_t * vm, ip4_address_t * dst,
-				  u32 sw_if_index);
+				  u32 sw_if_index, u8 refresh);
 
 clib_error_t *ip4_set_arp_limit (u32 arp_limit);
 

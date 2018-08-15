@@ -169,13 +169,17 @@ format_svm_fifo (u8 * s, va_list * args)
   svm_fifo_t *f = va_arg (*args, svm_fifo_t *);
   int verbose = va_arg (*args, int);
 
+  if (!s)
+    return s;
+
   s = format (s, "cursize %u nitems %u has_event %d\n",
 	      f->cursize, f->nitems, f->has_event);
-  s = format (s, " head %d tail %d\n", f->head, f->tail);
+  s = format (s, " head %d tail %d segment manager %u\n", f->head, f->tail,
+	      f->segment_manager);
 
   if (verbose > 1)
     s = format
-      (s, " server session %d thread %d client session %d thread %d\n",
+      (s, " vpp session %d thread %d app session %d thread %d\n",
        f->master_session_index, f->master_thread_index,
        f->client_session_index, f->client_thread_index);
 
@@ -459,7 +463,7 @@ svm_fifo_enqueue_internal (svm_fifo_t * f, u32 max_bytes,
   f->ooos_newest = OOO_SEGMENT_INVALID_INDEX;
 
   if (PREDICT_FALSE (cursize == f->nitems))
-    return -2;			/* fifo stuffed */
+    return SVM_FIFO_FULL;
 
   nitems = f->nitems;
 
@@ -615,6 +619,20 @@ svm_fifo_enqueue_with_offset (svm_fifo_t * f,
 						copy_from_here);
 }
 
+void
+svm_fifo_overwrite_head (svm_fifo_t * f, u8 * data, u32 len)
+{
+  u32 first_chunk;
+  first_chunk = f->nitems - f->head;
+  ASSERT (len <= f->nitems);
+  if (len <= first_chunk)
+    clib_memcpy (&f->data[f->head], data, len);
+  else
+    {
+      clib_memcpy (&f->data[f->head], data, first_chunk);
+      clib_memcpy (&f->data[0], data + first_chunk, len - first_chunk);
+    }
+}
 
 static int
 svm_fifo_dequeue_internal (svm_fifo_t * f, u32 max_bytes, u8 * copy_here)
@@ -808,6 +826,13 @@ svm_fifo_dequeue_drop (svm_fifo_t * f, u32 max_bytes)
   __sync_fetch_and_sub (&f->cursize, total_drop_bytes);
 
   return total_drop_bytes;
+}
+
+void
+svm_fifo_dequeue_drop_all (svm_fifo_t * f)
+{
+  f->head = f->tail;
+  __sync_fetch_and_sub (&f->cursize, f->cursize);
 }
 
 u32

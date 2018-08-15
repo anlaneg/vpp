@@ -163,8 +163,18 @@ vlib_frame_queue_t;
 
 typedef struct
 {
+  vlib_frame_queue_elt_t **handoff_queue_elt_by_thread_index;
+  vlib_frame_queue_t **congested_handoff_queue_by_thread_index;
+} vlib_frame_queue_per_thread_data_t;
+
+typedef struct
+{
   u32 node_index;
+  u32 frame_queue_nelts;
+  u32 queue_hi_thresh;
+
   vlib_frame_queue_t **vlib_frame_queues;
+  vlib_frame_queue_per_thread_data_t *per_thread_data;
 
   /* for frame queue tracing */
   frame_queue_trace_t *frame_queue_traces;
@@ -323,7 +333,7 @@ typedef struct
   u8 *thread_prefix;
 
   /* main thread lcore */
-  u8 main_lcore;
+  u32 main_lcore;
 
   /* Bitmap of available CPU cores */
   uword *cpu_core_bitmap;
@@ -362,6 +372,13 @@ static void __vlib_add_thread_registration_##x (void)   \
   vlib_thread_main_t * tm = &vlib_thread_main;          \
   x.next = tm->next;                                    \
   tm->next = &x;                                        \
+}                                                       \
+static void __vlib_rm_thread_registration_##x (void)    \
+  __attribute__((__destructor__)) ;                     \
+static void __vlib_rm_thread_registration_##x (void)    \
+{                                                       \
+  vlib_thread_main_t * tm = &vlib_thread_main;          \
+  VLIB_REMOVE_FROM_LINKED_LIST (tm->next, &x, next);    \
 }                                                       \
 __VA_ARGS__ vlib_thread_registration_t x
 

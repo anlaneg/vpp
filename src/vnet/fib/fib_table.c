@@ -197,10 +197,18 @@ fib_table_post_insert_actions (fib_table_t *fib_table,
 
         /*
          * inform the covering entry that a new more specific
-         * has been inserted beneath it
+         * has been inserted beneath it.
+         * If the prefix that has been inserted is a host route
+         * then it is not possible that it will be the cover for any
+         * other entry, so we can elide the walk. This is particularly
+         * beneficial since there are often many host entries sharing the
+         * same cover (i.e. ADJ or RR sourced entries).
          */
-	fib_entry_cover_change_notify(fib_entry_cover_index,
-				      fib_entry_index);
+        if (!fib_entry_is_host(fib_entry_index))
+        {
+            fib_entry_cover_change_notify(fib_entry_cover_index,
+                                          fib_entry_index);
+        }
     }
 }
 
@@ -869,12 +877,12 @@ void
 fib_table_entry_delete_index (fib_node_index_t fib_entry_index,
 			      fib_source_t source)
 {
-    fib_prefix_t prefix;
+    const fib_prefix_t *prefix;
 
-    fib_entry_get_prefix(fib_entry_index, &prefix);
+    prefix = fib_entry_get_prefix(fib_entry_index);
 
     fib_table_entry_delete_i(fib_entry_get_fib_index(fib_entry_index),
-                             fib_entry_index, &prefix, source);
+                             fib_entry_index, prefix, source);
 }
 
 fib_node_index_t
@@ -1029,6 +1037,17 @@ fib_table_get_table_id_for_sw_if_index (fib_protocol_t proto,
     fib_table = fib_table_get(fib_table_get_index_for_sw_if_index(
 				  proto, sw_if_index),
 			      proto);
+
+    return ((NULL != fib_table ? fib_table->ft_table_id : ~0));
+}
+
+u32
+fib_table_get_table_id (u32 fib_index,
+                        fib_protocol_t proto)
+{
+    fib_table_t *fib_table;
+
+    fib_table = fib_table_get(fib_index, proto);
 
     return ((NULL != fib_table ? fib_table->ft_table_id : ~0));
 }

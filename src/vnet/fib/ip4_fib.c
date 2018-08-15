@@ -108,7 +108,7 @@ ip4_create_fib_with_table_id (u32 table_id,
     ip4_fib_t *v4_fib;
     void *old_heap;
 
-    pool_get_aligned(ip4_main.fibs, fib_table, CLIB_CACHE_LINE_BYTES);
+    pool_get(ip4_main.fibs, fib_table);
     memset(fib_table, 0, sizeof(*fib_table));
 
     old_heap = clib_mem_set_heap (ip4_main.mtrie_mheap);
@@ -129,8 +129,6 @@ ip4_create_fib_with_table_id (u32 table_id,
 	v4_fib->table_id =
 	    table_id;
     fib_table->ft_flow_hash_config = IP_FLOW_HASH_DEFAULT;
-    v4_fib->fwd_classify_table_index = ~0;
-    v4_fib->rev_classify_table_index = ~0;
     
     fib_table_lock(fib_table->ft_index, FIB_PROTOCOL_IP4, src);
 
@@ -393,9 +391,7 @@ ip4_fib_table_fwding_dpo_remove (ip4_fib_t *fib,
 				 const dpo_id_t *dpo,
                                  u32 cover_index)
 {
-    fib_prefix_t cover_prefix = {
-        .fp_len = 0,
-    };
+    const fib_prefix_t *cover_prefix;
     const dpo_id_t *cover_dpo;
 
     /*
@@ -403,12 +399,12 @@ ip4_fib_table_fwding_dpo_remove (ip4_fib_t *fib,
      * covering prefix, so it can fill the plys with the correct replacement
      * for the entry being removed
      */
-    fib_entry_get_prefix(cover_index, &cover_prefix);
+    cover_prefix = fib_entry_get_prefix(cover_index);
     cover_dpo = fib_entry_contribute_ip_forwarding(cover_index);
 
     ip4_fib_mtrie_route_del(&fib->mtrie,
                             addr, len, dpo->dpoi_index,
-                            cover_prefix.fp_len,
+                            cover_prefix->fp_len,
                             cover_dpo->dpoi_index);
 }
 
@@ -569,10 +565,18 @@ ip4_fib_table_show_one (ip4_fib_t *fib,
 u8 *
 format_ip4_fib_table_memory (u8 * s, va_list * args)
 {
+#if USE_DLMALLOC == 0
     s = format(s, "%=30s %=6d %=8ld\n",
                "IPv4 unicast",
                pool_elts(ip4_main.fibs),
                mheap_bytes(ip4_main.mtrie_mheap));
+#else
+    s = format(s, "%=30s %=6d %=8ld\n",
+               "IPv4 unicast",
+               pool_elts(ip4_main.fibs),
+               mspace_footprint(ip4_main.mtrie_mheap));
+#endif
+    
 
     return (s);
 }

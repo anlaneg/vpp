@@ -19,6 +19,14 @@
 
 #include <vppinfra/lock.h>
 
+#include <vlib/log.h>
+
+typedef struct
+{
+  u32 sw_if_index;
+  u8 host_if_name[64];
+} af_packet_if_detail_t;
+
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -54,6 +62,9 @@ typedef struct
 
   /* hash of host interface names */
   mhash_t if_index_by_host_if_name;
+
+  /** log class */
+  vlib_log_class_t log_class;
 } af_packet_main_t;
 
 extern af_packet_main_t af_packet_main;
@@ -65,8 +76,11 @@ int af_packet_create_if (vlib_main_t * vm, u8 * host_if_name,
 int af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name);
 int af_packet_set_l4_cksum_offload (vlib_main_t * vm, u32 sw_if_index,
 				    u8 set);
+int af_packet_dump_ifs (af_packet_if_detail_t ** out_af_packet_ifs);
 
 format_function_t format_af_packet_device_name;
+
+#define MIN(x,y) (((x)<(y))?(x):(y))
 
 /*
  * fd.io coding-style-patch-verification: ON

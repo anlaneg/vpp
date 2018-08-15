@@ -362,7 +362,7 @@ sctp_enqueue_to_output_now (vlib_main_t * vm, vlib_buffer_t * b, u32 bi,
 
 always_inline void
 sctp_enqueue_to_ip_lookup_i (vlib_main_t * vm, vlib_buffer_t * b, u32 bi,
-			     u8 is_ip4, u8 flush)
+			     u8 is_ip4, u32 fib_index, u8 flush)
 {
   sctp_main_t *tm = vnet_get_sctp_main ();
   u32 thread_index = vlib_get_thread_index ();
@@ -372,8 +372,8 @@ sctp_enqueue_to_ip_lookup_i (vlib_main_t * vm, vlib_buffer_t * b, u32 bi,
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
   b->error = 0;
 
-  /* Default FIB for now */
-  vnet_buffer (b)->sw_if_index[VLIB_TX] = 0;
+  vnet_buffer (b)->sw_if_index[VLIB_TX] = fib_index;
+  vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
 
   /* Send to IP lookup */
   next_index = is_ip4 ? ip4_lookup_node.index : ip6_lookup_node.index;
@@ -403,9 +403,11 @@ sctp_enqueue_to_ip_lookup_i (vlib_main_t * vm, vlib_buffer_t * b, u32 bi,
 
 always_inline void
 sctp_enqueue_to_ip_lookup (vlib_main_t * vm, vlib_buffer_t * b, u32 bi,
-			   u8 is_ip4)
+			   u8 is_ip4, u32 fib_index)
 {
-  sctp_enqueue_to_ip_lookup_i (vm, b, bi, is_ip4, 0);
+  sctp_enqueue_to_ip_lookup_i (vm, b, bi, is_ip4, fib_index, 0);
+  if (vm->thread_index == 0 && vlib_num_workers ())
+    session_flush_frames_main_thread (vm);
 }
 
 /**
@@ -868,7 +870,7 @@ sctp_prepare_initack_chunk_for_collision (sctp_connection_t * sctp_conn,
 void
 sctp_prepare_initack_chunk (sctp_connection_t * sctp_conn, u8 idx,
 			    vlib_buffer_t * b, ip4_address_t * ip4_addr,
-			    ip6_address_t * ip6_addr)
+			    u8 add_ip4, ip6_address_t * ip6_addr, u8 add_ip6)
 {
   vlib_main_t *vm = vlib_get_main ();
   sctp_ipv4_addr_param_t *ip4_param = 0;
@@ -881,12 +883,12 @@ sctp_prepare_initack_chunk (sctp_connection_t * sctp_conn, u8 idx,
   u16 alloc_bytes =
     sizeof (sctp_init_ack_chunk_t) + sizeof (sctp_state_cookie_param_t);
 
-  if (PREDICT_TRUE (ip4_addr != NULL))
+  if (PREDICT_FALSE (add_ip4 == 1))
     {
       /* Create room for variable-length fields in the INIT_ACK chunk */
       alloc_bytes += SCTP_IPV4_ADDRESS_TYPE_LENGTH;
     }
-  if (PREDICT_TRUE (ip6_addr != NULL))
+  if (PREDICT_FALSE (add_ip6 == 1))
     {
       /* Create room for variable-length fields in the INIT_ACK chunk */
       alloc_bytes += SCTP_IPV6_ADDRESS_TYPE_LENGTH;
@@ -1342,7 +1344,8 @@ sctp_send_init (sctp_connection_t * sctp_conn)
   sctp_prepare_init_chunk (sctp_conn, idx, b);
 
   sctp_push_ip_hdr (tm, &sctp_conn->sub_conn[idx], b);
-  sctp_enqueue_to_ip_lookup (vm, b, bi, sctp_conn->sub_conn[idx].c_is_ip4);
+  sctp_enqueue_to_ip_lookup (vm, b, bi, sctp_conn->sub_conn[idx].c_is_ip4,
+			     sctp_conn->sub_conn[idx].c_fib_index);
 
   /* Start the T1_INIT timer */
   sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T1_INIT,
@@ -1475,7 +1478,7 @@ sctp_prepare_data_retransmit (sctp_connection_t * sctp_conn,
    * Make sure we can retransmit something
    */
   available_bytes =
-    stream_session_tx_fifo_max_dequeue (&sctp_conn->sub_conn[idx].connection);
+    session_tx_fifo_max_dequeue (&sctp_conn->sub_conn[idx].connection);
   ASSERT (available_bytes >= offset);
   available_bytes -= offset;
   if (!available_bytes)
@@ -1701,7 +1704,7 @@ sctp46_output_inline (vlib_main_t * vm,
 	    {
 	      clib_warning
 		("Trying to send an unrecognized chunk... something is really bad.");
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = SCTP_OUTPUT_NEXT_DROP;
 	      goto done;
 	    }
@@ -1734,7 +1737,7 @@ sctp46_output_inline (vlib_main_t * vm,
 				      connection.rmt_port,
 				      sctp_hdr->dst_port);
 
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = SCTP_OUTPUT_NEXT_DROP;
 	      goto done;
 	    }
@@ -1757,7 +1760,7 @@ sctp46_output_inline (vlib_main_t * vm,
 		 sctp_chunk_to_string (chunk_type),
 		 sctp_state_to_string (sctp_conn->state));
 
-	      error0 = SCTP_ERROR_UNKOWN_CHUNK;
+	      error0 = SCTP_ERROR_UNKNOWN_CHUNK;
 	      next0 = SCTP_OUTPUT_NEXT_DROP;
 	      goto done;
 
@@ -1820,7 +1823,8 @@ sctp46_output_inline (vlib_main_t * vm,
 	    }
 
 	  vnet_buffer (b0)->sw_if_index[VLIB_RX] = 0;
-	  vnet_buffer (b0)->sw_if_index[VLIB_TX] = ~0;
+	  vnet_buffer (b0)->sw_if_index[VLIB_TX] =
+	    sctp_conn->sub_conn[idx].c_fib_index;
 
 	  b0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 

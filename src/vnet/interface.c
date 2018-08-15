@@ -122,22 +122,6 @@ unserialize_vnet_sw_interface_set_flags (serialize_main_t * m, va_list * va)
      /* helper_flags no redistribution */ 0);
 }
 
-void
-vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu)
-{
-  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
-
-  if (hi->max_packet_bytes != mtu)
-    {
-      u16 l3_pad = hi->max_packet_bytes - hi->max_l3_packet_bytes[VLIB_TX];
-      hi->max_packet_bytes = mtu;
-      hi->max_l3_packet_bytes[VLIB_TX] =
-	hi->max_l3_packet_bytes[VLIB_RX] = mtu - l3_pad;
-      ethernet_set_flags (vnm, hw_if_index, ETHERNET_INTERFACE_FLAG_MTU);
-      adj_mtu_update (hw_if_index);
-    }
-}
-
 static void
 unserialize_vnet_hw_interface_set_flags (serialize_main_t * m, va_list * va)
 {
@@ -485,10 +469,13 @@ vnet_sw_interface_set_flags_helper (vnet_main_t * vnm, u32 sw_if_index,
 	error = call_elf_section_interface_callbacks
 	  (vnm, sw_if_index, flags,
 	   vnm->sw_interface_admin_up_down_functions);
-      si->flags = old_flags;
 
       if (error)
-	goto done;
+	{
+	  /* restore flags on error */
+	  si->flags = old_flags;
+	  goto done;
+	}
 
       if (si->type == VNET_SW_INTERFACE_TYPE_HARDWARE)
 	{
@@ -667,6 +654,7 @@ vnet_delete_sw_interface (vnet_main_t * vnm, u32 sw_if_index)
       if (config->xconnect || config->bridge)
 	set_int_l2_mode (vm, vnm, MODE_L3, sw_if_index, 0, 0, 0, 0);
     }
+  vnet_clear_sw_interface_tag (vnm, sw_if_index);
 
   /* Bring down interface in case it is up. */
   if (sw->flags != 0)
@@ -675,6 +663,87 @@ vnet_delete_sw_interface (vnet_main_t * vnm, u32 sw_if_index)
   call_sw_interface_add_del_callbacks (vnm, sw_if_index, /* is_create */ 0);
 
   pool_put (im->sw_interfaces, sw);
+}
+
+static clib_error_t *
+call_sw_interface_mtu_change_callbacks (vnet_main_t * vnm, u32 sw_if_index)
+{
+  return call_elf_section_interface_callbacks
+    (vnm, sw_if_index, 0, vnm->sw_interface_mtu_change_functions);
+}
+
+void
+vnet_sw_interface_set_mtu (vnet_main_t * vnm, u32 sw_if_index, u32 mtu)
+{
+  vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
+
+  if (si->mtu[VNET_MTU_L3] != mtu)
+    {
+      si->mtu[VNET_MTU_L3] = mtu;
+      call_sw_interface_mtu_change_callbacks (vnm, sw_if_index);
+    }
+}
+
+void
+vnet_sw_interface_set_protocol_mtu (vnet_main_t * vnm, u32 sw_if_index,
+				    u32 mtu[])
+{
+  vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
+  bool changed = false;
+  int i;
+
+  for (i = 0; i < VNET_N_MTU; i++)
+    {
+      if (si->mtu[i] != mtu[i])
+	{
+	  si->mtu[i] = mtu[i];
+	  changed = true;
+	}
+    }
+  /* Notify interested parties */
+  if (changed)
+    call_sw_interface_mtu_change_callbacks (vnm, sw_if_index);
+}
+
+void
+vnet_sw_interface_ip_directed_broadcast (vnet_main_t * vnm,
+					 u32 sw_if_index, u8 enable)
+{
+  vnet_sw_interface_t *si;
+
+  si = vnet_get_sw_interface (vnm, sw_if_index);
+
+  if (enable)
+    si->flags |= VNET_SW_INTERFACE_FLAG_DIRECTED_BCAST;
+  else
+    si->flags &= ~VNET_SW_INTERFACE_FLAG_DIRECTED_BCAST;
+
+  ip4_directed_broadcast (sw_if_index, enable);
+}
+
+/*
+ * Reflect a change in hardware MTU on protocol MTUs
+ */
+static walk_rc_t
+sw_interface_walk_callback (vnet_main_t * vnm, u32 sw_if_index, void *ctx)
+{
+  u32 *link_mtu = ctx;
+  vnet_sw_interface_set_mtu (vnm, sw_if_index, *link_mtu);
+  return WALK_CONTINUE;
+}
+
+void
+vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu)
+{
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+
+  if (hi->max_packet_bytes != mtu)
+    {
+      hi->max_packet_bytes = mtu;
+      ethernet_set_flags (vnm, hw_if_index, ETHERNET_INTERFACE_FLAG_MTU);
+      vnet_hw_interface_walk_sw (vnm, hw_if_index, sw_interface_walk_callback,
+				 &mtu);
+    }
 }
 
 static void
@@ -717,7 +786,7 @@ vnet_register_interface (vnet_main_t * vnm,
   vnet_feature_config_main_t *fcm;
   vnet_config_main_t *cm;
   u32 hw_index, i;
-  char *tx_node_name, *output_node_name;
+  char *tx_node_name = NULL, *output_node_name = NULL;
 
   pool_get (im->hw_interfaces, hw);
   memset (hw, 0, sizeof (*hw));
@@ -758,9 +827,7 @@ vnet_register_interface (vnet_main_t * vnm,
 
   hw->max_rate_bits_per_sec = 0;
   hw->min_packet_bytes = 0;
-  hw->per_packet_overhead_bytes = 0;
-  hw->max_l3_packet_bytes[VLIB_RX] = ~0;
-  hw->max_l3_packet_bytes[VLIB_TX] = ~0;
+  vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, 0);
 
   if (dev_class->tx_function == 0)
     goto no_output_nodes;	/* No output/tx nodes to create */
@@ -907,6 +974,8 @@ no_output_nodes:
 				      VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE);
   vnet_hw_interface_set_flags_helper (vnm, hw_index, /* flags */ 0,
 				      VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE);
+  vec_free (tx_node_name);
+  vec_free (output_node_name);
 
   return hw_index;
 }
@@ -973,6 +1042,7 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
 
   hash_unset_mem (im->hw_interface_by_name, hw->name);
   vec_free (hw->name);
+  vec_free (hw->hw_address);
   vec_free (hw->input_node_thread_index_by_queue);
   vec_free (hw->dq_runtime_index_by_queue);
 
@@ -988,15 +1058,53 @@ vnet_hw_interface_walk_sw (vnet_main_t * vnm,
   u32 id, sw_if_index;
 
   hi = vnet_get_hw_interface (vnm, hw_if_index);
-  /* the super first, then the and sub interfaces */
-  fn (vnm, hi->sw_if_index, ctx);
+  /* the super first, then the sub interfaces */
+  if (WALK_STOP == fn (vnm, hi->sw_if_index, ctx))
+    return;
 
   /* *INDENT-OFF* */
   hash_foreach (id, sw_if_index,
                 hi->sub_interface_sw_if_index_by_id,
   ({
-    fn (vnm, sw_if_index, ctx);
+    if (WALK_STOP == fn (vnm, sw_if_index, ctx))
+      break;
   }));
+  /* *INDENT-ON* */
+}
+
+void
+vnet_hw_interface_walk (vnet_main_t * vnm,
+			vnet_hw_interface_walk_t fn, void *ctx)
+{
+  vnet_interface_main_t *im;
+  vnet_hw_interface_t *hi;
+
+  im = &vnm->interface_main;
+
+  /* *INDENT-OFF* */
+  pool_foreach (hi, im->hw_interfaces,
+  ({
+    if (WALK_STOP == fn(vnm, hi->hw_if_index, ctx))
+      break;
+  }));
+  /* *INDENT-ON* */
+}
+
+void
+vnet_sw_interface_walk (vnet_main_t * vnm,
+			vnet_sw_interface_walk_t fn, void *ctx)
+{
+  vnet_interface_main_t *im;
+  vnet_sw_interface_t *si;
+
+  im = &vnm->interface_main;
+
+  /* *INDENT-OFF* */
+  pool_foreach (si, im->sw_interfaces,
+  {
+    if (WALK_STOP == fn (vnm, si, ctx))
+      break;
+  });
   /* *INDENT-ON* */
 }
 
@@ -1184,7 +1292,8 @@ int
 vnet_sw_interface_is_p2p (vnet_main_t * vnm, u32 sw_if_index)
 {
   vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
-  if (si->type == VNET_SW_INTERFACE_TYPE_P2P)
+  if ((si->type == VNET_SW_INTERFACE_TYPE_P2P) ||
+      (si->type == VNET_SW_INTERFACE_TYPE_PIPE))
     return 1;
 
   vnet_hw_interface_t *hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
@@ -1225,21 +1334,19 @@ vnet_interface_init (vlib_main_t * vm)
   im->sw_if_counter_lock[0] = 1;	/* should be no need */
 
   vec_validate (im->sw_if_counters, VNET_N_SIMPLE_INTERFACE_COUNTER - 1);
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_DROP].name = "drops";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_PUNT].name = "punts";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_IP4].name = "ip4";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_IP6].name = "ip6";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_RX_NO_BUF].name = "rx-no-buf";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_RX_MISS].name = "rx-miss";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_RX_ERROR].name = "rx-error";
-  im->sw_if_counters[VNET_INTERFACE_COUNTER_TX_ERROR].name = "tx-error";
-
-  vec_validate (im->combined_sw_if_counters,
-		VNET_N_COMBINED_INTERFACE_COUNTER - 1);
-  im->combined_sw_if_counters[VNET_INTERFACE_COUNTER_RX].name = "rx";
-  im->combined_sw_if_counters[VNET_INTERFACE_COUNTER_TX].name = "tx";
-
-  im->sw_if_counter_lock[0] = 0;
+#define _(E,n,p)							\
+  im->sw_if_counters[VNET_INTERFACE_COUNTER_##E].name = #n;		\
+  im->sw_if_counters[VNET_INTERFACE_COUNTER_##E].stat_segment_name = "/" #p "/" #n;
+  foreach_simple_interface_counter_name
+#undef _
+    vec_validate (im->combined_sw_if_counters,
+		  VNET_N_COMBINED_INTERFACE_COUNTER - 1);
+#define _(E,n,p)							\
+  im->combined_sw_if_counters[VNET_INTERFACE_COUNTER_##E].name = #n;	\
+  im->combined_sw_if_counters[VNET_INTERFACE_COUNTER_##E].stat_segment_name = "/" #p "/" #n;
+  foreach_combined_interface_counter_name
+#undef _
+    im->sw_if_counter_lock[0] = 0;
 
   im->device_class_by_name = hash_create_string ( /* size */ 0,
 						 sizeof (uword));
@@ -1252,6 +1359,27 @@ vnet_interface_init (vlib_main_t * vm)
       {
 	c->index = vec_len (im->device_classes);
 	hash_set_mem (im->device_class_by_name, c->name, c->index);
+
+	if (c->tx_fn_registrations)
+	  {
+	    vlib_node_fn_registration_t *fnr = c->tx_fn_registrations;
+	    int priority = -1;
+
+	    /* to avoid confusion, please remove ".tx_function" statiement
+	       from VNET_DEVICE_CLASS() if using function candidates */
+	    ASSERT (c->tx_function == 0);
+
+	    while (fnr)
+	      {
+		if (fnr->priority > priority)
+		  {
+		    priority = fnr->priority;
+		    c->tx_function = fnr->function;
+		  }
+		fnr = fnr->next_registration;
+	      }
+	  }
+
 	vec_add1 (im->device_classes, c[0]);
 	c = c->next_class_registration;
       }
@@ -1414,6 +1542,51 @@ vnet_hw_interface_change_mac_address (vnet_main_t * vnm, u32 hw_if_index,
     (vnm, hw_if_index, mac_address);
 }
 
+/* update the unnumbered state of an interface*/
+void
+vnet_sw_interface_update_unnumbered (u32 unnumbered_sw_if_index,
+				     u32 ip_sw_if_index, u8 enable)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_sw_interface_t *si;
+  u32 was_unnum;
+
+  si = vnet_get_sw_interface (vnm, unnumbered_sw_if_index);
+  was_unnum = (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED);
+
+  if (enable)
+    {
+      si->flags |= VNET_SW_INTERFACE_FLAG_UNNUMBERED;
+      si->unnumbered_sw_if_index = ip_sw_if_index;
+
+      ip4_main.lookup_main.if_address_pool_index_by_sw_if_index
+	[unnumbered_sw_if_index] =
+	ip4_main.
+	lookup_main.if_address_pool_index_by_sw_if_index[ip_sw_if_index];
+      ip6_main.
+	lookup_main.if_address_pool_index_by_sw_if_index
+	[unnumbered_sw_if_index] =
+	ip6_main.
+	lookup_main.if_address_pool_index_by_sw_if_index[ip_sw_if_index];
+    }
+  else
+    {
+      si->flags &= ~(VNET_SW_INTERFACE_FLAG_UNNUMBERED);
+      si->unnumbered_sw_if_index = (u32) ~ 0;
+
+      ip4_main.lookup_main.if_address_pool_index_by_sw_if_index
+	[unnumbered_sw_if_index] = ~0;
+      ip6_main.lookup_main.if_address_pool_index_by_sw_if_index
+	[unnumbered_sw_if_index] = ~0;
+    }
+
+  if (was_unnum != (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED))
+    {
+      ip4_sw_interface_enable_disable (unnumbered_sw_if_index, enable);
+      ip6_sw_interface_enable_disable (unnumbered_sw_if_index, enable);
+    }
+}
+
 vnet_l3_packet_type_t
 vnet_link_to_l3_proto (vnet_link_t link)
 {
@@ -1434,6 +1607,22 @@ vnet_link_to_l3_proto (vnet_link_t link)
     }
   ASSERT (0);
   return (0);
+}
+
+vnet_mtu_t
+vnet_link_to_mtu (vnet_link_t link)
+{
+  switch (link)
+    {
+    case VNET_LINK_IP4:
+      return (VNET_MTU_IP4);
+    case VNET_LINK_IP6:
+      return (VNET_MTU_IP6);
+    case VNET_LINK_MPLS:
+      return (VNET_MTU_MPLS);
+    default:
+      return (VNET_MTU_L3);
+    }
 }
 
 u8 *
@@ -1457,6 +1646,7 @@ default_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
       adj_glean_update_rewrite (ai);
       break;
     case IP_LOOKUP_NEXT_ARP:
+    case IP_LOOKUP_NEXT_BCAST:
       /*
        * default rewirte in neighbour adj
        */
@@ -1477,7 +1667,7 @@ default_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
 	 vnet_build_rewrite_for_sw_interface (vnm,
 					      sw_if_index,
 					      adj_get_link_type (ai),
-					      NULL), 0, 0);
+					      NULL), 0);
       break;
     case IP_LOOKUP_NEXT_DROP:
     case IP_LOOKUP_NEXT_PUNT:
@@ -1491,6 +1681,60 @@ default_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
       break;
     }
 }
+
+int collect_detailed_interface_stats_flag = 0;
+
+void
+collect_detailed_interface_stats_flag_set (void)
+{
+  collect_detailed_interface_stats_flag = 1;
+}
+
+void
+collect_detailed_interface_stats_flag_clear (void)
+{
+  collect_detailed_interface_stats_flag = 0;
+}
+
+static clib_error_t *
+collect_detailed_interface_stats_cli (vlib_main_t * vm,
+				      unformat_input_t * input,
+				      vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = NULL;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable") || unformat (line_input, "on"))
+	collect_detailed_interface_stats_flag_set ();
+      else if (unformat (line_input, "disable")
+	       || unformat (line_input, "off"))
+	collect_detailed_interface_stats_flag_clear ();
+      else
+	{
+	  error = clib_error_return (0, "unknown input `%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (collect_detailed_interface_stats_command, static) = {
+  .path = "interface collect detailed-stats",
+  .short_help = "interface collect detailed-stats <enable|disable>",
+  .function = collect_detailed_interface_stats_cli,
+};
+/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

@@ -25,6 +25,7 @@
 #include <vnet/api_errno.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/ip/ip.h>
+#include <vnet/ip/ip_neighbor.h>
 #include <vnet/ip/ip6_neighbor.h>
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/fib_api.h>
@@ -44,6 +45,7 @@
 #include <vnet/ip/ip6_hop_by_hop.h>
 #include <vnet/ip/ip4_reassembly.h>
 #include <vnet/ip/ip6_reassembly.h>
+#include <vnet/ethernet/arp.h>
 
 #include <vnet/vnet_msg_enum.h>
 
@@ -73,14 +75,19 @@ _(IP_NEIGHBOR_DUMP, ip_neighbor_dump)                                   \
 _(IP_MROUTE_ADD_DEL, ip_mroute_add_del)                                 \
 _(MFIB_SIGNAL_DUMP, mfib_signal_dump)                                   \
 _(IP_ADDRESS_DUMP, ip_address_dump)                                     \
+_(IP_UNNUMBERED_DUMP, ip_unnumbered_dump)                               \
 _(IP_DUMP, ip_dump)                                                     \
 _(IP_NEIGHBOR_ADD_DEL, ip_neighbor_add_del)                             \
 _(SET_ARP_NEIGHBOR_LIMIT, set_arp_neighbor_limit)			\
+_(IP_PROBE_NEIGHBOR, ip_probe_neighbor)      			        \
+_(IP_SCAN_NEIGHBOR_ENABLE_DISABLE, ip_scan_neighbor_enable_disable)     \
 _(WANT_IP4_ARP_EVENTS, want_ip4_arp_events)                             \
 _(WANT_IP6_ND_EVENTS, want_ip6_nd_events)                               \
 _(WANT_IP6_RA_EVENTS, want_ip6_ra_events)                               \
 _(PROXY_ARP_ADD_DEL, proxy_arp_add_del)                                 \
+_(PROXY_ARP_DUMP, proxy_arp_dump)                                       \
 _(PROXY_ARP_INTFC_ENABLE_DISABLE, proxy_arp_intfc_enable_disable)       \
+ _(PROXY_ARP_INTFC_DUMP, proxy_arp_intfc_dump)                          \
 _(RESET_FIB, reset_fib)							\
 _(IP_ADD_DEL_ROUTE, ip_add_del_route)                                   \
 _(IP_TABLE_ADD_DEL, ip_table_add_del)                                   \
@@ -103,7 +110,8 @@ _(IP_SOURCE_AND_PORT_RANGE_CHECK_ADD_DEL,                               \
 _(IP_SOURCE_AND_PORT_RANGE_CHECK_INTERFACE_ADD_DEL,                     \
   ip_source_and_port_range_check_interface_add_del)                     \
 _(IP_REASSEMBLY_SET, ip_reassembly_set)                                 \
-_(IP_REASSEMBLY_GET, ip_reassembly_get)
+_(IP_REASSEMBLY_GET, ip_reassembly_get)                                 \
+_(IP_REASSEMBLY_ENABLE_DISABLE, ip_reassembly_enable_disable)
 
 extern void stats_dslock_with_hint (int hint, int tag);
 extern void stats_dsunlock (void);
@@ -151,7 +159,7 @@ vl_api_ip_neighbor_dump_t_handler (vl_api_ip_neighbor_dump_t * mp)
       vec_foreach (n, ns)
       {
         send_ip_neighbor_details
-          (sw_if_index, mp->is_ipv6,
+          (n->key.sw_if_index, mp->is_ipv6,
 	   ((n->flags & IP6_NEIGHBOR_FLAG_STATIC) ? 1 : 0),
            (u8 *) n->link_layer_address,
            (u8 *) & (n->key.ip6_address.as_u8),
@@ -168,7 +176,7 @@ vl_api_ip_neighbor_dump_t_handler (vl_api_ip_neighbor_dump_t * mp)
       /* *INDENT-OFF* */
       vec_foreach (n, ns)
       {
-        send_ip_neighbor_details (sw_if_index, mp->is_ipv6,
+        send_ip_neighbor_details (n->sw_if_index, mp->is_ipv6,
           ((n->flags & ETHERNET_ARP_IP4_ENTRY_FLAG_STATIC) ? 1 : 0),
           (u8*) n->ethernet_address,
           (u8*) & (n->ip4_address.as_u8),
@@ -239,7 +247,7 @@ vl_api_ip_fib_dump_t_handler (vl_api_ip_fib_dump_t * mp)
   ip4_main_t *im = &ip4_main;
   fib_table_t *fib_table;
   fib_node_index_t *lfeip;
-  fib_prefix_t pfx;
+  const fib_prefix_t *pfx;
   u32 fib_index;
   fib_route_path_encode_t *api_rpaths;
   vl_api_ip_fib_dump_walk_ctx_t ctx = {
@@ -264,12 +272,12 @@ vl_api_ip_fib_dump_t_handler (vl_api_ip_fib_dump_t * mp)
 
   vec_foreach (lfeip, ctx.feis)
   {
-    fib_entry_get_prefix (*lfeip, &pfx);
+    pfx = fib_entry_get_prefix (*lfeip);
     fib_index = fib_entry_get_fib_index (*lfeip);
-    fib_table = fib_table_get (fib_index, pfx.fp_proto);
+    fib_table = fib_table_get (fib_index, pfx->fp_proto);
     api_rpaths = NULL;
     fib_entry_encode (*lfeip, &api_rpaths);
-    send_ip_fib_details (am, reg, fib_table, &pfx, api_rpaths, mp->context);
+    send_ip_fib_details (am, reg, fib_table, pfx, api_rpaths, mp->context);
     vec_free (api_rpaths);
   }
 
@@ -343,7 +351,7 @@ api_ip6_fib_table_get_all (vl_api_registration_t * reg,
     .entries = NULL,
   };
   fib_route_path_encode_t *api_rpaths;
-  fib_prefix_t pfx;
+  const fib_prefix_t *pfx;
 
   BV (clib_bihash_foreach_key_value_pair)
     ((BVT (clib_bihash) *) & im6->ip6_table[IP6_FIB_TABLE_NON_FWDING].
@@ -353,10 +361,10 @@ api_ip6_fib_table_get_all (vl_api_registration_t * reg,
 
   vec_foreach (fib_entry_index, ctx.entries)
   {
-    fib_entry_get_prefix (*fib_entry_index, &pfx);
+    pfx = fib_entry_get_prefix (*fib_entry_index);
     api_rpaths = NULL;
     fib_entry_encode (*fib_entry_index, &api_rpaths);
-    send_ip6_fib_details (am, reg, fib_table, &pfx, api_rpaths, mp->context);
+    send_ip6_fib_details (am, reg, fib_table, pfx, api_rpaths, mp->context);
     vec_free (api_rpaths);
   }
 
@@ -1206,13 +1214,15 @@ mroute_add_del_handler (u8 is_add,
 			dpo_proto_t nh_proto,
 			u32 entry_flags,
 			fib_rpf_id_t rpf_id,
-			u32 next_hop_sw_if_index, u32 itf_flags, u32 bier_imp)
+			u32 next_hop_sw_if_index,
+			ip46_address_t * nh, u32 itf_flags, u32 bier_imp)
 {
   stats_dslock_with_hint (1 /* release hint */ , 2 /* tag */ );
 
   fib_route_path_t path = {
     .frp_sw_if_index = next_hop_sw_if_index,
     .frp_proto = nh_proto,
+    .frp_addr = *nh,
   };
 
   if (is_local)
@@ -1251,6 +1261,7 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 {
   fib_protocol_t fproto;
   dpo_proto_t nh_proto;
+  ip46_address_t nh;
   u32 fib_index;
   int rv;
 
@@ -1275,6 +1286,8 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 		   sizeof (pfx.fp_grp_addr.ip4));
       clib_memcpy (&pfx.fp_src_addr.ip4, mp->src_address,
 		   sizeof (pfx.fp_src_addr.ip4));
+      memset (&nh.ip6, 0, sizeof (nh.ip6));
+      clib_memcpy (&nh.ip4, mp->nh_address, sizeof (nh.ip4));
     }
   else
     {
@@ -1282,6 +1295,7 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 		   sizeof (pfx.fp_grp_addr.ip6));
       clib_memcpy (&pfx.fp_src_addr.ip6, mp->src_address,
 		   sizeof (pfx.fp_src_addr.ip6));
+      clib_memcpy (&nh.ip6, mp->nh_address, sizeof (nh.ip6));
     }
 
   return (mroute_add_del_handler (mp->is_add,
@@ -1291,6 +1305,7 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 				  ntohl (mp->entry_flags),
 				  ntohl (mp->rpf_id),
 				  ntohl (mp->next_hop_sw_if_index),
+				  &nh,
 				  ntohl (mp->itf_flags),
 				  ntohl (mp->bier_imp)));
 }
@@ -1384,8 +1399,11 @@ vl_api_ip_address_dump_t_handler (vl_api_ip_address_dump_t * mp)
   if (mp->is_ipv6)
     {
       /* *INDENT-OFF* */
-      foreach_ip_interface_address (lm6, ia, sw_if_index,
-                                    1 /* honor unnumbered */,
+      /* Do not send subnet details of the IP-interface for
+       * unnumbered interfaces. otherwise listening clients
+       * will be confused that the subnet is applied on more
+       * than one interface */
+      foreach_ip_interface_address (lm6, ia, sw_if_index, 0,
       ({
         r6 = ip_interface_address_get_address (lm6, ia);
         u16 prefix_length = ia->address_length;
@@ -1397,8 +1415,7 @@ vl_api_ip_address_dump_t_handler (vl_api_ip_address_dump_t * mp)
   else
     {
       /* *INDENT-OFF* */
-      foreach_ip_interface_address (lm4, ia, sw_if_index,
-                                    1 /* honor unnumbered */,
+      foreach_ip_interface_address (lm4, ia, sw_if_index, 0,
       ({
         r4 = ip_interface_address_get_address (lm4, ia);
         u16 prefix_length = ia->address_length;
@@ -1407,6 +1424,74 @@ vl_api_ip_address_dump_t_handler (vl_api_ip_address_dump_t * mp)
       }));
       /* *INDENT-ON* */
     }
+  BAD_SW_IF_INDEX_LABEL;
+}
+
+static void
+send_ip_unnumbered_details (vpe_api_main_t * am,
+			    vl_api_registration_t * reg,
+			    u32 sw_if_index, u32 ip_sw_if_index, u32 context)
+{
+  vl_api_ip_unnumbered_details_t *mp;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (VL_API_IP_UNNUMBERED_DETAILS);
+
+  mp->context = context;
+  mp->sw_if_index = htonl (sw_if_index);
+  mp->ip_sw_if_index = htonl (ip_sw_if_index);
+
+  vl_api_send_msg (reg, (u8 *) mp);
+}
+
+static void
+vl_api_ip_unnumbered_dump_t_handler (vl_api_ip_unnumbered_dump_t * mp)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_interface_main_t *im = &vnm->interface_main;
+  int rv __attribute__ ((unused)) = 0;
+  vpe_api_main_t *am = &vpe_api_main;
+  vl_api_registration_t *reg;
+  vnet_sw_interface_t *si;
+  u32 sw_if_index;
+
+  sw_if_index = ntohl (mp->sw_if_index);
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  if (~0 != sw_if_index)
+    {
+      VALIDATE_SW_IF_INDEX (mp);
+
+      si = vnet_get_sw_interface (vnm, ntohl (mp->sw_if_index));
+
+      if (!(si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED))
+	{
+	  send_ip_unnumbered_details (am, reg,
+				      sw_if_index,
+				      si->unnumbered_sw_if_index,
+				      mp->context);
+	}
+    }
+  else
+    {
+      /* *INDENT-OFF* */
+      pool_foreach (si, im->sw_interfaces,
+      ({
+        if ((si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED))
+          {
+            send_ip_unnumbered_details(am, reg,
+                                       si->sw_if_index,
+                                       si->unnumbered_sw_if_index,
+                                       mp->context);
+          }
+      }));
+      /* *INDENT-ON* */
+    }
+
   BAD_SW_IF_INDEX_LABEL;
 }
 
@@ -1605,7 +1690,7 @@ vl_api_ip6nd_proxy_dump_t_handler (vl_api_ip6nd_proxy_dump_t * mp)
     .indices = NULL,
   };
   fib_node_index_t *feip;
-  fib_prefix_t pfx;
+  const fib_prefix_t *pfx;
   vl_api_registration_t *reg;
 
   reg = vl_api_client_index_to_registration (mp->client_index);
@@ -1626,11 +1711,11 @@ vl_api_ip6nd_proxy_dump_t_handler (vl_api_ip6nd_proxy_dump_t * mp)
 
   vec_foreach (feip, ctx.indices)
   {
-    fib_entry_get_prefix (*feip, &pfx);
+    pfx = fib_entry_get_prefix (*feip);
 
     send_ip6nd_proxy_details (reg,
 			      mp->context,
-			      &pfx.fp_addr,
+			      &pfx->fp_addr,
 			      fib_entry_get_resolving_interface (*feip));
   }
 
@@ -2067,7 +2152,7 @@ handle_ip4_arp_event (u32 pool_index)
     }
 }
 
-void
+static void
 handle_ip6_nd_event (u32 pool_index)
 {
   vpe_api_main_t *vam = &vpe_api_main;
@@ -2252,6 +2337,7 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
             ({
 	      vl_api_registration_t *vl_reg;
               vl_reg = vl_api_client_index_to_registration (reg->client_index);
+              ASSERT (vl_reg != NULL);
 	      if (reg && vl_api_can_send_msg (vl_reg))
 	        {
 	          vl_api_ip4_arp_event_t * event = vl_msg_api_alloc (sizeof *event);
@@ -2313,6 +2399,10 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	  ra_report_t *ra_events = event_data;
 	  for (i = 0; i < vec_len (ra_events); i++)
 	    {
+	      ip6_neighbor_public_main_t *npm = &ip6_neighbor_public_main;
+	      call_ip6_neighbor_callbacks (&ra_events[i],
+					   npm->ra_report_functions);
+
 	      vpe_client_registration_t *reg;
               /* *INDENT-OFF* */
               pool_foreach(reg, vpe_api_main.ip6_ra_events_registrations,
@@ -2373,7 +2463,8 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		    vl_api_send_msg (vl_reg, (u8 *) event);
 		  }
               }));
-            /* *INDENT-ON* */
+              /* *INDENT-ON* */
+	      vec_free (ra_events[i].prefixes);
 	    }
 	}
       vlib_process_put_event_data (vm, event_data);
@@ -2497,6 +2588,58 @@ reply:
   REPLY_MACRO (VL_API_WANT_IP4_ARP_EVENTS_REPLY);
 }
 
+static clib_error_t *
+want_ip4_arp_events_reaper (u32 client_index)
+{
+  vpe_client_registration_t *rp;
+  vl_api_ip4_arp_event_t *event;
+  u32 *to_delete, *event_id;
+  vpe_api_main_t *am;
+  vnet_main_t *vnm;
+  uword *p;
+
+  am = &vpe_api_main;
+  vnm = vnet_get_main ();
+  to_delete = NULL;
+
+  /* clear out all of its pending resolutions */
+  /* *INDENT-OFF* */
+  pool_foreach(event, am->arp_events,
+  ({
+    if (event->client_index == client_index)
+      {
+        vec_add1(to_delete, event - am->arp_events);
+      }
+  }));
+  /* *INDENT-ON* */
+
+  vec_foreach (event_id, to_delete)
+  {
+    event = pool_elt_at_index (am->arp_events, *event_id);
+    vnet_add_del_ip4_arp_change_event
+      (vnm, arp_change_delete_callback,
+       event->pid, &event->address,
+       ip_resolver_process_node.index, IP4_ARP_EVENT,
+       ~0 /* pool index, notused */ , 0 /* is_add */ );
+  }
+  vec_free (to_delete);
+
+  /* remove from the registration hash */
+  p = hash_get (am->wc_ip4_arp_events_registration_hash, client_index);
+
+  if (p)
+    {
+      rp = pool_elt_at_index (am->wc_ip4_arp_events_registrations, p[0]);
+      pool_put (am->wc_ip4_arp_events_registrations, rp);
+      hash_unset (am->wc_ip4_arp_events_registration_hash, client_index);
+      if (pool_elts (am->wc_ip4_arp_events_registrations) == 0)
+	wc_arp_set_publisher_node (~0, REPORT_MAX);
+    }
+  return (NULL);
+}
+
+VL_MSG_API_REAPER_FUNCTION (want_ip4_arp_events_reaper);
+
 static void
 vl_api_want_ip6_nd_events_t_handler (vl_api_want_ip6_nd_events_t * mp)
 {
@@ -2580,6 +2723,59 @@ reply:
   REPLY_MACRO (VL_API_WANT_IP6_ND_EVENTS_REPLY);
 }
 
+static clib_error_t *
+want_ip6_nd_events_reaper (u32 client_index)
+{
+
+  vpe_client_registration_t *rp;
+  vl_api_ip6_nd_event_t *event;
+  u32 *to_delete, *event_id;
+  vpe_api_main_t *am;
+  vnet_main_t *vnm;
+  uword *p;
+
+  am = &vpe_api_main;
+  vnm = vnet_get_main ();
+  to_delete = NULL;
+
+  /* clear out all of its pending resolutions */
+  /* *INDENT-OFF* */
+  pool_foreach(event, am->nd_events,
+  ({
+    if (event->client_index == client_index)
+      {
+        vec_add1(to_delete, event - am->nd_events);
+      }
+  }));
+  /* *INDENT-ON* */
+
+  vec_foreach (event_id, to_delete)
+  {
+    event = pool_elt_at_index (am->nd_events, *event_id);
+    vnet_add_del_ip6_nd_change_event
+      (vnm, nd_change_delete_callback,
+       event->pid, &event->address,
+       ip_resolver_process_node.index, IP6_ND_EVENT,
+       ~0 /* pool index, notused */ , 0 /* is_add */ );
+  }
+  vec_free (to_delete);
+
+  /* remove from the registration hash */
+  p = hash_get (am->wc_ip6_nd_events_registration_hash, client_index);
+
+  if (p)
+    {
+      rp = pool_elt_at_index (am->wc_ip6_nd_events_registrations, p[0]);
+      pool_put (am->wc_ip6_nd_events_registrations, rp);
+      hash_unset (am->wc_ip6_nd_events_registration_hash, client_index);
+      if (pool_elts (am->wc_ip6_nd_events_registrations) == 0)
+	wc_nd_set_publisher_node (~0, REPORT_MAX);
+    }
+  return (NULL);
+}
+
+VL_MSG_API_REAPER_FUNCTION (want_ip6_nd_events_reaper);
+
 static void
 vl_api_want_ip6_ra_events_t_handler (vl_api_want_ip6_ra_events_t * mp)
 {
@@ -2602,8 +2798,6 @@ vl_api_want_ip6_ra_events_t_handler (vl_api_want_ip6_ra_events_t * mp)
 	  rp = pool_elt_at_index (am->ip6_ra_events_registrations, p[0]);
 	  pool_put (am->ip6_ra_events_registrations, rp);
 	  hash_unset (am->ip6_ra_events_registration_hash, mp->client_index);
-	  if (pool_elts (am->ip6_ra_events_registrations) == 0)
-	    ra_set_publisher_node (~0, REPORT_MAX);
 	  goto reply;
 	}
     }
@@ -2618,11 +2812,30 @@ vl_api_want_ip6_ra_events_t_handler (vl_api_want_ip6_ra_events_t * mp)
   rp->client_pid = ntohl (mp->pid);
   hash_set (am->ip6_ra_events_registration_hash, rp->client_index,
 	    rp - am->ip6_ra_events_registrations);
-  ra_set_publisher_node (wc_arp_process_node.index, RA_REPORT);
 
 reply:
   REPLY_MACRO (VL_API_WANT_IP6_RA_EVENTS_REPLY);
 }
+
+static clib_error_t *
+want_ip6_ra_events_reaper (u32 client_index)
+{
+  vpe_api_main_t *am = &vpe_api_main;
+  vpe_client_registration_t *rp;
+  uword *p;
+
+  p = hash_get (am->ip6_ra_events_registration_hash, client_index);
+
+  if (p)
+    {
+      rp = pool_elt_at_index (am->ip6_ra_events_registrations, p[0]);
+      pool_put (am->ip6_ra_events_registrations, rp);
+      hash_unset (am->ip6_ra_events_registration_hash, client_index);
+    }
+  return (NULL);
+}
+
+VL_MSG_API_REAPER_FUNCTION (want_ip6_ra_events_reaper);
 
 static void
 vl_api_proxy_arp_add_del_t_handler (vl_api_proxy_arp_add_del_t * mp)
@@ -2631,14 +2844,11 @@ vl_api_proxy_arp_add_del_t_handler (vl_api_proxy_arp_add_del_t * mp)
   u32 fib_index;
   int rv;
   ip4_main_t *im = &ip4_main;
-  int vnet_proxy_arp_add_del (ip4_address_t * lo_addr,
-			      ip4_address_t * hi_addr,
-			      u32 fib_index, int is_del);
   uword *p;
 
   stats_dslock_with_hint (1 /* release hint */ , 6 /* tag */ );
 
-  p = hash_get (im->fib_index_by_table_id, ntohl (mp->vrf_id));
+  p = hash_get (im->fib_index_by_table_id, ntohl (mp->proxy.vrf_id));
 
   if (!p)
     {
@@ -2648,13 +2858,101 @@ vl_api_proxy_arp_add_del_t_handler (vl_api_proxy_arp_add_del_t * mp)
 
   fib_index = p[0];
 
-  rv = vnet_proxy_arp_add_del ((ip4_address_t *) mp->low_address,
-			       (ip4_address_t *) mp->hi_address,
+  rv = vnet_proxy_arp_add_del ((ip4_address_t *) mp->proxy.low_address,
+			       (ip4_address_t *) mp->proxy.hi_address,
 			       fib_index, mp->is_add == 0);
 
 out:
   stats_dsunlock ();
   REPLY_MACRO (VL_API_PROXY_ARP_ADD_DEL_REPLY);
+}
+
+typedef struct proxy_arp_walk_ctx_t_
+{
+  vl_api_registration_t *reg;
+  u32 context;
+} proxy_arp_walk_ctx_t;
+
+static walk_rc_t
+send_proxy_arp_details (const ip4_address_t * lo_addr,
+			const ip4_address_t * hi_addr,
+			u32 fib_index, void *data)
+{
+  vl_api_proxy_arp_details_t *mp;
+  proxy_arp_walk_ctx_t *ctx;
+
+  ctx = data;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (VL_API_PROXY_ARP_DETAILS);
+  mp->context = ctx->context;
+  mp->proxy.vrf_id = htonl (fib_index);
+  clib_memcpy (mp->proxy.low_address, lo_addr,
+	       sizeof (mp->proxy.low_address));
+  clib_memcpy (mp->proxy.hi_address, hi_addr, sizeof (mp->proxy.hi_address));
+
+  vl_api_send_msg (ctx->reg, (u8 *) mp);
+
+  return (WALK_CONTINUE);
+}
+
+static void
+vl_api_proxy_arp_dump_t_handler (vl_api_proxy_arp_dump_t * mp)
+{
+  vl_api_registration_t *reg;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  proxy_arp_walk_ctx_t wctx = {
+    .reg = reg,
+    .context = mp->context,
+  };
+
+  proxy_arp_walk (send_proxy_arp_details, &wctx);
+}
+
+static walk_rc_t
+send_proxy_arp_intfc_details (vnet_main_t * vnm,
+			      vnet_sw_interface_t * si, void *data)
+{
+  vl_api_proxy_arp_intfc_details_t *mp;
+  proxy_arp_walk_ctx_t *ctx;
+
+  if (!(si->flags & VNET_SW_INTERFACE_FLAG_PROXY_ARP))
+    return (WALK_CONTINUE);
+
+  ctx = data;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (VL_API_PROXY_ARP_INTFC_DETAILS);
+  mp->context = ctx->context;
+  mp->sw_if_index = htonl (si->sw_if_index);
+
+  vl_api_send_msg (ctx->reg, (u8 *) mp);
+
+  return (WALK_CONTINUE);
+}
+
+static void
+vl_api_proxy_arp_intfc_dump_t_handler (vl_api_proxy_arp_intfc_dump_t * mp)
+{
+  vl_api_registration_t *reg;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  proxy_arp_walk_ctx_t wctx = {
+    .reg = reg,
+    .context = mp->context,
+  };
+
+  vnet_sw_interface_walk (vnet_get_main (),
+			  send_proxy_arp_intfc_details, &wctx);
 }
 
 static void
@@ -2680,6 +2978,55 @@ static void
   BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_PROXY_ARP_INTFC_ENABLE_DISABLE_REPLY);
+}
+
+static void
+vl_api_ip_probe_neighbor_t_handler (vl_api_ip_probe_neighbor_t * mp)
+{
+  int rv = 0;
+  vlib_main_t *vm = vlib_get_main ();
+  vl_api_ip_probe_neighbor_reply_t *rmp;
+  clib_error_t *error;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+
+  if (mp->is_ipv6)
+    error = ip6_probe_neighbor (vm, (ip6_address_t *) mp->dst_address,
+				sw_if_index, 0);
+  else
+    error = ip4_probe_neighbor (vm, (ip4_address_t *) mp->dst_address,
+				sw_if_index, 0);
+
+  if (error)
+    {
+      clib_error_report (error);
+      rv = clib_error_get_code (error);
+    }
+
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_PROXY_ARP_INTFC_ENABLE_DISABLE_REPLY);
+}
+
+static void
+  vl_api_ip_scan_neighbor_enable_disable_t_handler
+  (vl_api_ip_scan_neighbor_enable_disable_t * mp)
+{
+  int rv = 0;
+  vl_api_ip_scan_neighbor_enable_disable_reply_t *rmp;
+  ip_neighbor_scan_arg_t arg;
+
+  arg.mode = mp->mode;
+  arg.scan_interval = mp->scan_interval;
+  arg.max_proc_time = mp->max_proc_time;
+  arg.max_update = mp->max_update;
+  arg.scan_int_delay = mp->scan_int_delay;
+  arg.stale_threshold = mp->stale_threshold;
+  ip_neighbor_scan_enable_disable (&arg);
+
+  REPLY_MACRO (VL_API_IP_SCAN_NEIGHBOR_ENABLE_DISABLE_REPLY);
 }
 
 static int
@@ -2904,6 +3251,23 @@ vl_api_ip_reassembly_get_t_handler (vl_api_ip_reassembly_get_t * mp)
   vl_msg_api_send_shmem (q, (u8 *) & rmp);
 }
 
+void
+  vl_api_ip_reassembly_enable_disable_t_handler
+  (vl_api_ip_reassembly_enable_disable_t * mp)
+{
+  vl_api_ip_reassembly_enable_disable_reply_t *rmp;
+  int rv = 0;
+  rv = ip4_reass_enable_disable (clib_net_to_host_u32 (mp->sw_if_index),
+				 mp->enable_ip4);
+  if (0 == rv)
+    {
+      rv = ip6_reass_enable_disable (clib_net_to_host_u32 (mp->sw_if_index),
+				     mp->enable_ip6);
+    }
+
+  REPLY_MACRO (VL_API_IP_REASSEMBLY_SET_REPLY);
+}
+
 #define vl_msg_name_crc_list
 #include <vnet/ip/ip.api.h>
 #undef vl_msg_name_crc_list
@@ -2935,6 +3299,8 @@ ip_api_hookup (vlib_main_t * vm)
    * Set up the (msg_name, crc, message-id) table
    */
   setup_message_id_table (am);
+
+  ra_set_publisher_node (wc_arp_process_node.index, RA_REPORT);
 
   return 0;
 }

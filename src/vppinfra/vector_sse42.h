@@ -41,6 +41,48 @@
 #include <vppinfra/error_bootstrap.h>	/* for ASSERT */
 #include <x86intrin.h>
 
+/* *INDENT-OFF* */
+#define foreach_sse42_vec128i \
+  _(i,8,16,epi8) _(i,16,8,epi16) _(i,32,4,epi32)  _(i,64,2,epi64x)
+#define foreach_sse42_vec128u \
+  _(u,8,16,epi8) _(u,16,8,epi16) _(u,32,4,epi32)  _(u,64,2,epi64x)
+#define foreach_sse42_vec128f \
+  _(f,32,4,ps) _(f,64,2,pd)
+
+/* splat, load_unaligned, store_unaligned, is_all_zero, is_equal,
+   is_all_equal */
+#define _(t, s, c, i) \
+static_always_inline t##s##x##c						\
+t##s##x##c##_splat (t##s x)						\
+{ return (t##s##x##c) _mm_set1_##i (x); }				\
+\
+static_always_inline t##s##x##c						\
+t##s##x##c##_load_unaligned (void *p)					\
+{ return (t##s##x##c) _mm_loadu_si128 (p); }				\
+\
+static_always_inline void						\
+t##s##x##c##_store_unaligned (t##s##x##c v, void *p)			\
+{ _mm_storeu_si128 ((__m128i *) p, (__m128i) v); }			\
+\
+static_always_inline int						\
+t##s##x##c##_is_all_zero (t##s##x##c x)					\
+{ return _mm_testz_si128 ((__m128i) x, (__m128i) x); }			\
+\
+static_always_inline int						\
+t##s##x##c##_is_equal (t##s##x##c a, t##s##x##c b)			\
+{ return t##s##x##c##_is_all_zero (a ^ b); }				\
+\
+static_always_inline int						\
+t##s##x##c##_is_all_equal (t##s##x##c v, t##s x)			\
+{ return t##s##x##c##_is_equal (v, t##s##x##c##_splat (x)); };		\
+
+foreach_sse42_vec128i foreach_sse42_vec128u
+#undef _
+/* *INDENT-ON* */
+
+#define CLIB_VEC128_SPLAT_DEFINED
+#define CLIB_HAVE_VEC128_UNALIGNED_LOAD_STORE
+
 /* 128 bit interleaves. */
 always_inline u8x16
 u8x16_interleave_hi (u8x16 a, u8x16 b)
@@ -197,16 +239,6 @@ u64x2_write_hi (u64x2 x, u64 * a)
 }
 #endif
 
-/* Unaligned loads/stores. */
-
-#define _(t)						\
-  always_inline void t##_store_unaligned (t x, t * a)	\
-  { _mm_storeu_si128 ((__m128i *) a, (__m128i) x); }	\
-  always_inline t t##_load_unaligned (t * a)		\
-  { return (t) _mm_loadu_si128 ((__m128i *) a); }
-
-_(u8x16) _(u16x8) _(u32x4) _(u64x2) _(i8x16) _(i16x8) _(i32x4) _(i64x2)
-#undef _
 #define _signed_binop(n,m,f,g)                                         \
   /* Unsigned */                                                       \
   always_inline u##n##x##m                                             \
@@ -218,7 +250,7 @@ _(u8x16) _(u16x8) _(u32x4) _(u64x2) _(i8x16) _(i16x8) _(i32x4) _(i64x2)
   i##n##x##m##_##f (i##n##x##m x, i##n##x##m y)                        \
   { return (i##n##x##m) _mm_##g##n ((__m128i) x, (__m128i) y); }
 /* Addition/subtraction with saturation. */
-  _signed_binop (8, 16, add_saturate, adds_epu)
+_signed_binop (8, 16, add_saturate, adds_epu)
 _signed_binop (16, 8, add_saturate, adds_epu)
 _signed_binop (8, 16, sub_saturate, subs_epu)
 _signed_binop (16, 8, sub_saturate, subs_epu)
@@ -403,30 +435,6 @@ _(u64, 2, right, left);
 #undef _
 #endif
 
-always_inline int
-u8x16_is_all_zero (u8x16 x)
-{
-  return _mm_testz_si128 ((__m128i) x, (__m128i) x);
-}
-
-always_inline int
-u16x8_is_all_zero (u16x8 x)
-{
-  return _mm_testz_si128 ((__m128i) x, (__m128i) x);
-}
-
-always_inline int
-u32x4_is_all_zero (u32x4 x)
-{
-  return _mm_testz_si128 ((__m128i) x, (__m128i) x);
-}
-
-always_inline int
-u64x2_is_all_zero (u64x2 x)
-{
-  return _mm_testz_si128 ((__m128i) x, (__m128i) x);
-}
-
 #define u32x4_select(A,MASK)						\
 ({									\
   u32x4 _x, _y;								\
@@ -495,21 +503,21 @@ always_inline u32
 u8x16_zero_byte_mask (u8x16 x)
 {
   u8x16 zero = { 0 };
-  return u8x16_compare_byte_mask (u8x16_is_equal (x, zero));
+  return u8x16_compare_byte_mask (x == zero);
 }
 
 always_inline u32
 u16x8_zero_byte_mask (u16x8 x)
 {
   u16x8 zero = { 0 };
-  return u8x16_compare_byte_mask ((u8x16) u16x8_is_equal (x, zero));
+  return u8x16_compare_byte_mask ((u8x16) (x == zero));
 }
 
 always_inline u32
 u32x4_zero_byte_mask (u32x4 x)
 {
   u32x4 zero = { 0 };
-  return u8x16_compare_byte_mask ((u8x16) u32x4_is_equal (x, zero));
+  return u8x16_compare_byte_mask ((u8x16) (x == zero));
 }
 
 always_inline u8x16
@@ -574,7 +582,72 @@ i16x8_min_scalar (i16x8 x)
   return _mm_extract_epi16 ((__m128i) x, 0);
 }
 
+static_always_inline u16
+u8x16_msb_mask (u8x16 v)
+{
+  return _mm_movemask_epi8 ((__m128i) v);
+}
+
+#define CLIB_HAVE_VEC128_MSB_MASK
+
 #undef _signed_binop
+
+static_always_inline u16x8
+u16x8_byte_swap (u16x8 v)
+{
+  u8x16 swap = {
+    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14,
+  };
+  return (u16x8) _mm_shuffle_epi8 ((__m128i) v, (__m128i) swap);
+}
+
+static_always_inline u32x4
+u32x4_hadd (u32x4 v1, u32x4 v2)
+{
+  return (u32x4) _mm_hadd_epi32 ((__m128i) v1, (__m128i) v2);
+}
+
+static_always_inline u8x16
+u8x16_shuffle (u8x16 v, u8x16 m)
+{
+  return (u8x16) _mm_shuffle_epi8 ((__m128i) v, (__m128i) m);
+}
+
+static_always_inline u32x4
+u32x4_shuffle (u32x4 v, const int a, const int b, const int c, const int d)
+{
+#if defined(__clang__) || CLIB_DEBUG > 0
+  u32x4 r = { v[a], v[b], v[c], v[d] };
+  return r;
+#else
+  return (u32x4) _mm_shuffle_epi32 ((__m128i) v,
+				    a | b << 2 | c << 4 | d << 6);
+#endif
+}
+
+/* _extend_to_ */
+/* *INDENT-OFF* */
+#define _(f,t,i) \
+static_always_inline t							\
+f##_extend_to_##t (f x)							\
+{ return (t) _mm_cvt##i ((__m128i) x); }
+
+_(u8x16, u16x8, epu8_epi16)
+_(u8x16, u32x4, epu8_epi32)
+_(u8x16, u64x2, epu8_epi64)
+_(u16x8, u32x4, epu16_epi32)
+_(u16x8, u64x2, epu16_epi64)
+_(u32x4, u64x2, epu32_epi64)
+
+_(i8x16, i16x8, epi8_epi16)
+_(i8x16, i32x4, epi8_epi32)
+_(i8x16, i64x2, epi8_epi64)
+_(i16x8, i32x4, epi16_epi32)
+_(i16x8, i64x2, epi16_epi64)
+_(i32x4, i64x2, epi32_epi64)
+#undef _
+/* *INDENT-ON* */
+
 
 #endif /* included_vector_sse2_h */
 

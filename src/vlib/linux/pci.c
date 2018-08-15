@@ -263,6 +263,17 @@ vlib_pci_get_device_info (vlib_pci_addr_t * addr, clib_error_t ** error)
 	  di->iommu_group = atoi ((char *) tmpstr);
 	  vec_free (tmpstr);
 	}
+      vec_reset_length (f);
+      f = format (f, "%v/iommu_group/name%c", dev_dir_name, 0);
+      err = clib_sysfs_read ((char *) f, "%s", &tmpstr);
+      if (err == 0)
+	{
+	  if (strncmp ((char *) tmpstr, "vfio-noiommu", 12) == 0)
+	    di->flags |= VLIB_PCI_DEVICE_INFO_F_NOIOMMU;
+	  vec_free (tmpstr);
+	}
+      else
+	clib_error_free (err);
     }
 
   close (fd);
@@ -431,7 +442,8 @@ vlib_pci_bind_to_uio (vlib_pci_addr_t * addr, char *uio_drv_name)
       memset (&ifr, 0, sizeof ifr);
       memset (&drvinfo, 0, sizeof drvinfo);
       ifr.ifr_data = (char *) &drvinfo;
-      strncpy (ifr.ifr_name, e->d_name, IFNAMSIZ - 1);
+      strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name));
+      ifr.ifr_name[ARRAY_LEN (ifr.ifr_name) - 1] = '\0';
       drvinfo.cmd = ETHTOOL_GDRVINFO;
       if (ioctl (fd, SIOCETHTOOL, &ifr) < 0)
 	{
@@ -446,7 +458,8 @@ vlib_pci_bind_to_uio (vlib_pci_addr_t * addr, char *uio_drv_name)
 	continue;
 
       memset (&ifr, 0, sizeof (ifr));
-      strncpy (ifr.ifr_name, e->d_name, IFNAMSIZ - 1);
+      strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name));
+      ifr.ifr_name[ARRAY_LEN (ifr.ifr_name) - 1] = '\0';
       if (ioctl (fd, SIOCGIFFLAGS, &ifr) < 0)
 	{
 	  error = clib_error_return_unix (0, "ioctl fetch intf %s flags",
@@ -695,7 +708,7 @@ add_device_uio (linux_pci_device_t * p, vlib_pci_device_info_t * di,
     err = r->init_function (lpm->vlib_main, p->handle);
 
 error:
-  free (s);
+  vec_free (s);
   if (err)
     {
       if (p->config_fd != -1)
@@ -908,8 +921,9 @@ error:
     {
       if (p->fd != -1)
 	close (p->fd);
-      if (p->config_fd != -1)
+      if (p->config_fd != -1 && p->config_fd != p->fd)
 	close (p->config_fd);
+      p->config_fd = p->fd = -1;
     }
   return err;
 }

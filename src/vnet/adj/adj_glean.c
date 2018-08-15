@@ -77,8 +77,8 @@ adj_glean_add_or_lock (fib_protocol_t proto,
 	adj->rewrite_header.sw_if_index = sw_if_index;
 	adj->rewrite_header.data_bytes = 0;
         adj->rewrite_header.max_l3_packet_bytes =
-            vnet_sw_interface_get_mtu(vnet_get_main(), sw_if_index, VLIB_TX);
-
+	  vnet_sw_interface_get_mtu(vnet_get_main(), sw_if_index,
+                                    vnet_link_to_mtu(linkt));
         adj_lock(adj_get_index(adj));
 
 	vnet_update_adjacency_for_sw_interface(vnet_get_main(),
@@ -173,12 +173,14 @@ VNET_SW_INTERFACE_ADMIN_UP_DOWN_FUNCTION(adj_glean_interface_state_change);
  * @brief Invoked on each SW interface of a HW interface when the
  * HW interface state changes
  */
-static void
+static walk_rc_t
 adj_nbr_hw_sw_interface_state_change (vnet_main_t * vnm,
                                       u32 sw_if_index,
                                       void *arg)
 {
     adj_glean_interface_state_change(vnm, sw_if_index, (uword) arg);
+
+    return (WALK_CONTINUE);
 }
 
 /**
@@ -262,16 +264,10 @@ format_adj_glean (u8* s, va_list *ap)
 {
     index_t index = va_arg(*ap, index_t);
     CLIB_UNUSED(u32 indent) = va_arg(*ap, u32);
-    vnet_main_t * vnm = vnet_get_main();
     ip_adjacency_t * adj = adj_get(index);
 
     s = format(s, "%U-glean: %U",
                format_fib_protocol, adj->ia_nh_proto,
-               format_vnet_sw_interface_name,
-               vnm,
-               vnet_get_sw_interface(vnm,
-                                     adj->rewrite_header.sw_if_index));
-    s = format (s, " %U",
 		format_vnet_rewrite,
 		&adj->rewrite_header, sizeof (adj->rewrite_data), 0);
 

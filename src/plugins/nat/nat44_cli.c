@@ -20,16 +20,26 @@
 #include <nat/nat.h>
 #include <nat/nat_ipfix_logging.h>
 #include <nat/nat_det.h>
+#include <nat/nat_inlines.h>
 #include <vnet/fib/fib_table.h>
+
+#define UNSUPPORTED_IN_DET_MODE_STR \
+  "This command is unsupported in deterministic mode"
+#define SUPPORTED_ONLY_IN_DET_MODE_STR \
+  "This command is supported only in deterministic mode"
 
 static clib_error_t *
 set_workers_command_fn (vlib_main_t * vm,
 			unformat_input_t * input, vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
   uword *bitmap = 0;
   int rv = 0;
   clib_error_t *error = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -82,6 +92,9 @@ nat_show_workers_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
 {
   snat_main_t *sm = &snat_main;
   u32 *worker;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   if (sm->num_workers > 1)
     {
@@ -146,13 +159,59 @@ done:
 }
 
 static clib_error_t *
+nat44_show_hash_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
+			    vlib_cli_command_t * cmd)
+{
+  snat_main_t *sm = &snat_main;
+  snat_main_per_thread_data_t *tsm;
+  int i;
+  int verbose = 0;
+
+  if (unformat (input, "detail"))
+    verbose = 1;
+  else if (unformat (input, "verbose"))
+    verbose = 2;
+
+  vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->static_mapping_by_local,
+		   verbose);
+  vlib_cli_output (vm, "%U",
+		   format_bihash_8_8, &sm->static_mapping_by_external,
+		   verbose);
+  vec_foreach_index (i, sm->per_thread_data)
+  {
+    tsm = vec_elt_at_index (sm->per_thread_data, i);
+    vlib_cli_output (vm, "-------- thread %d %s --------\n",
+		     i, vlib_worker_threads[i].name);
+    if (sm->endpoint_dependent)
+      {
+	vlib_cli_output (vm, "%U", format_bihash_16_8, &tsm->in2out_ed,
+			 verbose);
+	vlib_cli_output (vm, "%U", format_bihash_16_8, &tsm->out2in_ed,
+			 verbose);
+      }
+    else
+      {
+	vlib_cli_output (vm, "%U", format_bihash_8_8, &tsm->in2out, verbose);
+	vlib_cli_output (vm, "%U", format_bihash_8_8, &tsm->out2in, verbose);
+      }
+    vlib_cli_output (vm, "%U", format_bihash_8_8, &tsm->user_hash, verbose);
+  }
+
+  return 0;
+}
+
+static clib_error_t *
 nat44_set_alloc_addr_and_port_alg_command_fn (vlib_main_t * vm,
 					      unformat_input_t * input,
 					      vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
   u32 psid, psid_offset, psid_length;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -196,6 +255,9 @@ add_address_command_fn (vlib_main_t * vm,
   int rv = 0;
   clib_error_t *error = 0;
   u8 twice_nat = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -241,7 +303,7 @@ add_address_command_fn (vlib_main_t * vm,
   count = (end_host_order - start_host_order) + 1;
 
   if (count > 1024)
-    clib_warning ("%U - %U, %d addresses...",
+    nat_log_info ("%U - %U, %d addresses...",
 		  format_ip4_address, &start_addr,
 		  format_ip4_address, &end_addr, count);
 
@@ -250,18 +312,26 @@ add_address_command_fn (vlib_main_t * vm,
   for (i = 0; i < count; i++)
     {
       if (is_add)
-	snat_add_address (sm, &this_addr, vrf_id, twice_nat);
+	rv = snat_add_address (sm, &this_addr, vrf_id, twice_nat);
       else
 	rv = snat_del_address (sm, this_addr, 0, twice_nat);
 
       switch (rv)
 	{
+	case VNET_API_ERROR_VALUE_EXIST:
+	  error = clib_error_return (0, "NAT address already in use.");
+	  goto done;
 	case VNET_API_ERROR_NO_SUCH_ENTRY:
-	  error = clib_error_return (0, "S-NAT address not exist.");
+	  error = clib_error_return (0, "NAT address not exist.");
 	  goto done;
 	case VNET_API_ERROR_UNSPECIFIED:
 	  error =
-	    clib_error_return (0, "S-NAT address used in static mapping.");
+	    clib_error_return (0, "NAT address used in static mapping.");
+	  goto done;
+	case VNET_API_ERROR_FEATURE_DISABLED:
+	  error =
+	    clib_error_return (0,
+			       "twice NAT available only for endpoint-dependent mode.");
 	  goto done;
 	default:
 	  break;
@@ -285,6 +355,9 @@ nat44_show_addresses_command_fn (vlib_main_t * vm, unformat_input_t * input,
 {
   snat_main_t *sm = &snat_main;
   snat_address_t *ap;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   vlib_cli_output (vm, "NAT44 pool addresses:");
   /* *INDENT-OFF* */
@@ -468,6 +541,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
 			       vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
   ip4_address_t l_addr, e_addr;
   u32 l_port = 0, e_port = 0, vrf_id = ~0;
@@ -478,8 +552,11 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   int rv;
   snat_protocol_t proto = ~0;
   u8 proto_set = 0;
-  u8 twice_nat = 0;
+  twice_nat_type_t twice_nat = TWICE_NAT_DISABLED;
   u8 out2in_only = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -512,7 +589,9 @@ add_static_mapping_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "%U", unformat_snat_protocol, &proto))
 	proto_set = 1;
       else if (unformat (line_input, "twice-nat"))
-	twice_nat = 1;
+	twice_nat = TWICE_NAT;
+      else if (unformat (line_input, "self-twice-nat"))
+	twice_nat = TWICE_NAT_SELF;
       else if (unformat (line_input, "out2in-only"))
 	out2in_only = 1;
       else if (unformat (line_input, "del"))
@@ -558,6 +637,11 @@ add_static_mapping_command_fn (vlib_main_t * vm,
     case VNET_API_ERROR_VALUE_EXIST:
       error = clib_error_return (0, "Mapping already exist.");
       goto done;
+    case VNET_API_ERROR_FEATURE_DISABLED:
+      error =
+	clib_error_return (0,
+			   "twice-nat/out2in-only available only for endpoint-dependent mode.");
+      goto done;
     default:
       break;
     }
@@ -574,6 +658,7 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
 				 vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
   ip4_address_t addr;
   u32 port = 0, vrf_id = ~0;
@@ -583,6 +668,9 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
   vnet_main_t *vnm = vnet_get_main ();
   int rv;
   snat_protocol_t proto;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   addr.as_u32 = 0;
 
@@ -649,6 +737,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 				  vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
   ip4_address_t l_addr, e_addr;
   u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0;
@@ -657,8 +746,11 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
   snat_protocol_t proto;
   u8 proto_set = 0;
   nat44_lb_addr_port_t *locals = 0, local;
-  u8 twice_nat = 0;
+  twice_nat_type_t twice_nat = TWICE_NAT_DISABLED;
   u8 out2in_only = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -675,16 +767,27 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 	  local.probability = (u8) probability;
 	  vec_add1 (locals, local);
 	}
+      else if (unformat (line_input, "local %U:%u vrf %u probability %u",
+			 unformat_ip4_address, &l_addr, &l_port, &vrf_id,
+			 &probability))
+	{
+	  memset (&local, 0, sizeof (local));
+	  local.addr = l_addr;
+	  local.port = (u16) l_port;
+	  local.probability = (u8) probability;
+	  local.vrf_id = vrf_id;
+	  vec_add1 (locals, local);
+	}
       else if (unformat (line_input, "external %U:%u", unformat_ip4_address,
 			 &e_addr, &e_port))
-	;
-      else if (unformat (line_input, "vrf %u", &vrf_id))
 	;
       else if (unformat (line_input, "protocol %U", unformat_snat_protocol,
 			 &proto))
 	proto_set = 1;
       else if (unformat (line_input, "twice-nat"))
-	twice_nat = 1;
+	twice_nat = TWICE_NAT;
+      else if (unformat (line_input, "self-twice-nat"))
+	twice_nat = TWICE_NAT_SELF;
       else if (unformat (line_input, "out2in-only"))
 	out2in_only = 1;
       else if (unformat (line_input, "del"))
@@ -709,9 +812,8 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  rv = nat44_add_del_lb_static_mapping (e_addr, (u16) e_port, proto, vrf_id,
-					locals, is_add, twice_nat,
-					out2in_only, 0);
+  rv = nat44_add_del_lb_static_mapping (e_addr, (u16) e_port, proto, locals,
+					is_add, twice_nat, out2in_only, 0);
 
   switch (rv)
     {
@@ -726,6 +828,10 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       goto done;
     case VNET_API_ERROR_VALUE_EXIST:
       error = clib_error_return (0, "Mapping already exist.");
+      goto done;
+    case VNET_API_ERROR_FEATURE_DISABLED:
+      error =
+	clib_error_return (0, "Available only for endpoint-dependent mode.");
       goto done;
     default:
       break;
@@ -746,6 +852,9 @@ nat44_show_static_mappings_command_fn (vlib_main_t * vm,
   snat_main_t *sm = &snat_main;
   snat_static_mapping_t *m;
   snat_static_map_resolve_t *rp;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   vlib_cli_output (vm, "NAT44 static mappings:");
   /* *INDENT-OFF* */
@@ -772,6 +881,9 @@ snat_add_interface_address_command_fn (vlib_main_t * vm,
   int is_del = 0;
   clib_error_t *error = 0;
   u8 twice_nat = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -822,6 +934,9 @@ nat44_show_interface_address_command_fn (vlib_main_t * vm,
   vnet_main_t *vnm = vnet_get_main ();
   u32 *sw_if_index;
 
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
   /* *INDENT-OFF* */
   vlib_cli_output (vm, "NAT44 pool address interfaces:");
   vec_foreach (sw_if_index, sm->auto_add_sw_if_indices)
@@ -850,6 +965,9 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
   snat_user_t *u;
   int i = 0;
 
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
   if (unformat (input, "detail"))
     verbose = 1;
 
@@ -860,6 +978,8 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
     {
       tsm = vec_elt_at_index (sm->per_thread_data, i);
 
+      vlib_cli_output (vm, "-------- thread %d %s --------\n",
+                       i, vlib_worker_threads[i].name);
       pool_foreach (u, tsm->users,
       ({
         vlib_cli_output (vm, "  %U", format_snat_user, tsm, u, verbose);
@@ -877,12 +997,15 @@ nat44_del_session_command_fn (vlib_main_t * vm,
 {
   snat_main_t *sm = &snat_main;
   unformat_input_t _line_input, *line_input = &_line_input;
-  int is_in = 0;
+  int is_in = 0, is_ed = 0;
   clib_error_t *error = 0;
-  ip4_address_t addr;
-  u32 port = 0, vrf_id = sm->outside_vrf_id;
+  ip4_address_t addr, eh_addr;
+  u32 port = 0, eh_port = 0, vrf_id = sm->outside_vrf_id;
   snat_protocol_t proto;
   int rv;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -899,8 +1022,18 @@ nat44_del_session_command_fn (vlib_main_t * vm,
 	  is_in = 1;
 	  vrf_id = sm->inside_vrf_id;
 	}
+      else if (unformat (line_input, "out"))
+	{
+	  is_in = 0;
+	  vrf_id = sm->outside_vrf_id;
+	}
       else if (unformat (line_input, "vrf %u", &vrf_id))
 	;
+      else
+	if (unformat
+	    (line_input, "external-host %U:%u", unformat_ip4_address,
+	     &eh_addr, &eh_port))
+	is_ed = 1;
       else
 	{
 	  error = clib_error_return (0, "unknown input '%U'",
@@ -909,7 +1042,12 @@ nat44_del_session_command_fn (vlib_main_t * vm,
 	}
     }
 
-  rv = nat44_del_session (sm, &addr, port, proto, vrf_id, is_in);
+  if (is_ed)
+    rv =
+      nat44_del_ed_session (sm, &addr, port, &eh_addr, eh_port,
+			    snat_proto_to_ip_proto (proto), vrf_id, is_in);
+  else
+    rv = nat44_del_session (sm, &addr, port, proto, vrf_id, is_in);
 
   switch (rv)
     {
@@ -937,6 +1075,9 @@ snat_forwarding_set_command_fn (vlib_main_t * vm,
   u8 forwarding_enable;
   u8 forwarding_enable_set = 0;
   clib_error_t *error = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -987,6 +1128,9 @@ snat_det_map_command_fn (vlib_main_t * vm,
   int is_add = 1, rv;
   clib_error_t *error = 0;
 
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
+
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1034,6 +1178,9 @@ nat44_det_show_mappings_command_fn (vlib_main_t * vm,
   snat_main_t *sm = &snat_main;
   snat_det_map_t *dm;
 
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
+
   vlib_cli_output (vm, "NAT44 deterministic mappings:");
   /* *INDENT-OFF* */
   pool_foreach (dm, sm->det_maps,
@@ -1063,6 +1210,9 @@ snat_det_forward_command_fn (vlib_main_t * vm,
   u16 lo_port;
   snat_det_map_t *dm;
   clib_error_t *error = 0;
+
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1107,6 +1257,9 @@ snat_det_reverse_command_fn (vlib_main_t * vm,
   u32 out_port;
   snat_det_map_t *dm;
   clib_error_t *error = 0;
+
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1154,6 +1307,9 @@ set_timeout_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   clib_error_t *error = 0;
 
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
+
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1198,6 +1354,9 @@ nat44_det_show_timeouts_command_fn (vlib_main_t * vm,
 {
   snat_main_t *sm = &snat_main;
 
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
+
   vlib_cli_output (vm, "udp timeout: %dsec", sm->udp_timeout);
   vlib_cli_output (vm, "tcp-established timeout: %dsec",
 		   sm->tcp_established_timeout);
@@ -1217,6 +1376,9 @@ nat44_det_show_sessions_command_fn (vlib_main_t * vm,
   snat_det_map_t *dm;
   snat_det_session_t *ses;
   int i;
+
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   vlib_cli_output (vm, "NAT44 deterministic sessions:");
   /* *INDENT-OFF* */
@@ -1246,6 +1408,9 @@ snat_det_close_session_out_fn (vlib_main_t * vm,
   snat_det_session_t *ses;
   snat_det_out_key_t key;
   clib_error_t *error = 0;
+
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1302,6 +1467,9 @@ snat_det_close_session_in_fn (vlib_main_t * vm,
   snat_det_session_t *ses;
   snat_det_out_key_t key;
   clib_error_t *error = 0;
+
+  if (!sm->deterministic)
+    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1407,6 +1575,18 @@ VLIB_CLI_COMMAND (nat44_set_alloc_addr_and_port_alg_command, static) = {
 
 /*?
  * @cliexpar
+ * @cliexstart{show nat44 hash tables}
+ * Show NAT44 hash tables
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat44_show_hash, static) = {
+  .path = "show nat44 hash tables",
+  .short_help = "show nat44 hash tables [detail|verbose]",
+  .function = nat44_show_hash_commnad_fn,
+};
+
+/*?
+ * @cliexpar
  * @cliexstart{nat44 add address}
  * Add/delete NAT44 pool address.
  * To add NAT44 pool address use:
@@ -1505,7 +1685,8 @@ VLIB_CLI_COMMAND (add_static_mapping_command, static) = {
   .function = add_static_mapping_command_fn,
   .short_help =
     "nat44 add static mapping tcp|udp|icmp local <addr> [<port>] "
-    "external <addr> [<port>] [vrf <table-id>] [twice-nat] [out2in-only] [del]",
+    "external <addr> [<port>] [vrf <table-id>] [twice-nat|self-twice-nat] "
+    "[out2in-only] [del]",
 };
 
 /*?
@@ -1543,8 +1724,8 @@ VLIB_CLI_COMMAND (add_lb_static_mapping_command, static) = {
   .function = add_lb_static_mapping_command_fn,
   .short_help =
     "nat44 add load-balancing static mapping protocol tcp|udp "
-    "external <addr>:<port> local <addr>:<port> probability <n> [twice-nat] "
-    "[vrf <table-id>] [out2in-only] [del]",
+    "external <addr>:<port> local <addr>:<port> [vrf <table-id>] "
+    "probability <n> [twice-nat|self-twice-nat] [out2in-only] [del]",
 };
 
 /*?
@@ -1622,7 +1803,7 @@ VLIB_CLI_COMMAND (nat44_show_sessions_command, static) = {
 ?*/
 VLIB_CLI_COMMAND (nat44_del_session_command, static) = {
     .path = "nat44 del session",
-    .short_help = "nat44 del session in|out <addr>:<port> tcp|udp|icmp [vrf <id>]",
+    .short_help = "nat44 del session in|out <addr>:<port> tcp|udp|icmp [vrf <id>] [external-host <addr>:<port>]",
     .function = nat44_del_session_command_fn,
 };
 

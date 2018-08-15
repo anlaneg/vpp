@@ -26,17 +26,6 @@ vat_suspend (vlib_main_t * vm, f64 interval)
   /* do nothing in the standalone version, just return */
 }
 
-void
-fformat_append_cr (FILE * ofp, const char *fmt, ...)
-{
-  va_list va;
-
-  va_start (va, fmt);
-  (void) va_fformat (ofp, (char *) fmt, &va);
-  va_end (va);
-  fformat (ofp, "\n");
-}
-
 int
 connect_to_vpe (char *name)
 {
@@ -117,7 +106,7 @@ do_one_file (vat_main_t * vam)
       vec_free (this_cmd);
 
       this_cmd =
-	(u8 *) clib_macro_eval (&vam->macro_main, (char *) vam->inbuf,
+	(u8 *) clib_macro_eval (&vam->macro_main, (i8 *) vam->inbuf,
 				1 /* complain */ );
 
       if (vam->exec_mode == 0)
@@ -305,18 +294,10 @@ main (int argc, char **argv)
   u8 *this_input_file;
   u8 interactive = 1;
   u8 json_output = 0;
-  u8 *heap;
-  mheap_t *h;
   int i;
   f64 timeout;
 
-  clib_mem_init (0, 128 << 20);
-
-  heap = clib_mem_get_per_cpu_heap ();
-  h = mheap_header (heap);
-
-  /* make the main heap thread-safe */
-  h->flags |= MHEAP_FLAG_THREAD_SAFE;
+  clib_mem_init_thread_safe (0, 128 << 20);
 
   clib_macro_init (&vam->macro_main);
   clib_macro_add_builtin (&vam->macro_main, "current_file",

@@ -30,24 +30,23 @@
 
 typedef struct
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  app_session_t data;
   u64 bytes_to_send;
   u64 bytes_sent;
   u64 bytes_to_receive;
   u64 bytes_received;
-
-  svm_fifo_t *server_rx_fifo;
-  svm_fifo_t *server_tx_fifo;
-
   u64 vpp_session_handle;
-} session_t;
+  u8 thread_index;
+} eclient_session_t;
 
 typedef struct
 {
   /*
    * Application setup parameters
    */
-  svm_queue_t *vl_input_queue;	/**< vpe input queue */
-  svm_queue_t **vpp_event_queue;
+  svm_queue_t *vl_input_queue;		/**< vpe input queue */
+  svm_msg_q_t **vpp_event_queue;
 
   u32 cli_node_index;			/**< cli process node index */
   u32 my_client_index;			/**< loopback API client handle */
@@ -65,10 +64,13 @@ typedef struct
   u32 private_segment_count;		/**< Number of private fifo segs */
   u32 private_segment_size;		/**< size of private fifo segs */
   u32 tls_engine;			/**< TLS engine mbedtls/openssl */
+  u8 is_dgram;
+  u32 no_copy;				/**< Don't memcpy data to tx fifo */
+
   /*
    * Test state variables
    */
-  session_t *sessions;			/**< Session pool, shared */
+  eclient_session_t *sessions;		/**< Session pool, shared */
   clib_spinlock_t sessions_lock;
   u8 **rx_buf;				/**< intermediate rx buffers */
   u8 *connect_test_data;		/**< Pre-computed test data */

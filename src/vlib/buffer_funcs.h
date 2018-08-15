@@ -63,6 +63,81 @@ vlib_get_buffer (vlib_main_t * vm, u32 buffer_index)
   return uword_to_pointer (bm->buffer_mem_start + offset, void *);
 }
 
+/** \brief Translate array of buffer indices into buffer pointers with offset
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param bi - (u32 *) array of buffer indices
+    @param b - (void **) array to store buffer pointers
+    @param count - (uword) number of elements
+    @param offset - (i32) offset applied to each pointer
+*/
+static_always_inline void
+vlib_get_buffers_with_offset (vlib_main_t * vm, u32 * bi, void **b, int count,
+			      i32 offset)
+{
+#ifdef CLIB_HAVE_VEC256
+  u64x4 off = u64x4_splat (buffer_main.buffer_mem_start + offset);
+  /* if count is not const, compiler will not unroll while loop
+     se we maintain two-in-parallel variant */
+  while (count >= 8)
+    {
+      u64x4 b0 = u32x4_extend_to_u64x4 (u32x4_load_unaligned (bi));
+      u64x4 b1 = u32x4_extend_to_u64x4 (u32x4_load_unaligned (bi + 4));
+      /* shift and add to get vlib_buffer_t pointer */
+      u64x4_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
+      u64x4_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 4);
+      b += 8;
+      bi += 8;
+      count -= 8;
+    }
+#endif
+  while (count >= 4)
+    {
+#ifdef CLIB_HAVE_VEC256
+      u64x4 b0 = u32x4_extend_to_u64x4 (u32x4_load_unaligned (bi));
+      /* shift and add to get vlib_buffer_t pointer */
+      u64x4_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
+#elif defined (CLIB_HAVE_VEC128) && defined (__x86_64__)
+      u64x2 off = u64x2_splat (buffer_main.buffer_mem_start + offset);
+      u32x4 bi4 = u32x4_load_unaligned (bi);
+      u64x2 b0 = u32x4_extend_to_u64x2 ((u32x4) bi4);
+      bi4 = u32x4_shuffle (bi4, 2, 3, 0, 1);
+      u64x2 b1 = u32x4_extend_to_u64x2 ((u32x4) bi4);
+      u64x2_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
+      u64x2_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 2);
+#else
+      b[0] = ((u8 *) vlib_get_buffer (vm, bi[0])) + offset;
+      b[1] = ((u8 *) vlib_get_buffer (vm, bi[1])) + offset;
+      b[2] = ((u8 *) vlib_get_buffer (vm, bi[2])) + offset;
+      b[3] = ((u8 *) vlib_get_buffer (vm, bi[3])) + offset;
+#endif
+      b += 4;
+      bi += 4;
+      count -= 4;
+    }
+  while (count)
+    {
+      b[0] = ((u8 *) vlib_get_buffer (vm, bi[0])) + offset;
+      b += 1;
+      bi += 1;
+      count -= 1;
+    }
+}
+
+/** \brief Translate array of buffer indices into buffer pointers
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param bi - (u32 *) array of buffer indices
+    @param b - (vlib_buffer_t **) array to store buffer pointers
+    @param count - (uword) number of elements
+*/
+
+static_always_inline void
+vlib_get_buffers (vlib_main_t * vm, u32 * bi, vlib_buffer_t ** b, int count)
+{
+  vlib_get_buffers_with_offset (vm, bi, (void **) b, count, 0);
+}
+
 /** \brief Translate buffer pointer into buffer index
 
     @param vm - (vlib_main_t *) vlib main data structure pointer
@@ -79,6 +154,82 @@ vlib_get_buffer_index (vlib_main_t * vm, void *p)
   ASSERT (offset < bm->buffer_mem_size);
   ASSERT ((offset % (1 << CLIB_LOG2_CACHE_LINE_BYTES)) == 0);
   return offset >> CLIB_LOG2_CACHE_LINE_BYTES;
+}
+
+/** \brief Translate array of buffer pointers into buffer indices with offset
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param b - (void **) array of buffer pointers
+    @param bi - (u32 *) array to store buffer indices
+    @param count - (uword) number of elements
+    @param offset - (i32) offset applied to each pointer
+*/
+static_always_inline void
+vlib_get_buffer_indices_with_offset (vlib_main_t * vm, void **b, u32 * bi,
+				     uword count, i32 offset)
+{
+#ifdef CLIB_HAVE_VEC256
+  u32x8 mask = { 0, 2, 4, 6, 1, 3, 5, 7 };
+  u64x4 off4 = u64x4_splat (buffer_main.buffer_mem_start - offset);
+
+  while (count >= 8)
+    {
+      /* load 4 pointers into 256-bit register */
+      u64x4 v0 = u64x4_load_unaligned (b);
+      u64x4 v1 = u64x4_load_unaligned (b + 4);
+      u32x8 v2, v3;
+
+      v0 -= off4;
+      v1 -= off4;
+
+      v0 >>= CLIB_LOG2_CACHE_LINE_BYTES;
+      v1 >>= CLIB_LOG2_CACHE_LINE_BYTES;
+
+      /* permute 256-bit register so lower u32s of each buffer index are
+       * placed into lower 128-bits */
+      v2 = u32x8_permute ((u32x8) v0, mask);
+      v3 = u32x8_permute ((u32x8) v1, mask);
+
+      /* extract lower 128-bits and save them to the array of buffer indices */
+      u32x4_store_unaligned (u32x8_extract_lo (v2), bi);
+      u32x4_store_unaligned (u32x8_extract_lo (v3), bi + 4);
+      bi += 8;
+      b += 8;
+      count -= 8;
+    }
+#endif
+  while (count >= 4)
+    {
+      /* equivalent non-nector implementation */
+      bi[0] = vlib_get_buffer_index (vm, ((u8 *) b[0]) + offset);
+      bi[1] = vlib_get_buffer_index (vm, ((u8 *) b[1]) + offset);
+      bi[2] = vlib_get_buffer_index (vm, ((u8 *) b[2]) + offset);
+      bi[3] = vlib_get_buffer_index (vm, ((u8 *) b[3]) + offset);
+      bi += 4;
+      b += 4;
+      count -= 4;
+    }
+  while (count)
+    {
+      bi[0] = vlib_get_buffer_index (vm, ((u8 *) b[0]) + offset);
+      bi += 1;
+      b += 1;
+      count -= 1;
+    }
+}
+
+/** \brief Translate array of buffer pointers into buffer indices
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param b - (vlib_buffer_t **) array of buffer pointers
+    @param bi - (u32 *) array to store buffer indices
+    @param count - (uword) number of elements
+*/
+static_always_inline void
+vlib_get_buffer_indices (vlib_main_t * vm, vlib_buffer_t ** b, u32 * bi,
+			 uword count)
+{
+  vlib_get_buffer_indices_with_offset (vm, (void **) b, bi, count, 0);
 }
 
 /** \brief Get next buffer in buffer linklist, or zero for end of list.
@@ -459,6 +610,30 @@ vlib_buffer_free_from_ring (vlib_main_t * vm, u32 * ring, u32 start,
     }
 }
 
+/** \brief Free buffers from ring without freeing tail buffers
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param buffers - (u32 * ) buffer index ring
+    @param start - (u32) first slot in the ring
+    @param ring_size - (u32) ring size
+    @param n_buffers - (u32) number of buffers
+*/
+always_inline void
+vlib_buffer_free_from_ring_no_next (vlib_main_t * vm, u32 * ring, u32 start,
+				    u32 ring_size, u32 n_buffers)
+{
+  ASSERT (n_buffers <= ring_size);
+
+  if (PREDICT_TRUE (start + n_buffers <= ring_size))
+    {
+      vlib_buffer_free_no_next (vm, ring + start, n_buffers);
+    }
+  else
+    {
+      vlib_buffer_free_no_next (vm, ring + start, ring_size - start);
+      vlib_buffer_free_no_next (vm, ring, n_buffers - (ring_size - start));
+    }
+}
 
 /* Add/delete buffer free lists. */
 vlib_buffer_free_list_index_t vlib_buffer_create_free_list (vlib_main_t * vm,
@@ -579,6 +754,7 @@ vlib_buffer_copy (vlib_main_t * vm, vlib_buffer_t * b)
   d->total_length_not_including_first_buffer =
     s->total_length_not_including_first_buffer;
   clib_memcpy (d->opaque, s->opaque, sizeof (s->opaque));
+  clib_memcpy (d->opaque2, s->opaque2, sizeof (s->opaque2));
   clib_memcpy (vlib_buffer_get_current (d),
 	       vlib_buffer_get_current (s), s->current_length);
 
@@ -655,12 +831,18 @@ vlib_buffer_clone_256 (vlib_main_t * vm, u32 src_buffer, u32 * buffers,
       d->current_length = head_end_offset;
       vlib_buffer_set_free_list_index (d,
 				       vlib_buffer_get_free_list_index (s));
-      d->total_length_not_including_first_buffer =
-	s->total_length_not_including_first_buffer + s->current_length -
+
+      d->total_length_not_including_first_buffer = s->current_length -
 	head_end_offset;
+      if (PREDICT_FALSE (s->flags & VLIB_BUFFER_NEXT_PRESENT))
+	{
+	  d->total_length_not_including_first_buffer +=
+	    s->total_length_not_including_first_buffer;
+	}
       d->flags = s->flags | VLIB_BUFFER_NEXT_PRESENT;
       d->flags &= ~VLIB_BUFFER_EXT_HDR_VALID;
       clib_memcpy (d->opaque, s->opaque, sizeof (s->opaque));
+      clib_memcpy (d->opaque2, s->opaque2, sizeof (s->opaque2));
       clib_memcpy (vlib_buffer_get_current (d), vlib_buffer_get_current (s),
 		   head_end_offset);
       d->next_buffer = src_buffer;

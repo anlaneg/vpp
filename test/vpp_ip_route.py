@@ -60,6 +60,25 @@ def find_route(test, ip_addr, len, table_id=0, inet=AF_INET):
     return False
 
 
+def find_mroute(test, grp_addr, src_addr, grp_addr_len,
+                table_id=0, inet=AF_INET):
+    if inet == AF_INET:
+        s = 4
+        routes = test.vapi.ip_mfib_dump()
+    else:
+        s = 16
+        routes = test.vapi.ip6_mfib_dump()
+    gaddr = inet_pton(inet, grp_addr)
+    saddr = inet_pton(inet, src_addr)
+    for e in routes:
+        if gaddr == e.grp_address[:s] \
+           and grp_addr_len == e.address_length \
+           and saddr == e.src_address[:s] \
+           and table_id == e.table_id:
+            return True
+    return False
+
+
 class VppIpTable(VppObject):
 
     def __init__(self,
@@ -168,16 +187,31 @@ class VppRoutePath(object):
                                'ttl': 255})
         return lstack
 
+    def encode(self):
+        return {'next_hop': self.nh_addr,
+                'weight': 1,
+                'afi': 0,
+                'preference': 0,
+                'table_id': self.nh_table_id,
+                'next_hop_id': self.next_hop_id,
+                'sw_if_index': self.nh_itf,
+                'afi': self.proto,
+                'is_udp_encap': self.is_udp_encap,
+                'n_labels': len(self.nh_labels),
+                'label_stack': self.encode_labels()}
+
 
 class VppMRoutePath(VppRoutePath):
 
     def __init__(self, nh_sw_if_index, flags,
+                 nh=None,
                  proto=DpoProto.DPO_PROTO_IP4,
                  bier_imp=0):
-        super(VppMRoutePath, self).__init__(
-            "::" if proto is DpoProto.DPO_PROTO_IP6 else "0.0.0.0",
-            nh_sw_if_index,
-            proto=proto)
+        if not nh:
+            nh = "::" if proto is DpoProto.DPO_PROTO_IP6 else "0.0.0.0"
+        super(VppMRoutePath, self).__init__(nh,
+                                            nh_sw_if_index,
+                                            proto=proto)
         self.nh_i_flags = flags
         self.bier_imp = bier_imp
 
@@ -309,6 +343,8 @@ class VppIpMRoute(VppObject):
         self.is_ip6 = is_ip6
         self.rpf_id = rpf_id
 
+        self.grp_addr_p = grp_addr
+        self.src_addr_p = src_addr
         if is_ip6:
             self.grp_addr = inet_pton(AF_INET6, grp_addr)
             self.src_addr = inet_pton(AF_INET6, src_addr)
@@ -324,6 +360,7 @@ class VppIpMRoute(VppObject):
                                               self.e_flags,
                                               path.proto,
                                               path.nh_itf,
+                                              path.nh_addr,
                                               path.nh_i_flags,
                                               bier_imp=path.bier_imp,
                                               rpf_id=self.rpf_id,
@@ -339,6 +376,7 @@ class VppIpMRoute(VppObject):
                                               self.e_flags,
                                               path.proto,
                                               path.nh_itf,
+                                              path.nh_addr,
                                               path.nh_i_flags,
                                               table_id=self.table_id,
                                               bier_imp=path.bier_imp,
@@ -353,6 +391,7 @@ class VppIpMRoute(VppObject):
                                           self.e_flags,
                                           0,
                                           0xffffffff,
+                                          "",
                                           0,
                                           table_id=self.table_id,
                                           is_ipv6=self.is_ip6)
@@ -365,6 +404,7 @@ class VppIpMRoute(VppObject):
                                           self.e_flags,
                                           0,
                                           0xffffffff,
+                                          "",
                                           0,
                                           rpf_id=self.rpf_id,
                                           table_id=self.table_id,
@@ -381,22 +421,18 @@ class VppIpMRoute(VppObject):
                                           self.e_flags,
                                           path.proto,
                                           path.nh_itf,
+                                          path.nh_addr,
                                           path.nh_i_flags,
                                           table_id=self.table_id,
                                           is_ipv6=self.is_ip6)
 
     def query_vpp_config(self):
-        if self.is_ip6:
-            dump = self._test.vapi.ip6_mfib_dump()
-        else:
-            dump = self._test.vapi.ip_mfib_dump()
-        for e in dump:
-            if self.grp_addr == e.grp_address \
-               and self.grp_addr_len == e.address_length \
-               and self.src_addr == e.src_address \
-               and self.table_id == e.table_id:
-                return True
-        return False
+        return find_mroute(self._test,
+                           self.grp_addr_p,
+                           self.src_addr_p,
+                           self.grp_addr_len,
+                           self.table_id,
+                           inet=AF_INET6 if self.is_ip6 == 1 else AF_INET)
 
     def __str__(self):
         return self.object_id()

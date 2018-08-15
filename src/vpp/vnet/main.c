@@ -13,6 +13,10 @@
  * limitations under the License.
  */
 
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <sched.h>
+
 #include <vppinfra/cpu.h>
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
@@ -20,7 +24,53 @@
 #include <vnet/ethernet/ethernet.h>
 #include <vpp/app/version.h>
 #include <vpp/api/vpe_msg_enum.h>
+#include <limits.h>
 
+/*
+ * Load plugins from /usr/lib/vpp_plugins by default
+ */
+char *vlib_plugin_path = "/usr/lib/vpp_plugins";
+char *vlib_plugin_app_version = VPP_BUILD_VER;
+
+static void
+vpp_find_plugin_path ()
+{
+  extern char *vat_plugin_path;
+  char *p, path[PATH_MAX];
+  int rv;
+  u8 *s;
+
+  /* find executable path */
+  if ((rv = readlink ("/proc/self/exe", path, PATH_MAX - 1)) == -1)
+    return;
+
+  /* readlink doesn't provide null termination */
+  path[rv] = 0;
+
+  /* strip filename */
+  if ((p = strrchr (path, '/')) == 0)
+    return;
+  *p = 0;
+
+  /* strip bin/ */
+  if ((p = strrchr (path, '/')) == 0)
+    return;
+  *p = 0;
+
+  s = format (0, "%s/lib/vpp_plugins", path);
+#if uword_bits == 64
+  s = format (s, ":%s/lib64/vpp_plugins", path);
+#endif
+  vec_add1 (s, 0);
+  vlib_plugin_path = (char *) s;
+
+  s = format (0, "%s/lib/vpp_api_test_plugins", path);
+#if uword_bits == 64
+  s = format (s, ":%s/lib64/vpp_api_test_plugins", path);
+#endif
+  vec_add1 (s, 0);
+  vat_plugin_path = (char *) s;
+}
 
 static void
 vpe_main_init (vlib_main_t * vm)
@@ -39,18 +89,14 @@ vpe_main_init (vlib_main_t * vm)
    * Create the binary api plugin hashes before loading plugins
    */
   vat_plugin_hash_create ();
+
+  vpp_find_plugin_path ();
 }
 
 /*
  * Default path for runtime data
  */
 char *vlib_default_runtime_dir = "vpp";
-
-/*
- * Load plugins from /usr/lib/vpp_plugins by default
- */
-char *vlib_plugin_path = "/usr/lib/vpp_plugins";
-char *vlib_plugin_app_version = VPP_BUILD_VER;
 
 int
 main (int argc, char *argv[])
@@ -61,6 +107,8 @@ main (int argc, char *argv[])
   uword main_heap_size = (1ULL << 30);
   u8 *sizep;
   u32 size;
+  int main_core = 1;
+  cpu_set_t cpuset;
 
 #if __x86_64__
   CLIB_UNUSED (const char *msg)
@@ -192,15 +240,30 @@ main (int argc, char *argv[])
 	  else if (*sizep == 'm' || *sizep == 'M')
 	    main_heap_size <<= 20;
 	}
+      else if (!strncmp (argv[i], "main-core", 9))
+	{
+	  if (i < (argc - 1))
+	    {
+	      errno = 0;
+	      unsigned long x = strtol (argv[++i], 0, 0);
+	      if (errno == 0)
+		main_core = x;
+	    }
+	}
     }
 
 defaulted:
+
+  /* set process affinity for main thread */
+  CPU_ZERO (&cpuset);
+  CPU_SET (main_core, &cpuset);
+  pthread_setaffinity_np (pthread_self (), sizeof (cpu_set_t), &cpuset);
 
   /* Set up the plugin message ID allocator right now... */
   vl_msg_api_set_first_available_msg_id (VL_MSG_FIRST_AVAILABLE);
 
   /* Allocate main heap */
-  if (clib_mem_init (0, main_heap_size))
+  if (clib_mem_init_thread_safe (0, main_heap_size))
     {
       vm->init_functions_called = hash_create (0, /* value bytes */ 0);
       vpe_main_init (vm);
@@ -327,36 +390,6 @@ vlib_app_num_thread_stacks_needed (void)
  * It is never OK to ignore "node 'x' refers to unknown node 'y'
  * messages!
  */
-
-#if CLIB_DEBUG > 0
-
-static clib_error_t *
-test_crash_command_fn (vlib_main_t * vm,
-		       unformat_input_t * input, vlib_cli_command_t * cmd)
-{
-  u64 *p = (u64 *) 0xdefec8ed;
-
-  ELOG_TYPE_DECLARE (e) =
-  {
-  .format = "deliberate crash: touching %x",.format_args = "i4",};
-
-  elog (&vm->elog_main, &e, 0xdefec8ed);
-
-  *p = 0xdeadbeef;
-
-  /* Not so much... */
-  return 0;
-}
-
-/* *INDENT-OFF* */
-VLIB_CLI_COMMAND (test_crash_command, static) = {
-  .path = "test crash",
-  .short_help = "crash the bus!",
-  .function = test_crash_command_fn,
-};
-/* *INDENT-ON* */
-
-#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

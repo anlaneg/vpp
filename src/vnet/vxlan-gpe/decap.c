@@ -117,7 +117,7 @@ vxlan_gpe_input (vlib_main_t * vm,
   vxlan4_gpe_tunnel_key_t last_key4;
   vxlan6_gpe_tunnel_key_t last_key6;
   u32 pkts_decapsulated = 0;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   u32 stats_sw_if_index, stats_n_packets, stats_n_bytes;
 
   if (is_ip4)
@@ -857,10 +857,8 @@ ip_vxlan_gpe_bypass_inline (vlib_main_t * vm,
 	    }
 
 	  /* Setup packet for next IP feature */
-	  vnet_feature_next (vnet_buffer (b0)->sw_if_index[VLIB_RX], &next0,
-			     b0);
-	  vnet_feature_next (vnet_buffer (b1)->sw_if_index[VLIB_RX], &next1,
-			     b1);
+	  vnet_feature_next (&next0, b0);
+	  vnet_feature_next (&next1, b1);
 
 	  if (is_ip4)
 	    {
@@ -1073,8 +1071,7 @@ ip_vxlan_gpe_bypass_inline (vlib_main_t * vm,
 	    ip60 = vlib_buffer_get_current (b0);
 
 	  /* Setup packet for next IP feature */
-	  vnet_feature_next (vnet_buffer (b0)->sw_if_index[VLIB_RX], &next0,
-			     b0);
+	  vnet_feature_next (&next0, b0);
 
 	  if (is_ip4)
 	    proto0 = ip40->protocol;

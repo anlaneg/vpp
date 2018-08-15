@@ -168,8 +168,8 @@ int
 dpdk_hqos_validate_mask (u64 mask, u32 n)
 {
   int count = __builtin_popcountll (mask);
-  int pos_lead = sizeof (u64) * 8 - __builtin_clzll (mask);
-  int pos_trail = __builtin_ctzll (mask);
+  int pos_lead = sizeof (u64) * 8 - count_leading_zeros (mask);
+  int pos_trail = count_trailing_zeros (mask);
   int count_expected = __builtin_popcount (n - 1);
 
   /* Handle the exceptions */
@@ -282,13 +282,13 @@ dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
       u32 swq_flags = RING_F_SP_ENQ | RING_F_SC_DEQ;
 
       snprintf (name, sizeof (name), "SWQ-worker%u-to-device%u", i,
-		xd->device_index);
+		xd->port_id);
       xd->hqos_ht->swq[i] =
 	rte_ring_create (name, hqos->swq_size, xd->cpu_socket, swq_flags);
       if (xd->hqos_ht->swq[i] == NULL)
 	return clib_error_return (0,
 				  "SWQ-worker%u-to-device%u: rte_ring_create err",
-				  i, xd->device_index);
+				  i, xd->port_id);
     }
 
   /*
@@ -296,19 +296,19 @@ dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
    */
 
   /* HQoS port */
-  snprintf (name, sizeof (name), "HQoS%u", xd->device_index);
+  snprintf (name, sizeof (name), "HQoS%u", xd->port_id);
   hqos->port.name = strdup (name);
   if (hqos->port.name == NULL)
-    return clib_error_return (0, "HQoS%u: strdup err", xd->device_index);
+    return clib_error_return (0, "HQoS%u: strdup err", xd->port_id);
 
-  hqos->port.socket = rte_eth_dev_socket_id (xd->device_index);
+  hqos->port.socket = rte_eth_dev_socket_id (xd->port_id);
   if (hqos->port.socket == SOCKET_ID_ANY)
     hqos->port.socket = 0;
 
   xd->hqos_ht->hqos = rte_sched_port_config (&hqos->port);
   if (xd->hqos_ht->hqos == NULL)
     return clib_error_return (0, "HQoS%u: rte_sched_port_config err",
-			      xd->device_index);
+			      xd->port_id);
 
   /* HQoS subport */
   for (subport_id = 0; subport_id < hqos->port.n_subports_per_port;
@@ -322,7 +322,7 @@ dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
       if (rv)
 	return clib_error_return (0,
 				  "HQoS%u subport %u: rte_sched_subport_config err (%d)",
-				  xd->device_index, subport_id, rv);
+				  xd->port_id, subport_id, rv);
 
       /* HQoS pipe */
       for (pipe_id = 0; pipe_id < hqos->port.n_pipes_per_subport; pipe_id++)
@@ -336,8 +336,7 @@ dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
 	  if (rv)
 	    return clib_error_return (0,
 				      "HQoS%u subport %u pipe %u: rte_sched_pipe_config err (%d)",
-				      xd->device_index, subport_id, pipe_id,
-				      rv);
+				      xd->port_id, subport_id, pipe_id, rv);
 	}
     }
 
@@ -363,15 +362,15 @@ dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
       xd->hqos_wt[tid].hqos_field0_slabpos = hqos->pktfield0_slabpos;
       xd->hqos_wt[tid].hqos_field0_slabmask = hqos->pktfield0_slabmask;
       xd->hqos_wt[tid].hqos_field0_slabshr =
-	__builtin_ctzll (hqos->pktfield0_slabmask);
+	count_trailing_zeros (hqos->pktfield0_slabmask);
       xd->hqos_wt[tid].hqos_field1_slabpos = hqos->pktfield1_slabpos;
       xd->hqos_wt[tid].hqos_field1_slabmask = hqos->pktfield1_slabmask;
       xd->hqos_wt[tid].hqos_field1_slabshr =
-	__builtin_ctzll (hqos->pktfield1_slabmask);
+	count_trailing_zeros (hqos->pktfield1_slabmask);
       xd->hqos_wt[tid].hqos_field2_slabpos = hqos->pktfield2_slabpos;
       xd->hqos_wt[tid].hqos_field2_slabmask = hqos->pktfield2_slabmask;
       xd->hqos_wt[tid].hqos_field2_slabshr =
-	__builtin_ctzll (hqos->pktfield2_slabmask);
+	count_trailing_zeros (hqos->pktfield2_slabmask);
       memcpy (xd->hqos_wt[tid].hqos_tc_table, hqos->tc_table,
 	      sizeof (hqos->tc_table));
     }
@@ -411,7 +410,7 @@ dpdk_hqos_thread_internal_hqos_dbg_bypass (vlib_main_t * vm)
       dpdk_device_t *xd = vec_elt_at_index (dm->devices, dq->device);
 
       dpdk_device_hqos_per_hqos_thread_t *hqos = xd->hqos_ht;
-      u32 device_index = xd->device_index;
+      u32 device_index = xd->port_id;
       u16 queue_id = dq->queue_id;
 
       struct rte_mbuf **pkts_enq = hqos->pkts_enq;
@@ -498,7 +497,7 @@ dpdk_hqos_thread_internal (vlib_main_t * vm)
       dpdk_device_t *xd = vec_elt_at_index (dm->devices, dq->device);
 
       dpdk_device_hqos_per_hqos_thread_t *hqos = xd->hqos_ht;
-      u32 device_index = xd->device_index;
+      u32 device_index = xd->port_id;
       u16 queue_id = dq->queue_id;
 
       struct rte_mbuf **pkts_enq = hqos->pkts_enq;

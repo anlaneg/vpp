@@ -133,9 +133,8 @@ check_adj_port_range_x1 (const protocol_port_range_dpo_t * ppr_dpo,
 	u16x8_sub_saturate (ppr_dpo->blocks[i].low.as_u16x8, key.as_u16x8);
       diff2.as_u16x8 =
 	u16x8_sub_saturate (ppr_dpo->blocks[i].hi.as_u16x8, key.as_u16x8);
-      sum.as_u16x8 = u16x8_add (diff1.as_u16x8, diff2.as_u16x8);
-      sum_equal_diff2.as_u16x8 =
-	u16x8_is_equal (sum.as_u16x8, diff2.as_u16x8);
+      sum.as_u16x8 = diff1.as_u16x8 + diff2.as_u16x8;
+      sum_equal_diff2.as_u16x8 = (sum.as_u16x8 == diff2.as_u16x8);
       sum_nonzero = ~u16x8_zero_byte_mask (sum.as_u16x8);
       sum_equal = ~u16x8_zero_byte_mask (sum_equal_diff2.as_u16x8);
       winner_mask = sum_nonzero & sum_equal;
@@ -450,8 +449,7 @@ ip4_source_and_port_range_check_inline (vlib_main_t * vm,
 
 	  ip0 = vlib_buffer_get_current (b0);
 
-	  c0 = vnet_feature_next_with_data (sw_if_index0, &next0,
-					    b0, sizeof (c0[0]));
+	  c0 = vnet_feature_next_with_data (&next0, b0, sizeof (c0[0]));
 
 	  /* we can't use the default VRF here... */
 	  for (i = 0; i < IP_SOURCE_AND_PORT_RANGE_CHECK_N_PROTOCOLS; i++)

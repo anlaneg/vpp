@@ -156,29 +156,12 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
    *   set tx sw-if-handle
    */
 
-  u16 ethertype;
-  u8 protocol;
-  l2_input_config_t *config;
-  l2_bridge_domain_t *bd_config;
-  u16 bd_index0;
-  u32 feature_bitmap;
-  u32 feat_mask;
-  ethernet_header_t *h0;
-  u8 *l3h0;
-  u32 sw_if_index0;
-
-#define get_u16(addr) ( *((u16 *)(addr)) )
-
-  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-
-  h0 = vlib_buffer_get_current (b0);
-  l3h0 = (u8 *) h0 + vnet_buffer (b0)->l2.l2_len;
-
-  ethertype = clib_net_to_host_u16 (get_u16 (l3h0 - 2));
-  feat_mask = ~0;
+  u32 feat_mask = ~0;
+  u32 sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
+  ethernet_header_t *h0 = vlib_buffer_get_current (b0);
 
   /* Get config for the input interface */
-  config = vec_elt_at_index (msm->configs, sw_if_index0);
+  l2_input_config_t *config = vec_elt_at_index (msm->configs, sw_if_index0);
 
   /* Save split horizon group */
   vnet_buffer (b0)->l2.shg = config->shg;
@@ -186,10 +169,15 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
   /* determine layer2 kind for stat and mask */
   if (PREDICT_FALSE (ethernet_address_cast (h0->dst_address)))
     {
-      protocol = ((ip6_header_t *) l3h0)->protocol;
+      u8 *l3h0 = (u8 *) h0 + vnet_buffer (b0)->l2.l2_len;
+
+#define get_u16(addr) ( *((u16 *)(addr)) )
+      u16 ethertype = clib_net_to_host_u16 (get_u16 (l3h0 - 2));
+      u8 protocol = ((ip6_header_t *) l3h0)->protocol;
 
       /* Disable bridge forwarding (flooding will execute instead if not xconnect) */
-      feat_mask &= ~(L2INPUT_FEAT_FWD | L2INPUT_FEAT_UU_FLOOD);
+      feat_mask &= ~(L2INPUT_FEAT_FWD |
+		     L2INPUT_FEAT_UU_FLOOD | L2INPUT_FEAT_GBP_FWD);
 
       /* Disable ARP-term for non-ARP and non-ICMP6 packet */
       if (ethertype != ETHERNET_TYPE_ARP &&
@@ -237,12 +225,13 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
   if (config->bridge)
     {
       /* Do bridge-domain processing */
-      bd_index0 = config->bd_index;
+      u16 bd_index0 = config->bd_index;
       /* save BD ID for next feature graph nodes */
       vnet_buffer (b0)->l2.bd_index = bd_index0;
 
       /* Get config for the bridge domain interface */
-      bd_config = vec_elt_at_index (msm->bd_configs, bd_index0);
+      l2_bridge_domain_t *bd_config =
+	vec_elt_at_index (msm->bd_configs, bd_index0);
 
       /* Save bridge domain and interface seq_num */
       /* *INDENT-OFF* */
@@ -272,7 +261,7 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
     feat_mask = L2INPUT_FEAT_DROP;
 
   /* mask out features from bitmap using packet type and bd config */
-  feature_bitmap = config->feature_bitmap & feat_mask;
+  u32 feature_bitmap = config->feature_bitmap & feat_mask;
 
   /* save for next feature graph nodes */
   vnet_buffer (b0)->l2.feature_bitmap = feature_bitmap;
@@ -399,9 +388,6 @@ l2input_node_inline (vlib_main_t * vm,
 		}
 	    }
 
-	  vlib_node_increment_counter (vm, l2input_node.index,
-				       L2INPUT_ERROR_L2INPUT, 4);
-
 	  classify_and_dispatch (msm, b0, &next0);
 	  classify_and_dispatch (msm, b1, &next1);
 	  classify_and_dispatch (msm, b2, &next2);
@@ -442,9 +428,6 @@ l2input_node_inline (vlib_main_t * vm,
 	      clib_memcpy (t->dst, h0->dst_address, 6);
 	    }
 
-	  vlib_node_increment_counter (vm, l2input_node.index,
-				       L2INPUT_ERROR_L2INPUT, 1);
-
 	  classify_and_dispatch (msm, b0, &next0);
 
 	  /* verify speculative enqueue, maybe switch current next frame */
@@ -455,6 +438,9 @@ l2input_node_inline (vlib_main_t * vm,
 
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
+
+  vlib_node_increment_counter (vm, l2input_node.index,
+			       L2INPUT_ERROR_L2INPUT, frame->n_vectors);
 
   return frame->n_vectors;
 }
@@ -578,7 +564,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
   l2_input_config_t *config;
   l2_bridge_domain_t *bd_config;
   i32 l2_if_adjust = 0;
-  u32 slot;
+  vnet_device_class_t *dev_class;
 
   hi = vnet_get_sup_hw_interface (vnet_main, sw_if_index);
   config = l2input_intf_config (sw_if_index);
@@ -594,18 +580,17 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
       /* undo any BVI-related config */
       if (bd_config->bvi_sw_if_index == sw_if_index)
 	{
+	  vnet_sw_interface_t *si;
+
 	  bd_config->bvi_sw_if_index = ~0;
 	  config->bvi = 0;
 
 	  /* delete the l2fib entry for the bvi interface */
-	  l2fib_del_entry (hi->hw_address, config->bd_index);
+	  l2fib_del_entry (hi->hw_address, config->bd_index, sw_if_index);
 
-	  /* Make loop output node send packet back to ethernet-input node */
-	  slot =
-	    vlib_node_add_named_next_with_slot (vm, hi->tx_node_index,
-						"ethernet-input",
-						VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
-	  ASSERT (slot == VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
+	  /* since this is a no longer BVI interface do not to flood to it */
+	  si = vnet_get_sw_interface (vnm, sw_if_index);
+	  si->flood_class = VNET_FLOOD_CLASS_NO_FLOOD;
 	}
 
       /* Clear MACs learned on the interface */
@@ -688,6 +673,8 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  /* Do BVI interface initializations */
 	  if (bvi)
 	    {
+	      vnet_sw_interface_t *si;
+
 	      /* ensure BD has no bvi interface (or replace that one with this??) */
 	      if (bd_config->bvi_sw_if_index != ~0)
 		{
@@ -702,12 +689,9 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	      /* Disable learning by default. no use since l2fib entry is static. */
 	      config->feature_bitmap &= ~L2INPUT_FEAT_LEARN;
 
-	      /* Make loop output node send packet to l2-input node */
-	      slot =
-		vlib_node_add_named_next_with_slot (vm, hi->tx_node_index,
-						    "l2-input",
-						    VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
-	      ASSERT (slot == VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
+	      /* since this is a BVI interface we want to flood to it */
+	      si = vnet_get_sw_interface (vnm, sw_if_index);
+	      si->flood_class = VNET_FLOOD_CLASS_BVI;
 	    }
 
 	  /* Add interface to bridge-domain flood vector */
@@ -800,6 +784,12 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
   /* Set up the L2/L3 flag in the interface parsing tables */
   ethernet_sw_interface_set_l2_mode (vnm, sw_if_index, (mode != MODE_L3));
+
+  dev_class = vnet_get_device_class (vnet_main, hi->dev_class_index);
+  if (dev_class->set_l2_mode_function)
+    {
+      dev_class->set_l2_mode_function (vnet_main, hi, l2_if_adjust);
+    }
 
   return 0;
 }

@@ -111,10 +111,13 @@ void *vec_resize_allocate_memory (void *v,
     @return v_prime pointer to resized vector, may or may not equal v
 */
 
+#define _vec_resize(V,L,DB,HB,A) \
+  _vec_resize_inline(V,L,DB,HB,clib_max((__alignof__((V)[0])),(A)))
+
 always_inline void *
-_vec_resize (void *v,
-	     word length_increment,
-	     uword data_bytes, uword header_bytes, uword data_align)
+_vec_resize_inline (void *v,
+		    word length_increment,
+		    uword data_bytes, uword header_bytes, uword data_align)
 {
   vec_header_t *vh = _vec_find (v);
   uword new_data_bytes, aligned_header_bytes;
@@ -411,6 +414,8 @@ do {										\
 
 #define vec_validate_ha(V,I,H,A)					\
 do {									\
+  STATIC_ASSERT(A==0 || ((A % sizeof(V[0]))==0) || ((sizeof(V[0]) % A) == 0),\
+                "vector validate aligned on incorrectly sized object"); \
   word _v(i) = (I);							\
   word _v(l) = vec_len (V);						\
   if (_v(i) >= _v(l))							\
@@ -940,6 +945,27 @@ do {						\
   while (_v(i) < vec_len(v))				\
   {							\
     if ((v)[_v(i)] == E)				        \
+      break;						\
+    _v(i)++;						\
+  }							\
+  if (_v(i) == vec_len(v))				\
+    _v(i) = ~0;					        \
+  _v(i);						\
+})
+
+/** \brief Search a vector for the index of the entry that matches.
+
+    @param v1 Pointer to a vector
+    @param v2 Pointer to entry to match
+    @param fn Comparison function !0 => match
+    @return index of match or ~0
+*/
+#define vec_search_with_function(v,E,fn)                \
+({							\
+  word _v(i) = 0;					\
+  while (_v(i) < vec_len(v))				\
+  {							\
+    if (0 != fn(&(v)[_v(i)], (E)))                      \
       break;						\
     _v(i)++;						\
   }							\

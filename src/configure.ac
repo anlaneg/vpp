@@ -1,17 +1,22 @@
-AC_INIT([vpp], [18.04], [vpp-dev@fd.io])
+AC_INIT([vpp], [18.10], [vpp-dev@fd.io])
 LT_INIT
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([subdir-objects])
 AM_SILENT_RULES([yes])
-AC_CONFIG_FILES([Makefile plugins/Makefile vpp-api/python/Makefile vpp-api/java/Makefile vpp-api/vapi/Makefile vpp-api/vom/Makefile])
+AC_CONFIG_FILES([ \
+  Makefile \
+  plugins/Makefile \
+  vpp-api/python/Makefile \
+  vpp-api/vapi/Makefile \
+  vlib/config.h \
+  vppinfra/config.h \
+])
 AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CC
-AC_PROG_CXX
 AC_PROG_CPP
 AM_PROG_AS
 AM_PROG_LIBTOOL
-AC_PROG_YACC
 AM_PATH_PYTHON
 
 AM_CONDITIONAL([CROSSCOMPILE], [test "$cross_compiling" == "yes"])
@@ -115,6 +120,67 @@ AC_DEFUN([CC_CHECK_FLAG],
   AC_LANG_POP([C])
 ])
 
+# This function deduces the BUILD HOST cache-line size by
+# inspecting /sys and/or /proc depending on the kernel / arch in use
+as_fn_log2_cache_line_size_p()
+{
+  sysfs_cache_path="/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size"
+  m4_define([read_cache_line_size_from_sysfs], [`head -n 1 $1`])
+  m4_define([read_midr_implementer],
+            [`awk '/implementer/ {print $[]4;exit}' /proc/cpuinfo`])
+  m4_define([read_midr_cpuid],
+            [`awk '/part/ {print $[]4;exit}' /proc/cpuinfo`])
+
+  #Check if sysfs path exists,to ignore warning, else do manual mapping
+  AC_CHECK_FILE($sysfs_cache_path,
+    [
+      cache_line_size=read_cache_line_size_from_sysfs($sysfs_cache_path);
+      if test $cache_line_size = "32"  ; then
+          log2_cache_line_size="5";
+      elif test $cache_line_size = "64"  ; then
+          log2_cache_line_size="6";
+      elif test $cache_line_size = "128"  ; then
+          log2_cache_line_size="7";
+      fi
+      AC_MSG_NOTICE([cache_line_size/log2_cache_line_size deduced as $cache_line_size/$log2_cache_line_size])
+    ],
+    [
+        #Define Implementer Ids here
+        implementer_id_cavium=0x43
+
+        #Define CPU Ids here
+        cpu_id_cavium_thunderx_cn88xx=0x0a1
+        cpu_id_cavium_thunderx2_cn99xx=0x0af
+
+        implementer=read_midr_implementer()
+        cpuid=read_midr_cpuid()
+
+        AC_MSG_CHECKING([for implementerid/cpuid to set log2_cache_line_size])
+
+        # Switch case to map log2_cache_line_size for implementer/cpuid combination.
+        # Default case of Switch sets log2_cache_line_size to 6
+        AS_CASE($implementer,
+              #Switch Case for Cavium SoC's
+              [$implementer_id_cavium],
+                  [AS_CASE($cpuid,
+                      #Only ThunderX2 is 64B. Remaining chips are 128B
+                      [$cpu_id_cavium_thunderx2_cn99xx],
+                            [AC_MSG_RESULT([Cavium/ThunderX2]);log2_cache_line_size=6],
+                      [$cpu_id_cavium_thunderx_cn88xx],
+                            [AC_MSG_RESULT([Cavium/ThunderX]);log2_cache_line_size=7],
+                      [log2_cache_line_size=7;AC_MSG_RESULT([Cavium/OCTEONTx($cpuid)])]
+                   )],
+              #Add implementer specific case here:
+
+              #Default case: 64B for all SoC's
+              [log2_cache_line_size=6;AC_MSG_RESULT([$implementer/$cpuid])]
+        )
+      AC_MSG_NOTICE([log2_cache_line_size deduced as $log2_cache_line_size])
+    ]
+  )
+  echo $log2_cache_line_size
+}
+
 ###############################################################################
 # configure arguments
 ###############################################################################
@@ -124,13 +190,12 @@ ENABLE_ARG(tests,	[Enable unit tests])
 ENABLE_ARG(dpdk_shared,	[Enable unit tests])
 ENABLE_ARG(perftool,	[Enable perftool])
 ENABLE_ARG(g2,		[Enable g2])
+ENABLE_ARG(dlmalloc,    [Enable dlmalloc])
 
 # --disable-X
 DISABLE_ARG(vlib,	[Disable vlib and dependant libs and binaries])
 DISABLE_ARG(svm,	[Disable svm and dependant libs and binaries])
 DISABLE_ARG(papi,	[Disable Python API bindings])
-DISABLE_ARG(japi,	[Disable Java API bindings])
-DISABLE_ARG(vom,	[Disable VPP object model bindings])
 
 # --with-X
 
@@ -138,6 +203,16 @@ DISABLE_ARG(vom,	[Disable VPP object model bindings])
 WITHOUT_ARG(libssl,	[Disable libssl])
 WITHOUT_ARG(apicli,	[Disable binary api CLI])
 WITHOUT_ARG(mbedtls,	[Disable mbedtls])
+WITHOUT_ARG(libnuma,	[for non numa architectures])
+
+AC_ARG_WITH(log2-cache-line-bytes,
+            AC_HELP_STRING([--with-log2-cache-line-bytes],[Set the cache line size, --with-log2-cache-line-bytes=5|6|7|auto]),
+	    [case $with_log2_cache_line_bytes in
+	      5 | 6 | 7);;
+	      auto) with_log2_cache_line_bytes=`as_fn_log2_cache_line_size_p`;;
+              *) with_log2_cache_line_bytes="CONFIG_ERROR";;
+	      esac],
+              [with_log2_cache_line_bytes=`as_fn_log2_cache_line_size_p`])
 
 AC_ARG_WITH(unix,
             AC_HELP_STRING([--with-unix],[Compile unix version of clib]),
@@ -157,6 +232,8 @@ AC_ARG_WITH(pre-data,
                *) with_pre_data="pre-data-not-set" ;;
 	     esac], [with_pre_data=128])
 
+AM_CONDITIONAL(ENABLE_DLMALLOC, test "$enable_dlmalloc" = "yes")
+
 ###############################################################################
 # Target CPU flags
 ###############################################################################
@@ -175,7 +252,7 @@ AS_IF([test "$cc_flag_check" = yes],
   [march_skylake_avx512=no])
 AM_CONDITIONAL([CC_SUPPORTS_AVX512], [test "$march_skylake_avx512" = "yes"])
 
-AS_CASE([$build_cpu],
+AS_CASE([$host_cpu],
 	[x86_64], [CPU_FLAGS="-march=corei7 -mtune=corei7-avx"],
 	[aarch64], [CPU_FLAGS="-march=armv8-a+crc"],
 	[CPU_FLAGS=""],
@@ -185,19 +262,30 @@ AC_SUBST([CPU_FLAGS])
 AC_SUBST([CPU_AVX2_FLAGS],"-march=core-avx2 -mtune=core-avx2")
 AC_SUBST([CPU_AVX512_FLAGS],"-march=skylake-avx512 -mtune=skylake-avx512")
 
-AM_CONDITIONAL([CPU_X86_64], [test "$build_cpu" = "x86_64"])
-AM_CONDITIONAL([CPU_AARCH64], [test "$build_cpu" = "aarch64"])
+AM_CONDITIONAL([CPU_X86_64], [test "$host_cpu" = "x86_64"])
+AM_CONDITIONAL([CPU_AARCH64], [test "$host_cpu" = "aarch64"])
+
+###############################################################################
+# misc compiler flags
+###############################################################################
+
+CC_CHECK_FLAG("-Wno-address-of-packed-member")
+AS_IF([test "$cc_flag_check" = yes],
+	[CFLAGS="${CFLAGS} -Wno-address-of-packed-member"], [])
 
 ###############################################################################
 # Substitutions and defines
 ###############################################################################
 
 AC_SUBST(PRE_DATA_SIZE,		[$with_pre_data])
+AC_SUBST(LOG2_CACHE_LINE_BYTES, [$with_log2_cache_line_bytes])
 AC_SUBST(APICLI,		[-DVPP_API_TEST_BUILTIN=${n_with_apicli}])
+AC_SUBST(DLMALLOC,              [${n_enable_dlmalloc}])
 
 AC_DEFINE_UNQUOTED(DPDK_SHARED_LIB,	[${n_enable_dpdk_shared}])
 AC_DEFINE_UNQUOTED(WITH_LIBSSL,		[${n_with_libssl}])
 AC_DEFINE_UNQUOTED(WITH_MBEDTLS,	[${n_with_mbedtls}])
+AC_DEFINE_UNQUOTED(WITH_LIBNUMA,	[${n_with_libnuma}])
 
 
 # Silence following noise:
@@ -210,28 +298,34 @@ AC_SUBST(AR_FLAGS)
 ###############################################################################
 
 # Please keep alphabetical order
+PLUGIN_ENABLED(abf)
 PLUGIN_ENABLED(acl)
+PLUGIN_ENABLED(avf)
 PLUGIN_ENABLED(cdp)
 PLUGIN_ENABLED(dpdk)
 PLUGIN_ENABLED(flowprobe)
 PLUGIN_ENABLED(gbp)
 PLUGIN_ENABLED(gtpu)
+PLUGIN_ENABLED(igmp)
 PLUGIN_ENABLED(ila)
 PLUGIN_ENABLED(ioam)
 PLUGIN_ENABLED(ixge)
-PLUGIN_ENABLED(kubeproxy)
 PLUGIN_ENABLED(l2e)
+PLUGIN_ENABLED(lacp)
 PLUGIN_ENABLED(lb)
+PLUGIN_ENABLED(mactime)
 PLUGIN_ENABLED(marvell)
 PLUGIN_ENABLED(memif)
 PLUGIN_ENABLED(pppoe)
 PLUGIN_ENABLED(nat)
+PLUGIN_ENABLED(map)
 PLUGIN_ENABLED(srv6ad)
 PLUGIN_ENABLED(srv6am)
 PLUGIN_ENABLED(srv6as)
 PLUGIN_ENABLED(stn)
 PLUGIN_ENABLED(tlsmbedtls)
 PLUGIN_ENABLED(tlsopenssl)
+PLUGIN_ENABLED(unittest)
 
 ###############################################################################
 # Dependency checks
@@ -307,24 +401,17 @@ AM_COND_IF([ENABLE_TLSMBEDTLS_PLUGIN],
     ], [])
 ])
 
-AM_COND_IF([WITH_LIBSSL], [],
+AM_COND_IF([WITH_LIBSSL],
+[
+  AC_CHECK_LIB([ssl -lcrypto], [SSL_set_async_callback],
+    [
+      AC_DEFINE([HAVE_OPENSSL_ASYNC], [1], [Define if new openssl interface exists])
+    ])
+],
 [
   AC_MSG_WARN([openssl not enabled. Disabling tlsopenssl plugin])
   enable_tlsopenssl_plugin=no
   AM_CONDITIONAL(ENABLE_TLSOPENSSL_PLUGIN, false)
-])
-
-###############################################################################
-# JAVA
-###############################################################################
-
-AM_COND_IF([ENABLE_JAPI],
-[
-  AX_VPP_FIND_JDK8
-  AC_SUBST(JAVA_HOME)
-  AC_SUBST(JAVAC)
-  AC_SUBST(JAVAH)
-  AC_SUBST(JAR)
 ])
 
 ###############################################################################
@@ -350,11 +437,8 @@ PRINT_VAL([includedir], ${includedir})
 PRINT_VAL([CFLAGS], ${CFLAGS})
 PRINT_VAL([CPPFLAGS], ${CPPFLAGS})
 PRINT_VAL([LDFLAGS], ${LDFLAGS})
-AM_COND_IF([ENABLE_JAPI],
-[
-  PRINT_VAL([JAVA_VERSION], ${JAVA_VERSION})
-  PRINT_VAL([JAVA_HOME], ${JAVA_HOME})
-])
+PRINT_VAL([LOG2_CACHE_LINE_BYTES], ${with_log2_cache_line_bytes})
+PRINT_VAL([DLMALLOC], ${enable_dlmalloc})
 
 AC_MSG_RESULT([])
 AC_MSG_RESULT([with:])

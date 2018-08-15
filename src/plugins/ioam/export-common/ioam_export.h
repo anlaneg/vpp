@@ -22,7 +22,7 @@
 #include <vnet/ip/ip6_packet.h>
 #include <vnet/ip/ip6_hop_by_hop.h>
 #include <vnet/udp/udp.h>
-#include <vnet/flow/ipfix_packet.h>
+#include <vnet/ipfix-export/ipfix_packet.h>
 
 #include <vppinfra/pool.h>
 #include <vppinfra/hash.h>
@@ -33,6 +33,8 @@
 
 typedef struct ioam_export_buffer
 {
+  /** Required for pool_get_aligned */
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Allocated buffer */
   u32 buffer_index;
   u64 touched_at;

@@ -175,6 +175,16 @@ clib_cpu_time_now (void)
   return ((u64) h << 32) | l;
 }
 
+#elif defined(_mips) && __mips == 64
+
+always_inline u64
+clib_cpu_time_now (void)
+{
+  u64 result;
+  asm volatile ("rdhwr %0,$31\n":"=r" (result));
+  return result;
+}
+
 #else
 #error "don't know how to read CPU time stamp"
 
@@ -196,6 +206,9 @@ clib_time_now_internal (clib_time_t * c, u64 n)
     clib_time_verify_frequency (c);
   return t * c->seconds_per_clock;
 }
+
+/* Maximum f64 value as max clib_time */
+#define CLIB_TIME_MAX (1.7976931348623157e+308)
 
 always_inline f64
 clib_time_now (clib_time_t * c)

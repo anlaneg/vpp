@@ -79,6 +79,27 @@ typedef struct vlib_config_function_runtime_t
   char name[32];
 } vlib_config_function_runtime_t;
 
+#define VLIB_REMOVE_FROM_LINKED_LIST(first,p,next)              \
+{                                                               \
+  ASSERT (first);                                               \
+  if (first == p)                                               \
+      first = (p)->next;                                        \
+  else                                                          \
+    {                                                           \
+      __typeof__ (p) current = first;                           \
+      while (current->next)                                     \
+	{                                                       \
+	  if (current->next == p)                               \
+	    {                                                   \
+	      current->next = current->next->next;              \
+	      break;                                            \
+	    }                                                   \
+	  current = current->next;                              \
+	}                                                       \
+      ASSERT (current);                                         \
+    }                                                           \
+}
+
 //生成一个符号
 #define _VLIB_INIT_FUNCTION_SYMBOL(x, type)	\
   _vlib_##type##_function_##x
@@ -94,6 +115,8 @@ typedef struct vlib_config_function_runtime_t
 
 /* Declaration is global (e.g. not static) so that init functions can
    be called from other modules to resolve init function depend. */
+
+#ifndef CLIB_MARCH_VARIANT
 /*
  * 定义函数指针指向x,声明启动时函数，在启动时，注册此函数到
  * vm->tag##__function_registrations (放在此链的头部）
@@ -111,7 +134,37 @@ static void __vlib_add_##tag##_function_##x (void)              \
     = vm->tag##_function_registrations;                         \
   vm->tag##_function_registrations = &_vlib_init_function;      \
  _vlib_init_function.f = &x;                                    \
+}                                                               \
+static void __vlib_rm_##tag##_function_##x (void)               \
+    __attribute__((__destructor__)) ;                           \
+static void __vlib_rm_##tag##_function_##x (void)               \
+{                                                               \
+  vlib_main_t * vm = vlib_get_main();                           \
+  _vlib_init_function_list_elt_t *next;                         \
+  if (vm->tag##_function_registrations->f == &x)                \
+    {                                                           \
+      vm->tag##_function_registrations =                        \
+        vm->tag##_function_registrations->next_init_function;   \
+      return;                                                   \
+    }                                                           \
+  next = vm->tag##_function_registrations;                      \
+  while (next->next_init_function)                              \
+    {                                                           \
+      if (next->next_init_function->f == &x)                    \
+        {                                                       \
+          next->next_init_function =                            \
+            next->next_init_function->next_init_function;       \
+          return;                                               \
+        }                                                       \
+      next = next->next_init_function;                          \
+    }                                                           \
 }
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VLIB_DECLARE_INIT_FUNCTION(x, tag)                      \
+static __clib_unused void * __clib_unused_##tag##_##x = x;
+#endif
 
 //将x放在vm->init*链头部
 #define VLIB_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,init)
@@ -127,6 +180,7 @@ static void __vlib_add_##tag##_function_##x (void)              \
 #define VLIB_MAIN_LOOP_EXIT_FUNCTION(x) \
 VLIB_DECLARE_INIT_FUNCTION(x,main_loop_exit)
 
+#ifndef CLIB_MARCH_VARIANT
 #define VLIB_CONFIG_FUNCTION(x,n,...)                           \
     __VA_ARGS__ vlib_config_function_runtime_t                  \
     VLIB_CONFIG_FUNCTION_SYMBOL(x);                             \
@@ -140,6 +194,16 @@ static void __vlib_add_config_function_##x (void)               \
     vm->config_function_registrations                           \
        = &VLIB_CONFIG_FUNCTION_SYMBOL(x);                       \
 }                                                               \
+static void __vlib_rm_config_function_##x (void)                \
+    __attribute__((__destructor__)) ;                           \
+static void __vlib_rm_config_function_##x (void)                \
+{                                                               \
+    vlib_main_t * vm = vlib_get_main();                         \
+    vlib_config_function_runtime_t *p =                         \
+       & VLIB_CONFIG_FUNCTION_SYMBOL (x);                       \
+    VLIB_REMOVE_FROM_LINKED_LIST                                \
+      (vm->config_function_registrations, p, next_registration);\
+}                                                               \
   vlib_config_function_runtime_t                                \
     VLIB_CONFIG_FUNCTION_SYMBOL (x)                             \
   = {                                                           \
@@ -147,7 +211,20 @@ static void __vlib_add_config_function_##x (void)               \
     .function = x,                                              \
     .is_early = 0,						\
   }
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VLIB_CONFIG_FUNCTION(x,n,...)                           \
+  static __clib_unused vlib_config_function_runtime_t           \
+    VLIB_CONFIG_FUNCTION_SYMBOL (__clib_unused_##x)             \
+  = {                                                           \
+    .name = n,                                                  \
+    .function = x,                                              \
+    .is_early = 0,						\
+  }
+#endif
 
+#ifndef CLIB_MARCH_VARIANT
 #define VLIB_EARLY_CONFIG_FUNCTION(x,n,...)                     \
     __VA_ARGS__ vlib_config_function_runtime_t                  \
     VLIB_CONFIG_FUNCTION_SYMBOL(x);                             \
@@ -161,6 +238,16 @@ static void __vlib_add_config_function_##x (void)               \
     vm->config_function_registrations                           \
        = &VLIB_CONFIG_FUNCTION_SYMBOL(x);                       \
 }                                                               \
+static void __vlib_rm_config_function_##x (void)                \
+    __attribute__((__destructor__)) ;                           \
+static void __vlib_rm_config_function_##x (void)                \
+{                                                               \
+    vlib_main_t * vm = vlib_get_main();                         \
+    vlib_config_function_runtime_t *p =                         \
+       & VLIB_CONFIG_FUNCTION_SYMBOL (x);                       \
+    VLIB_REMOVE_FROM_LINKED_LIST                                \
+      (vm->config_function_registrations, p, next_registration);\
+}                                                               \
   vlib_config_function_runtime_t                                \
     VLIB_CONFIG_FUNCTION_SYMBOL (x)                             \
   = {                                                           \
@@ -168,6 +255,18 @@ static void __vlib_add_config_function_##x (void)               \
     .function = x,                                              \
     .is_early = 1,						\
   }
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VLIB_EARLY_CONFIG_FUNCTION(x,n,...)                     \
+  static __clib_unused vlib_config_function_runtime_t           \
+    VLIB_CONFIG_FUNCTION_SYMBOL (__clib_unused_##x)             \
+  = {                                                           \
+    .name = n,                                                  \
+    .function = x,                                              \
+    .is_early = 1,						\
+  }
+#endif
 
 /* Call given init function: used for init function dependencies. */
 #define vlib_call_init_function(vm, x)					\

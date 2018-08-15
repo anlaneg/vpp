@@ -35,7 +35,9 @@ typedef struct
   int af_unix_echo_tx;
   int af_unix_echo_rx;
 #endif
-  struct sockaddr_in server_addr;
+  struct sockaddr_storage server_addr;
+  uint32_t server_addr_size;
+  uint32_t cfg_seq_num;
   sock_test_socket_t ctrl_socket;
   sock_test_socket_t *test_socket;
   uint32_t num_test_sockets;
@@ -56,12 +58,18 @@ sock_test_cfg_sync (sock_test_socket_t * socket)
   if (socket->cfg.verbose)
     sock_test_cfg_dump (&socket->cfg, 1 /* is_client */ );
 
+  ctrl->cfg.seq_num = ++scm->cfg_seq_num;
+  if (socket->cfg.verbose)
+    {
+      printf ("CLIENT (fd %d): Sending config sent to server.\n", socket->fd);
+      sock_test_cfg_dump (&ctrl->cfg, 1 /* is_client */ );
+    }
   tx_bytes = sock_test_write (socket->fd, (uint8_t *) & ctrl->cfg,
 			      sizeof (ctrl->cfg), NULL, ctrl->cfg.verbose);
   if (tx_bytes < 0)
     {
-      fprintf (stderr, "CLIENT: ERROR: write test cfg failed (%d)!\n",
-	       tx_bytes);
+      fprintf (stderr, "CLIENT (fd %d): ERROR: write test cfg failed (%d)!\n",
+	       socket->fd, tx_bytes);
       return tx_bytes;
     }
 
@@ -72,21 +80,33 @@ sock_test_cfg_sync (sock_test_socket_t * socket)
 
   if (rl_cfg->magic != SOCK_TEST_CFG_CTRL_MAGIC)
     {
-      fprintf (stderr, "CLIENT: ERROR: Bad server reply cfg -- aborting!\n");
+      fprintf (stderr, "CLIENT (fd %d): ERROR: Bad server reply cfg "
+	       "-- aborting!\n", socket->fd);
       return -1;
-    }
-  if (socket->cfg.verbose)
-    {
-      printf ("CLIENT (fd %d): Got config back from server.\n", socket->fd);
-      sock_test_cfg_dump (rl_cfg, 1 /* is_client */ );
     }
   if ((rx_bytes != sizeof (sock_test_cfg_t))
       || !sock_test_cfg_verify (rl_cfg, &ctrl->cfg))
     {
-      fprintf (stderr, "CLIENT: ERROR: Invalid config received "
-	       "from server -- aborting!\n");
-      sock_test_cfg_dump (rl_cfg, 1 /* is_client */ );
+      fprintf (stderr, "CLIENT (fd %d): ERROR: Invalid config received "
+	       "from server!\n", socket->fd);
+      if (rx_bytes != sizeof (sock_test_cfg_t))
+	{
+	  fprintf (stderr, "\tRx bytes %d != cfg size %lu\n",
+		   rx_bytes, sizeof (sock_test_cfg_t));
+	}
+      else
+	{
+	  sock_test_cfg_dump (rl_cfg, 1 /* is_client */ );
+	  fprintf (stderr, "CLIENT (fd %d): Valid config sent to server.\n",
+		   socket->fd);
+	  sock_test_cfg_dump (&ctrl->cfg, 1 /* is_client */ );
+	}
       return -1;
+    }
+  else if (socket->cfg.verbose)
+    {
+      printf ("CLIENT (fd %d): Got config back from server.\n", socket->fd);
+      sock_test_cfg_dump (rl_cfg, 1 /* is_client */ );
     }
   ctrl->cfg.ctrl_handle = ((ctrl->cfg.ctrl_handle == ~0) ?
 			   rl_cfg->ctrl_handle : ctrl->cfg.ctrl_handle);
@@ -117,7 +137,8 @@ echo_test_client ()
       tsock = &scm->test_socket[n];
       tsock->cfg = ctrl->cfg;
       sock_test_socket_buf_alloc (tsock);
-      sock_test_cfg_sync (tsock);
+      if (sock_test_cfg_sync (tsock))
+	return;
 
       memcpy (tsock->txbuf, ctrl->txbuf, nbytes);
       memset (&tsock->stats, 0, sizeof (tsock->stats));
@@ -434,10 +455,9 @@ stream_test_client (sock_test_t test)
 	  if (FD_ISSET (tsock->fd, wfdset) &&
 	      (tsock->stats.tx_bytes < ctrl->cfg.total_bytes))
 	    {
-	      tx_bytes =
-		sock_test_write (tsock->fd, (uint8_t *) tsock->txbuf,
-				 ctrl->cfg.txbuf_size, &tsock->stats,
-				 ctrl->cfg.verbose);
+	      tx_bytes = sock_test_write (tsock->fd, (uint8_t *) tsock->txbuf,
+					  ctrl->cfg.txbuf_size, &tsock->stats,
+					  ctrl->cfg.verbose);
 	      if (tx_bytes < 0)
 		{
 		  fprintf (stderr, "\nCLIENT: ERROR: sock_test_write(%d) "
@@ -605,15 +625,19 @@ sock_test_connect_test_sockets (uint32_t num_test_sockets)
 	{
 	  tsock = &scm->test_socket[i];
 #ifdef VCL_TEST
-	  tsock->fd =
-	    vppcom_session_create (VPPCOM_PROTO_TCP, 1 /* is_nonblocking */ );
+	  tsock->fd = vppcom_session_create (ctrl->cfg.transport_udp ?
+					     VPPCOM_PROTO_UDP :
+					     VPPCOM_PROTO_TCP,
+					     1 /* is_nonblocking */ );
 	  if (tsock->fd < 0)
 	    {
 	      errno = -tsock->fd;
 	      tsock->fd = -1;
 	    }
 #else
-	  tsock->fd = socket (AF_INET, SOCK_STREAM, 0);
+	  tsock->fd = socket (ctrl->cfg.address_ip6 ? AF_INET6 : AF_INET,
+			      ctrl->cfg.transport_udp ?
+			      SOCK_DGRAM : SOCK_STREAM, 0);
 #endif
 	  if (tsock->fd < 0)
 	    {
@@ -634,7 +658,7 @@ sock_test_connect_test_sockets (uint32_t num_test_sockets)
 #else
 	  rv =
 	    connect (tsock->fd, (struct sockaddr *) &scm->server_addr,
-		     sizeof (scm->server_addr));
+		     scm->server_addr_size);
 #endif
 	  if (rv < 0)
 	    {
@@ -789,16 +813,20 @@ parse_input ()
   sock_test_socket_t *ctrl = &scm->ctrl_socket;
   sock_test_t rv = SOCK_TEST_TYPE_NONE;
 
-  if (!strcmp (SOCK_TEST_TOKEN_EXIT, ctrl->txbuf))
+  if (!strncmp (SOCK_TEST_TOKEN_EXIT, ctrl->txbuf,
+		strlen (SOCK_TEST_TOKEN_EXIT)))
     rv = SOCK_TEST_TYPE_EXIT;
 
-  else if (!strcmp (SOCK_TEST_TOKEN_HELP, ctrl->txbuf))
+  else if (!strncmp (SOCK_TEST_TOKEN_HELP, ctrl->txbuf,
+		     strlen (SOCK_TEST_TOKEN_HELP)))
     dump_help ();
 
-  else if (!strcmp (SOCK_TEST_TOKEN_SHOW_CFG, ctrl->txbuf))
+  else if (!strncmp (SOCK_TEST_TOKEN_SHOW_CFG, ctrl->txbuf,
+		     strlen (SOCK_TEST_TOKEN_SHOW_CFG)))
     scm->dump_cfg = 1;
 
-  else if (!strcmp (SOCK_TEST_TOKEN_VERBOSE, ctrl->txbuf))
+  else if (!strncmp (SOCK_TEST_TOKEN_VERBOSE, ctrl->txbuf,
+		     strlen (SOCK_TEST_TOKEN_VERBOSE)))
     cfg_verbose_toggle ();
 
   else if (!strncmp (SOCK_TEST_TOKEN_TXBUF_SIZE, ctrl->txbuf,
@@ -838,6 +866,8 @@ print_usage_and_exit (void)
 	   "sock_test_client [OPTIONS] <ipaddr> <port>\n"
 	   "  OPTIONS\n"
 	   "  -h               Print this message and exit.\n"
+	   "  -6               Use IPv6\n"
+	   "  -u               Use UDP transport layer\n"
 	   "  -c               Print test config before test.\n"
 	   "  -w <dir>         Write test results to <dir>.\n"
 	   "  -X               Exit after running test.\n"
@@ -863,7 +893,7 @@ main (int argc, char **argv)
   sock_test_socket_buf_alloc (ctrl);
 
   opterr = 0;
-  while ((c = getopt (argc, argv, "chn:w:XE:I:N:R:T:UBV")) != -1)
+  while ((c = getopt (argc, argv, "chn:w:XE:I:N:R:T:UBV6D")) != -1)
     switch (c)
       {
       case 'c':
@@ -1000,6 +1030,14 @@ main (int argc, char **argv)
 	ctrl->cfg.verbose = 1;
 	break;
 
+      case '6':
+	ctrl->cfg.address_ip6 = 1;
+	break;
+
+      case 'D':
+	ctrl->cfg.transport_udp = 1;
+	break;
+
       case '?':
 	switch (optopt)
 	  {
@@ -1042,7 +1080,9 @@ main (int argc, char **argv)
     }
   else
     {
-      ctrl->fd = vppcom_session_create (VPPCOM_PROTO_TCP,
+      ctrl->fd = vppcom_session_create (ctrl->cfg.transport_udp ?
+					VPPCOM_PROTO_UDP :
+					VPPCOM_PROTO_TCP,
 					0 /* is_nonblocking */ );
       if (ctrl->fd < 0)
 	{
@@ -1051,7 +1091,8 @@ main (int argc, char **argv)
 	}
     }
 #else
-  ctrl->fd = socket (AF_INET, SOCK_STREAM, 0);
+  ctrl->fd = socket (ctrl->cfg.address_ip6 ? AF_INET6 : AF_INET,
+		     ctrl->cfg.transport_udp ? SOCK_DGRAM : SOCK_STREAM, 0);
 #endif
 
   if (ctrl->fd < 0)
@@ -1064,15 +1105,42 @@ main (int argc, char **argv)
     }
 
   memset (&scm->server_addr, 0, sizeof (scm->server_addr));
-
-  scm->server_addr.sin_family = AF_INET;
-  inet_pton (AF_INET, argv[optind++], &(scm->server_addr.sin_addr));
-  scm->server_addr.sin_port = htons (atoi (argv[optind]));
+  if (ctrl->cfg.address_ip6)
+    {
+      struct sockaddr_in6 *server_addr =
+	(struct sockaddr_in6 *) &scm->server_addr;
+      scm->server_addr_size = sizeof (*server_addr);
+      server_addr->sin6_family = AF_INET6;
+      inet_pton (AF_INET6, argv[optind++], &(server_addr->sin6_addr));
+      server_addr->sin6_port = htons (atoi (argv[optind]));
+    }
+  else
+    {
+      struct sockaddr_in *server_addr =
+	(struct sockaddr_in *) &scm->server_addr;
+      scm->server_addr_size = sizeof (*server_addr);
+      server_addr->sin_family = AF_INET;
+      inet_pton (AF_INET, argv[optind++], &(server_addr->sin_addr));
+      server_addr->sin_port = htons (atoi (argv[optind]));
+    }
 
 #ifdef VCL_TEST
-  scm->server_endpt.is_ip4 = (scm->server_addr.sin_family == AF_INET);
-  scm->server_endpt.ip = (uint8_t *) & scm->server_addr.sin_addr;
-  scm->server_endpt.port = (uint16_t) scm->server_addr.sin_port;
+  if (ctrl->cfg.address_ip6)
+    {
+      struct sockaddr_in6 *server_addr =
+	(struct sockaddr_in6 *) &scm->server_addr;
+      scm->server_endpt.is_ip4 = 0;
+      scm->server_endpt.ip = (uint8_t *) & server_addr->sin6_addr;
+      scm->server_endpt.port = (uint16_t) server_addr->sin6_port;
+    }
+  else
+    {
+      struct sockaddr_in *server_addr =
+	(struct sockaddr_in *) &scm->server_addr;
+      scm->server_endpt.is_ip4 = 1;
+      scm->server_endpt.ip = (uint8_t *) & server_addr->sin_addr;
+      scm->server_endpt.port = (uint16_t) server_addr->sin_port;
+    }
 #endif
 
   do
@@ -1089,7 +1157,7 @@ main (int argc, char **argv)
 #else
       rv =
 	connect (ctrl->fd, (struct sockaddr *) &scm->server_addr,
-		 sizeof (scm->server_addr));
+		 scm->server_addr_size);
 #endif
       if (rv < 0)
 	{

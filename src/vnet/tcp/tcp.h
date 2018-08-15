@@ -119,7 +119,7 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
   _(FAST_RECOVERY, "Fast Recovery")		\
   _(FR_1_SMSS, "Sent 1 SMSS")			\
   _(HALF_OPEN_DONE, "Half-open completed")	\
-  _(FINPNDG, "FIN pending")
+  _(FINPNDG, "FIN pending")			\
 
 typedef enum _tcp_connection_flag_bits
 {
@@ -225,6 +225,24 @@ typedef struct _sack_scoreboard
 #define tcp_scoreboard_trace_add(_tc, _ack)
 #endif
 
+sack_scoreboard_hole_t *scoreboard_next_rxt_hole (sack_scoreboard_t * sb,
+						  sack_scoreboard_hole_t *
+						  start, u8 have_sent_1_smss,
+						  u8 * can_rescue,
+						  u8 * snd_limited);
+sack_scoreboard_hole_t *scoreboard_get_hole (sack_scoreboard_t * sb,
+					     u32 index);
+
+sack_scoreboard_hole_t *scoreboard_next_hole (sack_scoreboard_t * sb,
+					      sack_scoreboard_hole_t * hole);
+sack_scoreboard_hole_t *scoreboard_prev_hole (sack_scoreboard_t * sb,
+					      sack_scoreboard_hole_t * hole);
+sack_scoreboard_hole_t *scoreboard_first_hole (sack_scoreboard_t * sb);
+sack_scoreboard_hole_t *scoreboard_last_hole (sack_scoreboard_t * sb);
+void scoreboard_clear (sack_scoreboard_t * sb);
+void scoreboard_init (sack_scoreboard_t * sb);
+u8 *format_tcp_scoreboard (u8 * s, va_list * args);
+
 typedef enum _tcp_cc_algorithm_type
 {
   TCP_CC_NEWRENO,
@@ -267,13 +285,13 @@ typedef struct _tcp_connection
   u32 irs;		/**< initial remote sequence */
 
   /* Options */
-  tcp_options_t rcv_opts;	/**< Rx options for connection */
-  tcp_options_t snd_opts;	/**< Tx options for connection */
   u8 snd_opts_len;		/**< Tx options len */
-  u8 rcv_wscale;	/**< Window scale to advertise to peer */
-  u8 snd_wscale;	/**< Window scale to use when sending */
-  u32 tsval_recent;	/**< Last timestamp received */
-  u32 tsval_recent_age;	/**< When last updated tstamp_recent*/
+  u8 rcv_wscale;		/**< Window scale to advertise to peer */
+  u8 snd_wscale;		/**< Window scale to use when sending */
+  u32 tsval_recent;		/**< Last timestamp received */
+  u32 tsval_recent_age;		/**< When last updated tstamp_recent*/
+  tcp_options_t snd_opts;	/**< Tx options for connection */
+  tcp_options_t rcv_opts;	/**< Rx options for connection */
 
   sack_block_t *snd_sacks;	/**< Vector of SACKs to send. XXX Fixed size? */
   sack_scoreboard_t sack_sb;	/**< SACK "scoreboard" that tracks holes */
@@ -283,6 +301,7 @@ typedef struct _tcp_connection
 
   /* Congestion control */
   u32 cwnd;		/**< Congestion window */
+  u32 cwnd_acc_bytes;	/**< Bytes accumulated for cwnd increment */
   u32 ssthresh;		/**< Slow-start threshold */
   u32 prev_ssthresh;	/**< ssthresh before congestion */
   u32 prev_cwnd;	/**< ssthresh before congestion */
@@ -304,6 +323,7 @@ typedef struct _tcp_connection
   u16 mss;		/**< Our max seg size that includes options */
   u32 limited_transmit;	/**< snd_nxt when limited transmit starts */
   u32 last_fib_check;	/**< Last time we checked fib route for peer */
+  u32 sw_if_index;	/**< Interface for the connection */
 } tcp_connection_t;
 
 struct _tcp_cc_algorithm
@@ -336,13 +356,6 @@ tcp_cong_recovery_off (tcp_connection_t * tc)
   tcp_fastrecovery_1_smss_off (tc);
 }
 
-typedef enum
-{
-  TCP_IP4,
-  TCP_IP6,
-  TCP_N_AF,
-} tcp_af_t;
-
 typedef enum _tcp_error
 {
 #define tcp_error(n,s) TCP_ERROR_##n,
@@ -355,6 +368,21 @@ typedef struct _tcp_lookup_dispatch
 {
   u8 next, error;
 } tcp_lookup_dispatch_t;
+
+typedef struct tcp_worker_ctx_
+{
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  u32 time_now;					/**< worker time */
+  tw_timer_wheel_16t_2w_512sl_t timer_wheel;	/**< worker timer wheel */
+  u32 *tx_buffers;				/**< tx buffer free list */
+  vlib_frame_t *tx_frames[2];			/**< tx frames for tcp 4/6
+						     output nodes */
+  vlib_frame_t *ip_lookup_tx_frames[2];		/**< tx frames for ip 4/6
+						     lookup nodes */
+    CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
+  u8 cached_opts[40];				/**< cached 'on the wire'
+						     options for bursts */
+} tcp_worker_ctx_t;
 
 typedef struct _tcp_main
 {
@@ -369,17 +397,9 @@ typedef struct _tcp_main
 
   u8 log2_tstamp_clocks_per_tick;
   f64 tstamp_ticks_per_clock;
-  u32 *time_now;
 
-  /** per-worker tx buffer free lists */
-  u32 **tx_buffers;
-  /** per-worker tx frames to tcp 4/6 output nodes */
-  vlib_frame_t **tx_frames[2];
-  /** per-worker tx frames to ip 4/6 lookup nodes */
-  vlib_frame_t **ip_lookup_tx_frames[2];
-
-  /* Per worker-thread timer wheel for connections timers */
-  tw_timer_wheel_16t_2w_512sl_t *timer_wheels;
+  /** per-worker context */
+  tcp_worker_ctx_t *wrk_ctx;
 
   /* Pool of half-open connections on which we've sent a SYN */
   tcp_connection_t *half_open_connections;
@@ -482,11 +502,7 @@ int tcp_configure_v6_source_address_range (vlib_main_t * vm,
 					   ip6_address_t * start,
 					   ip6_address_t * end, u32 table_id);
 void tcp_api_reference (void);
-u8 *format_tcp_connection_id (u8 * s, va_list * args);
 u8 *format_tcp_connection (u8 * s, va_list * args);
-u8 *format_tcp_scoreboard (u8 * s, va_list * args);
-
-u8 *tcp_scoreboard_replay (u8 * s, tcp_connection_t * tc, u8 verbose);
 
 always_inline tcp_connection_t *
 tcp_listener_get (u32 tli)
@@ -514,7 +530,7 @@ void tcp_send_reset (tcp_connection_t * tc);
 void tcp_send_syn (tcp_connection_t * tc);
 void tcp_send_fin (tcp_connection_t * tc);
 void tcp_init_mss (tcp_connection_t * tc);
-void tcp_update_snd_mss (tcp_connection_t * tc);
+void tcp_update_burst_snd_vars (tcp_connection_t * tc);
 void tcp_update_rto (tcp_connection_t * tc);
 void tcp_flush_frame_to_output (vlib_main_t * vm, u8 thread_index, u8 is_ip4);
 void tcp_flush_frames_to_output (u8 thread_index);
@@ -615,7 +631,7 @@ tcp_available_output_snd_space (const tcp_connection_t * tc)
  * Estimate of how many bytes we can still push into the network
  */
 always_inline u32
-tcp_available_snd_space (const tcp_connection_t * tc)
+tcp_available_cc_snd_space (const tcp_connection_t * tc)
 {
   u32 available_wnd = tcp_available_snd_wnd (tc);
   u32 flight_size = tcp_flight_size (tc);
@@ -634,42 +650,34 @@ tcp_is_lost_fin (tcp_connection_t * tc)
   return 0;
 }
 
-i32 tcp_rcv_wnd_available (tcp_connection_t * tc);
-u32 tcp_snd_space (tcp_connection_t * tc);
-void tcp_update_rcv_wnd (tcp_connection_t * tc);
-
 void tcp_retransmit_first_unacked (tcp_connection_t * tc);
 void tcp_fast_retransmit_no_sack (tcp_connection_t * tc);
 void tcp_fast_retransmit_sack (tcp_connection_t * tc);
 void tcp_fast_retransmit (tcp_connection_t * tc);
 void tcp_cc_init_congestion (tcp_connection_t * tc);
-int tcp_cc_recover (tcp_connection_t * tc);
 void tcp_cc_fastrecovery_exit (tcp_connection_t * tc);
 
 fib_node_index_t tcp_lookup_rmt_in_fib (tcp_connection_t * tc);
 
 /* Made public for unit testing only */
 void tcp_update_sack_list (tcp_connection_t * tc, u32 start, u32 end);
+u32 tcp_sack_list_bytes (tcp_connection_t * tc);
 
 always_inline u32
 tcp_time_now (void)
 {
-  return tcp_main.time_now[vlib_get_thread_index ()];
+  return tcp_main.wrk_ctx[vlib_get_thread_index ()].time_now;
 }
 
 always_inline u32
 tcp_set_time_now (u32 thread_index)
 {
-  tcp_main.time_now[thread_index] = clib_cpu_time_now ()
+  tcp_main.wrk_ctx[thread_index].time_now = clib_cpu_time_now ()
     * tcp_main.tstamp_ticks_per_clock;
-  return tcp_main.time_now[thread_index];
+  return tcp_main.wrk_ctx[thread_index].time_now;
 }
 
-u32 tcp_push_header (transport_connection_t * tconn, vlib_buffer_t * b);
-
-u32
-tcp_prepare_retransmit_segment (tcp_connection_t * tc, u32 offset,
-				u32 max_bytes, vlib_buffer_t ** b);
+u32 tcp_push_header (tcp_connection_t * tconn, vlib_buffer_t * b);
 
 void tcp_connection_timers_init (tcp_connection_t * tc);
 void tcp_connection_timers_reset (tcp_connection_t * tc);
@@ -689,9 +697,10 @@ tcp_timer_set (tcp_connection_t * tc, u8 timer_id, u32 interval)
 {
   ASSERT (tc->c_thread_index == vlib_get_thread_index ());
   ASSERT (tc->timers[timer_id] == TCP_TIMER_HANDLE_INVALID);
-  tc->timers[timer_id]
-    = tw_timer_start_16t_2w_512sl (&tcp_main.timer_wheels[tc->c_thread_index],
-				   tc->c_c_index, timer_id, interval);
+  tc->timers[timer_id] =
+    tw_timer_start_16t_2w_512sl (&tcp_main.
+				 wrk_ctx[tc->c_thread_index].timer_wheel,
+				 tc->c_c_index, timer_id, interval);
 }
 
 always_inline void
@@ -701,7 +710,8 @@ tcp_timer_reset (tcp_connection_t * tc, u8 timer_id)
   if (tc->timers[timer_id] == TCP_TIMER_HANDLE_INVALID)
     return;
 
-  tw_timer_stop_16t_2w_512sl (&tcp_main.timer_wheels[tc->c_thread_index],
+  tw_timer_stop_16t_2w_512sl (&tcp_main.
+			      wrk_ctx[tc->c_thread_index].timer_wheel,
 			      tc->timers[timer_id]);
   tc->timers[timer_id] = TCP_TIMER_HANDLE_INVALID;
 }
@@ -711,11 +721,14 @@ tcp_timer_update (tcp_connection_t * tc, u8 timer_id, u32 interval)
 {
   ASSERT (tc->c_thread_index == vlib_get_thread_index ());
   if (tc->timers[timer_id] != TCP_TIMER_HANDLE_INVALID)
-    tw_timer_stop_16t_2w_512sl (&tcp_main.timer_wheels[tc->c_thread_index],
-				tc->timers[timer_id]);
-  tc->timers[timer_id] =
-    tw_timer_start_16t_2w_512sl (&tcp_main.timer_wheels[tc->c_thread_index],
-				 tc->c_c_index, timer_id, interval);
+    tw_timer_update_16t_2w_512sl (&tcp_main.
+				  wrk_ctx[tc->c_thread_index].timer_wheel,
+				  tc->timers[timer_id], interval);
+  else
+    tc->timers[timer_id] =
+      tw_timer_start_16t_2w_512sl (&tcp_main.
+				   wrk_ctx[tc->c_thread_index].timer_wheel,
+				   tc->c_c_index, timer_id, interval);
 }
 
 always_inline void
@@ -784,123 +797,15 @@ tcp_timer_is_active (tcp_connection_t * tc, tcp_timers_e timer)
 
 #define tcp_validate_txf_size(_tc, _a) 					\
   ASSERT(_tc->state != TCP_STATE_ESTABLISHED 				\
-	 || stream_session_tx_fifo_max_dequeue (&_tc->connection) >= _a)
-
-void
-scoreboard_remove_hole (sack_scoreboard_t * sb,
-			sack_scoreboard_hole_t * hole);
-void scoreboard_update_lost (tcp_connection_t * tc, sack_scoreboard_t * sb);
-sack_scoreboard_hole_t *scoreboard_insert_hole (sack_scoreboard_t * sb,
-						u32 prev_index, u32 start,
-						u32 end);
-sack_scoreboard_hole_t *scoreboard_next_rxt_hole (sack_scoreboard_t * sb,
-						  sack_scoreboard_hole_t *
-						  start, u8 have_sent_1_smss,
-						  u8 * can_rescue,
-						  u8 * snd_limited);
-void scoreboard_init_high_rxt (sack_scoreboard_t * sb, u32 seq);
-
-always_inline sack_scoreboard_hole_t *
-scoreboard_get_hole (sack_scoreboard_t * sb, u32 index)
-{
-  if (index != TCP_INVALID_SACK_HOLE_INDEX)
-    return pool_elt_at_index (sb->holes, index);
-  return 0;
-}
-
-always_inline sack_scoreboard_hole_t *
-scoreboard_next_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
-{
-  if (hole->next != TCP_INVALID_SACK_HOLE_INDEX)
-    return pool_elt_at_index (sb->holes, hole->next);
-  return 0;
-}
-
-always_inline sack_scoreboard_hole_t *
-scoreboard_prev_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
-{
-  if (hole->prev != TCP_INVALID_SACK_HOLE_INDEX)
-    return pool_elt_at_index (sb->holes, hole->prev);
-  return 0;
-}
-
-always_inline sack_scoreboard_hole_t *
-scoreboard_first_hole (sack_scoreboard_t * sb)
-{
-  if (sb->head != TCP_INVALID_SACK_HOLE_INDEX)
-    return pool_elt_at_index (sb->holes, sb->head);
-  return 0;
-}
-
-always_inline sack_scoreboard_hole_t *
-scoreboard_last_hole (sack_scoreboard_t * sb)
-{
-  if (sb->tail != TCP_INVALID_SACK_HOLE_INDEX)
-    return pool_elt_at_index (sb->holes, sb->tail);
-  return 0;
-}
-
-always_inline void
-scoreboard_clear (sack_scoreboard_t * sb)
-{
-  sack_scoreboard_hole_t *hole;
-  while ((hole = scoreboard_first_hole (sb)))
-    {
-      scoreboard_remove_hole (sb, hole);
-    }
-  ASSERT (sb->head == sb->tail && sb->head == TCP_INVALID_SACK_HOLE_INDEX);
-  ASSERT (pool_elts (sb->holes) == 0);
-  sb->sacked_bytes = 0;
-  sb->last_sacked_bytes = 0;
-  sb->last_bytes_delivered = 0;
-  sb->snd_una_adv = 0;
-  sb->high_sacked = 0;
-  sb->high_rxt = 0;
-  sb->lost_bytes = 0;
-  sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
-}
-
-always_inline u32
-scoreboard_hole_bytes (sack_scoreboard_hole_t * hole)
-{
-  return hole->end - hole->start;
-}
-
-always_inline u32
-scoreboard_hole_index (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
-{
-  ASSERT (!pool_is_free_index (sb->holes, hole - sb->holes));
-  return hole - sb->holes;
-}
-
-always_inline void
-scoreboard_init (sack_scoreboard_t * sb)
-{
-  sb->head = TCP_INVALID_SACK_HOLE_INDEX;
-  sb->tail = TCP_INVALID_SACK_HOLE_INDEX;
-  sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
-}
+	 || session_tx_fifo_max_dequeue (&_tc->connection) >= _a)
 
 void tcp_rcv_sacks (tcp_connection_t * tc, u32 ack);
+u8 *tcp_scoreboard_replay (u8 * s, tcp_connection_t * tc, u8 verbose);
 
-always_inline void
-tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
-		      const tcp_cc_algorithm_t * vft)
-{
-  tcp_main_t *tm = vnet_get_tcp_main ();
-  vec_validate (tm->cc_algos, type);
+void tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
+			   const tcp_cc_algorithm_t * vft);
 
-  tm->cc_algos[type] = *vft;
-}
-
-always_inline tcp_cc_algorithm_t *
-tcp_cc_algo_get (tcp_cc_algorithm_type_e type)
-{
-  tcp_main_t *tm = vnet_get_tcp_main ();
-  return &tm->cc_algos[type];
-}
-
-void tcp_cc_init (tcp_connection_t * tc);
+tcp_cc_algorithm_t *tcp_cc_algo_get (tcp_cc_algorithm_type_e type);
 
 /**
  * Push TCP header to buffer

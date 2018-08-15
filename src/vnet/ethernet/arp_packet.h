@@ -156,7 +156,7 @@ typedef struct
 
   ethernet_arp_entry_flags_t flags;
 
-  u64 cpu_time_last_updated;
+  f64 time_last_updated;
 
   /**
    * The index of the adj-fib entry created
@@ -164,10 +164,13 @@ typedef struct
   fib_node_index_t fib_entry_index;
 } ethernet_arp_ip4_entry_t;
 
+ethernet_arp_ip4_entry_t *ip4_neighbors_pool (void);
 ethernet_arp_ip4_entry_t *ip4_neighbor_entries (u32 sw_if_index);
 u8 *format_ethernet_arp_ip4_entry (u8 * s, va_list * va);
 
-void send_ip4_garp (vlib_main_t * vm, vnet_hw_interface_t * hi);
+void send_ip4_garp (vlib_main_t * vm, u32 sw_if_index);
+void send_ip4_garp_w_addr (vlib_main_t * vm,
+			   const ip4_address_t * ip4_addr, u32 sw_if_index);
 
 #endif /* included_ethernet_arp_packet_h */
 

@@ -30,8 +30,16 @@ nobase_include_HEADERS =
 vppapitestpluginsdir = ${libdir}/vpp_api_test_plugins
 vpppluginsdir = ${libdir}/vpp_plugins
 
+if ENABLE_ABF_PLUGIN
+include abf.am
+endif
+
 if ENABLE_ACL_PLUGIN
 include acl.am
+endif
+
+if ENABLE_AVF_PLUGIN
+include avf.am
 endif
 
 if ENABLE_CDP_PLUGIN
@@ -51,6 +59,10 @@ if ENABLE_GTPU_PLUGIN
 include gtpu.am
 endif
 
+if ENABLE_IGMP_PLUGIN
+include igmp.am
+endif
+
 if ENABLE_ILA_PLUGIN
 include ila.am
 endif
@@ -63,12 +75,16 @@ if ENABLE_IXGE_PLUGIN
 include ixge.am
 endif
 
-if ENABLE_KUBEPROXY_PLUGIN
-include kubeproxy.am
+if ENABLE_LACP_PLUGIN
+include lacp.am
 endif
 
 if ENABLE_LB_PLUGIN
 include lb.am
+endif
+
+if ENABLE_MACTIME_PLUGIN
+include mactime.am
 endif
 
 if ENABLE_MARVELL_PLUGIN
@@ -99,6 +115,10 @@ if ENABLE_NAT_PLUGIN
 include nat.am
 endif
 
+if ENABLE_MAP_PLUGIN
+include map.am
+endif
+
 if ENABLE_STN_PLUGIN
 include stn.am
 endif
@@ -117,6 +137,10 @@ endif
 
 if ENABLE_TLSOPENSSL_PLUGIN
 include tlsopenssl.am
+endif
+
+if ENABLE_UNITTEST_PLUGIN
+include unittest.am
 endif
 
 include ../suffix-rules.mk

@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 #include <nat/dslite.h>
+#include <nat/nat_inlines.h>
 
 vlib_node_registration_t dslite_in2out_node;
 vlib_node_registration_t dslite_in2out_slowpath_node;
@@ -227,7 +228,7 @@ dslite_in2out_node_fn_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   dslite_in2out_next_t next_index;
   u32 node_index;
   vlib_node_runtime_t *error_node;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   f64 now = vlib_time_now (vm);
   dslite_main_t *dm = &dslite_main;
 

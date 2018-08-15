@@ -127,6 +127,7 @@ typedef struct
 
   u8 is_tunnel;
   u8 is_tunnel_ip6;
+  u8 udp_encap;
   ip46_address_t tunnel_src_addr;
   ip46_address_t tunnel_dst_addr;
 
@@ -171,6 +172,9 @@ typedef struct
   u8 local_integ_key[128];
   u8 remote_integ_key_len;
   u8 remote_integ_key[128];
+  u8 renumber;
+  u32 show_instance;
+  u8 udp_encap;
 } ipsec_add_del_tunnel_args_t;
 
 typedef struct
@@ -240,9 +244,12 @@ typedef struct
 
 typedef struct
 {
+  /* Required for pool_get_aligned */
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   u32 input_sa_index;
   u32 output_sa_index;
   u32 hw_if_index;
+  u32 show_instance;
 } ipsec_tunnel_if_t;
 
 typedef struct
@@ -277,6 +284,7 @@ typedef struct
   uword *spd_index_by_sw_if_index;
   uword *sa_index_by_sa_id;
   uword *ipsec_if_pool_index_by_key;
+  uword *ipsec_if_real_dev_by_show_dev;
 
   /* node indeces */
   u32 error_drop_node_index;
@@ -292,6 +300,9 @@ typedef struct
 
   /* callbacks */
   ipsec_main_callbacks_t cb;
+
+  /* helper for sort function */
+  ipsec_spd_t *spd_to_sort;
 } ipsec_main_t;
 
 extern ipsec_main_t ipsec_main;
@@ -300,7 +311,6 @@ extern vlib_node_registration_t esp_encrypt_node;
 extern vlib_node_registration_t esp_decrypt_node;
 extern vlib_node_registration_t ah_encrypt_node;
 extern vlib_node_registration_t ah_decrypt_node;
-extern vlib_node_registration_t ipsec_if_output_node;
 extern vlib_node_registration_t ipsec_if_input_node;
 
 
@@ -317,7 +327,6 @@ int ipsec_set_sa_key (vlib_main_t * vm, ipsec_sa_t * sa_update);
 
 u32 ipsec_get_sa_index_by_sa_id (u32 sa_id);
 u8 ipsec_is_sa_used (u32 sa_index);
-u8 *format_ipsec_if_output_trace (u8 * s, va_list * args);
 u8 *format_ipsec_policy_action (u8 * s, va_list * args);
 u8 *format_ipsec_crypto_alg (u8 * s, va_list * args);
 u8 *format_ipsec_integ_alg (u8 * s, va_list * args);
@@ -346,7 +355,7 @@ int ipsec_set_interface_sa (vnet_main_t * vnm, u32 hw_if_index, u32 sa_id,
 always_inline void
 ipsec_alloc_empty_buffers (vlib_main_t * vm, ipsec_main_t * im)
 {
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   uword l = vec_len (im->empty_buffers[thread_index]);
   uword n_alloc = 0;
 
@@ -369,11 +378,10 @@ get_next_output_feature_node_index (vlib_buffer_t * b,
 				    vlib_node_runtime_t * nr)
 {
   u32 next;
-  u32 sw_if_index = vnet_buffer (b)->sw_if_index[VLIB_TX];
   vlib_main_t *vm = vlib_get_main ();
   vlib_node_t *node = vlib_get_node (vm, nr->node_index);
 
-  vnet_feature_next (sw_if_index, &next, b);
+  vnet_feature_next (&next, b);
   return node->next_nodes[next];
 }
 

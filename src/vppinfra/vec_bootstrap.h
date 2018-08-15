@@ -58,6 +58,7 @@ typedef struct
   u64 len; //长度
 #else
   u32 len; /**< Number of elements in vector (NOT its allocated length). */
+  u32 dlmalloc_header_offset;	/**< offset to memory allocator offset  */
 #endif
   u8 vector_data[0];  /**< Vector data . */
 } vec_header_t;
@@ -192,6 +193,10 @@ for (var = vec_end (vec) - 1; var >= (vec); var--)
 
 /** \brief Iterate over vector indices. */
 #define vec_foreach_index(var,v) for ((var) = 0; (var) < vec_len (v); (var)++)
+
+/** \brief Iterate over vector indices (reverse). */
+#define vec_foreach_index_backwards(var,v) \
+  for ((var) = vec_len((v)) - 1; (var) >= 0; (var)--)
 
 #endif /* included_clib_vec_bootstrap_h */
 

@@ -621,13 +621,13 @@ vl_msg_api_process_file (vlib_main_t * vm, u8 * filename,
 	  if (msg_id < vec_len (am->msg_print_handlers) &&
 	      am->msg_print_handlers[msg_id] && cfgp->replay_enable)
 	    {
-	      void (*handler) (void *);
+	      void (*handler) (void *, vlib_main_t *);
 
 	      handler = (void *) am->msg_handlers[msg_id];
 
 	      if (!am->is_mp_safe[msg_id])
 		vl_msg_api_barrier_sync ();
-	      (*handler) (tmpbuf + sizeof (uword));
+	      (*handler) (tmpbuf + sizeof (uword), vm);
 	      if (!am->is_mp_safe[msg_id])
 		vl_msg_api_barrier_release ();
 	    }
@@ -721,7 +721,7 @@ api_trace_command_fn (vlib_main_t * vm,
 	    vlib_cli_output (vm,
 			     "Error while writing start of buffer trace to file\n");
 	  else if (rv < 0)
-	    vlib_cli_output (vm, "Unkown error while saving: %d", rv);
+	    vlib_cli_output (vm, "Unknown error while saving: %d", rv);
 	  else
 	    vlib_cli_output (vm, "API trace saved to %s\n", chroot_filename);
 	  vec_free (chroot_filename);

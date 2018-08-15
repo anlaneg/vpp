@@ -71,29 +71,10 @@ nil
 #include <" plugin-name "/" plugin-name "_all_api_h.h>
 #undef vl_api_version
 
-/*
- * A handy macro to set up a message reply.
- * Assumes that the following variables are available:
- * mp - pointer to request message
- * rmp - pointer to reply message type
- * rv - return value
- */
+#define REPLY_MSG_ID_BASE sm->msg_id_base
+#include <vlibapi/api_helper_macros.h>
 
-#define REPLY_MACRO(t)                                          \\
-do {                                                            \\
-    unix_shared_memory_queue_t * q =                            \\
-    vl_api_client_index_to_input_queue (mp->client_index);      \\
-    if (!q)                                                     \\
-        return;                                                 \\
-                                                                \\
-    rmp = vl_msg_api_alloc (sizeof (*rmp));                     \\
-    rmp->_vl_msg_id = ntohs((t)+sm->msg_id_base);               \\
-    rmp->context = mp->context;                                 \\
-    rmp->retval = ntohl(rv);                                    \\
-                                                                \\
-    vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \\
-} while(0);
-
+extern " plugin-name "_main_t " plugin-name "_main;
 
 /* List of message types that this plugin understands */
 
@@ -120,6 +101,11 @@ int " plugin-name "_enable_disable (" plugin-name "_main_t * sm, u32 sw_if_index
 
   vnet_feature_enable_disable (\"device-input\", \"" plugin-name "\",
                                sw_if_index, enable_disable, 0, 0);
+
+  /* Send an event to enable/disable the periodic scanner process */
+  vlib_process_signal_event (sm->vlib_main, " plugin-name"_periodic_node.index, 
+                            " PLUGIN-NAME"_EVENT_PERIODIC_ENABLE_DISABLE, 
+                            (uword)enable_disable);
 
   return rv;
 }
@@ -234,6 +220,9 @@ static clib_error_t * " plugin-name "_init (vlib_main_t * vm)
   clib_error_t * error = 0;
   u8 * name;
 
+  sm->vlib_main = vm;
+  sm->vnet_main = vnet_get_main();
+
   name = format (0, \"" plugin-name "_%08x%c\", api_version, 0);
 
   /* Ask for a correctly-sized block of API message decode slots */
@@ -265,6 +254,7 @@ VNET_FEATURE_INIT (" plugin-name ", static) =
 VLIB_PLUGIN_REGISTER () = 
 {
   .version = VPP_BUILD_VER,
+  .description = \"" plugin-name " plugin description goes here\",
 };
 /* *INDENT-ON* */
 

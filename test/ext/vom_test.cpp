@@ -20,8 +20,13 @@
 #include "vom/om.hpp"
 #include "vom/interface.hpp"
 #include "vom/interface_cmds.hpp"
+#include "vom/bond_interface_cmds.hpp"
+#include "vom/bond_group_binding.hpp"
+#include "vom/bond_group_binding_cmds.hpp"
 #include "vom/l2_binding.hpp"
 #include "vom/l2_binding_cmds.hpp"
+#include "vom/l2_xconnect.hpp"
+#include "vom/l2_xconnect_cmds.hpp"
 #include "vom/l3_binding.hpp"
 #include "vom/l3_binding_cmds.hpp"
 #include "vom/bridge_domain.hpp"
@@ -62,6 +67,8 @@
 #include "vom/nat_static_cmds.hpp"
 #include "vom/nat_binding.hpp"
 #include "vom/nat_binding_cmds.hpp"
+#include "vom/pipe.hpp"
+#include "vom/pipe_cmds.hpp"
 
 using namespace boost;
 using namespace VOM;
@@ -178,6 +185,10 @@ public:
                     {
                         rc = handle_derived<interface_cmds::vhost_create_cmd>(f_exp, f_act);
                     }
+                    else if (typeid(*f_exp) == typeid(bond_interface_cmds::create_cmd))
+                    {
+                       rc = handle_derived<bond_interface_cmds::create_cmd>(f_exp, f_act);
+                    }
                     else if (typeid(*f_exp) == typeid(interface_cmds::loopback_delete_cmd))
                     {
                         rc = handle_derived<interface_cmds::loopback_delete_cmd>(f_exp, f_act);
@@ -189,6 +200,10 @@ public:
                     else if (typeid(*f_exp) == typeid(interface_cmds::vhost_delete_cmd))
                     {
                        rc = handle_derived<interface_cmds::vhost_delete_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(bond_interface_cmds::delete_cmd))
+                    {
+                       rc = handle_derived<bond_interface_cmds::delete_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(interface_cmds::state_change_cmd))
                     {
@@ -205,6 +220,14 @@ public:
                     else if (typeid(*f_exp) == typeid(interface_cmds::set_tag))
                     {
                         rc = handle_derived<interface_cmds::set_tag>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(bond_group_binding_cmds::bind_cmd))
+                    {
+                       rc = handle_derived<bond_group_binding_cmds::bind_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(bond_group_binding_cmds::unbind_cmd))
+                    {
+                       rc = handle_derived<bond_group_binding_cmds::unbind_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(route_domain_cmds::create_cmd))
                     {
@@ -273,6 +296,14 @@ public:
                     else if (typeid(*f_exp) == typeid(l2_binding_cmds::set_vtr_op_cmd))
                     {
                         rc = handle_derived<l2_binding_cmds::set_vtr_op_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(l2_xconnect_cmds::bind_cmd))
+                    {
+                        rc = handle_derived<l2_xconnect_cmds::bind_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(l2_xconnect_cmds::unbind_cmd))
+                    {
+                        rc = handle_derived<l2_xconnect_cmds::unbind_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(vxlan_tunnel_cmds::create_cmd))
                     {
@@ -397,6 +428,14 @@ public:
                     else if (typeid(*f_exp) == typeid(interface_cmds::events_cmd))
                     {
                         rc = handle_derived<interface_cmds::events_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(pipe_cmds::create_cmd))
+                    {
+                        rc = handle_derived<pipe_cmds::create_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(pipe_cmds::delete_cmd))
+                    {
+                        rc = handle_derived<pipe_cmds::delete_cmd>(f_exp, f_act);
                     }
                     else
                     {
@@ -770,6 +809,80 @@ BOOST_AUTO_TEST_CASE(test_bvi) {
     TRY_CHECK(OM::remove(graham));
 }
 
+BOOST_AUTO_TEST_CASE(test_bond) {
+    VppInit vi;
+    const std::string cb = "CarolBerg";
+    rc_t rc = rc_t::OK;
+
+    /*
+     * creates the interfaces
+     */
+    std::string itf1_name = "afpacket1";
+    interface itf1(itf1_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+
+    HW::item<handle_t> hw_ifh(2, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh, itf1_name));
+
+    HW::item<interface::admin_state_t> hw_as_up(interface::admin_state_t::UP, rc_t::OK);
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
+
+    TRY_CHECK_RC(OM::write(cb, itf1));
+
+    std::string itf2_name = "afpacket2";
+    interface itf2(itf2_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+
+
+    HW::item<handle_t> hw_ifh2(4, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh2));
+
+    TRY_CHECK_RC(OM::write(cb, itf2));
+
+    std::string bond_name = "bond";
+    bond_interface bond_itf(bond_name, interface::admin_state_t::UP,
+                                 bond_interface::mode_t::LACP);
+
+    HW::item<handle_t> hw_ifh3(6, rc_t::OK);
+    ADD_EXPECT(bond_interface_cmds::create_cmd(hw_ifh3, bond_name,
+      bond_interface::mode_t::LACP, bond_interface::lb_t::L2, l2_address_t::ZERO));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh3));
+
+    TRY_CHECK_RC(OM::write(cb, bond_itf));
+
+    bond_member *bm1 = new bond_member(itf1, bond_member::mode_t::ACTIVE,
+                                         bond_member::rate_t::SLOW);
+    bond_member *bm2 = new bond_member(itf2, bond_member::mode_t::ACTIVE,
+                                         bond_member::rate_t::SLOW);
+    bond_group_binding *bgb = new bond_group_binding(bond_itf, {*bm1, *bm2});
+
+    HW::item<bool> bond_hw_bind(true, rc_t::OK);
+    ADD_EXPECT(bond_group_binding_cmds::bind_cmd(bond_hw_bind, hw_ifh3.data(), *bm1));
+    ADD_EXPECT(bond_group_binding_cmds::bind_cmd(bond_hw_bind, hw_ifh3.data(), *bm2));
+
+    TRY_CHECK_RC(OM::write(cb, *bgb));
+
+    delete bgb;
+    delete bm2;
+    delete bm1;
+
+    STRICT_ORDER_OFF();
+    HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN, rc_t::OK);
+    ADD_EXPECT(bond_group_binding_cmds::unbind_cmd(bond_hw_bind, hw_ifh.data()));
+    ADD_EXPECT(bond_group_binding_cmds::unbind_cmd(bond_hw_bind, hw_ifh2.data()));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh2));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh3));
+    ADD_EXPECT(bond_interface_cmds::delete_cmd(hw_ifh3));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh, itf1_name));
+
+    TRY_CHECK(OM::remove(cb));
+}
+
 BOOST_AUTO_TEST_CASE(test_bridge) {
     VppInit vi;
     const std::string franz = "FranzKafka";
@@ -799,7 +912,11 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     bridge_domain bd1(33);
 
     HW::item<uint32_t> hw_bd(33, rc_t::OK);
-    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd, bridge_domain::learning_mode_t::ON));
+    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd,
+                                              bridge_domain::learning_mode_t::ON,
+                                              bridge_domain::arp_term_mode_t::ON,
+                                              bridge_domain::flood_mode_t::ON,
+                                              bridge_domain::mac_age_mode_t::OFF));
 
     TRY_CHECK_RC(OM::write(franz, bd1));
 
@@ -880,7 +997,11 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     bridge_domain bd2(99);
 
     HW::item<uint32_t> hw_bd2(99, rc_t::OK);
-    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd2, bridge_domain::learning_mode_t::ON));
+    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd2,
+                                              bridge_domain::learning_mode_t::ON,
+                                              bridge_domain::arp_term_mode_t::ON,
+                                              bridge_domain::flood_mode_t::ON,
+                                              bridge_domain::mac_age_mode_t::OFF));
 
     TRY_CHECK_RC(OM::write(jkr, bd2));
 
@@ -916,6 +1037,60 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     TRY_CHECK(OM::remove(jkr));
 }
 
+BOOST_AUTO_TEST_CASE(test_l2_xconnect) {
+    VppInit vi;
+    const std::string nicholas = "NicholasAbercrombie";
+    rc_t rc = rc_t::OK;
+
+    /*
+     * Interface 1
+     */
+    std::string itf1_name = "host1";
+    interface itf1(itf1_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+    HW::item<handle_t> hw_ifh(2, rc_t::OK);
+    HW::item<interface::admin_state_t> hw_as_up(interface::admin_state_t::UP, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh, itf1_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
+    TRY_CHECK_RC(OM::write(nicholas, itf1));
+
+    /*
+     * Interface 2
+     */
+    std::string itf2_name = "host2";
+    interface itf2(itf2_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+
+    HW::item<handle_t> hw_ifh2(4, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh2));
+    TRY_CHECK_RC(OM::write(nicholas, itf2));
+
+    l2_xconnect *l2_xconn = new l2_xconnect(itf1, itf2);
+    HW::item<bool> xconnect_east(true, rc_t::OK);
+    HW::item<bool> xconnect_west(true, rc_t::OK);
+    HW::item<bool> xconnect_east_unbind(false, rc_t::OK);
+    HW::item<bool> xconnect_west_unbind(false, rc_t::OK);
+    ADD_EXPECT(l2_xconnect_cmds::bind_cmd(xconnect_east, hw_ifh.data(), hw_ifh2.data()));
+    ADD_EXPECT(l2_xconnect_cmds::bind_cmd(xconnect_west, hw_ifh2.data(), hw_ifh.data()));
+    TRY_CHECK_RC(OM::write(nicholas, *l2_xconn));
+
+    delete l2_xconn;
+
+    HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN, rc_t::OK);
+    STRICT_ORDER_OFF();
+    ADD_EXPECT(l2_xconnect_cmds::unbind_cmd(xconnect_east_unbind, hw_ifh.data(), hw_ifh2.data()));
+    ADD_EXPECT(l2_xconnect_cmds::unbind_cmd(xconnect_west_unbind, hw_ifh2.data(), hw_ifh.data()));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh2));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh, itf1_name));
+
+    TRY_CHECK(OM::remove(nicholas));
+}
+
 BOOST_AUTO_TEST_CASE(test_vxlan) {
     VppInit vi;
     const std::string franz = "FranzKafka";
@@ -927,8 +1102,8 @@ BOOST_AUTO_TEST_CASE(test_vxlan) {
 
     // VXLAN create
     vxlan_tunnel::endpoint_t ep(boost::asio::ip::address::from_string("10.10.10.10"),
-                               boost::asio::ip::address::from_string("10.10.10.11"),
-                               322);
+                                boost::asio::ip::address::from_string("10.10.10.11"),
+                                322);
 
     vxlan_tunnel vxt(ep.src, ep.dst, ep.vni);
 
@@ -938,10 +1113,17 @@ BOOST_AUTO_TEST_CASE(test_vxlan) {
     TRY_CHECK_RC(OM::write(franz, vxt));
 
     // bridge-domain create
-    bridge_domain bd1(33, bridge_domain::learning_mode_t::OFF);
+    bridge_domain bd1(33, bridge_domain::learning_mode_t::OFF,
+                      bridge_domain::arp_term_mode_t::OFF,
+                      bridge_domain::flood_mode_t::OFF,
+                      bridge_domain::mac_age_mode_t::ON);
 
     HW::item<uint32_t> hw_bd(33, rc_t::OK);
-    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd, bridge_domain::learning_mode_t::OFF));
+    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd,
+                                              bridge_domain::learning_mode_t::OFF,
+                                              bridge_domain::arp_term_mode_t::OFF,
+                                              bridge_domain::flood_mode_t::OFF,
+                                              bridge_domain::mac_age_mode_t::ON));
 
     TRY_CHECK_RC(OM::write(franz, bd1));
 
@@ -1129,7 +1311,7 @@ BOOST_AUTO_TEST_CASE(test_arp_proxy) {
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
     TRY_CHECK_RC(OM::write(kurt, itf3));
 
-    arp_proxy_binding *apb = new arp_proxy_binding(itf3, ap);
+    arp_proxy_binding *apb = new arp_proxy_binding(itf3);
     HW::item<bool> hw_binding(true, rc_t::OK);
     ADD_EXPECT(arp_proxy_binding_cmds::bind_cmd(hw_binding, hw_ifh.data()));
     TRY_CHECK_RC(OM::write(kurt, *apb));
@@ -1686,6 +1868,74 @@ BOOST_AUTO_TEST_CASE(test_prefixes) {
     BOOST_CHECK(p4_s_32.low().address() == boost::asio::ip::address::from_string("192.168.1.1"));
     BOOST_CHECK(p4_s_32.high().address() == boost::asio::ip::address::from_string("192.168.1.1"));
 
+}
+
+BOOST_AUTO_TEST_CASE(test_pipes) {
+    VppInit vi;
+    const std::string gk = "GKChesterton";
+
+    const std::string pipe_name_1 = "pipe1";
+    VOM::pipe pipe1(1, interface::admin_state_t::UP);
+    HW::item<handle_t> hw_hdl(4, rc_t::OK);
+    HW::item<pipe::handle_pair_t> hw_hdl_pair(std::make_pair(5,6), rc_t::OK);
+
+    HW::item<interface::admin_state_t> hw_as_up(interface::admin_state_t::UP,
+                                                rc_t::OK);
+    HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN,
+                                                  rc_t::OK);
+    ADD_EXPECT(pipe_cmds::create_cmd(hw_hdl, pipe_name_1, 1, hw_hdl_pair));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_hdl));
+    TRY_CHECK_RC(OM::write(gk, pipe1));
+
+    pipe1.set_ends(hw_hdl_pair.data());
+
+    // put each end of the pipe in a BD
+    bridge_domain bd1(33, bridge_domain::learning_mode_t::OFF,
+                      bridge_domain::arp_term_mode_t::OFF,
+                      bridge_domain::flood_mode_t::OFF,
+                      bridge_domain::mac_age_mode_t::ON);
+
+    HW::item<uint32_t> hw_bd(33, rc_t::OK);
+    ADD_EXPECT(bridge_domain_cmds::create_cmd(hw_bd,
+                                              bridge_domain::learning_mode_t::OFF,
+                                              bridge_domain::arp_term_mode_t::OFF,
+                                              bridge_domain::flood_mode_t::OFF,
+                                              bridge_domain::mac_age_mode_t::ON));
+
+    TRY_CHECK_RC(OM::write(gk, bd1));
+
+    l2_binding *l2_1 = new l2_binding(*pipe1.east(), bd1);
+    HW::item<bool> hw_l2_1_bind(true, rc_t::OK);
+
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_1_bind,
+                                         pipe1.east()->handle(),
+                                         hw_bd.data(), false));
+    TRY_CHECK_RC(OM::write(gk, *l2_1));
+
+    l2_binding *l2_2 = new l2_binding(*pipe1.west(), bd1);
+    HW::item<bool> hw_l2_2_bind(true, rc_t::OK);
+
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_2_bind,
+                                         pipe1.west()->handle(),
+                                         hw_bd.data(), false));
+    TRY_CHECK_RC(OM::write(gk, *l2_2));
+
+    STRICT_ORDER_OFF();
+
+    delete l2_1;
+    delete l2_2;
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_1_bind,
+                                           pipe1.east()->handle(),
+                                           hw_bd.data(),
+                                           false));
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_1_bind,
+                                           pipe1.west()->handle(),
+                                           hw_bd.data(),
+                                           false));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_hdl));
+    ADD_EXPECT(pipe_cmds::delete_cmd(hw_hdl, hw_hdl_pair));
+    ADD_EXPECT(bridge_domain_cmds::delete_cmd(hw_bd));
+    TRY_CHECK(OM::remove(gk));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -23,13 +23,11 @@
 #define _LIBMEMIF_H_
 
 /** Libmemif version. */
-#define LIBMEMIF_VERSION "1.0"
+#define LIBMEMIF_VERSION "2.0"
 /** Default name of application using libmemif. */
 #define MEMIF_DEFAULT_APP_NAME "libmemif-app"
 
 #include <inttypes.h>
-
-#include <memif.h>
 
 /*! Error codes */
 typedef enum
@@ -76,6 +74,7 @@ typedef enum
   MEMIF_ERR_UNKNOWN_MSG,	/*!< unknown message type */
   MEMIF_ERR_POLL_CANCEL,	/*!< memif_poll_event() was cancelled */
   MEMIF_ERR_MAX_RING,		/*!< too large ring size */
+  MEMIF_ERR_PRIVHDR,		/*!< private hdrs not supported */
 } memif_err_t;
 
 /**
@@ -95,10 +94,25 @@ typedef enum
 #define MEMIF_FD_EVENT_MOD   (1 << 4)
 /** @} */
 
-/** *brief Memif connection handle
+/** \brief Memif connection handle
     pointer of type void, pointing to internal structure
 */
 typedef void *memif_conn_handle_t;
+
+/** \brief Memif allocator alloc
+    @param size - requested allocation size
+
+    custom memory allocator: alloc function template
+*/
+typedef void *(memif_alloc_t) (size_t size);
+
+/** \brief Memif allocator free
+    @param size - requested allocation size
+
+    custom memory allocator: free function template
+*/
+typedef void (memif_free_t) (void *ptr);
+
 /**
  * @defgroup CALLBACKS Callback functions definitions
  * @ingroup libmemif
@@ -143,6 +157,15 @@ typedef int (memif_interrupt_t) (memif_conn_handle_t conn, void *private_ctx,
  * @{
  */
 
+#ifndef _MEMIF_H_
+typedef enum
+{
+  MEMIF_INTERFACE_MODE_ETHERNET = 0,
+  MEMIF_INTERFACE_MODE_IP = 1,
+  MEMIF_INTERFACE_MODE_PUNT_INJECT = 2,
+} memif_interface_mode_t;
+#endif /* _MEMIF_H_ */
+
 /** \brief Memif connection arguments
     @param socket_filename - socket filename
     @param secret - otional parameter used as interface autenthication
@@ -153,7 +176,6 @@ typedef int (memif_interrupt_t) (memif_conn_handle_t conn, void *private_ctx,
     @param is_master - 0 == master, 1 == slave
     @param interface_id - id used to identify peer connection
     @param interface_name - interface name
-    @param instance_name - application name
     @param mode - 0 == ethernet, 1 == ip , 2 == punt/inject
 */
 typedef struct
@@ -164,12 +186,11 @@ typedef struct
   uint8_t num_s2m_rings;	/*!< default = 1 */
   uint8_t num_m2s_rings;	/*!< default = 1 */
   uint16_t buffer_size;		/*!< default = 2048 */
-  memif_log2_ring_size_t log2_ring_size;	/*!< default = 10 (1024) */
+  uint8_t log2_ring_size;	/*!< default = 10 (1024) */
   uint8_t is_master;
 
-  memif_interface_id_t interface_id;
+  uint32_t interface_id;
   uint8_t interface_name[32];
-  uint8_t instance_name[32];	/*!< deprecated, will be removed in 2.0 */
   memif_interface_mode_t mode:8;
 } memif_conn_args_t;
 
@@ -182,15 +203,21 @@ typedef enum
 
 /** \brief Memif buffer
     @param desc_index - ring descriptor index
-    @param buffer_len - shared meory buffer length
-    @param data_len - data length
+    @param ring - pointer to ring containing descriptor for this buffer
+    @param len - available length
+    @param flags - memif buffer flags
     @param data - pointer to shared memory data
 */
 typedef struct
 {
   uint16_t desc_index;
-  uint32_t buffer_len;
-  uint32_t data_len;
+  void *ring;
+  uint32_t len;
+/** next buffer present (chained buffers) */
+#define MEMIF_BUFFER_FLAG_NEXT (1 << 0)
+/** states that buffer is from rx ring */
+#define MEMIF_BUFFER_FLAG_RX (1 << 1)
+  uint8_t flags;
   void *data;
 } memif_buffer_t;
 /** @} */
@@ -266,6 +293,12 @@ typedef struct
  * @{
  */
 
+/** \brief Memif get version
+
+    \return ((MEMIF_VERSION_MAJOR << 8) | MEMIF_VERSION_MINOR)
+*/
+uint16_t memif_get_version ();
+
 /** \biref Memif get queue event file descriptor
     @param conn - memif connection handle
     @param qid - queue id
@@ -309,6 +342,8 @@ int memif_get_details (memif_conn_handle_t conn, memif_details_t * md,
 /** \brief Memif initialization
     @param on_control_fd_update - if control fd updates inform user to watch new fd
     @param app_name - application name (will be truncated to 32 chars)
+    @param memif_alloc - cutom memory allocator, NULL = default
+    @param memif_free - custom memory free, NULL = default
 
     if param on_control_fd_update is set to NULL,
     libmemif will handle file descriptor event polling
@@ -323,7 +358,8 @@ int memif_get_details (memif_conn_handle_t conn, memif_details_t * md,
     \return memif_err_t
 */
 int memif_init (memif_control_fd_update_t * on_control_fd_update,
-		char *app_name);
+		char *app_name, memif_alloc_t * memif_alloc,
+		memif_free_t * memif_free);
 
 /** \brief Memif cleanup
 
@@ -392,13 +428,29 @@ int memif_control_fd_handler (int fd, uint8_t events);
 */
 int memif_delete (memif_conn_handle_t * conn);
 
+/** \brief Memif buffer enq tx
+    @param conn - memif conenction handle
+    @param qid - number indentifying queue
+    @param bufs - memif buffers
+    @param count - number of memif buffers to enque
+    @param count_out - returns number of allocated buffers
+
+    Slave is producer of buffers.
+    If connection handle points to master returns MEMIF_ERR_INVAL_ARG.
+
+    \return memif_err_t
+*/
+int memif_buffer_enq_tx (memif_conn_handle_t conn, uint16_t qid,
+			 memif_buffer_t * bufs, uint16_t count,
+			 uint16_t * count_out);
+
 /** \brief Memif buffer alloc
     @param conn - memif conenction handle
     @param qid - number indentifying queue
     @param bufs - memif buffers
     @param count - number of memif buffers to allocate
     @param count_out - returns number of allocated buffers
-    @param size - minimal buffer size, 0 = standard buffer size
+    @param size - buffer size, may return chained buffers if size > buffer_size
 
     \return memif_err_t
 */
@@ -406,18 +458,16 @@ int memif_buffer_alloc (memif_conn_handle_t conn, uint16_t qid,
 			memif_buffer_t * bufs, uint16_t count,
 			uint16_t * count_out, uint16_t size);
 
-/** \brief Memif buffer free
+/** \brief Memif refill ring
     @param conn - memif conenction handle
     @param qid - number indentifying queue
-    @param bufs - memif buffers
-    @param count - number of memif buffers to free
-    @param count_out - returns number of freed buffers
+    @param count - number of buffers to be placed on ring
+    @param headroom - offset the buffer by headroom
 
     \return memif_err_t
 */
-int memif_buffer_free (memif_conn_handle_t conn, uint16_t qid,
-		       memif_buffer_t * bufs, uint16_t count,
-		       uint16_t * count_out);
+int memif_refill_queue (memif_conn_handle_t conn, uint16_t qid,
+			uint16_t count, uint16_t headroom);
 
 /** \brief Memif transmit buffer burst
     @param conn - memif conenction handle

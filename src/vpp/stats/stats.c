@@ -18,6 +18,10 @@
 #include <vnet/fib/fib_entry.h>
 #include <vnet/mfib/mfib_entry.h>
 #include <vnet/dpo/load_balance.h>
+#include <vnet/udp/udp_encap.h>
+#include <vnet/bier/bier_fmask.h>
+#include <vnet/bier/bier_table.h>
+#include <vnet/fib/fib_api.h>
 
 #define STATS_DEBUG 0
 
@@ -47,24 +51,25 @@ stats_main_t stats_main;
 #define foreach_stats_msg						\
 _(WANT_STATS, want_stats)						\
 _(VNET_INTERFACE_SIMPLE_COUNTERS, vnet_interface_simple_counters)	\
-_(WANT_INTERFACE_SIMPLE_STATS, want_interface_simple_stats)	\
+_(WANT_INTERFACE_SIMPLE_STATS, want_interface_simple_stats)             \
 _(VNET_INTERFACE_COMBINED_COUNTERS, vnet_interface_combined_counters)	\
-_(WANT_INTERFACE_COMBINED_STATS, want_interface_combined_stats)	\
+_(WANT_INTERFACE_COMBINED_STATS, want_interface_combined_stats)         \
 _(WANT_PER_INTERFACE_COMBINED_STATS, want_per_interface_combined_stats)	\
-_(WANT_PER_INTERFACE_SIMPLE_STATS, want_per_interface_simple_stats) \
+_(WANT_PER_INTERFACE_SIMPLE_STATS, want_per_interface_simple_stats)     \
 _(VNET_IP4_FIB_COUNTERS, vnet_ip4_fib_counters)				\
-_(WANT_IP4_FIB_STATS, want_ip4_fib_stats)            \
+_(WANT_IP4_FIB_STATS, want_ip4_fib_stats)                               \
 _(VNET_IP6_FIB_COUNTERS, vnet_ip6_fib_counters)				\
-_(WANT_IP6_FIB_STATS, want_ip6_fib_stats)        \
+_(WANT_IP6_FIB_STATS, want_ip6_fib_stats)                               \
 _(WANT_IP4_MFIB_STATS, want_ip4_mfib_stats)                             \
 _(WANT_IP6_MFIB_STATS, want_ip6_mfib_stats)                             \
 _(VNET_IP4_NBR_COUNTERS, vnet_ip4_nbr_counters)				\
-_(WANT_IP4_NBR_STATS, want_ip4_nbr_stats)            \
-_(VNET_IP6_NBR_COUNTERS, vnet_ip6_nbr_counters) \
-_(WANT_IP6_NBR_STATS, want_ip6_nbr_stats) \
-_(VNET_GET_SUMMARY_STATS, vnet_get_summary_stats) \
-_(STATS_GET_POLLER_DELAY, stats_get_poller_delay)
-
+_(WANT_IP4_NBR_STATS, want_ip4_nbr_stats)                               \
+_(VNET_IP6_NBR_COUNTERS, vnet_ip6_nbr_counters)                         \
+_(WANT_IP6_NBR_STATS, want_ip6_nbr_stats)                               \
+_(VNET_GET_SUMMARY_STATS, vnet_get_summary_stats)                       \
+_(STATS_GET_POLLER_DELAY, stats_get_poller_delay)                       \
+_(WANT_UDP_ENCAP_STATS, want_udp_encap_stats)                           \
+_(WANT_BIER_NEIGHBOR_STATS, want_bier_neighbor_stats)
 
 #define vl_msg_name_crc_list
 #include <vpp/stats/stats.api.h>
@@ -86,6 +91,8 @@ setup_message_id_table (api_main_t * am)
 #define IP6_FIB_COUNTER_BATCH_SIZE	30
 #define IP4_MFIB_COUNTER_BATCH_SIZE	24
 #define IP6_MFIB_COUNTER_BATCH_SIZE	15
+#define UDP_ENCAP_COUNTER_BATCH_SIZE	(1024 / sizeof(vl_api_udp_encap_counter_t))
+#define BIER_NEIGHBOR_COUNTER_BATCH_SIZE (1024 / sizeof(vl_api_bier_neighbor_counter_t))
 
 /* 5ms */
 #define STATS_RELEASE_DELAY_NS (1000 * 1000 * 5)
@@ -295,6 +302,8 @@ set_client_for_stat (u32 reg, u32 item, vpe_client_registration_t * client)
     {
       pool_get (sm->stats_registrations[reg], registration);
       registration->item = item;
+      registration->client_hash = NULL;
+      registration->clients = NULL;
       hash_set (sm->stats_registration_hash[reg], item,
 		registration - sm->stats_registrations[reg]);
     }
@@ -317,12 +326,38 @@ set_client_for_stat (u32 reg, u32 item, vpe_client_registration_t * client)
   return 1;			//At least one client is doing something ... poll
 }
 
-int
-clear_client_for_stat (u32 reg, u32 item, u32 client_index)
+static void
+clear_one_client (u32 reg_index, u32 reg, u32 item, u32 client_index)
 {
   stats_main_t *sm = &stats_main;
   vpe_client_stats_registration_t *registration;
   vpe_client_registration_t *client;
+  uword *p;
+
+  registration = pool_elt_at_index (sm->stats_registrations[reg], reg_index);
+  p = hash_get (registration->client_hash, client_index);
+
+  if (p)
+    {
+      client = pool_elt_at_index (registration->clients, p[0]);
+      hash_unset (registration->client_hash, client->client_index);
+      pool_put (registration->clients, client);
+
+      /* Now check if that was the last client for that item */
+      if (0 == pool_elts (registration->clients))
+	{
+	  hash_unset (sm->stats_registration_hash[reg], item);
+	  hash_free (registration->client_hash);
+	  pool_free (registration->clients);
+	  pool_put (sm->stats_registrations[reg], registration);
+	}
+    }
+}
+
+int
+clear_client_for_stat (u32 reg, u32 item, u32 client_index)
+{
+  stats_main_t *sm = &stats_main;
   uword *p;
   int i, elts;
 
@@ -334,22 +369,7 @@ clear_client_for_stat (u32 reg, u32 item, u32 client_index)
     goto exit;
 
   /* If there is, is our client_index one of them */
-  registration = pool_elt_at_index (sm->stats_registrations[reg], p[0]);
-  p = hash_get (registration->client_hash, client_index);
-
-  if (!p)
-    goto exit;
-
-  client = pool_elt_at_index (registration->clients, p[0]);
-  hash_unset (registration->client_hash, client->client_index);
-  pool_put (registration->clients, client);
-
-  /* Now check if that was the last client for that item */
-  if (0 == pool_elts (registration->clients))
-    {
-      hash_unset (sm->stats_registration_hash[reg], item);
-      pool_put (sm->stats_registrations[reg], registration);
-    }
+  clear_one_client (p[0], reg, item, client_index);
 
 exit:
   elts = 0;
@@ -361,6 +381,48 @@ exit:
   return elts;
 }
 
+static int
+clear_client_for_all_stats (u32 client_index)
+{
+  stats_main_t *sm = &stats_main;
+  u32 reg_index, item, reg;
+  int i, elts;
+
+  /* *INDENT-OFF* */
+  vec_foreach_index(reg, sm->stats_registration_hash)
+    {
+      hash_foreach(item, reg_index, sm->stats_registration_hash[reg],
+      ({
+        clear_one_client(reg_index, reg, item, client_index);
+      }));
+    }
+  /* *INDENT-OFF* */
+
+  elts = 0;
+  /* Now check if that was the last item in any of the listened to stats */
+  for (i = 0; i < STATS_REG_N_IDX; i++)
+    {
+      elts += pool_elts (sm->stats_registrations[i]);
+    }
+  return elts;
+}
+
+static clib_error_t *
+want_stats_reaper (u32 client_index)
+{
+  stats_main_t *sm = &stats_main;
+
+  sm->enable_poller = clear_client_for_all_stats (client_index);
+
+  return (NULL);
+}
+
+VL_MSG_API_REAPER_FUNCTION (want_stats_reaper);
+
+
+/*
+ * Return a copy of the clients list.
+ */
 vpe_client_registration_t *
 get_clients_for_stat (u32 reg, u32 item)
 {
@@ -379,10 +441,13 @@ get_clients_for_stat (u32 reg, u32 item)
   registration = pool_elt_at_index (sm->stats_registrations[reg], p[0]);
 
   vec_reset_length (clients);
-  pool_foreach (client, registration->clients, (
-						 {
-						 vec_add1 (clients, *client);}
-		));
+
+  /* *INDENT-OFF* */
+  pool_foreach (client, registration->clients,
+  ({
+    vec_add1 (clients, *client);}
+  ));
+  /* *INDENT-ON* */
   return clients;
 }
 
@@ -606,6 +671,7 @@ static void
 	  reg_prev = reg;
 	}
     }
+  vec_free (clients);
 #if STATS_DEBUG > 0
   fformat (stdout, "%U\n", format_vnet_combined_counters, mp);
 #endif
@@ -846,18 +912,26 @@ do_combined_per_interface_counters (stats_main_t * sm)
 	  vp->sw_if_index = htonl (reg->item);
 
 	  im = &vnet_get_main ()->interface_main;
-	  cm = im->combined_sw_if_counters + VNET_INTERFACE_COUNTER_RX;
-	  vlib_get_combined_counter (cm, reg->item, &v);
-	  clib_mem_unaligned (&vp->rx_packets, u64) =
-	    clib_host_to_net_u64 (v.packets);
-	  clib_mem_unaligned (&vp->rx_bytes, u64) =
-	    clib_host_to_net_u64 (v.bytes);
-	  cm = im->combined_sw_if_counters + VNET_INTERFACE_COUNTER_TX;
-	  vlib_get_combined_counter (cm, reg->item, &v);
-	  clib_mem_unaligned (&vp->tx_packets, u64) =
-	    clib_host_to_net_u64 (v.packets);
-	  clib_mem_unaligned (&vp->tx_bytes, u64) =
-	    clib_host_to_net_u64 (v.bytes);
+
+#define _(X, x)                  \
+          cm = im->combined_sw_if_counters + X; \
+          vlib_get_combined_counter (cm, reg->item, &v); \
+          clib_mem_unaligned (&vp->x##_packets, u64) = \
+            clib_host_to_net_u64 (v.packets); \
+          clib_mem_unaligned (&vp->x##_bytes, u64) = \
+            clib_host_to_net_u64 (v.bytes);
+
+
+	  _(VNET_INTERFACE_COUNTER_RX, rx);
+	  _(VNET_INTERFACE_COUNTER_TX, tx);
+	  _(VNET_INTERFACE_COUNTER_RX_UNICAST, rx_unicast);
+	  _(VNET_INTERFACE_COUNTER_TX_UNICAST, tx_unicast);
+	  _(VNET_INTERFACE_COUNTER_RX_MULTICAST, rx_multicast);
+	  _(VNET_INTERFACE_COUNTER_TX_MULTICAST, tx_multicast);
+	  _(VNET_INTERFACE_COUNTER_RX_BROADCAST, rx_broadcast);
+	  _(VNET_INTERFACE_COUNTER_TX_BROADCAST, tx_broadcast);
+
+#undef _
 
 	  vl_api_send_msg (vl_reg, (u8 *) mp);
 	}
@@ -1155,6 +1229,23 @@ ip4_nbr_stats_cb (adj_index_t ai, void *arg)
 #define MIN(x,y) (((x)<(y))?(x):(y))
 
 static void
+send_and_pause (stats_main_t * sm, svm_queue_t * q, u8 * mp)
+{
+  u8 pause = 0;
+
+  svm_queue_lock (q);
+  pause = svm_queue_is_full (q);
+
+  vl_msg_api_send_shmem_nolock (q, (u8 *) & mp);
+  svm_queue_unlock (q);
+  dsunlock (sm);
+
+  if (pause)
+    ip46_fib_stats_delay (sm, 0 /* sec */ ,
+			  STATS_RELEASE_DELAY_NS);
+}
+
+static void
 ip4_nbr_ship (stats_main_t * sm, ip4_nbr_stats_ctx_t * ctx)
 {
   api_main_t *am = sm->api_main;
@@ -1199,16 +1290,7 @@ ip4_nbr_ship (stats_main_t * sm, ip4_nbr_stats_ctx_t * ctx)
       /*
        * send to the shm q
        */
-      svm_queue_lock (q);
-      pause = svm_queue_is_full (q);
-
-      vl_msg_api_send_shmem_nolock (q, (u8 *) & mp);
-      svm_queue_unlock (q);
-      dsunlock (sm);
-
-      if (pause)
-	ip46_fib_stats_delay (sm, 0 /* sec */ ,
-			      STATS_RELEASE_DELAY_NS);
+      send_and_pause (sm, q, (u8 *) & mp);
     }
 }
 
@@ -1354,16 +1436,7 @@ ip6_nbr_ship (stats_main_t * sm,
       /*
        * send to the shm q
        */
-      svm_queue_lock (q);
-      pause = svm_queue_is_full (q);
-
-      vl_msg_api_send_shmem_nolock (q, (u8 *) & mp);
-      svm_queue_unlock (q);
-      dsunlock (sm);
-
-      if (pause)
-        ip46_fib_stats_delay (sm, 0 /* sec */ ,
-                              STATS_RELEASE_DELAY_NS);
+      send_and_pause(sm, q, (u8 *) & mp);
     }
 }
 
@@ -2069,6 +2142,189 @@ again:
     vl_msg_api_free (mp);
 }
 
+typedef struct udp_encap_stats_walk_t_
+{
+  vl_api_udp_encap_counter_t *stats;
+} udp_encap_stats_walk_t;
+
+static walk_rc_t
+udp_encap_stats_walk_cb (index_t uei, void *arg)
+{
+  udp_encap_stats_walk_t *ctx = arg;
+  vl_api_udp_encap_counter_t *stat;
+  udp_encap_t *ue;
+
+  ue = udp_encap_get (uei);
+  vec_add2 (ctx->stats, stat, 1);
+
+  stat->id = ue->ue_id;
+  udp_encap_get_stats (ue->ue_id, &stat->packets, &stat->bytes);
+
+  return (WALK_CONTINUE);
+}
+
+static void
+udp_encap_ship (udp_encap_stats_walk_t * ctx)
+{
+  vl_api_vnet_udp_encap_counters_t *mp;
+  vl_shmem_hdr_t *shmem_hdr;
+  stats_main_t *sm;
+  api_main_t *am;
+  svm_queue_t *q;
+
+  mp = NULL;
+  sm = &stats_main;
+  am = sm->api_main;
+  shmem_hdr = am->shmem_hdr;
+  q = shmem_hdr->vl_input_queue;
+
+  /*
+   * If the walk context has counters, which may be left over from the last
+   * suspend, then we continue from there.
+   */
+  while (0 != vec_len (ctx->stats))
+    {
+      u32 n_items = MIN (vec_len (ctx->stats),
+			 UDP_ENCAP_COUNTER_BATCH_SIZE);
+      u8 pause = 0;
+
+      dslock (sm, 0 /* release hint */ , 1 /* tag */ );
+
+      mp = vl_msg_api_alloc_as_if_client (sizeof (*mp) +
+					  (n_items *
+					   sizeof
+					   (vl_api_udp_encap_counter_t)));
+      mp->_vl_msg_id = ntohs (VL_API_VNET_UDP_ENCAP_COUNTERS);
+      mp->count = ntohl (n_items);
+
+      /*
+       * copy the counters from the back of the context, then we can easily
+       * 'erase' them by resetting the vector length.
+       * The order we push the stats to the caller is not important.
+       */
+      clib_memcpy (mp->c,
+		   &ctx->stats[vec_len (ctx->stats) - n_items],
+		   n_items * sizeof (*ctx->stats));
+
+      _vec_len (ctx->stats) = vec_len (ctx->stats) - n_items;
+
+      /*
+       * send to the shm q
+       */
+      send_and_pause (sm, q, (u8 *) & mp);
+    }
+}
+
+static void
+do_udp_encap_counters (stats_main_t * sm)
+{
+  vl_api_udp_encap_counter_t *stat;
+
+  udp_encap_stats_walk_t ctx = {
+    .stats = NULL,
+  };
+
+  dslock (sm, 0 /* release hint */ , 1 /* tag */ );
+  udp_encap_walk (udp_encap_stats_walk_cb, &ctx);
+  dsunlock (sm);
+
+  udp_encap_ship (&ctx);
+}
+
+typedef struct bier_neighbor_stats_walk_t_
+{
+  vl_api_bier_neighbor_counter_t *stats;
+} bier_neighbor_stats_walk_t;
+
+static walk_rc_t
+bier_neighbor_stats_walk_cb (index_t bfmi, void *arg)
+{
+  bier_neighbor_stats_walk_t *ctx = arg;
+  vl_api_bier_neighbor_counter_t *stat;
+  fib_route_path_encode_t rpath;
+  bier_table_id_t btid;
+
+  vec_add2 (ctx->stats, stat, 1);
+
+  bier_fmask_encode (bfmi, &btid, &rpath);
+
+  stat->tbl_id.bt_set = btid.bti_set;
+  stat->tbl_id.bt_sub_domain = btid.bti_sub_domain;
+  stat->tbl_id.bt_hdr_len_id = btid.bti_hdr_len;
+  fib_api_path_encode (&rpath, &stat->path);
+  bier_fmask_get_stats (bfmi, &stat->packets, &stat->bytes);
+
+  return (WALK_CONTINUE);
+}
+
+static void
+bier_neighbor_ship (bier_neighbor_stats_walk_t * ctx)
+{
+  vl_api_vnet_bier_neighbor_counters_t *mp;
+  vl_shmem_hdr_t *shmem_hdr;
+  stats_main_t *sm;
+  api_main_t *am;
+  svm_queue_t *q;
+
+  mp = NULL;
+  sm = &stats_main;
+  am = sm->api_main;
+  shmem_hdr = am->shmem_hdr;
+  q = shmem_hdr->vl_input_queue;
+
+  /*
+   * If the walk context has counters, which may be left over from the last
+   * suspend, then we continue from there.
+   */
+  while (0 != vec_len (ctx->stats))
+    {
+      u32 n_items = MIN (vec_len (ctx->stats),
+			 BIER_NEIGHBOR_COUNTER_BATCH_SIZE);
+      u8 pause = 0;
+
+      dslock (sm, 0 /* release hint */ , 1 /* tag */ );
+
+      mp = vl_msg_api_alloc_as_if_client (sizeof (*mp) +
+					  (n_items *
+					   sizeof
+					   (vl_api_bier_neighbor_counter_t)));
+      mp->_vl_msg_id = ntohs (VL_API_VNET_BIER_NEIGHBOR_COUNTERS);
+      mp->count = ntohl (n_items);
+
+      /*
+       * copy the counters from the back of the context, then we can easily
+       * 'erase' them by resetting the vector length.
+       * The order we push the stats to the caller is not important.
+       */
+      clib_memcpy (mp->c,
+		   &ctx->stats[vec_len (ctx->stats) - n_items],
+		   n_items * sizeof (*ctx->stats));
+
+      _vec_len (ctx->stats) = vec_len (ctx->stats) - n_items;
+
+      /*
+       * send to the shm q
+       */
+      send_and_pause (sm, q, (u8 *) & mp);
+    }
+}
+
+static void
+do_bier_neighbor_counters (stats_main_t * sm)
+{
+  vl_api_bier_neighbor_counter_t *stat;
+
+  bier_neighbor_stats_walk_t ctx = {
+    .stats = NULL,
+  };
+
+  dslock (sm, 0 /* release hint */ , 1 /* tag */ );
+  bier_fmask_db_walk (bier_neighbor_stats_walk_cb, &ctx);
+  dsunlock (sm);
+
+  bier_neighbor_ship (&ctx);
+}
+
 int
 stats_set_poller_delay (u32 poller_delay_sec)
 {
@@ -2084,14 +2340,74 @@ stats_set_poller_delay (u32 poller_delay_sec)
     }
 }
 
+/*
+ * Accept connection on the socket and exchange the fd for the shared
+ * memory segment.
+ */
+static clib_error_t *
+stats_socket_accept_ready (clib_file_t * uf)
+{
+  stats_main_t *sm = &stats_main;
+  ssvm_private_t *ssvmp = &sm->stat_segment;
+  clib_error_t *err;
+  clib_socket_t client = { 0 };
+
+  err = clib_socket_accept (sm->socket, &client);
+  if (err)
+    {
+      clib_error_report (err);
+      return err;
+    }
+
+  /* Send the fd across and close */
+  err = clib_socket_sendmsg (&client, 0, 0, &ssvmp->fd, 1);
+  if (err)
+    clib_error_report (err);
+  clib_socket_close (&client);
+
+  return 0;
+}
+
+static void
+stats_segment_socket_init (void)
+{
+  stats_main_t *sm = &stats_main;
+  clib_error_t *error;
+  clib_socket_t *s = clib_mem_alloc (sizeof (clib_socket_t));
+
+  s->config = (char *) sm->socket_name;
+  s->flags = CLIB_SOCKET_F_IS_SERVER | CLIB_SOCKET_F_SEQPACKET |
+    CLIB_SOCKET_F_ALLOW_GROUP_WRITE | CLIB_SOCKET_F_PASSCRED;
+  if ((error = clib_socket_init (s)))
+    {
+      clib_error_report (error);
+      return;
+    }
+
+  clib_file_t template = { 0 };
+  clib_file_main_t *fm = &file_main;
+  template.read_function = stats_socket_accept_ready;
+  template.file_descriptor = s->fd;
+  template.description =
+    format (0, "stats segment listener %s", STAT_SEGMENT_SOCKET_FILE);
+  clib_file_add (fm, &template);
+
+  sm->socket = s;
+}
+
 static clib_error_t *
 stats_config (vlib_main_t * vm, unformat_input_t * input)
 {
+  stats_main_t *sm = &stats_main;
   u32 sec;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "interval %u", &sec))
+      if (unformat (input, "socket-name %s", &sm->socket_name))
+	;
+      else if (unformat (input, "default"))
+	sm->socket_name = format (0, "%s", STAT_SEGMENT_SOCKET_FILE);
+      else if (unformat (input, "interval %u", &sec))
 	{
 	  int rv = stats_set_poller_delay (sec);
 	  if (rv)
@@ -2100,7 +2416,6 @@ stats_config (vlib_main_t * vm, unformat_input_t * input)
 					"`stats_set_poller_delay' API call failed, rv=%d:%U",
 					(int) rv, format_vnet_api_errno, rv);
 	    }
-	  return 0;
 	}
       else
 	{
@@ -2108,6 +2423,10 @@ stats_config (vlib_main_t * vm, unformat_input_t * input)
 				    format_unformat_error, input);
 	}
     }
+
+  if (sm->socket_name)
+    stats_segment_socket_init ();
+
   return 0;
 }
 
@@ -2132,7 +2451,7 @@ static void
   vl_api_stats_get_poller_delay_reply_t *rmp;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_WANT_PER_INTERFACE_SIMPLE_STATS_REPLY);
+  rmp->_vl_msg_id = ntohs (VL_API_STATS_GET_POLLER_DELAY_REPLY);
   rmp->context = mp->context;
   rmp->retval = 0;
   rmp->delay = clib_host_to_net_u32 (sm->stats_poll_interval_in_seconds);
@@ -2155,21 +2474,23 @@ stats_thread_fn (void *arg)
     pthread_sigmask (SIG_SETMASK, &s, 0);
   }
 
+  clib_mem_set_heap (w->thread_mheap);
+
   if (vec_len (tm->thread_prefix))
     vlib_set_thread_name ((char *)
 			  format (0, "%v_stats%c", tm->thread_prefix, '\0'));
-
-  clib_mem_set_heap (w->thread_mheap);
 
   while (1)
     {
       ip46_fib_stats_delay (sm, sm->stats_poll_interval_in_seconds,
 			    0 /* nsec */ );
 
+      /* Always update stats segment data */
+      do_stat_segment_updates (sm);
+
       if (!(sm->enable_poller))
-	{
-	  continue;
-	}
+	continue;
+
       if (pool_elts
 	  (sm->stats_registrations[IDX_PER_INTERFACE_COMBINED_COUNTERS]))
 	do_combined_per_interface_counters (sm);
@@ -2195,6 +2516,9 @@ stats_thread_fn (void *arg)
 
       if (pool_elts (sm->stats_registrations[IDX_IP6_NBR_COUNTERS]))
 	do_ip6_nbr_counters (sm);
+
+      if (pool_elts (sm->stats_registrations[IDX_BIER_NEIGHBOR_COUNTERS]))
+	do_bier_neighbor_counters (sm);
     }
 }
 
@@ -2238,6 +2562,7 @@ static void
 	  continue;
 	}
     }
+  vec_free (clients);
 
 #if STATS_DEBUG > 0
   fformat (stdout, "%U\n", format_vnet_simple_counters, mp);
@@ -2291,6 +2616,7 @@ vl_api_vnet_ip4_fib_counters_t_handler (vl_api_vnet_ip4_fib_counters_t * mp)
 	  continue;
 	}
     }
+  vec_free (clients);
 
   if (reg_prev && vl_api_can_send_msg (reg_prev))
     {
@@ -2340,6 +2666,7 @@ vl_api_vnet_ip4_nbr_counters_t_handler (vl_api_vnet_ip4_nbr_counters_t * mp)
 	  continue;
 	}
     }
+  vec_free (clients);
 
   /* *INDENT-ON* */
   if (reg_prev && vl_api_can_send_msg (reg_prev))
@@ -2390,6 +2717,8 @@ vl_api_vnet_ip6_fib_counters_t_handler (vl_api_vnet_ip6_fib_counters_t * mp)
 	  continue;
 	}
     }
+  vec_free (clients);
+
   /* *INDENT-ON* */
   if (reg_prev && vl_api_can_send_msg (reg_prev))
     {
@@ -2439,6 +2768,8 @@ vl_api_vnet_ip6_nbr_counters_t_handler (vl_api_vnet_ip6_nbr_counters_t * mp)
 	  continue;
 	}
     }
+  vec_free (clients);
+
   /* *INDENT-ON* */
   if (reg_prev && vl_api_can_send_msg (reg_prev))
     {
@@ -2448,6 +2779,78 @@ vl_api_vnet_ip6_nbr_counters_t_handler (vl_api_vnet_ip6_nbr_counters_t * mp)
     {
       vl_msg_api_free (mp);
     }
+}
+
+static void
+vl_api_want_udp_encap_stats_t_handler (vl_api_want_udp_encap_stats_t * mp)
+{
+  stats_main_t *sm = &stats_main;
+  vpe_client_registration_t rp;
+  vl_api_want_udp_encap_stats_reply_t *rmp;
+  uword *p;
+  i32 retval = 0;
+  vl_api_registration_t *reg;
+  u32 fib;
+
+  fib = ~0;			//Using same mechanism as _per_interface_
+  rp.client_index = mp->client_index;
+  rp.client_pid = mp->pid;
+
+  handle_client_registration (&rp, IDX_UDP_ENCAP_COUNTERS, fib, mp->enable);
+
+reply:
+  reg = vl_api_client_index_to_registration (mp->client_index);
+
+  if (!reg)
+    {
+      sm->enable_poller = clear_client_for_stat (IDX_UDP_ENCAP_COUNTERS,
+						 fib, mp->client_index);
+      return;
+    }
+
+  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  rmp->_vl_msg_id = ntohs (VL_API_WANT_UDP_ENCAP_STATS_REPLY);
+  rmp->context = mp->context;
+  rmp->retval = retval;
+
+  vl_api_send_msg (reg, (u8 *) rmp);
+}
+
+static void
+vl_api_want_bier_neighbor_stats_t_handler (vl_api_want_bier_neighbor_stats_t *
+					   mp)
+{
+  stats_main_t *sm = &stats_main;
+  vpe_client_registration_t rp;
+  vl_api_want_bier_neighbor_stats_reply_t *rmp;
+  uword *p;
+  i32 retval = 0;
+  vl_api_registration_t *reg;
+  u32 fib;
+
+  fib = ~0;			//Using same mechanism as _per_interface_
+  rp.client_index = mp->client_index;
+  rp.client_pid = mp->pid;
+
+  handle_client_registration (&rp, IDX_BIER_NEIGHBOR_COUNTERS, fib,
+			      mp->enable);
+
+reply:
+  reg = vl_api_client_index_to_registration (mp->client_index);
+
+  if (!reg)
+    {
+      sm->enable_poller = clear_client_for_stat (IDX_BIER_NEIGHBOR_COUNTERS,
+						 fib, mp->client_index);
+      return;
+    }
+
+  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  rmp->_vl_msg_id = ntohs (VL_API_WANT_BIER_NEIGHBOR_STATS_REPLY);
+  rmp->context = mp->context;
+  rmp->retval = retval;
+
+  vl_api_send_msg (reg, (u8 *) rmp);
 }
 
 static void
@@ -2695,9 +3098,10 @@ vl_api_vnet_get_summary_stats_t_handler (vl_api_vnet_get_summary_stats_t * mp)
   vl_api_vnet_get_summary_stats_reply_t *rmp;
   vlib_combined_counter_main_t *cm;
   vlib_counter_t v;
+  vnet_interface_counter_type_t ct;
   int i, which;
-  u64 total_pkts[VLIB_N_RX_TX];
-  u64 total_bytes[VLIB_N_RX_TX];
+  u64 total_pkts[VNET_N_COMBINED_INTERFACE_COUNTER];
+  u64 total_bytes[VNET_N_COMBINED_INTERFACE_COUNTER];
   vl_api_registration_t *reg;
 
   reg = vl_api_client_index_to_registration (mp->client_index);
@@ -2727,10 +3131,17 @@ vl_api_vnet_get_summary_stats_t_handler (vl_api_vnet_get_summary_stats_t * mp)
   }
   vnet_interface_counter_unlock (im);
 
-  rmp->total_pkts[VLIB_RX] = clib_host_to_net_u64 (total_pkts[VLIB_RX]);
-  rmp->total_bytes[VLIB_RX] = clib_host_to_net_u64 (total_bytes[VLIB_RX]);
-  rmp->total_pkts[VLIB_TX] = clib_host_to_net_u64 (total_pkts[VLIB_TX]);
-  rmp->total_bytes[VLIB_TX] = clib_host_to_net_u64 (total_bytes[VLIB_TX]);
+  foreach_rx_combined_interface_counter (ct)
+  {
+    rmp->total_pkts[ct] = clib_host_to_net_u64 (total_pkts[ct]);
+    rmp->total_bytes[ct] = clib_host_to_net_u64 (total_bytes[ct]);
+  }
+
+  foreach_tx_combined_interface_counter (ct)
+  {
+    rmp->total_pkts[ct] = clib_host_to_net_u64 (total_pkts[ct]);
+    rmp->total_bytes[ct] = clib_host_to_net_u64 (total_bytes[ct]);
+  }
   rmp->vector_rate =
     clib_host_to_net_u64 (vlib_last_vector_length_per_node (sm->vlib_main));
 

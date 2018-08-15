@@ -127,6 +127,7 @@ clib_mem_vm_ext_alloc (clib_mem_vm_alloc_t * a)
 
 	  if (mount ("none", (char *) mount_dir, "hugetlbfs", 0, NULL))
 	    {
+	      rmdir ((char *) mount_dir);
 	      err = clib_error_return_unix (0, "mount hugetlb directory '%s'",
 					    mount_dir);
 	      goto error;
@@ -136,6 +137,8 @@ clib_mem_vm_ext_alloc (clib_mem_vm_alloc_t * a)
 
 	  if ((fd = open ((char *) filename, O_CREAT | O_RDWR, 0755)) == -1)
 	    {
+	      umount2 ((char *) mount_dir, MNT_DETACH);
+	      rmdir ((char *) mount_dir);
 	      err = clib_error_return_unix (0, "open");
 	      goto error;
 	    }
@@ -210,7 +213,8 @@ clib_mem_vm_ext_alloc (clib_mem_vm_alloc_t * a)
       u64 mask[16] = { 0 };
       mask[0] = 1 << a->numa_node;
       rv = set_mempolicy (MPOL_BIND, mask, sizeof (mask) * 8 + 1);
-      if (rv)
+      if (rv == -1 && a->numa_node != 0 &&
+	  (a->flags & CLIB_MEM_VM_F_NUMA_FORCE) != 0)
 	{
 	  err = clib_error_return_unix (0, "set_mempolicy");
 	  goto error;

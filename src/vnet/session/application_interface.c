@@ -453,10 +453,17 @@ vnet_application_attach (vnet_app_attach_args_t * a)
   u64 secret;
   int rv;
 
-  app = application_lookup (a->api_client_index);
+  if (a->api_client_index != APP_INVALID_INDEX)
+    app = application_lookup (a->api_client_index);
+  else if (a->name)
+    app = application_lookup_name (a->name);
+  else
+    return clib_error_return_code (0, VNET_API_ERROR_INVALID_VALUE, 0,
+				   "api index or name must be provided");
+
   if (app)
-    return clib_error_return_code (0, VNET_API_ERROR_APP_ALREADY_ATTACHED,
-				   0, "app already attached");
+    return clib_error_return_code (0, VNET_API_ERROR_APP_ALREADY_ATTACHED, 0,
+				   "app already attached");
 
   secret = a->options[APP_OPTIONS_NAMESPACE_SECRET];
   if ((rv = session_validate_namespace (a->namespace_id, secret,
@@ -464,11 +471,11 @@ vnet_application_attach (vnet_app_attach_args_t * a)
     return clib_error_return_code (0, rv, 0, "namespace validation: %d", rv);
   a->options[APP_OPTIONS_NAMESPACE] = app_ns_index;
   app = application_new ();
-  if ((rv = application_init (app, a->api_client_index, a->options,
+  if ((rv = application_init (app, a->api_client_index, a->name, a->options,
 			      a->session_cb_vft)))
     return clib_error_return_code (0, rv, 0, "app init: %d", rv);
 
-  a->app_event_queue_address = pointer_to_uword (app->event_queue);
+  a->app_evt_q = app->event_queue;
   sm = segment_manager_get (app->first_segment_manager);
   fs = segment_manager_get_segment_w_lock (sm, 0);
 
@@ -521,14 +528,18 @@ vnet_unbind_uri (vnet_unbind_args_t * a)
 {
   session_endpoint_extended_t sep = SESSION_ENDPOINT_EXT_NULL;
   stream_session_t *listener;
+  u32 table_index;
   int rv;
 
   rv = parse_uri (a->uri, &sep);
   if (rv)
     return rv;
 
-  /* NOTE: only default table supported for uri */
-  listener = session_lookup_listener (0, (session_endpoint_t *) & sep);
+  /* NOTE: only default fib tables supported for uri apis */
+  table_index = session_lookup_get_index_for_fib (fib_ip_proto (!sep.is_ip4),
+						  0);
+  listener = session_lookup_listener (table_index,
+				      (session_endpoint_t *) & sep);
   if (!listener)
     return VNET_API_ERROR_ADDRESS_NOT_IN_USE;
 
@@ -558,7 +569,18 @@ vnet_disconnect_session (vnet_disconnect_args_t * a)
   if (session_handle_is_local (a->handle))
     {
       local_session_t *ls;
-      ls = application_get_local_session_from_handle (a->handle);
+
+      /* Disconnect reply came to worker 1 not main thread */
+      if (vlib_get_thread_index () == 1)
+	{
+	  vlib_rpc_call_main_thread (vnet_disconnect_session, (u8 *) a,
+				     sizeof (*a));
+	  return 0;
+	}
+
+      if (!(ls = application_get_local_session_from_handle (a->handle)))
+	return 0;
+
       if (ls->app_index != a->app_index && ls->client_index != a->app_index)
 	{
 	  clib_warning ("app %u is neither client nor server for session %u",
@@ -587,7 +609,7 @@ vnet_bind (vnet_bind_args_t * a)
 {
   int rv;
   if ((rv = vnet_bind_i (a->app_index, &a->sep, &a->handle)))
-    return clib_error_return_code (0, rv, 0, "bind failed");
+    return clib_error_return_code (0, rv, 0, "bind failed: %d", rv);
   return 0;
 }
 
@@ -596,7 +618,7 @@ vnet_unbind (vnet_unbind_args_t * a)
 {
   int rv;
   if ((rv = vnet_unbind_i (a->app_index, a->handle)))
-    return clib_error_return_code (0, rv, 0, "unbind failed");
+    return clib_error_return_code (0, rv, 0, "unbind failed: %d", rv);
   return 0;
 }
 
@@ -607,7 +629,7 @@ vnet_connect (vnet_connect_args_t * a)
   int rv;
 
   if ((rv = application_connect (a->app_index, a->api_context, sep)))
-    return clib_error_return_code (0, rv, 0, "connect failed");
+    return clib_error_return_code (0, rv, 0, "connect failed: %d", rv);
   return 0;
 }
 

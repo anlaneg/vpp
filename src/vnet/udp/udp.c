@@ -49,6 +49,7 @@ udp_connection_alloc (u32 thread_index)
   uc->c_c_index = uc - um->connections[thread_index];
   uc->c_thread_index = thread_index;
   uc->c_proto = TRANSPORT_PROTO_UDP;
+  clib_spinlock_init (&uc->rx_lock);
   return uc;
 }
 
@@ -92,6 +93,7 @@ udp_session_bind (u32 session_index, transport_endpoint_t * lcl)
   listener->c_proto = TRANSPORT_PROTO_UDP;
   listener->c_s_index = session_index;
   listener->c_fib_index = lcl->fib_index;
+  clib_spinlock_init (&listener->rx_lock);
 
   node_index = lcl->is_ip4 ? udp4_input_node.index : udp6_input_node.index;
   udp_register_dst_port (vm, clib_net_to_host_u16 (lcl->port), node_index,
@@ -140,7 +142,7 @@ udp_push_header (transport_connection_t * tc, vlib_buffer_t * b)
       vnet_buffer (b)->l3_hdr_offset = (u8 *) ih - b->data;
     }
   vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
-  vnet_buffer (b)->sw_if_index[VLIB_TX] = ~0;
+  vnet_buffer (b)->sw_if_index[VLIB_TX] = uc->c_fib_index;
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
   return 0;
@@ -210,7 +212,7 @@ format_udp_connection (u8 * s, va_list * args)
   if (verbose)
     {
       if (verbose == 1)
-	s = format (s, "%-15s", "-");
+	s = format (s, "%-15s\n", "-");
       else
 	s = format (s, "\n");
     }
@@ -263,7 +265,7 @@ udp_open_connection (transport_endpoint_t * rmt)
 {
   udp_main_t *um = vnet_get_udp_main ();
   vlib_main_t *vm = vlib_get_main ();
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   udp_connection_t *uc;
   ip46_address_t lcl_addr;
   u32 node_index;
@@ -286,6 +288,10 @@ udp_open_connection (transport_endpoint_t * rmt)
   node_index = rmt->is_ip4 ? udp4_input_node.index : udp6_input_node.index;
   udp_register_dst_port (vm, lcl_port, node_index, 1 /* is_ipv4 */ );
 
+  /* We don't poll main thread if we have workers */
+  if (vlib_num_workers ())
+    thread_index = 1;
+
   uc = udp_connection_alloc (thread_index);
   ip_copy (&uc->c_rmt_ip, &rmt->ip, rmt->is_ip4);
   ip_copy (&uc->c_lcl_ip, &lcl_addr, rmt->is_ip4);
@@ -299,10 +305,14 @@ udp_open_connection (transport_endpoint_t * rmt)
 }
 
 transport_connection_t *
-udp_half_open_session_get_transport (u32 conn_index)
+udp_session_get_half_open (u32 conn_index)
 {
   udp_connection_t *uc;
-  uc = udp_connection_get (conn_index, vlib_get_thread_index ());
+  u32 thread_index;
+
+  /* We don't poll main thread if we have workers */
+  thread_index = vlib_num_workers ()? 1 : 0;
+  uc = udp_connection_get (conn_index, thread_index);
   return &uc->connection;
 }
 
@@ -314,7 +324,51 @@ const static transport_proto_vft_t udp_proto = {
   .push_header = udp_push_header,
   .get_connection = udp_session_get,
   .get_listener = udp_session_get_listener,
-  .get_half_open = udp_half_open_session_get_transport,
+  .get_half_open = udp_session_get_half_open,
+  .close = udp_session_close,
+  .cleanup = udp_session_cleanup,
+  .send_mss = udp_send_mss,
+  .send_space = udp_send_space,
+  .format_connection = format_udp_session,
+  .format_half_open = format_udp_half_open_session,
+  .format_listener = format_udp_listener_session,
+  .tx_type = TRANSPORT_TX_DGRAM,
+  .service_type = TRANSPORT_SERVICE_CL,
+};
+/* *INDENT-ON* */
+
+
+int
+udpc_connection_open (transport_endpoint_t * rmt)
+{
+  udp_connection_t *uc;
+  u32 uc_index;
+  uc_index = udp_open_connection (rmt);
+  uc = udp_connection_get (uc_index, vlib_get_thread_index ());
+  uc->is_connected = 1;
+  return uc_index;
+}
+
+u32
+udpc_connection_listen (u32 session_index, transport_endpoint_t * lcl)
+{
+  udp_connection_t *listener;
+  u32 li;
+  li = udp_session_bind (session_index, lcl);
+  listener = udp_listener_get (li);
+  listener->is_connected = 1;
+  return li;
+}
+
+/* *INDENT-OFF* */
+const static transport_proto_vft_t udpc_proto = {
+  .bind = udpc_connection_listen,
+  .open = udpc_connection_open,
+  .unbind = udp_session_unbind,
+  .push_header = udp_push_header,
+  .get_connection = udp_session_get,
+  .get_listener = udp_session_get_listener,
+  .get_half_open = udp_session_get_half_open,
   .close = udp_session_close,
   .cleanup = udp_session_cleanup,
   .send_mss = udp_send_mss,
@@ -323,7 +377,7 @@ const static transport_proto_vft_t udp_proto = {
   .format_half_open = format_udp_half_open_session,
   .format_listener = format_udp_listener_session,
   .tx_type = TRANSPORT_TX_DEQUEUE,
-  .service_type = TRANSPORT_SERVICE_VC,
+  .service_type = TRANSPORT_SERVICE_CL,
 };
 /* *INDENT-ON* */
 
@@ -360,6 +414,10 @@ udp_init (vlib_main_t * vm)
   transport_register_protocol (TRANSPORT_PROTO_UDP, &udp_proto,
 			       FIB_PROTOCOL_IP4, ip4_lookup_node.index);
   transport_register_protocol (TRANSPORT_PROTO_UDP, &udp_proto,
+			       FIB_PROTOCOL_IP6, ip6_lookup_node.index);
+  transport_register_protocol (TRANSPORT_PROTO_UDPC, &udpc_proto,
+			       FIB_PROTOCOL_IP4, ip4_lookup_node.index);
+  transport_register_protocol (TRANSPORT_PROTO_UDPC, &udpc_proto,
 			       FIB_PROTOCOL_IP6, ip6_lookup_node.index);
 
   /*

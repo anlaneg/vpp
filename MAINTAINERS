@@ -28,6 +28,11 @@ Doxygen
 M:	Chris Luke <chrisy@flirble.org>
 F:	doxygen/
 
+Sphinx Documents
+M:     John DeNisco <jdenisco@cisco.com>
+M:     Ray Kinsella <raykinsella78@gmail.com>
+F:     docs/
+
 DPDK Development Packaging
 M:	Damjan Marion <damarion@cisco.com>
 F:	dpdk/
@@ -46,7 +51,6 @@ VLIB API Libraries
 M:	Dave Barach <dave@barachs.net>
 F:	src/vlibapi/
 F:	src/vlibmemory/
-F:	src/vlibsocket/
 
 VNET Bidirectonal Forwarding Detection (BFD)
 M:	Klement Sekera <ksekera@cisco.com>
@@ -101,9 +105,9 @@ M:	Florin Coras <fcoras@cisco.com>
 F:	src/vnet/lisp-cp/
 F:	src/vnet/lisp-gpe/
 
-VNET MAP
+Plugin - MAP
 M:	Ole Troan <ot@cisco.com>
-F:	src/vnet/map
+F:	src/plugins/map
 
 VNET MPLS
 M:	Neale Ranns <nranns@cisco.com>

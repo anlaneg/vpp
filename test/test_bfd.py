@@ -52,7 +52,7 @@ class BFDAPITestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFDAPITestCase, cls).setUpClass()
-
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces(range(2))
             for i in cls.pg_interfaces:
@@ -626,9 +626,10 @@ class BFD4TestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFD4TestCase, cls).setUpClass()
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces([0])
-            cls.create_loopback_interfaces([0])
+            cls.create_loopback_interfaces(1)
             cls.loopback0 = cls.lo_interfaces[0]
             cls.loopback0.config_ip4()
             cls.loopback0.admin_up()
@@ -1406,7 +1407,7 @@ class BFD4TestCase(VppTestCase):
 
     def test_intf_deleted(self):
         """ interface with bfd session deleted """
-        intf = VppLoInterface(self, 0)
+        intf = VppLoInterface(self)
         intf.config_ip4()
         intf.admin_up()
         sw_if_index = intf.sw_if_index
@@ -1431,13 +1432,14 @@ class BFD6TestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFD6TestCase, cls).setUpClass()
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces([0])
             cls.pg0.config_ip6()
             cls.pg0.configure_ipv6_neighbors()
             cls.pg0.admin_up()
             cls.pg0.resolve_ndp()
-            cls.create_loopback_interfaces([0])
+            cls.create_loopback_interfaces(1)
             cls.loopback0 = cls.lo_interfaces[0]
             cls.loopback0.config_ip6()
             cls.loopback0.admin_up()
@@ -1614,7 +1616,7 @@ class BFD6TestCase(VppTestCase):
 
     def test_intf_deleted(self):
         """ interface with bfd session deleted """
-        intf = VppLoInterface(self, 0)
+        intf = VppLoInterface(self)
         intf.config_ip6()
         intf.admin_up()
         sw_if_index = intf.sw_if_index
@@ -1742,6 +1744,7 @@ class BFDSHA1TestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFDSHA1TestCase, cls).setUpClass()
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces([0])
             cls.pg0.config_ip4()
@@ -1974,6 +1977,7 @@ class BFDAuthOnOffTestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFDAuthOnOffTestCase, cls).setUpClass()
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces([0])
             cls.pg0.config_ip4()
@@ -2179,7 +2183,7 @@ class BFDCLITestCase(VppTestCase):
     @classmethod
     def setUpClass(cls):
         super(BFDCLITestCase, cls).setUpClass()
-
+        cls.vapi.cli("set log class bfd level debug")
         try:
             cls.create_pg_interfaces((0,))
             cls.pg0.config_ip4()
@@ -2553,7 +2557,7 @@ class BFDCLITestCase(VppTestCase):
 
     def test_set_del_udp_echo_source(self):
         """ set/del udp echo source """
-        self.create_loopback_interfaces([0])
+        self.create_loopback_interfaces(1)
         self.loopback0 = self.lo_interfaces[0]
         self.loopback0.admin_up()
         self.cli_verify_response("show bfd echo-source",

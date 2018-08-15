@@ -25,6 +25,7 @@
 
 
 #include <vcl/vppcom.h>
+#include <vcl/vcl_event.h>
 #include <unistd.h>
 
 char MESSAGE[] = "Hello, World!\n";
@@ -60,6 +61,8 @@ main (int argc, char **argv)
   struct sockaddr_in sin;
   uint32_t listen_fd;
   vppcom_endpt_t endpt;
+
+  clib_mem_init_thread_safe (0, 64<<20);
 
   //Address stuff
   memset (&sin, 0, sizeof (sin));

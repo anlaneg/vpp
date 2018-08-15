@@ -1,8 +1,11 @@
 import signal
 import os
+import sys
 import traceback
 from log import RED, single_line_delim, double_line_delim
 from debug import spawn_gdb
+from subprocess import check_output, CalledProcessError
+from util import check_core_path
 
 
 class Hook(object):
@@ -66,8 +69,18 @@ class PollHook(Hook):
             open('%s/_core_handled' % self.testcase.tempdir, 'a').close()
             spawn_gdb(self.testcase.vpp_bin, core_path, self.logger)
         else:
-            self.logger.critical("Core file present, debug with: gdb %s %s" %
-                                 (self.testcase.vpp_bin, core_path))
+            self.logger.error("Core file present, debug with: gdb %s %s" %
+                              (self.testcase.vpp_bin, core_path))
+            check_core_path(self.logger, core_path)
+            self.logger.error("Running `file %s':" % core_path)
+            try:
+                info = check_output(["file", core_path])
+                self.logger.error(info)
+            except CalledProcessError as e:
+                self.logger.error(
+                    "Could not run `file' utility on core-file, "
+                    "rc=%s" % e.returncode)
+                pass
 
     def poll_vpp(self):
         """
@@ -167,14 +180,15 @@ class StepHook(PollHook):
         print("Calls in/below that stack frame will be not be stepped anymore")
         print(single_line_delim)
         while True:
-            choice = raw_input("Enter your choice, if any, and press ENTER to "
-                               "continue running the testcase...")
+            choice = sys.stdin.readline(
+                "Enter your choice, if any, and press ENTER to continue "
+                "running the testcase...")
             if choice == "":
                 choice = None
             try:
                 if choice is not None:
                     num = int(choice)
-            except:
+            except TypeError:
                 print("Invalid input")
                 continue
             if choice is not None and (num < 0 or num >= len(stack)):

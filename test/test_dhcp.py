@@ -11,7 +11,8 @@ from util import mk_ll_addr
 
 from scapy.layers.l2 import Ether, getmacbyip, ARP
 from scapy.layers.inet import IP, UDP, ICMP
-from scapy.layers.inet6 import IPv6, in6_getnsmac, in6_mactoifaceid
+from scapy.layers.inet6 import IPv6, in6_getnsmac
+from scapy.utils6 import in6_mactoifaceid
 from scapy.layers.dhcp import DHCP, BOOTP, DHCPTypes
 from scapy.layers.dhcp6 import DHCP6, DHCP6_Solicit, DHCP6_RelayForward, \
     DHCP6_RelayReply, DHCP6_Advertise, DHCP6OptRelayMsg, DHCP6OptIfaceId, \
@@ -1216,10 +1217,12 @@ class TestDHCP(VppTestCase):
         p_offer = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
                    IP(src=self.pg3.remote_ip4, dst="255.255.255.255") /
                    UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
-                   BOOTP(op=1, yiaddr=self.pg3.local_ip4) /
+                   BOOTP(op=1,
+                         yiaddr=self.pg3.local_ip4,
+                         chaddr=mactobinary(self.pg3.local_mac)) /
                    DHCP(options=[('message-type', 'offer'),
                                  ('server_id', self.pg3.remote_ip4),
-                                 ('end')]))
+                                 'end']))
 
         self.pg3.add_stream(p_offer)
         self.pg_enable_capture(self.pg_interfaces)
@@ -1230,18 +1233,19 @@ class TestDHCP(VppTestCase):
                                       self.pg3.local_ip4)
 
         #
-        # Send an acknowloedgement
+        # Send an acknowledgment
         #
         p_ack = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
                  IP(src=self.pg3.remote_ip4, dst="255.255.255.255") /
                  UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
-                 BOOTP(op=1, yiaddr=self.pg3.local_ip4) /
+                 BOOTP(op=1, yiaddr=self.pg3.local_ip4,
+                       chaddr=mactobinary(self.pg3.local_mac)) /
                  DHCP(options=[('message-type', 'ack'),
                                ('subnet_mask', "255.255.255.0"),
                                ('router', self.pg3.remote_ip4),
                                ('server_id', self.pg3.remote_ip4),
                                ('lease_time', 43200),
-                               ('end')]))
+                               'end']))
 
         self.pg3.add_stream(p_ack)
         self.pg_enable_capture(self.pg_interfaces)
@@ -1292,6 +1296,11 @@ class TestDHCP(VppTestCase):
         self.verify_orig_dhcp_discover(rx[0], self.pg3, hostname,
                                        self.pg3.local_mac)
 
+        # TODO: VPP DHCP client should not accept DHCP OFFER message with
+        # the XID (Transaction ID) not matching the XID of the most recent
+        # DHCP DISCOVERY message.
+        # Such DHCP OFFER message must be silently discarded - RFC2131.
+        # Reported in Jira ticket: VPP-99
         self.pg3.add_stream(p_offer)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
@@ -1306,13 +1315,14 @@ class TestDHCP(VppTestCase):
         p_ack = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
                  IP(src=self.pg3.remote_ip4, dst=self.pg3.local_ip4) /
                  UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
-                 BOOTP(op=1, yiaddr=self.pg3.local_ip4) /
+                 BOOTP(op=1, yiaddr=self.pg3.local_ip4,
+                       chaddr=mactobinary(self.pg3.local_mac)) /
                  DHCP(options=[('message-type', 'ack'),
                                ('subnet_mask', "255.255.255.0"),
                                ('router', self.pg3.remote_ip4),
                                ('server_id', self.pg3.remote_ip4),
                                ('lease_time', 43200),
-                               ('end')]))
+                               'end']))
 
         self.pg3.add_stream(p_ack)
         self.pg_enable_capture(self.pg_interfaces)
@@ -1363,10 +1373,11 @@ class TestDHCP(VppTestCase):
         p_offer = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
                    IP(src=self.pg3.remote_ip4, dst=self.pg3.local_ip4) /
                    UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
-                   BOOTP(op=1, yiaddr=self.pg3.local_ip4) /
+                   BOOTP(op=1, yiaddr=self.pg3.local_ip4,
+                         chaddr=mactobinary(self.pg3.local_mac)) /
                    DHCP(options=[('message-type', 'offer'),
                                  ('server_id', self.pg3.remote_ip4),
-                                 ('end')]))
+                                 'end']))
 
         self.pg3.add_stream(p_offer)
         self.pg_enable_capture(self.pg_interfaces)
@@ -1378,18 +1389,19 @@ class TestDHCP(VppTestCase):
                                       broadcast=0)
 
         #
-        # Send an acknowloedgement
+        # Send an acknowledgment
         #
         p_ack = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
                  IP(src=self.pg3.remote_ip4, dst=self.pg3.local_ip4) /
                  UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
-                 BOOTP(op=1, yiaddr=self.pg3.local_ip4) /
+                 BOOTP(op=1, yiaddr=self.pg3.local_ip4,
+                       chaddr=mactobinary(self.pg3.local_mac)) /
                  DHCP(options=[('message-type', 'ack'),
                                ('subnet_mask', "255.255.255.0"),
                                ('router', self.pg3.remote_ip4),
                                ('server_id', self.pg3.remote_ip4),
                                ('lease_time', 43200),
-                               ('end')]))
+                               'end']))
 
         self.pg3.add_stream(p_ack)
         self.pg_enable_capture(self.pg_interfaces)
@@ -1415,6 +1427,29 @@ class TestDHCP(VppTestCase):
                                       mactobinary(self.pg3.remote_mac),
                                       self.pg3.remote_ip4,
                                       is_add=0)
+
+        #
+        # read the DHCP client details from a dump
+        #
+        clients = self.vapi.dhcp_client_dump()
+
+        self.assertEqual(clients[0].client.sw_if_index,
+                         self.pg3.sw_if_index)
+        self.assertEqual(clients[0].lease.sw_if_index,
+                         self.pg3.sw_if_index)
+        self.assertEqual(clients[0].client.hostname.rstrip('\0'),
+                         hostname)
+        self.assertEqual(clients[0].lease.hostname.rstrip('\0'),
+                         hostname)
+        self.assertEqual(clients[0].lease.is_ipv6, 0)
+        # 0 = DISCOVER, 1 = REQUEST, 2 = BOUND
+        self.assertEqual(clients[0].lease.state, 2)
+        self.assertEqual(clients[0].lease.mask_width, 24)
+        self.assertEqual(clients[0].lease.router_address.rstrip('\0'),
+                         self.pg3.remote_ip4n)
+        self.assertEqual(clients[0].lease.host_address.rstrip('\0'),
+                         self.pg3.local_ip4n)
+
         #
         # remove the DHCP config
         #
@@ -1425,6 +1460,96 @@ class TestDHCP(VppTestCase):
         #
         self.assertFalse(find_route(self, self.pg3.local_ip4, 32))
         self.assertFalse(find_route(self, self.pg3.local_ip4, 24))
+
+        #
+        # Start the procedure again. Use requested lease time option.
+        #
+        self.pg3.admin_down()
+        self.sleep(1)
+        self.pg3.admin_up()
+        self.vapi.dhcp_client(self.pg3.sw_if_index, hostname)
+
+        rx = self.pg3.get_capture(1)
+
+        self.verify_orig_dhcp_discover(rx[0], self.pg3, hostname)
+
+        #
+        # Send back on offer with requested lease time, expect the request
+        #
+        lease_time = 1
+        p_offer = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
+                   IP(src=self.pg3.remote_ip4, dst='255.255.255.255') /
+                   UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
+                   BOOTP(op=1,
+                         yiaddr=self.pg3.local_ip4,
+                         chaddr=mactobinary(self.pg3.local_mac)) /
+                   DHCP(options=[('message-type', 'offer'),
+                                 ('server_id', self.pg3.remote_ip4),
+                                 ('lease_time', lease_time),
+                                 'end']))
+
+        self.pg3.add_stream(p_offer)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        rx = self.pg3.get_capture(1)
+        self.verify_orig_dhcp_request(rx[0], self.pg3, hostname,
+                                      self.pg3.local_ip4)
+
+        #
+        # Send an acknowledgment
+        #
+        p_ack = (Ether(dst=self.pg3.local_mac, src=self.pg3.remote_mac) /
+                 IP(src=self.pg3.remote_ip4, dst='255.255.255.255') /
+                 UDP(sport=DHCP4_SERVER_PORT, dport=DHCP4_CLIENT_PORT) /
+                 BOOTP(op=1, yiaddr=self.pg3.local_ip4,
+                       chaddr=mactobinary(self.pg3.local_mac)) /
+                 DHCP(options=[('message-type', 'ack'),
+                               ('subnet_mask', '255.255.255.0'),
+                               ('router', self.pg3.remote_ip4),
+                               ('server_id', self.pg3.remote_ip4),
+                               ('lease_time', lease_time),
+                               'end']))
+
+        self.pg3.add_stream(p_ack)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        #
+        # We'll get an ARP request for the router address
+        #
+        rx = self.pg3.get_capture(1)
+
+        self.assertEqual(rx[0][ARP].pdst, self.pg3.remote_ip4)
+
+        #
+        # At the end of this procedure there should be a connected route
+        # in the FIB
+        #
+        self.assertTrue(find_route(self, self.pg3.local_ip4, 32))
+        self.assertTrue(find_route(self, self.pg3.local_ip4, 24))
+
+        # remove the left over ARP entry
+        self.vapi.ip_neighbor_add_del(self.pg3.sw_if_index,
+                                      mactobinary(self.pg3.remote_mac),
+                                      self.pg3.remote_ip4,
+                                      is_add=0)
+
+        #
+        # Sleep for the lease time
+        #
+        self.sleep(lease_time+1)
+
+        #
+        # And now the route should be gone
+        #
+        self.assertFalse(find_route(self, self.pg3.local_ip4, 32))
+        self.assertFalse(find_route(self, self.pg3.local_ip4, 24))
+
+        #
+        # remove the DHCP config
+        #
+        self.vapi.dhcp_client(self.pg3.sw_if_index, hostname, is_add=0)
 
 
 if __name__ == '__main__':

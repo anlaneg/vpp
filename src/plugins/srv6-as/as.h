@@ -23,8 +23,29 @@
 #include <vppinfra/error.h>
 #include <vppinfra/elog.h>
 
-#define DA_IP4 4
-#define DA_IP6 6
+#define AS_TYPE_L2	2
+#define AS_TYPE_IP4	4
+#define AS_TYPE_IP6	6
+
+/*
+ * This is the memory that will be stored per each localsid
+ * the user instantiates
+ */
+typedef struct
+{
+  ip46_address_t nh_addr;		/**< Proxied device address */
+  u32 sw_if_index_out;			/**< Outgoing iface to proxied dev. */
+  u32 nh_adj;				/**< Adjacency index for out. iface */
+  u8 inner_type;
+
+  u32 sw_if_index_in;			/**< Incoming iface from proxied dev. */
+  u8 *rewrite;				/**< Headers to be rewritten */
+  ip6_address_t src_addr;		/**< Source address to be restored */
+  ip6_address_t *sid_list;		/**< SID list to be restored */
+  char *sid_list_str;
+
+  u32 index;
+} srv6_as_localsid_t;
 
 typedef struct
 {
@@ -37,27 +58,15 @@ typedef struct
 
   u32 srv6_localsid_behavior_id;	/**< SRv6 LocalSID behavior number */
 
+  u32 *sw_iface_localsid2;		/**< Retrieve local SID from iface */
   u32 *sw_iface_localsid4;		/**< Retrieve local SID from iface */
   u32 *sw_iface_localsid6;		/**< Retrieve local SID from iface */
+
+  srv6_as_localsid_t **sids;	/**< Pool of AS SID pointers */
+
+  vlib_combined_counter_main_t valid_counters;	/**< Valid rewrite counters */
+  vlib_combined_counter_main_t invalid_counters;/**< Invalid rewrite counters */
 } srv6_as_main_t;
-
-/*
- * This is the memory that will be stored per each localsid
- * the user instantiates
- */
-typedef struct
-{
-  ip46_address_t nh_addr;		/**< Proxied device address */
-  u32 sw_if_index_out;			/**< Outgoing iface to proxied dev. */
-  u32 nh_adj;				/**< Adjacency index for out. iface */
-  u8 ip_version;
-
-  u32 sw_if_index_in;			/**< Incoming iface from proxied dev. */
-  u8 *rewrite;				/**< Headers to be rewritten */
-  ip6_address_t src_addr;		/**< Source address to be restored */
-  ip6_address_t *sid_list;		/**< SID list to be restored */
-  char *sid_list_str;
-} srv6_as_localsid_t;
 
 srv6_as_main_t srv6_as_main;
 

@@ -157,6 +157,7 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
   int rv = 0;
   void *oldheap;
   api_main_t *am = &api_main;
+  u8 *msg_table;
 
   /*
    * This is tortured. Maintain a vlib-address-space private
@@ -209,6 +210,11 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
     am->serialized_message_table_in_shmem =
       vl_api_serialize_message_table (am, 0);
 
+  if (am->vlib_rp != am->vlib_primary_rp)
+    msg_table = vl_api_serialize_message_table (am, 0);
+  else
+    msg_table = am->serialized_message_table_in_shmem;
+
   pthread_mutex_unlock (&svm->mutex);
   svm_pop_heap (oldheap);
 
@@ -220,8 +226,7 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
      am->shmem_hdr->application_restarts);
   rp->context = mp->context;
   rp->response = ntohl (rv);
-  rp->message_table =
-    pointer_to_uword (am->serialized_message_table_in_shmem);
+  rp->message_table = pointer_to_uword (msg_table);
 
   vl_msg_api_send_shmem (q, (u8 *) & rp);
 }
@@ -339,6 +344,7 @@ vl_api_memclnt_delete_t_handler (vl_api_memclnt_delete_t * mp)
 			  regp->vl_api_registration_pool_index);
 	  pthread_mutex_lock (&svm->mutex);
 	  oldheap = svm_push_data_heap (svm);
+	  vec_free (regp->name);
 	  /* Poison the old registration */
 	  memset (regp, 0xF1, sizeof (*regp));
 	  clib_mem_free (regp);
@@ -455,6 +461,20 @@ vl_mem_api_init (const char *region_name)
   /* Make a note so we can always find the primary region easily */
   am->vlib_primary_rp = am->vlib_rp;
 
+  return 0;
+}
+
+clib_error_t *
+map_api_segment_init (vlib_main_t * vm)
+{
+  api_main_t *am = &api_main;
+  int rv;
+
+  if ((rv = vl_mem_api_init (am->region_name)) < 0)
+    {
+      return clib_error_return (0, "vl_mem_api_init (%s) failed",
+				am->region_name);
+    }
   return 0;
 }
 
@@ -898,8 +918,6 @@ vlibmemory_init (vlib_main_t * vm)
 
   return error;
 }
-
-VLIB_INIT_FUNCTION (vlibmemory_init);
 
 void
 vl_set_memory_region_name (const char *name)

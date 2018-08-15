@@ -15,8 +15,9 @@
  * limitations under the License.
  */
 
-#include <vnet/flow/flow_report.h>
+#include <vnet/ipfix-export/flow_report.h>
 #include <vlibmemory/api.h>
+#include <nat/nat_inlines.h>
 #include <nat/nat_ipfix_logging.h>
 
 snat_ipfix_logging_main_t snat_ipfix_logging_main;
@@ -403,7 +404,9 @@ snat_template_rewrite_addr_exhausted (flow_report_main_t * frm,
 				      flow_report_t * fr,
 				      ip4_address_t * collector_address,
 				      ip4_address_t * src_address,
-				      u16 collector_port)
+				      u16 collector_port,
+                                      ipfix_report_element_t *elts,
+                                      u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, NAT_ADDRESSES_EXHAUTED, 0);
@@ -414,7 +417,9 @@ snat_template_rewrite_nat44_session (flow_report_main_t * frm,
 				     flow_report_t * fr,
 				     ip4_address_t * collector_address,
 				     ip4_address_t * src_address,
-				     u16 collector_port)
+				     u16 collector_port,
+                                     ipfix_report_element_t *elts,
+                                     u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, NAT44_SESSION_CREATE, 0);
@@ -425,7 +430,9 @@ snat_template_rewrite_max_entries_per_usr (flow_report_main_t * frm,
 					   flow_report_t * fr,
 					   ip4_address_t * collector_address,
 					   ip4_address_t * src_address,
-					   u16 collector_port)
+					   u16 collector_port,
+                                           ipfix_report_element_t *elts,
+                                           u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, QUOTA_EXCEEDED,
@@ -437,7 +444,9 @@ nat_template_rewrite_max_sessions (flow_report_main_t * frm,
 				   flow_report_t * fr,
 				   ip4_address_t * collector_address,
 				   ip4_address_t * src_address,
-				   u16 collector_port)
+				   u16 collector_port,
+                                   ipfix_report_element_t *elts,
+                                   u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, QUOTA_EXCEEDED,
@@ -449,7 +458,9 @@ nat_template_rewrite_max_bibs (flow_report_main_t * frm,
 			       flow_report_t * fr,
 			       ip4_address_t * collector_address,
 			       ip4_address_t * src_address,
-			       u16 collector_port)
+			       u16 collector_port,
+                               ipfix_report_element_t *elts,
+                               u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, QUOTA_EXCEEDED,
@@ -461,7 +472,9 @@ nat_template_rewrite_max_frags_ip4 (flow_report_main_t * frm,
 			            flow_report_t * fr,
 			            ip4_address_t * collector_address,
 			            ip4_address_t * src_address,
-			            u16 collector_port)
+			            u16 collector_port,
+                                    ipfix_report_element_t *elts,
+                                    u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, QUOTA_EXCEEDED,
@@ -473,7 +486,9 @@ nat_template_rewrite_max_frags_ip6 (flow_report_main_t * frm,
 			            flow_report_t * fr,
 			            ip4_address_t * collector_address,
 			            ip4_address_t * src_address,
-			            u16 collector_port)
+			            u16 collector_port,
+                                    ipfix_report_element_t *elts,
+                                    u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, QUOTA_EXCEEDED,
@@ -485,7 +500,9 @@ nat_template_rewrite_nat64_bib (flow_report_main_t * frm,
 			        flow_report_t * fr,
 			        ip4_address_t * collector_address,
 			        ip4_address_t * src_address,
-			        u16 collector_port)
+			        u16 collector_port,
+                                ipfix_report_element_t *elts,
+                                u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, NAT64_BIB_CREATE, 0);
@@ -496,7 +513,9 @@ nat_template_rewrite_nat64_session (flow_report_main_t * frm,
 			            flow_report_t * fr,
 			            ip4_address_t * collector_address,
 			            ip4_address_t * src_address,
-			            u16 collector_port)
+			            u16 collector_port,
+                                    ipfix_report_element_t *elts,
+                                    u32 n_elts, u32 *stream_index)
 {
   return snat_template_rewrite (frm, fr, collector_address, src_address,
 				collector_port, NAT64_SESSION_CREATE, 0);

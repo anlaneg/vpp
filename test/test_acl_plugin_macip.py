@@ -63,7 +63,7 @@ class MethodHolder(VppTestCase):
         try:
             # create 4 pg interfaces, 1 loopback interface
             cls.create_pg_interfaces(range(4))
-            cls.create_loopback_interfaces(range(1))
+            cls.create_loopback_interfaces(1)
 
             # create 2 subinterfaces
             cls.subifs = [
@@ -287,13 +287,10 @@ class MethodHolder(VppTestCase):
         reply = self.vapi.macip_acl_dump()
         self.assertEqual(len(reply), 0)
 
-        intf_acls = self.vapi.ppcli("sh acl-plugin interface").split(
-            "\nsw_if_index")
+        intf_acls = self.vapi.acl_interface_list_dump()
         for i_a in intf_acls:
-            ia = i_a.split(":")
-            if len(ia) == 3:
-                sw_if_index = int(ia[0])
-                acl_index = int(ia[2])
+            sw_if_index = i_a.sw_if_index
+            for acl_index in i_a.acls:
                 self.vapi.acl_interface_add_del(sw_if_index, acl_index, 0)
                 self.vapi.acl_del(acl_index)
 
@@ -1083,8 +1080,8 @@ class TestMACIP(MethodHolder):
         self.apply_macip_rules(self.create_rules(acl_count=3,
                                                  rules_count=[3, 5, 4]))
 
-        intf.append(VppLoInterface(self, 0))
-        intf.append(VppLoInterface(self, 1))
+        intf.append(VppLoInterface(self))
+        intf.append(VppLoInterface(self))
 
         sw_if_index0 = intf[0].sw_if_index
         self.vapi.macip_acl_interface_add_del(sw_if_index0, 1)
@@ -1106,8 +1103,8 @@ class TestMACIP(MethodHolder):
         self.assertEqual(reply.acls[sw_if_index0], 4294967295)
         self.assertEqual(reply.acls[sw_if_index1], 0)
 
-        intf.append(VppLoInterface(self, 2))
-        intf.append(VppLoInterface(self, 3))
+        intf.append(VppLoInterface(self))
+        intf.append(VppLoInterface(self))
         sw_if_index2 = intf[2].sw_if_index
         sw_if_index3 = intf[3].sw_if_index
         self.vapi.macip_acl_interface_add_del(sw_if_index2, 1)
@@ -1118,6 +1115,12 @@ class TestMACIP(MethodHolder):
         self.assertEqual(reply.acls[sw_if_index1], 0)
         self.assertEqual(reply.acls[sw_if_index2], 1)
         self.assertEqual(reply.acls[sw_if_index3], 1)
+        self.logger.info("MACIP ACL on multiple interfaces:")
+        self.logger.info(self.vapi.ppcli("sh acl-plugin macip acl"))
+        self.logger.info(self.vapi.ppcli("sh acl-plugin macip acl index 1234"))
+        self.logger.info(self.vapi.ppcli("sh acl-plugin macip acl index 1"))
+        self.logger.info(self.vapi.ppcli("sh acl-plugin macip acl index 0"))
+        self.logger.info(self.vapi.ppcli("sh acl-plugin macip interface"))
 
         intf[2].remove_vpp_config()
         intf[1].remove_vpp_config()

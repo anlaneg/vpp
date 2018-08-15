@@ -59,6 +59,9 @@ typedef CLIB_PACKED (union
 
 typedef struct vlib_pci_device_info
 {
+  u32 flags;
+#define VLIB_PCI_DEVICE_INFO_F_NOIOMMU		(1 << 0);
+
   /* addr */
   vlib_pci_addr_t addr;
 
@@ -155,6 +158,14 @@ static void __vlib_add_pci_device_registration_##x (void)       \
     vlib_pci_main_t * pm = &pci_main;                           \
     x.next_registration = pm->pci_device_registrations;         \
     pm->pci_device_registrations = &x;                          \
+}                                                               \
+static void __vlib_rm_pci_device_registration_##x (void)        \
+    __attribute__((__destructor__)) ;                           \
+static void __vlib_rm_pci_device_registration_##x (void)        \
+{                                                               \
+    vlib_pci_main_t * pm = &pci_main;                           \
+    VLIB_REMOVE_FROM_LINKED_LIST (pm->pci_device_registrations, \
+                                  &x, next_registration);       \
 }                                                               \
 __VA_ARGS__ pci_device_registration_t x
 

@@ -19,11 +19,13 @@
 #include <vnet/api_errno.h>
 #include <vnet/ip/ip.h>
 #include <vnet/interface.h>
+#include <vnet/udp/udp.h>
 
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ikev2.h>
 #include <vnet/ipsec/esp.h>
 #include <vnet/ipsec/ah.h>
+
 
 ipsec_main_t ipsec_main;
 
@@ -133,20 +135,15 @@ ipsec_add_del_spd (vlib_main_t * vm, u32 spd_id, int is_add)
 static int
 ipsec_spd_entry_sort (void *a1, void *a2)
 {
-  ipsec_main_t *im = &ipsec_main;
   u32 *id1 = a1;
   u32 *id2 = a2;
-  ipsec_spd_t *spd;
+  ipsec_spd_t *spd = ipsec_main.spd_to_sort;
   ipsec_policy_t *p1, *p2;
 
-  /* *INDENT-OFF* */
-  pool_foreach (spd, im->spds, ({
-    p1 = pool_elt_at_index(spd->policies, *id1);
-    p2 = pool_elt_at_index(spd->policies, *id2);
-    if (p1 && p2)
-      return p2->priority - p1->priority;
-  }));
-  /* *INDENT-ON* */
+  p1 = pool_elt_at_index (spd->policies, *id1);
+  p2 = pool_elt_at_index (spd->policies, *id2);
+  if (p1 && p2)
+    return p2->priority - p1->priority;
 
   return 0;
 }
@@ -188,6 +185,8 @@ ipsec_add_del_policy (vlib_main_t * vm, ipsec_policy_t * policy, int is_add)
       pool_get (spd->policies, vp);
       clib_memcpy (vp, policy, sizeof (*vp));
       policy_index = vp - spd->policies;
+
+      ipsec_main.spd_to_sort = spd;
 
       if (policy->is_outbound)
 	{
@@ -254,6 +253,7 @@ ipsec_add_del_policy (vlib_main_t * vm, ipsec_policy_t * policy, int is_add)
 	    }
 	}
 
+      ipsec_main.spd_to_sort = NULL;
     }
   else
     {

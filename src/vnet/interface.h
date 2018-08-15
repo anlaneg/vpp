@@ -76,6 +76,25 @@ typedef clib_error_t *(vnet_interface_set_rx_mode_function_t)
   (struct vnet_main_t * vnm, u32 if_index, u32 queue_id,
    vnet_hw_interface_rx_mode mode);
 
+/* Interface set l2 mode callback. */
+typedef clib_error_t *(vnet_interface_set_l2_mode_function_t)
+  (struct vnet_main_t * vnm, struct vnet_hw_interface_t * hi,
+   i32 l2_if_adjust);
+
+typedef enum
+{
+  VNET_FLOW_DEV_OP_ADD_FLOW,
+  VNET_FLOW_DEV_OP_DEL_FLOW,
+  VNET_FLOW_DEV_OP_GET_COUNTER,
+  VNET_FLOW_DEV_OP_RESET_COUNTER,
+} vnet_flow_dev_op_t;
+
+/* Interface flow opeations callback. */
+typedef int (vnet_flow_dev_ops_function_t) (struct vnet_main_t * vnm,
+					    vnet_flow_dev_op_t op,
+					    u32 hw_if_index, u32 index,
+					    uword * private_data);
+
 typedef enum vnet_interface_function_priority_t_
 {
   VNET_ITF_FUNC_PRIORITY_LOW,
@@ -89,6 +108,7 @@ typedef struct _vnet_interface_function_list_elt
   clib_error_t *(*fp) (struct vnet_main_t * vnm, u32 if_index, u32 flags);
 } _vnet_interface_function_list_elt_t;
 
+#ifndef CLIB_MARCH_VARIANT
 #define _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,p)                    \
                                                                         \
 static void __vnet_interface_function_init_##tag##_##f (void)           \
@@ -101,7 +121,38 @@ static void __vnet_interface_function_init_##tag##_##f (void)           \
  init_function.next_interface_function = vnm->tag##_functions[p];       \
  vnm->tag##_functions[p] = &init_function;                              \
  init_function.fp = (void *) &f;                                        \
+}                                                                       \
+static void __vnet_interface_function_deinit_##tag##_##f (void)         \
+    __attribute__((__destructor__)) ;                                   \
+                                                                        \
+static void __vnet_interface_function_deinit_##tag##_##f (void)         \
+{                                                                       \
+ vnet_main_t * vnm = vnet_get_main();                                   \
+ _vnet_interface_function_list_elt_t *next;                             \
+ if (vnm->tag##_functions[p]->fp == (void *) &f)                        \
+    {                                                                   \
+      vnm->tag##_functions[p] =                                         \
+        vnm->tag##_functions[p]->next_interface_function;               \
+      return;                                                           \
+    }                                                                   \
+  next = vnm->tag##_functions[p];                                       \
+  while (next->next_interface_function)                                 \
+    {                                                                   \
+      if (next->next_interface_function->fp == (void *) &f)             \
+        {                                                               \
+          next->next_interface_function =                               \
+            next->next_interface_function->next_interface_function;     \
+          return;                                                       \
+        }                                                               \
+      next = next->next_interface_function;                             \
+    }                                                                   \
 }
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,p)                    \
+static __clib_unused void * __clib_unused_##f = f;
+#endif
 
 #define _VNET_INTERFACE_FUNCTION_DECL(f,tag)                            \
   _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,VNET_ITF_FUNC_PRIORITY_LOW)
@@ -110,8 +161,10 @@ static void __vnet_interface_function_init_##tag##_##f (void)           \
   _VNET_INTERFACE_FUNCTION_DECL(f,hw_interface_add_del)
 #define VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION(f)		\
   _VNET_INTERFACE_FUNCTION_DECL(f,hw_interface_link_up_down)
-#define VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION_PRIO(f,p)        \
+#define VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION_PRIO(f,p)       \
   _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,hw_interface_link_up_down,p)
+#define VNET_SW_INTERFACE_MTU_CHANGE_FUNCTION(f)                \
+  _VNET_INTERFACE_FUNCTION_DECL(f,sw_interface_mtu_change)
 #define VNET_SW_INTERFACE_ADD_DEL_FUNCTION(f)			\
   _VNET_INTERFACE_FUNCTION_DECL(f,sw_interface_add_del)
 #define VNET_SW_INTERFACE_ADMIN_UP_DOWN_FUNCTION(f)		\
@@ -140,11 +193,17 @@ typedef struct _vnet_device_class
   /* Function to call interface rx mode is changed */
   vnet_interface_set_rx_mode_function_t *rx_mode_change_function;
 
+  /* Function to call interface l2 mode is changed */
+  vnet_interface_set_l2_mode_function_t *set_l2_mode_function;
+
   /* Redistribute flag changes/existence of this interface class. */
   u32 redistribute;
 
   /* Transmit function. */
   vlib_node_function_t *tx_function;
+
+  /* Transmit function candidate registration with priority */
+  vlib_node_fn_registration_t *tx_fn_registrations;
 
   /* Error strings indexed by error code for this node. */
   char **tx_function_error_strings;
@@ -155,6 +214,9 @@ typedef struct _vnet_device_class
   /* Renumber device name [only!] support, a control-plane kludge */
   int (*name_renumber) (struct vnet_hw_interface_t * hi,
 			u32 new_dev_instance);
+
+  /* Interface flow offload operations */
+  vnet_flow_dev_ops_function_t *flow_ops_function;
 
   /* Format device instance as name. */
   format_function_t *format_device_name;
@@ -167,6 +229,9 @@ typedef struct _vnet_device_class
 
   /* Trace buffer format for TX function. */
   format_function_t *format_tx_trace;
+
+  /* Format flow offload entry */
+  format_function_t *format_flow;
 
   /* Function to clear hardware counters for device. */
   void (*clear_counters) (u32 dev_class_instance);
@@ -190,6 +255,7 @@ typedef struct _vnet_device_class
   vnet_interface_set_mac_address_function_t *mac_addr_change_function;
 } vnet_device_class_t;
 
+#ifndef CLIB_MARCH_VARIANT
 #define VNET_DEVICE_CLASS(x,...)                                        \
   __VA_ARGS__ vnet_device_class_t x;                                    \
 static void __vnet_add_device_class_registration_##x (void)             \
@@ -200,7 +266,39 @@ static void __vnet_add_device_class_registration_##x (void)             \
     x.next_class_registration = vnm->device_class_registrations;        \
     vnm->device_class_registrations = &x;                               \
 }                                                                       \
+static void __vnet_rm_device_class_registration_##x (void)              \
+    __attribute__((__destructor__)) ;                                   \
+static void __vnet_rm_device_class_registration_##x (void)              \
+{                                                                       \
+    vnet_main_t * vnm = vnet_get_main();                                \
+    VLIB_REMOVE_FROM_LINKED_LIST (vnm->device_class_registrations,      \
+                                  &x, next_class_registration);         \
+}                                                                       \
 __VA_ARGS__ vnet_device_class_t x
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VNET_DEVICE_CLASS(x,...)                                        \
+static __clib_unused vnet_device_class_t __clib_unused_##x
+#endif
+
+#define VNET_DEVICE_CLASS_TX_FN(devclass)				\
+uword CLIB_MARCH_SFX (devclass##_tx_fn)();				\
+static vlib_node_fn_registration_t					\
+  CLIB_MARCH_SFX(devclass##_tx_fn_registration) =			\
+  { .function = &CLIB_MARCH_SFX (devclass##_tx_fn), };			\
+									\
+static void __clib_constructor						\
+CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
+{									\
+  extern vnet_device_class_t devclass;					\
+  vlib_node_fn_registration_t *r;					\
+  r = &CLIB_MARCH_SFX (devclass##_tx_fn_registration);			\
+  r->priority = CLIB_MARCH_FN_PRIORITY();				\
+  r->next_registration = devclass.tx_fn_registrations;			\
+  devclass.tx_fn_registrations = r;					\
+}									\
+uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (devclass##_tx_fn)
 
 #define VLIB_DEVICE_TX_FUNCTION_CLONE_TEMPLATE(arch, fn, tgt)		\
   uword									\
@@ -254,6 +352,11 @@ typedef enum vnet_link_t_
     [VNET_LINK_ARP] = "arp",	       \
     [VNET_LINK_NSH] = "nsh",           \
 }
+
+#define FOR_EACH_VNET_LINK(_link)    \
+  for (_link = VNET_LINK_IP4;        \
+       _link <= VNET_LINK_NSH;       \
+       _link++)
 
 /**
  * @brief Number of link types. Not part of the enum so it does not have to be included in
@@ -368,6 +471,14 @@ static void __vnet_add_hw_interface_class_registration_##x (void)       \
     x.next_class_registration = vnm->hw_interface_class_registrations;  \
     vnm->hw_interface_class_registrations = &x;                         \
 }                                                                       \
+static void __vnet_rm_hw_interface_class_registration_##x (void)        \
+    __attribute__((__destructor__)) ;                                   \
+static void __vnet_rm_hw_interface_class_registration_##x (void)        \
+{                                                                       \
+    vnet_main_t * vnm = vnet_get_main();                                \
+    VLIB_REMOVE_FROM_LINKED_LIST (vnm->hw_interface_class_registrations,\
+                                  &x, next_class_registration);         \
+}                                                                       \
 __VA_ARGS__ vnet_hw_interface_class_t x
 
 /* Hardware-interface.  This corresponds to a physical wire
@@ -463,14 +574,6 @@ typedef struct vnet_hw_interface_t
   /* Largest packet size for this interface. */
   u32 max_packet_bytes;
 
-  /* Number of extra bytes that go on the wire.
-     Packet length on wire
-     = max (length + per_packet_overhead_bytes, min_packet_bytes). */
-  u32 per_packet_overhead_bytes;
-
-  /* Receive and transmit layer 3 packet size limits (MRU/MTU). */
-  u32 max_l3_packet_bytes[VLIB_N_RX_TX];
-
   /* Hash table mapping sub interface id to sw_if_index. */
   uword *sub_interface_sw_if_index_by_id;
 
@@ -510,6 +613,7 @@ typedef enum
   /* A sub-interface. */
   VNET_SW_INTERFACE_TYPE_SUB,
   VNET_SW_INTERFACE_TYPE_P2P,
+  VNET_SW_INTERFACE_TYPE_PIPE,
 } vnet_sw_interface_type_t;
 
 typedef struct
@@ -556,12 +660,54 @@ typedef struct
 
 typedef enum
 {
+  /* THe BVI interface */
+  VNET_FLOOD_CLASS_BVI,
   /* Always flood */
   VNET_FLOOD_CLASS_NORMAL,
   VNET_FLOOD_CLASS_TUNNEL_MASTER,
   /* Does not flood when tunnel master is in the same L2 BD */
-  VNET_FLOOD_CLASS_TUNNEL_NORMAL
+  VNET_FLOOD_CLASS_TUNNEL_NORMAL,
+  /* Never flood to this type */
+  VNET_FLOOD_CLASS_NO_FLOOD,
 } vnet_flood_class_t;
+
+/* Per protocol MTU */
+typedef enum
+{
+  VNET_MTU_L3,			/* Default payload MTU (without L2 headers) */
+  VNET_MTU_IP4,			/* Per-protocol MTUs overriding default */
+  VNET_MTU_IP6,
+  VNET_MTU_MPLS,
+  VNET_N_MTU
+} vnet_mtu_t;
+
+extern vnet_mtu_t vnet_link_to_mtu (vnet_link_t link);
+
+typedef enum vnet_sw_interface_flags_t_
+{
+  /* Interface is "up" meaning adminstratively up.
+     Up in the sense of link state being up is maintained by hardware interface. */
+  VNET_SW_INTERFACE_FLAG_ADMIN_UP = (1 << 0),
+
+  /* Interface is disabled for forwarding: punt all traffic to slow-path. */
+  VNET_SW_INTERFACE_FLAG_PUNT = (1 << 1),
+
+  VNET_SW_INTERFACE_FLAG_PROXY_ARP = (1 << 2),
+
+  VNET_SW_INTERFACE_FLAG_UNNUMBERED = (1 << 3),
+
+  VNET_SW_INTERFACE_FLAG_BOND_SLAVE = (1 << 4),
+
+  /* Interface does not appear in CLI/API */
+  VNET_SW_INTERFACE_FLAG_HIDDEN = (1 << 5),
+
+  /* Interface in ERROR state */
+  VNET_SW_INTERFACE_FLAG_ERROR = (1 << 6),
+
+  /* Interface has IP configured directed broadcast */
+  VNET_SW_INTERFACE_FLAG_DIRECTED_BCAST = (1 << 7),
+
+} __attribute__ ((packed)) vnet_sw_interface_flags_t;
 
 /* Software-interface.  This corresponds to a Ethernet VLAN, ATM vc, a
    tunnel, etc.  Configuration (e.g. IP address) gets attached to
@@ -570,25 +716,7 @@ typedef struct
 {
   vnet_sw_interface_type_t type:16;
 
-  u16 flags;
-  /* Interface is "up" meaning adminstratively up.
-     Up in the sense of link state being up is maintained by hardware interface. */
-#define VNET_SW_INTERFACE_FLAG_ADMIN_UP (1 << 0)
-
-  /* Interface is disabled for forwarding: punt all traffic to slow-path. */
-#define VNET_SW_INTERFACE_FLAG_PUNT (1 << 1)
-
-#define VNET_SW_INTERFACE_FLAG_PROXY_ARP (1 << 2)
-
-#define VNET_SW_INTERFACE_FLAG_UNNUMBERED (1 << 3)
-
-#define VNET_SW_INTERFACE_FLAG_BOND_SLAVE (1 << 4)
-
-  /* Interface does not appear in CLI/API */
-#define VNET_SW_INTERFACE_FLAG_HIDDEN (1 << 5)
-
-  /* Interface in ERROR state */
-#define VNET_SW_INTERFACE_FLAG_ERROR (1 << 6)
+  vnet_sw_interface_flags_t flags;
 
   /* Index for this interface. */
   u32 sw_if_index;
@@ -603,17 +731,17 @@ typedef struct
 
   u32 link_speed;
 
-  union
-  {
-    /* VNET_SW_INTERFACE_TYPE_HARDWARE. */
-    u32 hw_if_index;
+  /* VNET_SW_INTERFACE_TYPE_HARDWARE. */
+  u32 hw_if_index;
 
-    /* VNET_SW_INTERFACE_TYPE_SUB. */
-    vnet_sub_interface_t sub;
+  /* MTU for network layer (not including L2 headers) */
+  u32 mtu[VNET_N_MTU];
 
-    /* VNET_SW_INTERFACE_TYPE_P2P. */
-    vnet_p2p_sub_interface_t p2p;
-  };
+  /* VNET_SW_INTERFACE_TYPE_SUB. */
+  vnet_sub_interface_t sub;
+
+  /* VNET_SW_INTERFACE_TYPE_P2P. */
+  vnet_p2p_sub_interface_t p2p;
 
   vnet_flood_class_t flood_class;
 } vnet_sw_interface_t;
@@ -633,9 +761,63 @@ typedef enum
   VNET_N_SIMPLE_INTERFACE_COUNTER = 9,
   /* Combined counters. */
   VNET_INTERFACE_COUNTER_RX = 0,
-  VNET_INTERFACE_COUNTER_TX = 1,
-  VNET_N_COMBINED_INTERFACE_COUNTER = 2,
+  VNET_INTERFACE_COUNTER_RX_UNICAST = 1,
+  VNET_INTERFACE_COUNTER_RX_MULTICAST = 2,
+  VNET_INTERFACE_COUNTER_RX_BROADCAST = 3,
+  VNET_INTERFACE_COUNTER_TX = 4,
+  VNET_INTERFACE_COUNTER_TX_UNICAST = 5,
+  VNET_INTERFACE_COUNTER_TX_MULTICAST = 6,
+  VNET_INTERFACE_COUNTER_TX_BROADCAST = 7,
+  VNET_N_COMBINED_INTERFACE_COUNTER = 8,
 } vnet_interface_counter_type_t;
+
+#define foreach_rx_combined_interface_counter(_x)               \
+  for (_x = VNET_INTERFACE_COUNTER_RX;                          \
+       _x <= VNET_INTERFACE_COUNTER_RX_BROADCAST;               \
+       _x++)
+
+#define foreach_tx_combined_interface_counter(_x)               \
+  for (_x = VNET_INTERFACE_COUNTER_TX;                          \
+       _x <= VNET_INTERFACE_COUNTER_TX_BROADCAST;               \
+       _x++)
+
+#define foreach_simple_interface_counter_name	\
+  _(DROP, drops, if)				\
+  _(PUNT, punt, if)				\
+  _(IP4, ip4, if)				\
+  _(IP6, ip6, if)				\
+  _(RX_NO_BUF, rx-no-buf, if)			\
+  _(RX_MISS, rx-miss, if)			\
+  _(RX_ERROR, rx-error, if)			\
+  _(TX_ERROR, tx-error, if)
+
+#define foreach_combined_interface_counter_name	\
+  _(RX, rx, if)					\
+  _(RX_UNICAST, rx-unicast, if)			\
+  _(RX_MULTICAST, rx-multicast, if)		\
+  _(RX_BROADCAST, rx-broadcast, if)		\
+  _(TX, tx, if)					\
+  _(TX_UNICAST, tx-unicast-miss, if)		\
+  _(TX_MULTICAST, tx-multicast, if)		\
+  _(TX_BROADCAST, tx-broadcast, if)
+
+typedef enum
+{
+  COLLECT_SIMPLE_STATS = 0,
+  COLLECT_DETAILED_STATS = 1,
+} vnet_interface_stats_collection_mode_e;
+
+extern int collect_detailed_interface_stats_flag;
+
+static inline int
+collect_detailed_interface_stats (void)
+{
+  return collect_detailed_interface_stats_flag;
+}
+
+void collect_detailed_interface_stats_flag_set (void);
+void collect_detailed_interface_stats_flag_clear (void);
+
 
 typedef struct
 {

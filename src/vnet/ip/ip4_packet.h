@@ -77,6 +77,11 @@ typedef struct
   ip4_address_t src, dst;
 } ip4_address_pair_t;
 
+typedef struct
+{
+  ip4_address_t addr, mask;
+} ip4_address_and_mask_t;
+
 /* If address is a valid netmask, return length of mask. */
 always_inline uword
 ip4_address_netmask_length (ip4_address_t * a)
@@ -187,6 +192,8 @@ typedef union
 /* Value of ip_version_and_header_length for packets w/o options. */
 #define IP4_VERSION_AND_HEADER_LENGTH_NO_OPTIONS \
   ((4 << 4) | (sizeof (ip4_header_t) / sizeof (u32)))
+
+#define IP4_ROUTER_ALERT_OPTION 20
 
 always_inline int
 ip4_get_fragment_offset (ip4_header_t * i)

@@ -29,6 +29,7 @@
 #include <vlibmemory/vl_memory_api_h.h>
 #endif /* included_from_layer_3 */
 
+#include <vnet/bonding/bond.api.h>
 #include <vnet/devices/af_packet/af_packet.api.h>
 #include <vnet/devices/netmap/netmap.api.h>
 #include <vnet/devices/virtio/vhost_user.api.h>
@@ -36,7 +37,6 @@
 #include <vnet/gre/gre.api.h>
 #include <vnet/ipip/ipip.api.h>
 #include <vnet/interface.api.h>
-#include <vnet/map/map.api.h>
 #include <vnet/l2/l2.api.h>
 #include <vnet/l2tp/l2tp.api.h>
 #include <vnet/span/span.api.h>
@@ -58,7 +58,7 @@
 #include <vnet/srv6/sr.api.h>
 #include <vnet/srmpls/sr_mpls.api.h>
 #include <vnet/classify/classify.api.h>
-#include <vnet/flow/flow.api.h>
+#include <vnet/ipfix-export/ipfix_export.api.h>
 #include <vnet/dhcp/dhcp.api.h>
 #include <vnet/cop/cop.api.h>
 #include <vnet/policer/policer.api.h>
@@ -72,6 +72,9 @@
 #include <vnet/feature/feature.api.h>
 #include <vnet/sctp/sctp.api.h>
 #include <vnet/qos/qos.api.h>
+#include <vnet/dhcp/dhcp6_pd_client_cp.api.h>
+#include <vnet/dhcp/dhcp6_ia_na_client_cp.api.h>
+#include <vnet/devices/pipe/pipe.api.h>
 
 /*
  * fd.io coding-style-patch-verification: ON

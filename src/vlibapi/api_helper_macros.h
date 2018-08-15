@@ -115,7 +115,7 @@ vnet_sw_if_index_is_api_valid (u32 sw_if_index)
 }
 
 #define VALIDATE_SW_IF_INDEX(mp)				\
- do { u32 __sw_if_index = ntohl(mp->sw_if_index);		\
+ do { u32 __sw_if_index = ntohl((mp)->sw_if_index);		\
     if (!vnet_sw_if_index_is_api_valid(__sw_if_index)) {        \
         rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;                \
         goto bad_sw_if_index;                                   \
@@ -129,7 +129,7 @@ bad_sw_if_index:                                \
 } while (0);
 
 #define VALIDATE_RX_SW_IF_INDEX(mp)				\
- do { u32 __rx_sw_if_index = ntohl(mp->rx_sw_if_index);		\
+ do { u32 __rx_sw_if_index = ntohl((mp)->rx_sw_if_index);       \
     if (!vnet_sw_if_index_is_api_valid(__rx_sw_if_index)) {     \
         rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;                \
         goto bad_rx_sw_if_index;				\
@@ -207,7 +207,25 @@ static void vl_api_want_##lca##_t_handler (                             \
                                                                         \
 reply:                                                                  \
     REPLY_MACRO (VL_API_WANT_##UCA##_REPLY);                            \
-}
+}                                                                       \
+                                                                        \
+static clib_error_t * vl_api_want_##lca##_t_reaper (u32 client_index)   \
+{                                                                       \
+    vpe_api_main_t *vam = &vpe_api_main;                                \
+    vpe_client_registration_t *rp;                                      \
+    uword *p;                                                           \
+                                                                        \
+    p = hash_get (vam->lca##_registration_hash, client_index);          \
+    if (p)                                                              \
+      {                                                                 \
+        rp = pool_elt_at_index (vam->lca##_registrations, p[0]);        \
+        pool_put (vam->lca##_registrations, rp);                        \
+        hash_unset (vam->lca##_registration_hash, client_index);        \
+      }                                                                 \
+    return (NULL);                                                      \
+}                                                                       \
+                                                                        \
+VL_MSG_API_REAPER_FUNCTION (vl_api_want_##lca##_t_reaper);              \
 
 #define foreach_registration_hash               \
 _(interface_events)                             \
@@ -219,7 +237,9 @@ _(oam_events)                                   \
 _(bfd_events)                                   \
 _(wc_ip6_nd_events)                             \
 _(wc_ip4_arp_events)                            \
-_(ip6_ra_events)
+_(ip6_ra_events)                                \
+_(dhcp6_pd_reply_events)                        \
+_(dhcp6_reply_events)
 
 typedef struct
 {

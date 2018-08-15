@@ -12,6 +12,8 @@ from framework import VppTestRunner
 from debug import spawn_gdb
 from log import global_logger
 from discover_tests import discover_tests
+from subprocess import check_output, CalledProcessError
+from util import check_core_path
 
 # timeout which controls how long the child has to finish after seeing
 # a core dump in test temporary directory. If this is exceeded, parent assumes
@@ -50,7 +52,10 @@ class Filter_by_class_list:
 
 def suite_from_failed(suite, failed):
     filter_cb = Filter_by_class_list(failed)
-    return VppTestRunner.filter_tests(suite, filter_cb)
+    suite = VppTestRunner.filter_tests(suite, filter_cb)
+    if 0 == suite.countTestCases():
+        raise Exception("Suite is empty after filtering out the failed tests!")
+    return suite
 
 
 def run_forked(suite):
@@ -99,8 +104,8 @@ def run_forked(suite):
                                    (last_test, last_test_temp_dir))
         elif not child.is_alive():
             fail = True
-            global_logger.critical("Child process unexpectedly died (last "
-                                   "test running was `%s' in `%s')!" %
+            global_logger.critical("Child python process unexpectedly died "
+                                   "(last test running was `%s' in `%s')!" %
                                    (last_test, last_test_temp_dir))
         elif last_test_temp_dir and last_test_vpp_binary:
             core_path = "%s/core" % last_test_temp_dir
@@ -111,8 +116,8 @@ def run_forked(suite):
                     if not os.path.isfile(
                             "%s/_core_handled" % last_test_temp_dir):
                         global_logger.critical(
-                            "Child unresponsive and core-file exists in test "
-                            "temporary directory!")
+                            "Child python process unresponsive and core-file "
+                            "exists in test temporary directory!")
                         fail = True
 
         if fail:
@@ -123,7 +128,7 @@ def run_forked(suite):
                                 "test: %s -> %s" % (link_path, lttd))
             try:
                 os.symlink(last_test_temp_dir, link_path)
-            except:
+            except Exception:
                 pass
             api_post_mortem_path = "/tmp/api_post_mortem.%d" % vpp_pid
             if os.path.isfile(api_post_mortem_path):
@@ -135,6 +140,16 @@ def run_forked(suite):
                 if os.path.isfile(core_path):
                     global_logger.error("Core-file exists in test temporary "
                                         "directory: %s!" % core_path)
+                    check_core_path(global_logger, core_path)
+                    global_logger.debug("Running `file %s':" % core_path)
+                    try:
+                        info = check_output(["file", core_path])
+                        global_logger.debug(info)
+                    except CalledProcessError as e:
+                        global_logger.error(
+                            "Could not run `file' utility on core-file, "
+                            "rc=%s" % e.returncode)
+                        pass
                     if debug_core:
                         spawn_gdb(last_test_vpp_binary, core_path,
                                   global_logger)
@@ -151,19 +166,19 @@ if __name__ == '__main__':
 
     try:
         verbose = int(os.getenv("V", 0))
-    except:
+    except ValueError:
         verbose = 0
 
     default_test_timeout = 600  # 10 minutes
     try:
         test_timeout = int(os.getenv("TIMEOUT", default_test_timeout))
-    except:
+    except ValueError:
         test_timeout = default_test_timeout
 
-    try:
-        debug = os.getenv("DEBUG")
-    except:
-        debug = None
+    debug = os.getenv("DEBUG")
+
+    s = os.getenv("STEP", "n")
+    step = True if s.lower() in ("y", "yes", "1") else False
 
     parser = argparse.ArgumentParser(description="VPP unit tests")
     parser.add_argument("-f", "--failfast", action='count',
@@ -181,15 +196,23 @@ if __name__ == '__main__':
         discover_tests(d, cb)
 
     try:
-        retries = int(os.getenv("RETRIES"))
-    except:
+        retries = int(os.getenv("RETRIES", 0))
+    except ValueError:
         retries = 0
-    if retries is None:
-        retries = 0
+
+    try:
+        force_foreground = int(os.getenv("FORCE_FOREGROUND", 0))
+    except ValueError:
+        force_foreground = 0
     attempts = retries + 1
     if attempts > 1:
         print("Perform %s attempts to pass the suite..." % attempts)
-    if debug is None or debug.lower() not in ["gdb", "gdbserver"]:
+    if (debug is not None and debug.lower() in ["gdb", "gdbserver"]) or step\
+            or force_foreground:
+        # don't fork if requiring interactive terminal..
+        sys.exit(not VppTestRunner(
+            verbosity=verbose, failfast=failfast).run(suite).wasSuccessful())
+    else:
         while True:
             result, failed = run_forked(suite)
             attempts = attempts - 1
@@ -199,7 +222,3 @@ if __name__ == '__main__':
                 suite = suite_from_failed(suite, failed)
                 continue
             sys.exit(result)
-
-    # don't fork if debugging..
-    sys.exit(not VppTestRunner(verbosity=verbose,
-                               failfast=failfast).run(suite).wasSuccessful())

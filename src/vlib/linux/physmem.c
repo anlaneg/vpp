@@ -69,10 +69,18 @@ unix_physmem_alloc_aligned (vlib_main_t * vm, vlib_physmem_region_index_t idx,
 
   while (1)
     {
+#if USE_DLMALLOC == 0
+
       mheap_get_aligned (pr->heap, n_bytes,
 			 /* align */ alignment,
 			 /* align offset */ 0,
 			 &lo_offset);
+#else
+      lo_offset = (uword) mspace_get_aligned (pr->heap, n_bytes,
+					      alignment, ~0ULL /* offset */ );
+      if (lo_offset == 0)
+	lo_offset = ~0ULL;
+#endif
 
       /* Allocation failed? */
       if (lo_offset == ~0)
@@ -94,11 +102,21 @@ unix_physmem_alloc_aligned (vlib_main_t * vm, vlib_physmem_region_index_t idx,
     {
       uword i;
       for (i = 0; i < vec_len (to_free); i++)
-	mheap_put (pr->heap, to_free[i]);
+	{
+#if USE_DLMALLOC == 0
+	  mheap_put (pr->heap, to_free[i]);
+#else
+	  mspace_put_no_offset (pr->heap, (void *) to_free[i]);
+#endif
+	}
       vec_free (to_free);
     }
 
-  return lo_offset != ~0 ? pr->heap + lo_offset : 0;
+#if USE_DLMALLOC == 0
+  return lo_offset != ~0 ? (void *) (pr->heap + lo_offset) : 0;
+#else
+  return lo_offset != ~0 ? (void *) lo_offset : 0;
+#endif
 }
 
 static void
@@ -106,7 +124,11 @@ unix_physmem_free (vlib_main_t * vm, vlib_physmem_region_index_t idx, void *x)
 {
   vlib_physmem_region_t *pr = vlib_physmem_get_region (vm, idx);
   /* Return object to region's heap. */
+#if USE_DLMALLOC == 0
   mheap_put (pr->heap, x - pr->heap);
+#else
+  mspace_put_no_offset (pr->heap, x);
+#endif
 }
 
 static clib_error_t *
@@ -159,7 +181,7 @@ unix_physmem_region_alloc (vlib_main_t * vm, char *name, u32 size,
   pr->size = (u64) pr->n_pages << (u64) pr->log2_page_size;
   pr->page_mask = (1 << pr->log2_page_size) - 1;
   pr->numa_node = numa_node;
-  pr->name = format (0, "%s", name);
+  pr->name = format (0, "%s%c", name, 0);
 
   for (i = 0; i < pr->n_pages; i++)
     {
@@ -181,10 +203,15 @@ unix_physmem_region_alloc (vlib_main_t * vm, char *name, u32 size,
 
   if (flags & VLIB_PHYSMEM_F_INIT_MHEAP)
     {
+#if USE_DLMALLOC == 0
       pr->heap = mheap_alloc_with_flags (pr->mem, pr->size,
 					 /* Don't want mheap mmap/munmap with IO memory. */
 					 MHEAP_FLAG_DISABLE_VM |
 					 MHEAP_FLAG_THREAD_SAFE);
+#else
+      pr->heap = create_mspace_with_base (pr->mem, pr->size, 1 /* locked */ );
+      mspace_disable_expand (pr->heap);
+#endif
     }
 
   *idx = pr->index;

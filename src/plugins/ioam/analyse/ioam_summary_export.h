@@ -16,7 +16,7 @@
 #define __included_ip6_ioam_flow_report_h__
 
 #include <ioam/analyse/ioam_analyse.h>
-#include <vnet/flow/flow_report.h>
+#include <vnet/ipfix-export/flow_report.h>
 
 #define foreach_ioam_ipfix_info_element           \
 _(ioamPacketSent, 5239, u32)                     \
@@ -67,7 +67,9 @@ clib_error_t *ioam_flow_create (u8 del);
 
 u8 *ioam_template_rewrite (flow_report_main_t * frm, flow_report_t * fr,
 			   ip4_address_t * collector_address,
-			   ip4_address_t * src_address, u16 collector_port);
+			   ip4_address_t * src_address, u16 collector_port,
+			   ipfix_report_element_t * elts,
+			   u32 n_elts, u32 * stream_index);
 
 u16 ioam_analyse_add_ipfix_record (flow_report_t * fr,
 				   ioam_analyser_data_t * record,

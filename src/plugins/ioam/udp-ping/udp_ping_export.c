@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-#include <vnet/flow/flow_report.h>
+#include <vnet/ipfix-export/flow_report.h>
 #include <ioam/analyse/ioam_summary_export.h>
 #include <vnet/api_errno.h>
 #include <ioam/udp-ping/udp_ping.h>
@@ -23,10 +23,13 @@
 static u8 *
 udp_ping_template_rewrite (flow_report_main_t * frm, flow_report_t * fr,
 			   ip4_address_t * collector_address,
-			   ip4_address_t * src_address, u16 collector_port)
+			   ip4_address_t * src_address, u16 collector_port,
+			   ipfix_report_element_t * elts,
+			   u32 n_elts, u32 * stream_index)
 {
   return ioam_template_rewrite (frm, fr, collector_address,
-				src_address, collector_port);
+				src_address, collector_port, elts, n_elts,
+				stream_index);
 }
 
 static vlib_frame_t *

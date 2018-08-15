@@ -123,7 +123,7 @@ tcp_segment_in_rcv_wnd (tcp_connection_t * tc, u32 seq, u32 end_seq)
  * @param to TCP options data structure to be populated
  * @return -1 if parsing failed
  */
-int
+static int
 tcp_options_parse (tcp_header_t * th, tcp_options_t * to)
 {
   const u8 *data;
@@ -272,27 +272,35 @@ tcp_update_timestamp (tcp_connection_t * tc, u32 seq, u32 seq_end)
  */
 static int
 tcp_segment_validate (vlib_main_t * vm, tcp_connection_t * tc0,
-		      vlib_buffer_t * b0, tcp_header_t * th0, u32 * next0)
+		      vlib_buffer_t * b0, tcp_header_t * th0,
+		      u32 * next0, u32 * error0)
 {
+  /* We could get a burst of RSTs interleaved with acks */
+  if (PREDICT_FALSE (tc0->state == TCP_STATE_CLOSED))
+    {
+      tcp_send_reset (tc0);
+      *error0 = TCP_ERROR_CONNECTION_CLOSED;
+      goto drop;
+    }
+
   if (PREDICT_FALSE (!tcp_ack (th0) && !tcp_rst (th0) && !tcp_syn (th0)))
-    return -1;
+    {
+      *error0 = TCP_ERROR_SEGMENT_INVALID;
+      goto drop;
+    }
 
   if (PREDICT_FALSE (tcp_options_parse (th0, &tc0->rcv_opts)))
     {
       clib_warning ("options parse error");
-      return -1;
+      *error0 = TCP_ERROR_OPTIONS;
+      goto drop;
     }
 
-  if (tcp_segment_check_paws (tc0))
+  if (PREDICT_FALSE (tcp_segment_check_paws (tc0)))
     {
+      *error0 = TCP_ERROR_PAWS;
       if (CLIB_DEBUG > 2)
-	{
-	  clib_warning ("paws failed\n%U", format_tcp_connection, tc0, 2);
-	  clib_warning ("seq %u seq_end %u ack %u",
-			vnet_buffer (b0)->tcp.seq_number - tc0->irs,
-			vnet_buffer (b0)->tcp.seq_end - tc0->irs,
-			vnet_buffer (b0)->tcp.ack_number - tc0->iss);
-	}
+	clib_warning ("paws failed\n%U", format_tcp_connection, tc0, 2);
       TCP_EVT_DBG (TCP_EVT_PAWS_FAIL, tc0, vnet_buffer (b0)->tcp.seq_number,
 		   vnet_buffer (b0)->tcp.seq_end);
 
@@ -311,48 +319,46 @@ tcp_segment_validate (vlib_main_t * vm, tcp_connection_t * tc0,
 	  if (!tcp_rst (th0))
 	    {
 	      tcp_make_ack (tc0, b0);
-	      *next0 = tcp_next_output (tc0->c_is_ip4);
-	      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0);
-	      return -1;
+	      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0, vnet_buffer (b0)->tcp);
+	      goto error;
 	    }
 	}
+      goto drop;
     }
 
   /* 1st: check sequence number */
   if (!tcp_segment_in_rcv_wnd (tc0, vnet_buffer (b0)->tcp.seq_number,
 			       vnet_buffer (b0)->tcp.seq_end))
     {
+      *error0 = TCP_ERROR_RCV_WND;
       /* If our window is 0 and the packet is in sequence, let it pass
-       * through for ack processing. It should be dropped later.*/
-      if (tc0->rcv_wnd == 0
-	  && tc0->rcv_nxt == vnet_buffer (b0)->tcp.seq_number)
-	{
-	  /* TODO Should segment be tagged?  */
-	}
-      else
+       * through for ack processing. It should be dropped later. */
+      if (!(tc0->rcv_wnd == 0
+	    && tc0->rcv_nxt == vnet_buffer (b0)->tcp.seq_number))
 	{
 	  /* If not RST, send dup ack */
 	  if (!tcp_rst (th0))
 	    {
 	      tcp_make_ack (tc0, b0);
-	      *next0 = tcp_next_output (tc0->c_is_ip4);
-	      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0);
+	      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0, vnet_buffer (b0)->tcp);
+	      goto error;
 	    }
-	  return -1;
+	  goto drop;
 	}
     }
 
   /* 2nd: check the RST bit */
-  if (tcp_rst (th0))
+  if (PREDICT_FALSE (tcp_rst (th0)))
     {
       tcp_connection_reset (tc0);
-      return -1;
+      *error0 = TCP_ERROR_RST_RCVD;
+      goto drop;
     }
 
   /* 3rd: check security and precedence (skip) */
 
   /* 4th: check the SYN bit */
-  if (tcp_syn (th0))
+  if (PREDICT_FALSE (tcp_syn (th0)))
     {
       /* TODO implement RFC 5961 */
       if (tc0->state == TCP_STATE_SYN_RCVD)
@@ -365,14 +371,20 @@ tcp_segment_validate (vlib_main_t * vm, tcp_connection_t * tc0,
 	  tcp_make_ack (tc0, b0);
 	  TCP_EVT_DBG (TCP_EVT_SYNACK_RCVD, tc0);
 	}
-      *next0 = tcp_next_output (tc0->c_is_ip4);
-      return -1;
+      goto error;
     }
 
   /* If segment in window, save timestamp */
   tcp_update_timestamp (tc0, vnet_buffer (b0)->tcp.seq_number,
 			vnet_buffer (b0)->tcp.seq_end);
   return 0;
+
+drop:
+  *next0 = tcp_next_drop (tc0->c_is_ip4);
+  return -1;
+error:
+  *next0 = tcp_next_output (tc0->c_is_ip4);
+  return -1;
 }
 
 always_inline int
@@ -522,7 +534,60 @@ tcp_ack_is_cc_event (tcp_connection_t * tc, vlib_buffer_t * b,
   return ((*is_dack || tcp_in_cong_recovery (tc)) && !tcp_is_lost_fin (tc));
 }
 
-void
+static u32
+scoreboard_hole_index (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
+{
+  ASSERT (!pool_is_free_index (sb->holes, hole - sb->holes));
+  return hole - sb->holes;
+}
+
+static u32
+scoreboard_hole_bytes (sack_scoreboard_hole_t * hole)
+{
+  return hole->end - hole->start;
+}
+
+sack_scoreboard_hole_t *
+scoreboard_get_hole (sack_scoreboard_t * sb, u32 index)
+{
+  if (index != TCP_INVALID_SACK_HOLE_INDEX)
+    return pool_elt_at_index (sb->holes, index);
+  return 0;
+}
+
+sack_scoreboard_hole_t *
+scoreboard_next_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
+{
+  if (hole->next != TCP_INVALID_SACK_HOLE_INDEX)
+    return pool_elt_at_index (sb->holes, hole->next);
+  return 0;
+}
+
+sack_scoreboard_hole_t *
+scoreboard_prev_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
+{
+  if (hole->prev != TCP_INVALID_SACK_HOLE_INDEX)
+    return pool_elt_at_index (sb->holes, hole->prev);
+  return 0;
+}
+
+sack_scoreboard_hole_t *
+scoreboard_first_hole (sack_scoreboard_t * sb)
+{
+  if (sb->head != TCP_INVALID_SACK_HOLE_INDEX)
+    return pool_elt_at_index (sb->holes, sb->head);
+  return 0;
+}
+
+sack_scoreboard_hole_t *
+scoreboard_last_hole (sack_scoreboard_t * sb)
+{
+  if (sb->tail != TCP_INVALID_SACK_HOLE_INDEX)
+    return pool_elt_at_index (sb->holes, sb->tail);
+  return 0;
+}
+
+static void
 scoreboard_remove_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
 {
   sack_scoreboard_hole_t *next, *prev;
@@ -557,7 +622,7 @@ scoreboard_remove_hole (sack_scoreboard_t * sb, sack_scoreboard_hole_t * hole)
   pool_put (sb->holes, hole);
 }
 
-sack_scoreboard_hole_t *
+static sack_scoreboard_hole_t *
 scoreboard_insert_hole (sack_scoreboard_t * sb, u32 prev_index,
 			u32 start, u32 end)
 {
@@ -594,7 +659,7 @@ scoreboard_insert_hole (sack_scoreboard_t * sb, u32 prev_index,
   return hole;
 }
 
-void
+static void
 scoreboard_update_bytes (tcp_connection_t * tc, sack_scoreboard_t * sb)
 {
   sack_scoreboard_hole_t *hole, *prev;
@@ -693,7 +758,7 @@ scoreboard_next_rxt_hole (sack_scoreboard_t * sb,
   return hole;
 }
 
-void
+static void
 scoreboard_init_high_rxt (sack_scoreboard_t * sb, u32 seq)
 {
   sack_scoreboard_hole_t *hole;
@@ -706,13 +771,41 @@ scoreboard_init_high_rxt (sack_scoreboard_t * sb, u32 seq)
   sb->high_rxt = seq;
 }
 
+void
+scoreboard_init (sack_scoreboard_t * sb)
+{
+  sb->head = TCP_INVALID_SACK_HOLE_INDEX;
+  sb->tail = TCP_INVALID_SACK_HOLE_INDEX;
+  sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
+}
+
+void
+scoreboard_clear (sack_scoreboard_t * sb)
+{
+  sack_scoreboard_hole_t *hole;
+  while ((hole = scoreboard_first_hole (sb)))
+    {
+      scoreboard_remove_hole (sb, hole);
+    }
+  ASSERT (sb->head == sb->tail && sb->head == TCP_INVALID_SACK_HOLE_INDEX);
+  ASSERT (pool_elts (sb->holes) == 0);
+  sb->sacked_bytes = 0;
+  sb->last_sacked_bytes = 0;
+  sb->last_bytes_delivered = 0;
+  sb->snd_una_adv = 0;
+  sb->high_sacked = 0;
+  sb->high_rxt = 0;
+  sb->lost_bytes = 0;
+  sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
+}
+
 /**
  * Test that scoreboard is sane after recovery
  *
  * Returns 1 if scoreboard is empty or if first hole beyond
  * snd_una.
  */
-u8
+static u8
 tcp_scoreboard_is_sane_post_recovery (tcp_connection_t * tc)
 {
   sack_scoreboard_hole_t *hole;
@@ -730,13 +823,14 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
   int i, j;
 
   sb->last_sacked_bytes = 0;
-  sb->snd_una_adv = 0;
-  old_sacked_bytes = sb->sacked_bytes;
   sb->last_bytes_delivered = 0;
+  sb->snd_una_adv = 0;
 
   if (!tcp_opts_sack (&tc->rcv_opts)
       && sb->head == TCP_INVALID_SACK_HOLE_INDEX)
     return;
+
+  old_sacked_bytes = sb->sacked_bytes;
 
   /* Remove invalid blocks */
   blk = tc->rcv_opts.sacks;
@@ -878,13 +972,14 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
   scoreboard_update_bytes (tc, sb);
   sb->last_sacked_bytes = sb->sacked_bytes
     - (old_sacked_bytes - sb->last_bytes_delivered);
-  ASSERT (sb->last_sacked_bytes <= sb->sacked_bytes);
+  ASSERT (sb->last_sacked_bytes <= sb->sacked_bytes || tcp_in_recovery (tc));
   ASSERT (sb->sacked_bytes == 0
 	  || sb->sacked_bytes < tc->snd_una_max - seq_max (tc->snd_una, ack));
   ASSERT (sb->last_sacked_bytes + sb->lost_bytes <= tc->snd_una_max
 	  - seq_max (tc->snd_una, ack));
   ASSERT (sb->head == TCP_INVALID_SACK_HOLE_INDEX || tcp_in_recovery (tc)
 	  || sb->holes[sb->head].start == ack + sb->snd_una_adv);
+  TCP_EVT_DBG (TCP_EVT_CC_SCOREBOARD, tc);
 }
 
 /**
@@ -925,11 +1020,18 @@ tcp_update_snd_wnd (tcp_connection_t * tc, u32 seq, u32 ack, u32 snd_wnd)
     }
 }
 
+/**
+ * Init loss recovery/fast recovery.
+ *
+ * Triggered by dup acks as opposed to timer timeout. Note that cwnd is
+ * updated in @ref tcp_cc_handle_event after fast retransmit
+ */
 void
 tcp_cc_init_congestion (tcp_connection_t * tc)
 {
   tcp_fastrecovery_on (tc);
   tc->snd_congestion = tc->snd_una_max;
+  tc->cwnd_acc_bytes = 0;
   tc->cc_algo->congestion (tc);
   TCP_EVT_DBG (TCP_EVT_CC_EVT, tc, 4);
 }
@@ -937,7 +1039,6 @@ tcp_cc_init_congestion (tcp_connection_t * tc)
 static void
 tcp_cc_recovery_exit (tcp_connection_t * tc)
 {
-  /* Deflate rto */
   tc->rto_boff = 0;
   tcp_update_rto (tc);
   tc->snd_rxt_ts = 0;
@@ -981,7 +1082,7 @@ tcp_cc_is_spurious_retransmit (tcp_connection_t * tc)
 	  && timestamp_lt (tc->rcv_opts.tsecr, tc->snd_rxt_ts));
 }
 
-int
+static int
 tcp_cc_recover (tcp_connection_t * tc)
 {
   ASSERT (tcp_in_cong_recovery (tc));
@@ -1045,32 +1146,35 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
 {
   u32 rxt_delivered;
 
+  if (tcp_in_fastrecovery (tc) && tcp_opts_sack_permitted (&tc->rcv_opts))
+    {
+      if (tc->bytes_acked)
+	goto partial_ack;
+      tcp_fast_retransmit (tc);
+      return;
+    }
   /*
    * Duplicate ACK. Check if we should enter fast recovery, or if already in
    * it account for the bytes that left the network.
    */
-  if (is_dack)
+  else if (is_dack && !tcp_in_recovery (tc))
     {
+      TCP_EVT_DBG (TCP_EVT_DUPACK_RCVD, tc, 1);
       ASSERT (tc->snd_una != tc->snd_una_max
 	      || tc->sack_sb.last_sacked_bytes);
 
       tc->rcv_dupacks++;
 
+      /* Pure duplicate ack. If some data got acked, it's handled lower */
       if (tc->rcv_dupacks > TCP_DUPACK_THRESHOLD && !tc->bytes_acked)
 	{
 	  ASSERT (tcp_in_fastrecovery (tc));
-	  /* Pure duplicate ack. If some data got acked, it's handled lower */
 	  tc->cc_algo->rcv_cong_ack (tc, TCP_CC_DUPACK);
 	  return;
 	}
       else if (tcp_should_fastrecover (tc))
 	{
-	  /* Things are already bad */
-	  if (tcp_in_cong_recovery (tc))
-	    {
-	      tc->rcv_dupacks = 0;
-	      goto partial_ack_test;
-	    }
+	  ASSERT (!tcp_in_fastrecovery (tc));
 
 	  /* If of of the two conditions lower hold, reset dupacks because
 	   * we're probably after timeout (RFC6582 heuristics).
@@ -1114,7 +1218,6 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
 	    {
 	      tcp_fast_retransmit_no_sack (tc);
 	    }
-
 	  return;
 	}
       else if (!tc->bytes_acked
@@ -1127,12 +1230,12 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
 	goto partial_ack;
     }
 
-partial_ack_test:
-
   if (!tc->bytes_acked)
     return;
 
 partial_ack:
+  TCP_EVT_DBG (TCP_EVT_CC_PACK, tc);
+
   /*
    * Legitimate ACK. 1) See if we can exit recovery
    */
@@ -1159,17 +1262,18 @@ partial_ack:
   /*
    * Legitimate ACK. 2) If PARTIAL ACK try to retransmit
    */
-  TCP_EVT_DBG (TCP_EVT_CC_PACK, tc);
 
   /* RFC6675: If the incoming ACK is a cumulative acknowledgment,
-   * reset dupacks to 0 */
+   * reset dupacks to 0. Also needed if in congestion recovery */
   tc->rcv_dupacks = 0;
-
-  tcp_retransmit_first_unacked (tc);
 
   /* Post RTO timeout don't try anything fancy */
   if (tcp_in_recovery (tc))
-    return;
+    {
+      tc->cc_algo->rcv_ack (tc);
+      tc->tsecr_last_ack = tc->rcv_opts.tsecr;
+      return;
+    }
 
   /* Remove retransmitted bytes that have been delivered */
   ASSERT (tc->bytes_acked + tc->sack_sb.snd_una_adv
@@ -1200,13 +1304,6 @@ partial_ack:
   tcp_fast_retransmit (tc);
 }
 
-void
-tcp_cc_init (tcp_connection_t * tc)
-{
-  tc->cc_algo = tcp_cc_algo_get (TCP_CC_NEWRENO);
-  tc->cc_algo->init (tc);
-}
-
 /**
  * Process incoming ACK
  */
@@ -1222,6 +1319,16 @@ tcp_rcv_ack (tcp_connection_t * tc, vlib_buffer_t * b,
   /* If the ACK acks something not yet sent (SEG.ACK > SND.NXT) */
   if (PREDICT_FALSE (seq_gt (vnet_buffer (b)->tcp.ack_number, tc->snd_nxt)))
     {
+      /* When we entered recovery, we reset snd_nxt to snd_una. Seems peer
+       * still has the data so accept the ack */
+      if (tcp_in_recovery (tc)
+	  && seq_leq (vnet_buffer (b)->tcp.ack_number, tc->snd_congestion)
+	  && seq_geq (vnet_buffer (b)->tcp.ack_number, tc->snd_una))
+	{
+	  tc->snd_una_max = tc->snd_nxt = vnet_buffer (b)->tcp.ack_number;
+	  goto process_ack;
+	}
+
       /* If we have outstanding data and this is within the window, accept it,
        * probably retransmit has timed out. Otherwise ACK segment and then
        * drop it */
@@ -1249,10 +1356,7 @@ tcp_rcv_ack (tcp_connection_t * tc, vlib_buffer_t * b,
       TCP_EVT_DBG (TCP_EVT_ACK_RCV_ERR, tc, 1,
 		   vnet_buffer (b)->tcp.ack_number);
       if (tcp_in_fastrecovery (tc) && tc->rcv_dupacks == TCP_DUPACK_THRESHOLD)
-	{
-	  TCP_EVT_DBG (TCP_EVT_DUPACK_RCVD, tc);
-	  tcp_cc_handle_event (tc, 1);
-	}
+	tcp_cc_handle_event (tc, 1);
       /* Don't drop yet */
       return 0;
     }
@@ -1260,7 +1364,7 @@ tcp_rcv_ack (tcp_connection_t * tc, vlib_buffer_t * b,
   /*
    * Looks okay, process feedback
    */
-
+process_ack:
   if (tcp_opts_sack_permitted (&tc->rcv_opts))
     tcp_rcv_sacks (tc, vnet_buffer (b)->tcp.ack_number);
 
@@ -1288,7 +1392,6 @@ tcp_rcv_ack (tcp_connection_t * tc, vlib_buffer_t * b,
       if (!tcp_in_cong_recovery (tc))
 	return 0;
       *error = TCP_ERROR_ACK_DUP;
-      TCP_EVT_DBG (TCP_EVT_DUPACK_RCVD, tc, 1);
       return vnet_buffer (b)->tcp.data_len ? 0 : -1;
     }
 
@@ -1296,7 +1399,7 @@ tcp_rcv_ack (tcp_connection_t * tc, vlib_buffer_t * b,
    * Update congestion control (slow start/congestion avoidance)
    */
   tcp_cc_update (tc, b);
-
+  *error = TCP_ERROR_ACK_OK;
   return 0;
 }
 
@@ -1377,21 +1480,24 @@ tcp_update_sack_list (tcp_connection_t * tc, u32 start, u32 end)
   ASSERT (tcp_sack_vector_is_sane (tc->snd_sacks));
 }
 
+u32
+tcp_sack_list_bytes (tcp_connection_t * tc)
+{
+  u32 bytes = 0, i;
+  for (i = 0; i < vec_len (tc->snd_sacks); i++)
+    bytes += tc->snd_sacks[i].end - tc->snd_sacks[i].start;
+  return bytes;
+}
+
 /** Enqueue data for delivery to application */
-always_inline int
+static int
 tcp_session_enqueue_data (tcp_connection_t * tc, vlib_buffer_t * b,
 			  u16 data_len)
 {
   int written, error = TCP_ERROR_ENQUEUED;
 
   ASSERT (seq_geq (vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt));
-
-  /* Pure ACK. Update rcv_nxt and be done. */
-  if (PREDICT_FALSE (data_len == 0))
-    {
-      return TCP_ERROR_PURE_ACK;
-    }
-
+  ASSERT (data_len);
   written = session_enqueue_stream_connection (&tc->connection, b, 0,
 					       1 /* queue event */ , 1);
 
@@ -1409,6 +1515,7 @@ tcp_session_enqueue_data (tcp_connection_t * tc, vlib_buffer_t * b,
 
       /* Send ACK confirming the update */
       tc->flags |= TCP_CONN_SNDACK;
+      TCP_EVT_DBG (TCP_EVT_CC_INPUT, tc, data_len, written);
     }
   else if (written > 0)
     {
@@ -1438,7 +1545,7 @@ tcp_session_enqueue_data (tcp_connection_t * tc, vlib_buffer_t * b,
 }
 
 /** Enqueue out-of-order data */
-always_inline int
+static int
 tcp_session_enqueue_ooo (tcp_connection_t * tc, vlib_buffer_t * b,
 			 u16 data_len)
 {
@@ -1446,12 +1553,7 @@ tcp_session_enqueue_ooo (tcp_connection_t * tc, vlib_buffer_t * b,
   int rv, offset;
 
   ASSERT (seq_gt (vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt));
-
-  /* Pure ACK. Do nothing */
-  if (PREDICT_FALSE (data_len == 0))
-    {
-      return TCP_ERROR_PURE_ACK;
-    }
+  ASSERT (data_len);
 
   /* Enqueue out-of-order data with relative offset */
   rv = session_enqueue_stream_connection (&tc->connection, b,
@@ -1486,10 +1588,11 @@ tcp_session_enqueue_ooo (tcp_connection_t * tc, vlib_buffer_t * b,
 	  end = start + ooo_segment_length (s0->server_rx_fifo, newest);
 	  tcp_update_sack_list (tc, start, end);
 	  svm_fifo_newest_ooo_segment_reset (s0->server_rx_fifo);
+	  TCP_EVT_DBG (TCP_EVT_CC_SACKS, tc);
 	}
     }
 
-  return TCP_ERROR_ENQUEUED;
+  return TCP_ERROR_ENQUEUED_OOO;
 }
 
 /**
@@ -1506,7 +1609,7 @@ tcp_can_delack (tcp_connection_t * tc)
       /* constrained to send ack */
       || (tc->flags & TCP_CONN_SNDACK) != 0
       /* we're almost out of tx wnd */
-      || tcp_available_snd_space (tc) < 4 * tc->snd_mss)
+      || tcp_available_cc_snd_space (tc) < 4 * tc->snd_mss)
     return 0;
 
   return 1;
@@ -1540,11 +1643,15 @@ tcp_buffer_discard_bytes (vlib_buffer_t * b, u32 n_bytes_to_drop)
   return 0;
 }
 
+/**
+ * Receive buffer for connection and handle acks
+ *
+ * It handles both in order or out-of-order data.
+ */
 static int
-tcp_segment_rcv (tcp_main_t * tm, tcp_connection_t * tc, vlib_buffer_t * b,
-		 u32 * next0)
+tcp_segment_rcv (tcp_connection_t * tc, vlib_buffer_t * b, u32 * next0)
 {
-  u32 error = 0, n_bytes_to_drop, n_data_bytes;
+  u32 error, n_bytes_to_drop, n_data_bytes;
 
   vlib_buffer_advance (b, vnet_buffer (b)->tcp.data_offset);
   n_data_bytes = vnet_buffer (b)->tcp.data_len;
@@ -1557,46 +1664,36 @@ tcp_segment_rcv (tcp_main_t * tm, tcp_connection_t * tc, vlib_buffer_t * b,
        * the rx window */
       if (seq_lt (vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt))
 	{
-	  error = TCP_ERROR_SEGMENT_OLD;
-	  *next0 = tcp_next_drop (tc->c_is_ip4);
-
-	  /* Completely in the past (possible retransmit) */
+	  /* Completely in the past (possible retransmit). Ack
+	   * retransmissions since we may not have any data to send */
 	  if (seq_leq (vnet_buffer (b)->tcp.seq_end, tc->rcv_nxt))
 	    {
-	      /* Ack retransmissions since we may not have any data to send */
 	      tcp_make_ack (tc, b);
+	      error = TCP_ERROR_SEGMENT_OLD;
 	      *next0 = tcp_next_output (tc->c_is_ip4);
 	      goto done;
 	    }
 
-	  /* Chop off the bytes in the past */
+	  /* Chop off the bytes in the past and see if what is left
+	   * can be enqueued in order */
 	  n_bytes_to_drop = tc->rcv_nxt - vnet_buffer (b)->tcp.seq_number;
 	  n_data_bytes -= n_bytes_to_drop;
 	  vnet_buffer (b)->tcp.seq_number = tc->rcv_nxt;
 	  if (tcp_buffer_discard_bytes (b, n_bytes_to_drop))
-	    goto done;
-
+	    {
+	      error = TCP_ERROR_SEGMENT_OLD;
+	      *next0 = tcp_next_drop (tc->c_is_ip4);
+	      goto done;
+	    }
 	  goto in_order;
 	}
 
+      /* RFC2581: Enqueue and send DUPACK for fast retransmit */
       error = tcp_session_enqueue_ooo (tc, b, n_data_bytes);
-
-      /* N.B. Should not filter burst of dupacks. Two issues 1) dupacks open
-       * cwnd on remote peer when congested 2) acks leaving should have the
-       * latest rcv_wnd since the burst may eaten up all of it, so only the
-       * old ones could be filtered.
-       */
-
-      /* RFC2581: Send DUPACK for fast retransmit */
-      tcp_make_ack (tc, b);
       *next0 = tcp_next_output (tc->c_is_ip4);
-
-      /* Mark as DUPACK. We may filter these in output if
-       * the burst fills the holes. */
-      if (n_data_bytes)
-	vnet_buffer (b)->tcp.flags = TCP_BUF_FLAG_DUPACK;
-
-      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc);
+      tcp_make_ack (tc, b);
+      vnet_buffer (b)->tcp.flags = TCP_BUF_FLAG_DUPACK;
+      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc, vnet_buffer (b)->tcp);
       goto done;
     }
 
@@ -1605,10 +1702,9 @@ in_order:
   /* In order data, enqueue. Fifo figures out by itself if any out-of-order
    * segments can be enqueued after fifo tail offset changes. */
   error = tcp_session_enqueue_data (tc, b, n_data_bytes);
-
-  /* Check if ACK can be delayed */
   if (tcp_can_delack (tc))
     {
+      *next0 = tcp_next_drop (tc->c_is_ip4);
       if (!tcp_timer_is_active (tc, TCP_TIMER_DELACK))
 	tcp_timer_set (tc, TCP_TIMER_DELACK, TCP_DELACK_TIME);
       goto done;
@@ -1627,7 +1723,7 @@ typedef struct
   tcp_connection_t tcp_connection;
 } tcp_rx_trace_t;
 
-u8 *
+static u8 *
 format_tcp_rx_trace (u8 * s, va_list * args)
 {
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
@@ -1643,7 +1739,7 @@ format_tcp_rx_trace (u8 * s, va_list * args)
   return s;
 }
 
-u8 *
+static u8 *
 format_tcp_rx_trace_short (u8 * s, va_list * args)
 {
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
@@ -1651,14 +1747,14 @@ format_tcp_rx_trace_short (u8 * s, va_list * args)
   tcp_rx_trace_t *t = va_arg (*args, tcp_rx_trace_t *);
 
   s = format (s, "%d -> %d (%U)",
-	      clib_net_to_host_u16 (t->tcp_header.src_port),
-	      clib_net_to_host_u16 (t->tcp_header.dst_port), format_tcp_state,
+	      clib_net_to_host_u16 (t->tcp_header.dst_port),
+	      clib_net_to_host_u16 (t->tcp_header.src_port), format_tcp_state,
 	      t->tcp_connection.state);
 
   return s;
 }
 
-void
+static void
 tcp_set_rx_trace_data (tcp_rx_trace_t * t0, tcp_connection_t * tc0,
 		       tcp_header_t * th0, vlib_buffer_t * b0, u8 is_ip4)
 {
@@ -1673,31 +1769,92 @@ tcp_set_rx_trace_data (tcp_rx_trace_t * t0, tcp_connection_t * tc0,
   clib_memcpy (&t0->tcp_header, th0, sizeof (t0->tcp_header));
 }
 
-always_inline void
-tcp_node_inc_counter (vlib_main_t * vm, u32 tcp4_node, u32 tcp6_node,
-		      u8 is_ip4, u8 evt, u8 val)
+static void
+tcp_established_trace_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
+			     vlib_frame_t * frame, u8 is_ip4)
 {
-  if (PREDICT_TRUE (!val))
-    return;
+  u32 *from, n_left;
 
+  n_left = frame->n_vectors;
+  from = vlib_frame_vector_args (frame);
+
+  while (n_left >= 1)
+    {
+      tcp_connection_t *tc0;
+      tcp_rx_trace_t *t0;
+      tcp_header_t *th0;
+      vlib_buffer_t *b0;
+      u32 bi0;
+
+      bi0 = from[0];
+      b0 = vlib_get_buffer (vm, bi0);
+
+      if (b0->flags & VLIB_BUFFER_IS_TRACED)
+	{
+	  t0 = vlib_add_trace (vm, node, b0, sizeof (*t0));
+	  tc0 = tcp_connection_get (vnet_buffer (b0)->tcp.connection_index,
+				    vm->thread_index);
+	  th0 = tcp_buffer_hdr (b0);
+	  tcp_set_rx_trace_data (t0, tc0, th0, b0, is_ip4);
+	}
+
+      from += 1;
+      n_left -= 1;
+    }
+}
+
+always_inline void
+tcp_node_inc_counter_i (vlib_main_t * vm, u32 tcp4_node, u32 tcp6_node,
+			u8 is_ip4, u32 evt, u32 val)
+{
   if (is_ip4)
     vlib_node_increment_counter (vm, tcp4_node, evt, val);
   else
     vlib_node_increment_counter (vm, tcp6_node, evt, val);
 }
 
+#define tcp_maybe_inc_counter(node_id, err, count)			\
+{									\
+  if (next0 != tcp_next_drop (is_ip4))					\
+    tcp_node_inc_counter_i (vm, tcp4_##node_id##_node.index,		\
+                            tcp6_##node_id##_node.index, is_ip4, err, 	\
+			    1);						\
+}
+#define tcp_inc_counter(node_id, err, count)				\
+  tcp_node_inc_counter_i (vm, tcp4_##node_id##_node.index,		\
+	                   tcp6_##node_id##_node.index, is_ip4,		\
+	                   err, count)
+#define tcp_maybe_inc_err_counter(cnts, err)				\
+{									\
+  cnts[err] += (next0 != tcp_next_drop (is_ip4));			\
+}
+#define tcp_inc_err_counter(cnts, err, val)				\
+{									\
+  cnts[err] += val;							\
+}
+#define tcp_store_err_counters(node_id, cnts)				\
+{									\
+  int i;								\
+  for (i = 0; i < TCP_N_ERROR; i++)					\
+    if (cnts[i])							\
+      tcp_inc_counter(node_id, i, cnts[i]);				\
+}
+
+
 always_inline uword
 tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-			  vlib_frame_t * from_frame, int is_ip4)
+			  vlib_frame_t * frame, int is_ip4)
 {
+  u32 thread_index = vm->thread_index, errors = 0;
   u32 n_left_from, next_index, *from, *to_next;
-  u32 my_thread_index = vm->thread_index, errors = 0;
-  tcp_main_t *tm = vnet_get_tcp_main ();
+  u16 err_counters[TCP_N_ERROR] = { 0 };
   u8 is_fin = 0;
 
-  from = vlib_frame_vector_args (from_frame);
-  n_left_from = from_frame->n_vectors;
+  if (node->flags & VLIB_NODE_FLAG_TRACE)
+    tcp_established_trace_frame (vm, node, frame, is_ip4);
 
+  from = vlib_frame_vector_args (frame);
+  n_left_from = frame->n_vectors;
   next_index = node->cached_next_index;
 
   while (n_left_from > 0)
@@ -1711,7 +1868,15 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_buffer_t *b0;
 	  tcp_header_t *th0 = 0;
 	  tcp_connection_t *tc0;
-	  u32 next0 = tcp_next_drop (is_ip4), error0 = TCP_ERROR_ENQUEUED;
+	  u32 next0 = tcp_next_drop (is_ip4), error0 = TCP_ERROR_ACK_OK;
+
+	  if (n_left_from > 1)
+	    {
+	      vlib_buffer_t *pb;
+	      pb = vlib_get_buffer (vm, from[1]);
+	      vlib_prefetch_buffer_header (pb, LOAD);
+	      CLIB_PREFETCH (pb->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+	    }
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -1722,7 +1887,7 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  b0 = vlib_get_buffer (vm, bi0);
 	  tc0 = tcp_connection_get (vnet_buffer (b0)->tcp.connection_index,
-				    my_thread_index);
+				    thread_index);
 
 	  if (PREDICT_FALSE (tc0 == 0))
 	    {
@@ -1742,24 +1907,29 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* TODO header prediction fast path */
 
 	  /* 1-4: check SEQ, RST, SYN */
-	  if (PREDICT_FALSE (tcp_segment_validate (vm, tc0, b0, th0, &next0)))
+	  if (PREDICT_FALSE (tcp_segment_validate (vm, tc0, b0, th0, &next0,
+						   &error0)))
 	    {
-	      error0 = TCP_ERROR_SEGMENT_INVALID;
-	      TCP_EVT_DBG (TCP_EVT_SEG_INVALID, tc0,
-			   vnet_buffer (b0)->tcp.seq_number,
-			   vnet_buffer (b0)->tcp.seq_end);
+	      tcp_maybe_inc_err_counter (err_counters, error0);
+	      TCP_EVT_DBG (TCP_EVT_SEG_INVALID, tc0, vnet_buffer (b0)->tcp);
 	      goto done;
 	    }
 
 	  /* 5: check the ACK field  */
-	  if (tcp_rcv_ack (tc0, b0, th0, &next0, &error0))
-	    goto done;
+	  if (PREDICT_FALSE (tcp_rcv_ack (tc0, b0, th0, &next0, &error0)))
+	    {
+	      tcp_maybe_inc_err_counter (err_counters, error0);
+	      goto done;
+	    }
 
 	  /* 6: check the URG bit TODO */
 
 	  /* 7: process the segment text */
 	  if (vnet_buffer (b0)->tcp.data_len)
-	    error0 = tcp_segment_rcv (tm, tc0, b0, &next0);
+	    {
+	      error0 = tcp_segment_rcv (tc0, b0, &next0);
+	      tcp_maybe_inc_err_counter (err_counters, error0);
+	    }
 
 	  /* 8: check the FIN bit */
 	  if (PREDICT_FALSE (is_fin))
@@ -1775,17 +1945,11 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      stream_session_disconnect_notify (&tc0->connection);
 	      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
 	      TCP_EVT_DBG (TCP_EVT_FIN_RCVD, tc0);
+	      tcp_inc_err_counter (err_counters, TCP_ERROR_FIN_RCVD, 1);
 	    }
 
 	done:
 	  b0->error = node->errors[error0];
-	  if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
-	    {
-	      tcp_rx_trace_t *t0 =
-		vlib_add_trace (vm, node, b0, sizeof (*t0));
-	      tcp_set_rx_trace_data (t0, tc0, th0, b0, is_ip4);
-	    }
-
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, next0);
 	}
@@ -1794,13 +1958,12 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
     }
 
   errors = session_manager_flush_enqueue_events (TRANSPORT_PROTO_TCP,
-						 my_thread_index);
-  tcp_node_inc_counter (vm, is_ip4, tcp4_established_node.index,
-			tcp6_established_node.index,
-			TCP_ERROR_EVENT_FIFO_FULL, errors);
-  tcp_flush_frame_to_output (vm, my_thread_index, is_ip4);
+						 thread_index);
+  err_counters[TCP_ERROR_EVENT_FIFO_FULL] = errors;
+  tcp_store_err_counters (established, err_counters);
+  tcp_flush_frame_to_output (vm, thread_index, is_ip4);
 
-  return from_frame->n_vectors;
+  return frame->n_vectors;
 }
 
 static uword
@@ -2094,6 +2257,7 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  new_tc0->timers[TCP_TIMER_ESTABLISH] = TCP_TIMER_HANDLE_INVALID;
 	  new_tc0->timers[TCP_TIMER_RETRANSMIT_SYN] =
 	    TCP_TIMER_HANDLE_INVALID;
+	  new_tc0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 
 	  /* If this is not the owning thread, wait for syn retransmit to
 	   * expire and cleanup then */
@@ -2170,10 +2334,11 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* Read data, if any */
 	  if (PREDICT_FALSE (vnet_buffer (b0)->tcp.data_len))
 	    {
-	      ASSERT (0);
-	      error0 = tcp_segment_rcv (tm, new_tc0, b0, &next0);
-	      if (error0 == TCP_ERROR_PURE_ACK)
+	      clib_warning ("rcvd data in syn-sent");
+	      error0 = tcp_segment_rcv (new_tc0, b0, &next0);
+	      if (error0 == TCP_ERROR_ACK_OK)
 		error0 = TCP_ERROR_SYN_ACKS_RCVD;
+	      tcp_maybe_inc_counter (syn_sent, error0, 1);
 	    }
 	  else
 	    {
@@ -2202,9 +2367,7 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   errors = session_manager_flush_enqueue_events (TRANSPORT_PROTO_TCP,
 						 my_thread_index);
-  tcp_node_inc_counter (vm, is_ip4, tcp4_syn_sent_node.index,
-			tcp6_syn_sent_node.index,
-			TCP_ERROR_EVENT_FIFO_FULL, errors);
+  tcp_inc_counter (syn_sent, TCP_ERROR_EVENT_FIFO_FULL, errors);
   return from_frame->n_vectors;
 }
 
@@ -2277,13 +2440,11 @@ always_inline uword
 tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			  vlib_frame_t * from_frame, int is_ip4)
 {
-  tcp_main_t *tm = vnet_get_tcp_main ();
-  u32 n_left_from, next_index, *from, *to_next;
+  u32 n_left_from, next_index, *from, *to_next, n_fins = 0;
   u32 my_thread_index = vm->thread_index, errors = 0;
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
-
   next_index = node->cached_next_index;
 
   while (n_left_from > 0)
@@ -2298,7 +2459,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_buffer_t *b0;
 	  tcp_header_t *tcp0 = 0;
 	  tcp_connection_t *tc0;
-	  u32 next0 = tcp_next_drop (is_ip4), error0 = TCP_ERROR_ENQUEUED;
+	  u32 next0 = tcp_next_drop (is_ip4), error0 = TCP_ERROR_NONE;
 	  u8 is_fin0;
 
 	  bi0 = from[0];
@@ -2327,13 +2488,11 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  if (CLIB_DEBUG)
 	    {
 	      tcp_connection_t *tmp;
-	      tmp =
-		tcp_lookup_connection (tc0->c_fib_index, b0, my_thread_index,
-				       is_ip4);
+	      tmp = tcp_lookup_connection (tc0->c_fib_index, b0,
+					   my_thread_index, is_ip4);
 	      if (tmp->state != tc0->state)
 		{
 		  clib_warning ("state changed");
-		  ASSERT (0);
 		  goto drop;
 		}
 	    }
@@ -2341,11 +2500,10 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /*
 	   * Special treatment for CLOSED
 	   */
-	  switch (tc0->state)
+	  if (PREDICT_FALSE (tc0->state == TCP_STATE_CLOSED))
 	    {
-	    case TCP_STATE_CLOSED:
+	      error0 = TCP_ERROR_CONNECTION_CLOSED;
 	      goto drop;
-	      break;
 	    }
 
 	  /*
@@ -2354,9 +2512,9 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  /* 1-4: check SEQ, RST, SYN */
 	  if (PREDICT_FALSE (tcp_segment_validate (vm, tc0, b0, tcp0,
-						   &next0)))
+						   &next0, &error0)))
 	    {
-	      error0 = TCP_ERROR_SEGMENT_INVALID;
+	      tcp_maybe_inc_counter (rcv_process, error0, 1);
 	      goto drop;
 	    }
 
@@ -2374,6 +2532,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		{
 		  TCP_DBG ("connection not accepted");
 		  tcp_send_reset_w_pkt (tc0, b0, is_ip4);
+		  error0 = TCP_ERROR_ACK_INVALID;
 		  goto drop;
 		}
 
@@ -2394,14 +2553,17 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      /* Reset SYN-ACK retransmit and SYN_RCV establish timers */
 	      tcp_retransmit_timer_reset (tc0);
 	      tcp_timer_reset (tc0, TCP_TIMER_ESTABLISH);
-
 	      stream_session_accept_notify (&tc0->connection);
+	      error0 = TCP_ERROR_ACK_OK;
 	      break;
 	    case TCP_STATE_ESTABLISHED:
 	      /* We can get packets in established state here because they
 	       * were enqueued before state change */
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
 
 	      break;
 	    case TCP_STATE_FIN_WAIT_1:
@@ -2409,13 +2571,16 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       * our FIN is now acknowledged then enter FIN-WAIT-2 and
 	       * continue processing in that state. */
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
 
 	      /* Still have to send the FIN */
 	      if (tc0->flags & TCP_CONN_FINPNDG)
 		{
 		  /* TX fifo finally drained */
-		  if (!stream_session_tx_fifo_max_dequeue (&tc0->connection))
+		  if (!session_tx_fifo_max_dequeue (&tc0->connection))
 		    tcp_send_fin (tc0);
 		}
 	      /* If FIN is ACKed */
@@ -2436,19 +2601,40 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       * the retransmission queue is empty, the user's CLOSE can be
 	       * acknowledged ("ok") but do not delete the TCB. */
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
 	      break;
 	    case TCP_STATE_CLOSE_WAIT:
 	      /* Do the same processing as for the ESTABLISHED state. */
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
+	      if (tc0->flags & TCP_CONN_FINPNDG)
+		{
+		  /* TX fifo finally drained */
+		  if (!session_tx_fifo_max_dequeue (&tc0->connection))
+		    {
+		      tcp_send_fin (tc0);
+		      tcp_connection_timers_reset (tc0);
+		      tc0->state = TCP_STATE_LAST_ACK;
+		      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE,
+					TCP_2MSL_TIME);
+		    }
+		}
 	      break;
 	    case TCP_STATE_CLOSING:
 	      /* In addition to the processing for the ESTABLISHED state, if
 	       * the ACK acknowledges our FIN then enter the TIME-WAIT state,
 	       * otherwise ignore the segment. */
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
 
 	      tc0->state = TCP_STATE_TIME_WAIT;
 	      TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc0);
@@ -2466,7 +2652,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  error0 = TCP_ERROR_ACK_INVALID;
 		  goto drop;
 		}
-
+	      error0 = TCP_ERROR_ACK_OK;
 	      tc0->snd_una = vnet_buffer (b0)->tcp.ack_number;
 	      /* Apparently our ACK for the peer's FIN was lost */
 	      if (is_fin0 && tc0->snd_una != tc0->snd_una_max)
@@ -2477,13 +2663,9 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      tc0->state = TCP_STATE_CLOSED;
 	      TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc0);
-	      tcp_connection_timers_reset (tc0);
-
-	      /* Don't delete the connection/session yet. Instead, wait a
-	       * reasonable amount of time until the pipes are cleared. In
-	       * particular, this makes sure that we won't have dead sessions
-	       * when processing events on the tx path */
-	      tcp_timer_set (tc0, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+	      /* Delete the connection/session since the pipes should be
+	       * clear by now */
+	      tcp_connection_del (tc0);
 
 	      goto drop;
 
@@ -2494,12 +2676,14 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	       * the 2 MSL timeout. */
 
 	      if (tcp_rcv_ack (tc0, b0, tcp0, &next0, &error0))
-		goto drop;
+		{
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		  goto drop;
+		}
 
 	      tcp_make_ack (tc0, b0);
 	      next0 = tcp_next_output (is_ip4);
 	      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, TCP_TIMEWAIT_TIME);
-
 	      goto drop;
 
 	      break;
@@ -2516,7 +2700,10 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    case TCP_STATE_FIN_WAIT_1:
 	    case TCP_STATE_FIN_WAIT_2:
 	      if (vnet_buffer (b0)->tcp.data_len)
-		error0 = tcp_segment_rcv (tm, tc0, b0, &next0);
+		{
+		  error0 = tcp_segment_rcv (tc0, b0, &next0);
+		  tcp_maybe_inc_counter (rcv_process, error0, 1);
+		}
 	      else if (is_fin0)
 		tc0->rcv_nxt += 1;
 	      break;
@@ -2539,8 +2726,10 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    case TCP_STATE_SYN_RCVD:
 	      /* Send FIN-ACK notify app and enter CLOSE-WAIT */
 	      tcp_connection_timers_reset (tc0);
+	      tcp_retransmit_timer_set (tc0);
 	      tcp_make_fin (tc0, b0);
 	      tc0->snd_nxt += 1;
+	      tc0->snd_una_max = tc0->snd_nxt;
 	      next0 = tcp_next_output (tc0->c_is_ip4);
 	      stream_session_disconnect_notify (&tc0->connection);
 	      tc0->state = TCP_STATE_CLOSE_WAIT;
@@ -2576,6 +2765,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      break;
 	    }
 	  TCP_EVT_DBG (TCP_EVT_FIN_RCVD, tc0);
+	  n_fins += 1;
 
 	drop:
 	  b0->error = error0 ? node->errors[error0] : 0;
@@ -2596,10 +2786,8 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   errors = session_manager_flush_enqueue_events (TRANSPORT_PROTO_TCP,
 						 my_thread_index);
-  tcp_node_inc_counter (vm, is_ip4, tcp4_rcv_process_node.index,
-			tcp6_rcv_process_node.index,
-			TCP_ERROR_EVENT_FIFO_FULL, errors);
-
+  tcp_inc_counter (rcv_process, TCP_ERROR_EVENT_FIFO_FULL, errors);
+  tcp_inc_counter (rcv_process, TCP_ERROR_FIN_RCVD, n_fins);
   return from_frame->n_vectors;
 }
 
@@ -2671,7 +2859,7 @@ always_inline uword
 tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		     vlib_frame_t * from_frame, int is_ip4)
 {
-  u32 n_left_from, next_index, *from, *to_next;
+  u32 n_left_from, next_index, *from, *to_next, n_syns = 0;
   u32 my_thread_index = vm->thread_index;
 
   from = vlib_frame_vector_args (from_frame);
@@ -2695,7 +2883,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  ip4_header_t *ip40;
 	  ip6_header_t *ip60;
 	  tcp_connection_t *child0;
-	  u32 error0 = TCP_ERROR_SYNS_RCVD, next0 = tcp_next_drop (is_ip4);
+	  u32 error0 = TCP_ERROR_NONE, next0 = tcp_next_drop (is_ip4);
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -2734,9 +2922,8 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* 3. check for a SYN (did that already) */
 
 	  /* Make sure connection wasn't just created */
-	  child0 =
-	    tcp_lookup_connection (lc0->c_fib_index, b0, my_thread_index,
-				   is_ip4);
+	  child0 = tcp_lookup_connection (lc0->c_fib_index, b0,
+					  my_thread_index, is_ip4);
 	  if (PREDICT_FALSE (child0->state != TCP_STATE_LISTEN))
 	    {
 	      error0 = TCP_ERROR_CREATE_EXISTS;
@@ -2749,6 +2936,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  child0->c_rmt_port = th0->src_port;
 	  child0->c_is_ip4 = is_ip4;
 	  child0->state = TCP_STATE_SYN_RCVD;
+	  child0->c_fib_index = lc0->c_fib_index;
 
 	  if (is_ip4)
 	    {
@@ -2772,6 +2960,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  child0->irs = vnet_buffer (b0)->tcp.seq_number;
 	  child0->rcv_nxt = vnet_buffer (b0)->tcp.seq_number + 1;
 	  child0->rcv_las = child0->rcv_nxt;
+	  child0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 
 	  /* RFC1323: TSval timestamps sent on {SYN} and {SYN,ACK}
 	   * segments are used to initialize PAWS. */
@@ -2815,6 +3004,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			   sizeof (t0->tcp_connection));
 	    }
 
+	  n_syns += (error0 == TCP_ERROR_NONE);
 	  b0->error = node->errors[error0];
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
@@ -2823,6 +3013,8 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
+
+  tcp_inc_counter (listen, TCP_ERROR_SYNS_RCVD, n_syns);
   return from_frame->n_vectors;
 }
 
@@ -2919,168 +3111,239 @@ typedef enum _tcp_input_next
 
 #define filter_flags (TCP_FLAG_SYN|TCP_FLAG_ACK|TCP_FLAG_RST|TCP_FLAG_FIN)
 
-always_inline uword
-tcp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-		    vlib_frame_t * from_frame, int is_ip4)
+static void
+tcp_input_trace_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
+		       vlib_buffer_t ** bs, u32 n_bufs, u8 is_ip4)
 {
-  u32 n_left_from, next_index, *from, *to_next;
-  u32 my_thread_index = vm->thread_index;
-  tcp_main_t *tm = vnet_get_tcp_main ();
+  tcp_connection_t *tc;
+  tcp_header_t *tcp;
+  tcp_rx_trace_t *t;
+  int i;
 
-  from = vlib_frame_vector_args (from_frame);
-  n_left_from = from_frame->n_vectors;
-  next_index = node->cached_next_index;
-  tcp_set_time_now (my_thread_index);
-
-  while (n_left_from > 0)
+  for (i = 0; i < n_bufs; i++)
     {
-      u32 n_left_to_next;
-
-      vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
-
-      while (n_left_from > 0 && n_left_to_next > 0)
+      if (bs[i]->flags & VLIB_BUFFER_IS_TRACED)
 	{
-	  int n_advance_bytes0, n_data_bytes0;
-	  u32 bi0, fib_index0;
-	  vlib_buffer_t *b0;
-	  tcp_header_t *tcp0 = 0;
-	  tcp_connection_t *tc0;
-	  transport_connection_t *tconn;
-	  ip4_header_t *ip40;
-	  ip6_header_t *ip60;
-	  u32 error0 = TCP_ERROR_NO_LISTENER, next0 = TCP_INPUT_NEXT_DROP;
-	  u8 flags0, is_filtered = 0;
+	  t = vlib_add_trace (vm, node, bs[i], sizeof (*t));
+	  tc = tcp_connection_get (vnet_buffer (bs[i])->tcp.connection_index,
+				   vm->thread_index);
+	  tcp = vlib_buffer_get_current (bs[i]);
+	  tcp_set_rx_trace_data (t, tc, tcp, bs[i], is_ip4);
+	}
+    }
+}
 
-	  bi0 = from[0];
-	  to_next[0] = bi0;
-	  from += 1;
-	  to_next += 1;
-	  n_left_from -= 1;
-	  n_left_to_next -= 1;
+static void
+tcp_input_set_error_next (tcp_main_t * tm, u16 * next, u32 * error, u8 is_ip4)
+{
+  if (*error == TCP_ERROR_FILTERED)
+    {
+      *next = TCP_INPUT_NEXT_DROP;
+    }
+  else if ((is_ip4 && tm->punt_unknown4) || (!is_ip4 && tm->punt_unknown6))
+    {
+      *next = TCP_INPUT_NEXT_PUNT;
+      *error = TCP_ERROR_PUNT;
+    }
+  else
+    {
+      *next = TCP_INPUT_NEXT_RESET;
+      *error = TCP_ERROR_NO_LISTENER;
+    }
+}
 
-	  b0 = vlib_get_buffer (vm, bi0);
-	  vnet_buffer (b0)->tcp.flags = 0;
-	  fib_index0 = vnet_buffer (b0)->ip.fib_index;
+static inline tcp_connection_t *
+tcp_input_lookup_buffer (vlib_buffer_t * b, u8 thread_index, u32 * error,
+			 u8 is_ip4)
+{
+  u32 fib_index = vnet_buffer (b)->ip.fib_index;
+  int n_advance_bytes, n_data_bytes;
+  transport_connection_t *tc;
+  tcp_header_t *tcp;
+  u8 is_filtered = 0;
 
-	  /* Checksum computed by ipx_local no need to compute again */
+  if (is_ip4)
+    {
+      ip4_header_t *ip4 = vlib_buffer_get_current (b);
+      tcp = ip4_next_header (ip4);
+      vnet_buffer (b)->tcp.hdr_offset = (u8 *) tcp - (u8 *) ip4;
+      n_advance_bytes = (ip4_header_bytes (ip4) + tcp_header_bytes (tcp));
+      n_data_bytes = clib_net_to_host_u16 (ip4->length) - n_advance_bytes;
 
-	  if (is_ip4)
-	    {
-	      ip40 = vlib_buffer_get_current (b0);
-	      tcp0 = ip4_next_header (ip40);
-	      n_advance_bytes0 = (ip4_header_bytes (ip40)
-				  + tcp_header_bytes (tcp0));
-	      n_data_bytes0 = clib_net_to_host_u16 (ip40->length)
-		- n_advance_bytes0;
-	      tconn = session_lookup_connection_wt4 (fib_index0,
-						     &ip40->dst_address,
-						     &ip40->src_address,
-						     tcp0->dst_port,
-						     tcp0->src_port,
-						     TRANSPORT_PROTO_TCP,
-						     my_thread_index,
-						     &is_filtered);
-	    }
-	  else
-	    {
-	      ip60 = vlib_buffer_get_current (b0);
-	      tcp0 = ip6_next_header (ip60);
-	      n_advance_bytes0 = tcp_header_bytes (tcp0);
-	      n_data_bytes0 = clib_net_to_host_u16 (ip60->payload_length)
-		- n_advance_bytes0;
-	      n_advance_bytes0 += sizeof (ip60[0]);
-	      tconn = session_lookup_connection_wt6 (fib_index0,
-						     &ip60->dst_address,
-						     &ip60->src_address,
-						     tcp0->dst_port,
-						     tcp0->src_port,
-						     TRANSPORT_PROTO_TCP,
-						     my_thread_index,
-						     &is_filtered);
-	    }
-
-	  /* Length check */
-	  if (PREDICT_FALSE (n_advance_bytes0 < 0))
-	    {
-	      error0 = TCP_ERROR_LENGTH;
-	      goto done;
-	    }
-
-	  vnet_buffer (b0)->tcp.hdr_offset = (u8 *) tcp0
-	    - (u8 *) vlib_buffer_get_current (b0);
-
-	  /* Session exists */
-	  if (PREDICT_TRUE (0 != tconn))
-	    {
-	      tc0 = tcp_get_connection_from_transport (tconn);
-	      ASSERT (tcp_lookup_is_valid (tc0, tcp0));
-
-	      /* Save connection index */
-	      vnet_buffer (b0)->tcp.connection_index = tc0->c_c_index;
-	      vnet_buffer (b0)->tcp.seq_number =
-		clib_net_to_host_u32 (tcp0->seq_number);
-	      vnet_buffer (b0)->tcp.ack_number =
-		clib_net_to_host_u32 (tcp0->ack_number);
-
-	      vnet_buffer (b0)->tcp.data_offset = n_advance_bytes0;
-	      vnet_buffer (b0)->tcp.data_len = n_data_bytes0;
-
-	      flags0 = tcp0->flags & filter_flags;
-	      next0 = tm->dispatch_table[tc0->state][flags0].next;
-	      error0 = tm->dispatch_table[tc0->state][flags0].error;
-
-	      if (PREDICT_FALSE (error0 == TCP_ERROR_DISPATCH
-				 || next0 == TCP_INPUT_NEXT_RESET))
-		{
-		  /* Overload tcp flags to store state */
-		  tcp_state_t state0 = tc0->state;
-		  vnet_buffer (b0)->tcp.flags = tc0->state;
-
-		  if (error0 == TCP_ERROR_DISPATCH)
-		    clib_warning ("disp error state %U flags %U",
-				  format_tcp_state, state0, format_tcp_flags,
-				  (int) flags0);
-		}
-	    }
-	  else
-	    {
-	      if (is_filtered)
-		{
-		  next0 = TCP_INPUT_NEXT_DROP;
-		  error0 = TCP_ERROR_FILTERED;
-		}
-	      else if ((is_ip4 && tm->punt_unknown4) ||
-		       (!is_ip4 && tm->punt_unknown6))
-		{
-		  next0 = TCP_INPUT_NEXT_PUNT;
-		  error0 = TCP_ERROR_PUNT;
-		}
-	      else
-		{
-		  /* Send reset */
-		  next0 = TCP_INPUT_NEXT_RESET;
-		  error0 = TCP_ERROR_NO_LISTENER;
-		}
-	      tc0 = 0;
-	    }
-
-	done:
-	  b0->error = error0 ? node->errors[error0] : 0;
-
-	  if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
-	    {
-	      tcp_rx_trace_t *t0;
-	      t0 = vlib_add_trace (vm, node, b0, sizeof (*t0));
-	      tcp_set_rx_trace_data (t0, tc0, tcp0, b0, is_ip4);
-	    }
-	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
-					   n_left_to_next, bi0, next0);
+      /* Length check. Checksum computed by ipx_local no need to compute again */
+      if (PREDICT_FALSE (n_advance_bytes < 0))
+	{
+	  *error = TCP_ERROR_LENGTH;
+	  return 0;
 	}
 
-      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
+      tc = session_lookup_connection_wt4 (fib_index, &ip4->dst_address,
+					  &ip4->src_address, tcp->dst_port,
+					  tcp->src_port, TRANSPORT_PROTO_TCP,
+					  thread_index, &is_filtered);
+    }
+  else
+    {
+      ip6_header_t *ip6 = vlib_buffer_get_current (b);
+      tcp = ip6_next_header (ip6);
+      vnet_buffer (b)->tcp.hdr_offset = (u8 *) tcp - (u8 *) ip6;
+      n_advance_bytes = tcp_header_bytes (tcp);
+      n_data_bytes = clib_net_to_host_u16 (ip6->payload_length)
+	- n_advance_bytes;
+      n_advance_bytes += sizeof (ip6[0]);
+
+      if (PREDICT_FALSE (n_advance_bytes < 0))
+	{
+	  *error = TCP_ERROR_LENGTH;
+	  return 0;
+	}
+
+      tc = session_lookup_connection_wt6 (fib_index, &ip6->dst_address,
+					  &ip6->src_address, tcp->dst_port,
+					  tcp->src_port, TRANSPORT_PROTO_TCP,
+					  thread_index, &is_filtered);
     }
 
-  return from_frame->n_vectors;
+  vnet_buffer (b)->tcp.seq_number = clib_net_to_host_u32 (tcp->seq_number);
+  vnet_buffer (b)->tcp.ack_number = clib_net_to_host_u32 (tcp->ack_number);
+  vnet_buffer (b)->tcp.data_offset = n_advance_bytes;
+  vnet_buffer (b)->tcp.data_len = n_data_bytes;
+  vnet_buffer (b)->tcp.flags = 0;
+
+  *error = is_filtered ? TCP_ERROR_FILTERED : *error;
+
+  return tcp_get_connection_from_transport (tc);
+}
+
+static inline void
+tcp_input_dispatch_buffer (tcp_main_t * tm, tcp_connection_t * tc,
+			   vlib_buffer_t * b, u16 * next, u32 * error)
+{
+  tcp_header_t *tcp;
+  u8 flags;
+
+  tcp = tcp_buffer_hdr (b);
+  flags = tcp->flags & filter_flags;
+  *next = tm->dispatch_table[tc->state][flags].next;
+  *error = tm->dispatch_table[tc->state][flags].error;
+
+  if (PREDICT_FALSE (*error == TCP_ERROR_DISPATCH
+		     || *next == TCP_INPUT_NEXT_RESET))
+    {
+      /* Overload tcp flags to store state */
+      tcp_state_t state = tc->state;
+      vnet_buffer (b)->tcp.flags = tc->state;
+
+      if (*error == TCP_ERROR_DISPATCH)
+	clib_warning ("disp error state %U flags %U", format_tcp_state,
+		      state, format_tcp_flags, (int) flags);
+    }
+}
+
+always_inline uword
+tcp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
+		    vlib_frame_t * frame, int is_ip4)
+{
+  u32 n_left_from, *from, thread_index = vm->thread_index;
+  tcp_main_t *tm = vnet_get_tcp_main ();
+  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
+  u16 nexts[VLIB_FRAME_SIZE], *next;
+
+  tcp_set_time_now (thread_index);
+
+  from = vlib_frame_vector_args (frame);
+  n_left_from = frame->n_vectors;
+  vlib_get_buffers (vm, from, bufs, n_left_from);
+
+  b = bufs;
+  next = nexts;
+
+  while (n_left_from >= 4)
+    {
+      u32 error0 = TCP_ERROR_NO_LISTENER, error1 = TCP_ERROR_NO_LISTENER;
+      tcp_connection_t *tc0, *tc1;
+
+      {
+	vlib_prefetch_buffer_header (b[2], STORE);
+	CLIB_PREFETCH (b[2]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+
+	vlib_prefetch_buffer_header (b[3], STORE);
+	CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+      }
+
+      next[0] = next[1] = TCP_INPUT_NEXT_DROP;
+
+      tc0 = tcp_input_lookup_buffer (b[0], thread_index, &error0, is_ip4);
+      tc1 = tcp_input_lookup_buffer (b[1], thread_index, &error1, is_ip4);
+
+      if (PREDICT_TRUE (!tc0 + !tc1 == 0))
+	{
+	  ASSERT (tcp_lookup_is_valid (tc0, tcp_buffer_hdr (b[0])));
+	  ASSERT (tcp_lookup_is_valid (tc1, tcp_buffer_hdr (b[1])));
+
+	  vnet_buffer (b[0])->tcp.connection_index = tc0->c_c_index;
+	  vnet_buffer (b[1])->tcp.connection_index = tc1->c_c_index;
+
+	  tcp_input_dispatch_buffer (tm, tc0, b[0], &next[0], &error0);
+	  tcp_input_dispatch_buffer (tm, tc1, b[1], &next[1], &error1);
+	}
+      else
+	{
+	  if (PREDICT_TRUE (tc0 != 0))
+	    {
+	      ASSERT (tcp_lookup_is_valid (tc0, tcp_buffer_hdr (b[0])));
+	      vnet_buffer (b[0])->tcp.connection_index = tc0->c_c_index;
+	      tcp_input_dispatch_buffer (tm, tc0, b[0], &next[0], &error0);
+	    }
+	  else
+	    tcp_input_set_error_next (tm, &next[0], &error0, is_ip4);
+
+	  if (PREDICT_TRUE (tc1 != 0))
+	    {
+	      ASSERT (tcp_lookup_is_valid (tc1, tcp_buffer_hdr (b[1])));
+	      vnet_buffer (b[1])->tcp.connection_index = tc1->c_c_index;
+	      tcp_input_dispatch_buffer (tm, tc1, b[1], &next[1], &error1);
+	    }
+	  else
+	    tcp_input_set_error_next (tm, &next[1], &error1, is_ip4);
+	}
+
+      b += 2;
+      next += 2;
+      n_left_from -= 2;
+    }
+  while (n_left_from > 0)
+    {
+      tcp_connection_t *tc0;
+      u32 error0 = TCP_ERROR_NO_LISTENER;
+
+      if (n_left_from > 1)
+	{
+	  vlib_prefetch_buffer_header (b[1], STORE);
+	  CLIB_PREFETCH (b[1]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+	}
+
+      next[0] = TCP_INPUT_NEXT_DROP;
+      tc0 = tcp_input_lookup_buffer (b[0], thread_index, &error0, is_ip4);
+      if (PREDICT_TRUE (tc0 != 0))
+	{
+	  ASSERT (tcp_lookup_is_valid (tc0, tcp_buffer_hdr (b[0])));
+	  vnet_buffer (b[0])->tcp.connection_index = tc0->c_c_index;
+	  tcp_input_dispatch_buffer (tm, tc0, b[0], &next[0], &error0);
+	}
+      else
+	tcp_input_set_error_next (tm, &next[0], &error0, is_ip4);
+
+      b += 1;
+      next += 1;
+      n_left_from -= 1;
+    }
+
+  if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
+    tcp_input_trace_frame (vm, node, bufs, frame->n_vectors, is_ip4);
+
+  vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
+  return frame->n_vectors;
 }
 
 static uword
@@ -3163,7 +3426,7 @@ do {                                                       	\
   /* SYNs for new connections -> tcp-listen. */
   _(LISTEN, TCP_FLAG_SYN, TCP_INPUT_NEXT_LISTEN, TCP_ERROR_NONE);
   _(LISTEN, TCP_FLAG_ACK, TCP_INPUT_NEXT_RESET, TCP_ERROR_NONE);
-  _(LISTEN, TCP_FLAG_RST, TCP_INPUT_NEXT_DROP, TCP_ERROR_NONE);
+  _(LISTEN, TCP_FLAG_RST, TCP_INPUT_NEXT_DROP, TCP_ERROR_RST_RCVD);
   _(LISTEN, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_RESET,
     TCP_ERROR_NONE);
   /* ACK for for a SYN-ACK -> tcp-rcv-process. */
@@ -3196,6 +3459,7 @@ do {                                                       	\
   /* FIN in reply to our FIN from the other side */
   _(FIN_WAIT_1, TCP_FLAG_FIN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(FIN_WAIT_1, TCP_FLAG_RST, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
+  _(CLOSING, TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   /* FIN confirming that the peer (app) has closed */
   _(FIN_WAIT_2, TCP_FLAG_FIN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(FIN_WAIT_2, TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
@@ -3221,7 +3485,7 @@ do {                                                       	\
 #undef _
 }
 
-clib_error_t *
+static clib_error_t *
 tcp_input_init (vlib_main_t * vm)
 {
   clib_error_t *error = 0;

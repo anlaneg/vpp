@@ -87,7 +87,7 @@ memif_msg_enq_hello (clib_socket_t * sock)
   h->min_version = MEMIF_VERSION;
   h->max_version = MEMIF_VERSION;
   h->max_m2s_ring = MEMIF_MAX_M2S_RING;
-  h->max_s2m_ring = MEMIF_MAX_M2S_RING;
+  h->max_s2m_ring = MEMIF_MAX_S2M_RING;
   h->max_region = MEMIF_MAX_REGION;
   h->max_log2_ring_size = MEMIF_MAX_LOG2_RING_SIZE;
   s = format (0, "VPP %s%c", VPP_BUILD_VER, 0);
@@ -153,6 +153,7 @@ memif_msg_enq_add_ring (memif_if_t * mif, u8 index, u8 direction)
   ar->offset = mq->offset;
   ar->log2_ring_size = mq->log2_ring_size;
   ar->flags = (direction == MEMIF_RING_S2M) ? MEMIF_MSG_ADD_RING_FLAG_S2M : 0;
+  ar->private_hdr_size = 0;
 }
 
 static void
@@ -326,6 +327,9 @@ memif_msg_receive_add_ring (memif_if_t * mif, memif_msg_t * msg, int fd)
   if (fd < 0)
     return clib_error_return (0, "missing ring interrupt fd");
 
+  if (ar->private_hdr_size != 0)
+    return clib_error_return (0, "private headers not supported");
+
   if (ar->flags & MEMIF_MSG_ADD_RING_FLAG_S2M)
     {
       if (ar->index != vec_len (mif->rx_queues))
@@ -404,6 +408,7 @@ memif_msg_receive_disconnect (memif_if_t * mif, memif_msg_t * msg)
 static clib_error_t *
 memif_msg_receive (memif_if_t ** mifp, clib_socket_t * sock, clib_file_t * uf)
 {
+  memif_main_t *mm = &memif_main;
   memif_msg_t msg = { 0 };
   clib_error_t *err = 0;
   int fd = -1;
@@ -412,15 +417,16 @@ memif_msg_receive (memif_if_t ** mifp, clib_socket_t * sock, clib_file_t * uf)
 
   err = clib_socket_recvmsg (sock, &msg, sizeof (memif_msg_t), &fd, 1);
   if (err)
-    return err;
+    goto error;
 
   if (mif == 0 && msg.type != MEMIF_MSG_TYPE_INIT)
     {
       memif_socket_close (&sock);
-      return clib_error_return (0, "unexpected message received");
+      err = clib_error_return (0, "unexpected message received");
+      goto error;
     }
 
-  DBG ("Message type %u received", msg.type);
+  vlib_log_debug (mm->log_class, "Message type %u received", msg.type);
   /* process the message based on its type */
   switch (msg.type)
     {
@@ -429,21 +435,24 @@ memif_msg_receive (memif_if_t ** mifp, clib_socket_t * sock, clib_file_t * uf)
 
     case MEMIF_MSG_TYPE_HELLO:
       if ((err = memif_msg_receive_hello (mif, &msg)))
-	return err;
+	goto error;
       if ((err = memif_init_regions_and_queues (mif)))
-	return err;
+	goto error;
       memif_msg_enq_init (mif);
-      memif_msg_enq_add_region (mif, 0);
+      /* *INDENT-OFF* */
+      vec_foreach_index (i, mif->regions)
+	memif_msg_enq_add_region (mif, i);
       vec_foreach_index (i, mif->tx_queues)
 	memif_msg_enq_add_ring (mif, i, MEMIF_RING_S2M);
       vec_foreach_index (i, mif->rx_queues)
 	memif_msg_enq_add_ring (mif, i, MEMIF_RING_M2S);
+      /* *INDENT-ON* */
       memif_msg_enq_connect (mif);
       break;
 
     case MEMIF_MSG_TYPE_INIT:
       if ((err = memif_msg_receive_init (mifp, &msg, sock, uf->private_data)))
-	return err;
+	goto error;
       mif = *mifp;
       vec_reset_length (uf->description);
       uf->description = format (uf->description, "%U ctl",
@@ -453,41 +462,45 @@ memif_msg_receive (memif_if_t ** mifp, clib_socket_t * sock, clib_file_t * uf)
 
     case MEMIF_MSG_TYPE_ADD_REGION:
       if ((err = memif_msg_receive_add_region (mif, &msg, fd)))
-	return err;
+	goto error;
       memif_msg_enq_ack (mif);
       break;
 
     case MEMIF_MSG_TYPE_ADD_RING:
       if ((err = memif_msg_receive_add_ring (mif, &msg, fd)))
-	return err;
+	goto error;
       memif_msg_enq_ack (mif);
       break;
 
     case MEMIF_MSG_TYPE_CONNECT:
       if ((err = memif_msg_receive_connect (mif, &msg)))
-	return err;
+	goto error;
       memif_msg_enq_connected (mif);
       break;
 
     case MEMIF_MSG_TYPE_CONNECTED:
       if ((err = memif_msg_receive_connected (mif, &msg)))
-	return err;
+	goto error;
       break;
 
     case MEMIF_MSG_TYPE_DISCONNECT:
       if ((err = memif_msg_receive_disconnect (mif, &msg)))
-	return err;
+	goto error;
       break;
 
     default:
       err = clib_error_return (0, "unknown message type (0x%x)", msg.type);
-      return err;
+      goto error;
     }
 
   if (clib_fifo_elts (mif->msg_queue))
     clib_file_set_data_available_to_write (&file_main,
 					   mif->sock->private_data, 1);
   return 0;
+
+error:
+  vlib_log_err (mm->log_class, "%U", format_clib_error, err);
+  return err;
 }
 
 clib_error_t *
@@ -626,7 +639,8 @@ memif_master_conn_fd_error (clib_file_t * uf)
 	}
     }
 
-  clib_warning ("Error on unknown file descriptor %d", uf->file_descriptor);
+  vlib_log_warn (mm->log_class, "Error on unknown file descriptor %d",
+		 uf->file_descriptor);
   memif_file_del (uf);
   return 0;
 }
@@ -669,7 +683,7 @@ memif_conn_fd_accept_ready (clib_file_t * uf)
   return 0;
 
 error:
-  clib_error_report (err);
+  vlib_log_err (mm->log_class, "%U", format_clib_error, err);
   clib_mem_free (client);
   return err;
 }

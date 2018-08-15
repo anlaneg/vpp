@@ -3,8 +3,7 @@
 %define _vpp_build_dir   build-tool-native
 %define _unitdir         /lib/systemd/system
 %define _builddir        %{_topdir}
-%define _tmp_build_dir   %{name}-%{_version}.0
-%define _mu_build_dir    %{_topdir}/%{_tmp_build_dir}/build-root
+%define _mu_build_dir    %{_topdir}/%{name}-%{_version}/build-root
 %define _vpp_tag	 %{getenv:TAG}
 %if "%{_vpp_tag}" == ""
 %define _vpp_tag	 vpp
@@ -50,17 +49,20 @@ Release: %{_release}
 Requires: vpp-lib = %{_version}-%{_release}, vpp-selinux-policy = %{_version}-%{_release}, net-tools, pciutils, python
 BuildRequires: systemd, chrpath
 BuildRequires: check, check-devel
-BuildRequires: subunit, subunit-devel
 %if 0%{?fedora} >= 26
+BuildRequires: subunit, subunit-devel
 BuildRequires: compat-openssl10-devel
-BuildRequires: python2-devel, python2-virtualenv
+BuildRequires: python2-devel, python2-virtualenv, python2-ply
+BuildRequires: mbedtls-devel
 %else
 %if 0%{?fedora} == 25
+BuildRequires: subunit, subunit-devel
 BuildRequires: openssl-devel
-BuildRequires: python-devel, python2-virtualenv
+BuildRequires: python-devel, python2-virtualenv, python2-ply
+BuildRequires: mbedtls-devel
 %else
 BuildREquires: openssl-devel
-BuildRequires: python-devel, python-virtualenv
+BuildRequires: python-devel, python-virtualenv, python-ply
 %endif
 %endif
 BuildRequires: libffi-devel
@@ -70,7 +72,6 @@ BuildRequires: numactl-devel
 BuildRequires: autoconf automake libtool byacc bison flex
 BuildRequires: boost boost-devel
 BuildRequires: selinux-policy selinux-policy-devel
-BuildRequires: mbedtls-devel
 
 Source: %{name}-%{_version}-%{_release}.tar.xz
 # Source: vpp-latest.tar.xz
@@ -149,20 +150,13 @@ Requires(post): selinux-policy-base >= %{selinux_policyver}, selinux-policy-targ
 This package contains a tailored VPP SELinux policy
 
 %prep
-# Unpack into dir with longer name as work around of debugedit bug in in rpm-build 4.13
-rm -rf %{name}-%{_version}
-rm -rf %{_tmp_build_dir}
-/usr/bin/xz -dc '%{_sourcedir}/%{name}-%{_version}-%{_release}.tar.xz' | /usr/bin/tar -xf -
-mv %{name}-%{_version} %{_tmp_build_dir}
-cd '%{_tmp_build_dir}'
-/usr/bin/chmod -Rf a+rX,u+w,g-w,o-w .
+%setup -q -n %{name}-%{_version}
 
 %pre
 # Add the vpp group
 groupadd -f -r vpp
 
 %build
-cd '%{_tmp_build_dir}'
 %if %{with aesni}
     make bootstrap
     make -C build-root PLATFORM=vpp TAG=%{_vpp_tag} install-packages
@@ -229,7 +223,7 @@ done
 
 # Java bindings
 mkdir -p -m755 %{buildroot}/usr/share/java
-for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/vpp/share/java -type f -name '*.jar' -print )
+for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/japi/share/java -type f -name '*.jar' -print )
 do
 	install -p -m 644 $file %{buildroot}/usr/share/java
 done
@@ -266,8 +260,8 @@ do
 done
 
 mkdir -p -m755 %{buildroot}%{python2_sitelib}/jvppgen
-install -p -m755 %{_mu_build_dir}/../src/vpp-api/java/jvpp/gen/jvpp_gen.py %{buildroot}/usr/bin
-for i in $(ls %{_mu_build_dir}/../src/vpp-api/java/jvpp/gen/jvppgen/*.py); do
+install -p -m755 %{_mu_build_dir}/../extras/japi/java/jvpp/gen/jvpp_gen.py %{buildroot}/usr/bin
+for i in $(ls %{_mu_build_dir}/../extras/japi/java/jvpp/gen/jvppgen/*.py); do
    install -p -m666 ${i} %{buildroot}%{python2_sitelib}/jvppgen
 done;
 
@@ -385,6 +379,7 @@ fi
 
 %files lib
 %defattr(-,bin,bin)
+%global __requires_exclude_from %{_libdir}/librte_pmd_mlx[45]_glue\\.so.*$
 %exclude %{_libdir}/vpp_plugins
 %exclude %{_libdir}/vpp_api_test_plugins
 %{_libdir}/*
@@ -402,7 +397,7 @@ fi
 
 %files api-python
 %defattr(644,root,root)
-%{python2_sitelib}/vpp_papi*
+%{python2_sitelib}/vpp_*
 
 %files selinux-policy
 %defattr(-,root,root,0755)

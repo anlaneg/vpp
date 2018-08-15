@@ -25,6 +25,19 @@ else
 FORCE_FOREGROUND=0
 endif
 
+ifdef PROFILE_OUTPUT
+PROFILE_OUTPUT_OPTS=-o $(PROFILE_OUTPUT)
+endif
+
+ifndef PROFILE_SORT_BY
+PROFILE_SORT_BY=cumtime
+endif
+
+ifeq ($(PROFILE),1)
+PYTHON_PROFILE_OPTS=-m cProfile $(PROFILE_OUTPUT_OPTS) -s $(PROFILE_SORT_BY)
+FORCE_FOREGROUND=1
+endif
+
 verify-no-running-vpp:
 	@if [ "$(VPP_PIDS)" != "" ]; then \
 		echo; \
@@ -54,7 +67,7 @@ PYTHON_EXTRA_DEPENDS=
 endif
 
 PYTHON_VENV_PATH=$(VPP_PYTHON_PREFIX)/virtualenv
-PYTHON_DEPENDS=$(PYTHON_EXTRA_DEPENDS) faulthandler six scapy==2.3.3 pexpect pycrypto subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup
+PYTHON_DEPENDS=$(PYTHON_EXTRA_DEPENDS) faulthandler six scapy==2.4.0 pexpect cryptography subprocess32 cffi git+https://github.com/vpp-dev/py-lispnetworking
 SCAPY_SOURCE=$(shell find $(PYTHON_VENV_PATH) -name site-packages)
 BUILD_COV_DIR=$(BR)/test-cov
 
@@ -84,7 +97,7 @@ $(PIP_INSTALL_DONE): $(GET_PIP_SCRIPT)
 $(PIP_PATCH_DONE): $(PIP_INSTALL_DONE)
 	@echo --- patching ---
 	@sleep 1 # Ensure python recompiles patched *.py files -> *.pyc
-	for f in $(CURDIR)/patches/scapy-2.3.3/*.patch ; do \
+	for f in $(CURDIR)/patches/scapy-2.4/*.patch ; do \
 		echo Applying patch: $$(basename $$f) ; \
 		patch -p1 -d $(SCAPY_SOURCE) < $$f ; \
 	done
@@ -95,7 +108,7 @@ $(PAPI_INSTALL_DONE): $(PIP_PATCH_DONE)
 	@touch $@
 
 define retest-func
-@env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(PYTHON_VENV_PATH)/bin/activate python run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
+@env FORCE_FOREGROUND=$(FORCE_FOREGROUND) VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(PYTHON_VENV_PATH)/bin/activate python $(PYTHON_PROFILE_OPTS) run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
 endef
 
 .PHONY: sanity
@@ -128,7 +141,12 @@ sanity: verify-no-running-vpp
 ext:
 	make -C ext
 
-test: verify-python-path $(PAPI_INSTALL_DONE) ext sanity reset
+test-dep: verify-python-path $(PAPI_INSTALL_DONE)
+
+test: verify-python-path $(PAPI_INSTALL_DONE) sanity reset
+	$(call retest-func)
+
+test-ext: verify-python-path $(PAPI_INSTALL_DONE) ext sanity reset
 	$(call retest-func)
 
 retest: verify-python-path sanity reset
@@ -194,7 +212,7 @@ checkstyle: verify-python-path
 	@virtualenv $(PYTHON_VENV_PATH) -p $(PYTHON_INTERP)
 	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install pycodestyle"
 	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate &&\
-		pycodestyle --show-source --ignore=E126,E241,E226,E305,E704,E741,E722 -v $(WS_ROOT)/test/*.py ||\
+		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 -v $(WS_ROOT)/test/*.py ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Test framework PEP8 compliance check FAILED \" &&\
 	         echo \"*******************************************************************\" &&\
@@ -249,6 +267,10 @@ help:
 	@echo " EXTERN_TESTS=<path>  - path to out-of-tree test_<name>.py files containing test cases"
 	@echo " EXTERN_PLUGINS=<path>- path to out-of-tree plugins to be loaded by vpp under test"
 	@echo " EXTERN_COV_DIR=<path>- path to out-of-tree prefix, where source, object and .gcda files can be found for coverage report"
+	@echo ""
+	@echo " PROFILE=1            - enable profiling of test framework via cProfile module"
+	@echo " PROFILE_SORT_BY=opt  - sort profiling report by opt - consult cProfile documentation for possible values (default: cumtime)"
+	@echo " PROFILE_OUTPUT=file  - output profiling info to file - use absolute path (default: stdout)"
 	@echo ""
 	@echo " TEST_DEBUG=1         - turn on debugging of the test framework itself (expert)"
 	@echo ""

@@ -65,7 +65,7 @@ ipip_input (vlib_main_t * vm, vlib_node_runtime_t * node,
   ipip_main_t *gm = &ipip_main;
   u32 n_left_from, next_index, *from, *to_next, n_left_to_next;
   u32 tunnel_sw_if_index = ~0;
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vm->thread_index;
   u32 len;
   vnet_interface_main_t *im = &gm->vnet_main->interface_main;
 
@@ -108,6 +108,14 @@ ipip_input (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  else
 	    {
 	      ip40 = vlib_buffer_get_current (b0);
+	      /* Check for outer fragmentation */
+	      if (ip40->flags_and_fragment_offset &
+		  clib_host_to_net_u16 (IP4_HEADER_FLAG_MORE_FRAGMENTS))
+		{
+		  next0 = IPIP_INPUT_NEXT_DROP;
+		  b0->error = node->errors[IPIP_ERROR_FRAGMENTED_PACKET];
+		  goto drop;
+		}
 	      vlib_buffer_advance (b0, sizeof (*ip40));
 	      ip_set (&src0, &ip40->src_address, true);
 	      ip_set (&dst0, &ip40->dst_address, true);

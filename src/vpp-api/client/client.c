@@ -62,6 +62,7 @@ typedef struct {
   pthread_cond_t suspend_cv;
   pthread_cond_t resume_cv;
   pthread_mutex_t timeout_lock;
+  u8 timeout_loop;
   pthread_cond_t timeout_cv;
   pthread_cond_t timeout_cancel_cv;
   pthread_cond_t terminate_cv;
@@ -72,6 +73,40 @@ vac_callback_t vac_callback;
 u16 read_timeout = 0;
 bool rx_is_running = false;
 
+/* Set to true to enable memory tracing */
+bool mem_trace = false;
+
+__attribute__((constructor))
+static void
+vac_client_constructor (void)
+{
+  clib_mem_init (0, 1 << 30);
+#if USE_DLMALLOC == 0
+  {
+      u8 *heap;
+      mheap_t *h;
+
+      heap = clib_mem_get_per_cpu_heap ();
+      h = mheap_header (heap);
+      /* make the main heap thread-safe */
+      h->flags |= MHEAP_FLAG_THREAD_SAFE;
+  }
+#endif
+  if (mem_trace)
+    clib_mem_trace (1);
+}
+
+__attribute__((destructor))
+static void
+vac_client_destructor (void)
+{
+  if (mem_trace)
+    fformat(stderr, "TRACE: %s",
+	    format (0, "%U\n",
+		    format_mheap, clib_mem_get_heap (), 1));
+}
+
+
 static void
 init (void)
 {
@@ -81,6 +116,7 @@ init (void)
   pthread_cond_init(&pm->suspend_cv, NULL);
   pthread_cond_init(&pm->resume_cv, NULL);
   pthread_mutex_init(&pm->timeout_lock, NULL);
+  pm->timeout_loop = 1;
   pthread_cond_init(&pm->timeout_cv, NULL);
   pthread_cond_init(&pm->timeout_cancel_cv, NULL);
   pthread_cond_init(&pm->terminate_cv, NULL);
@@ -90,14 +126,14 @@ static void
 cleanup (void)
 {
   vac_main_t *pm = &vac_main;
+  pthread_mutex_destroy(&pm->queue_lock);
   pthread_cond_destroy(&pm->suspend_cv);
   pthread_cond_destroy(&pm->resume_cv);
+  pthread_mutex_destroy(&pm->timeout_lock);
   pthread_cond_destroy(&pm->timeout_cv);
   pthread_cond_destroy(&pm->timeout_cancel_cv);
   pthread_cond_destroy(&pm->terminate_cv);
-  pthread_mutex_destroy(&pm->queue_lock);
-  pthread_mutex_destroy(&pm->timeout_lock);
-  memset (pm, 0, sizeof (*pm));
+  memset(pm, 0, sizeof(*pm));
 }
 
 /*
@@ -200,7 +236,7 @@ vac_timeout_thread_fn (void *arg)
   u16 timeout;
   int rv;
 
-  while (1)
+  while (pm->timeout_loop)
     {
       /* Wait for poke */
       pthread_mutex_lock(&pm->timeout_lock);
@@ -317,17 +353,36 @@ vac_connect (char * name, char * chroot_prefix, vac_callback_t cb,
   return (0);
 }
 
+static void
+set_timeout (unsigned short timeout)
+{
+  vac_main_t *pm = &vac_main;
+  pthread_mutex_lock(&pm->timeout_lock);
+  read_timeout = timeout;
+  pthread_cond_signal(&pm->timeout_cv);
+  pthread_mutex_unlock(&pm->timeout_lock);
+}
+
+static void
+unset_timeout (void)
+{
+  vac_main_t *pm = &vac_main;
+  pthread_mutex_lock(&pm->timeout_lock);
+  pthread_cond_signal(&pm->timeout_cancel_cv);
+  pthread_mutex_unlock(&pm->timeout_lock);
+}
+
 int
 vac_disconnect (void)
 {
   api_main_t *am = &api_main;
   vac_main_t *pm = &vac_main;
+  uword junk;
 
   if (!pm->connected_to_vlib) return 0;
 
   if (pm->rx_thread_handle) {
     vl_api_rx_thread_exit_t *ep;
-    uword junk;
     ep = vl_msg_api_alloc (sizeof (*ep));
     ep->_vl_msg_id = ntohs(VL_API_RX_THREAD_EXIT);
     vl_msg_api_send_shmem(am->vl_input_queue, (u8 *)&ep);
@@ -347,8 +402,13 @@ vac_disconnect (void)
     else
       pthread_join(pm->rx_thread_handle, (void **) &junk);
   }
-  if (pm->timeout_thread_handle)
-    pthread_cancel(pm->timeout_thread_handle);
+  if (pm->timeout_thread_handle) {
+    /* cancel, wake then join the timeout thread */
+    clib_warning("vac_disconnect cnacel");
+    pm->timeout_loop = 0;
+    set_timeout(0);
+    pthread_join(pm->timeout_thread_handle, (void **) &junk);
+  }
 
   vl_client_disconnect();
   vl_client_api_unmap();
@@ -357,25 +417,6 @@ vac_disconnect (void)
   cleanup();
 
   return (0);
-}
-
-static void
-set_timeout (unsigned short timeout)
-{
-  vac_main_t *pm = &vac_main;
-  pthread_mutex_lock(&pm->timeout_lock);
-  read_timeout = timeout;
-  pthread_cond_signal(&pm->timeout_cv);
-  pthread_mutex_unlock(&pm->timeout_lock);
-}
-
-static void
-unset_timeout (void)
-{
-  vac_main_t *pm = &vac_main;
-  pthread_mutex_lock(&pm->timeout_lock);
-  pthread_cond_signal(&pm->timeout_cancel_cv);
-  pthread_mutex_unlock(&pm->timeout_lock);
 }
 
 int
@@ -411,6 +452,7 @@ vac_read (char **p, int *l, u16 timeout)
     switch (msg_id) {
     case VL_API_RX_THREAD_EXIT:
       printf("Received thread exit\n");
+      vl_msg_api_free((void *) msg);
       return -1;
     case VL_API_MEMCLNT_RX_THREAD_SUSPEND:
       printf("Received thread suspend\n");

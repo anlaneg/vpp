@@ -33,15 +33,24 @@
 typedef enum
 {
   FIFO_EVENT_APP_RX,
+  SESSION_IO_EVT_CT_RX,
   FIFO_EVENT_APP_TX,
-  FIFO_EVENT_TIMEOUT,
+  SESSION_IO_EVT_CT_TX,
   FIFO_EVENT_DISCONNECT,
   FIFO_EVENT_BUILTIN_RX,
   FIFO_EVENT_RPC,
-} fifo_event_type_t;
+  SESSION_CTRL_EVT_ACCEPTED,
+  SESSION_CTRL_EVT_ACCEPTED_REPLY,
+  SESSION_CTRL_EVT_CONNECTED,
+  SESSION_CTRL_EVT_CONNECTED_REPLY,
+  SESSION_CTRL_EVT_DISCONNECTED,
+  SESSION_CTRL_EVT_DISCONNECTED_REPLY,
+  SESSION_CTRL_EVT_RESET,
+  SESSION_CTRL_EVT_RESET_REPLY
+} session_evt_type_t;
 
 static inline const char *
-fifo_event_type_str (fifo_event_type_t et)
+fifo_event_type_str (session_evt_type_t et)
 {
   switch (et)
     {
@@ -49,8 +58,6 @@ fifo_event_type_str (fifo_event_type_t et)
       return "FIFO_EVENT_APP_RX";
     case FIFO_EVENT_APP_TX:
       return "FIFO_EVENT_APP_TX";
-    case FIFO_EVENT_TIMEOUT:
-      return "FIFO_EVENT_TIMEOUT";
     case FIFO_EVENT_DISCONNECT:
       return "FIFO_EVENT_DISCONNECT";
     case FIFO_EVENT_BUILTIN_RX:
@@ -61,6 +68,13 @@ fifo_event_type_str (fifo_event_type_t et)
       return "UNKNOWN FIFO EVENT";
     }
 }
+
+typedef enum
+{
+  SESSION_MQ_IO_EVT_RING,
+  SESSION_MQ_CTRL_EVT_RING,
+  SESSION_MQ_N_RINGS
+} session_mq_rings_e;
 
 #define foreach_session_input_error                                    	\
 _(NO_SESSION, "No session drops")                                       \
@@ -86,37 +100,89 @@ typedef struct
 {
   void *fp;
   void *arg;
-} rpc_args_t;
+} session_rpc_args_t;
 
 typedef u64 session_handle_t;
 
 /* *INDENT-OFF* */
-typedef CLIB_PACKED (struct {
-  union
-    {
-      svm_fifo_t * fifo;
-      session_handle_t session_handle;
-      rpc_args_t rpc_args;
-    };
+typedef struct
+{
   u8 event_type;
   u8 postponed;
-}) session_fifo_event_t;
+  union
+  {
+    svm_fifo_t *fifo;
+    session_handle_t session_handle;
+    session_rpc_args_t rpc_args;
+    struct
+    {
+      u8 data[0];
+    };
+  };
+} __clib_packed session_event_t;
 /* *INDENT-ON* */
+
+#define SESSION_MSG_NULL { }
+
+typedef struct session_dgram_pre_hdr_
+{
+  u32 data_length;
+  u32 data_offset;
+} session_dgram_pre_hdr_t;
+
+/* *INDENT-OFF* */
+typedef CLIB_PACKED (struct session_dgram_header_
+{
+  u32 data_length;
+  u32 data_offset;
+  ip46_address_t rmt_ip;
+  ip46_address_t lcl_ip;
+  u16 rmt_port;
+  u16 lcl_port;
+  u8 is_ip4;
+}) session_dgram_hdr_t;
+/* *INDENT-ON* */
+
+#define SESSION_CONN_ID_LEN 37
+#define SESSION_CONN_HDR_LEN 45
+
+STATIC_ASSERT (sizeof (session_dgram_hdr_t) == (SESSION_CONN_ID_LEN + 8),
+	       "session conn id wrong length");
+
+typedef struct session_tx_context_
+{
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  stream_session_t *s;
+  transport_proto_vft_t *transport_vft;
+  transport_connection_t *tc;
+  vlib_buffer_t *b;
+  u32 max_dequeue;
+  u32 snd_space;
+  u32 left_to_snd;
+  u32 tx_offset;
+  u32 max_len_to_snd;
+  u16 deq_per_first_buf;
+  u16 deq_per_buf;
+  u16 snd_mss;
+  u16 n_segs_per_evt;
+  u8 n_bufs_per_seg;
+    CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
+  session_dgram_hdr_t hdr;
+} session_tx_context_t;
 
 /* Forward definition */
 typedef struct _session_manager_main session_manager_main_t;
 
 typedef int
   (session_fifo_rx_fn) (vlib_main_t * vm, vlib_node_runtime_t * node,
-			session_manager_main_t * smm,
-			session_fifo_event_t * e0, stream_session_t * s0,
-			u32 thread_index, int *n_tx_pkts);
+			session_event_t * e0, stream_session_t * s0,
+			int *n_tx_pkts);
 
 extern session_fifo_rx_fn session_tx_fifo_peek_and_snd;
 extern session_fifo_rx_fn session_tx_fifo_dequeue_and_snd;
 extern session_fifo_rx_fn session_tx_fifo_dequeue_internal;
 
-u8 session_node_lookup_fifo_event (svm_fifo_t * f, session_fifo_event_t * e);
+u8 session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e);
 
 struct _session_manager_main
 {
@@ -125,9 +191,6 @@ struct _session_manager_main
 
   /** Per worker-thread session pool peekers rw locks */
   clib_rwlock_t *peekers_rw_locks;
-
-  /** Pool of listen sessions. Same type as stream sessions to ease lookups */
-  stream_session_t **listen_sessions;
 
   /** Per-proto, per-worker enqueue epoch counters */
   u32 *current_enqueue_epoch[TRANSPORT_N_PROTO];
@@ -139,16 +202,19 @@ struct _session_manager_main
   u32 **tx_buffers;
 
   /** Per worker-thread vector of partially read events */
-  session_fifo_event_t **free_event_vector;
+  session_event_t **free_event_vector;
 
   /** per-worker active event vectors */
-  session_fifo_event_t **pending_event_vector;
+  session_event_t **pending_event_vector;
 
   /** per-worker postponed disconnects */
-  session_fifo_event_t **pending_disconnects;
+  session_event_t **pending_disconnects;
+
+  /** per-worker session context */
+  session_tx_context_t *ctx;
 
   /** vpp fifo event queue */
-  svm_queue_t **vpp_event_queues;
+  svm_msg_q_t **vpp_event_queues;
 
   /** Event queues memfd segment initialized only if so configured */
   ssvm_private_t evt_qs_segment;
@@ -197,7 +263,7 @@ struct _session_manager_main
   /** Preallocate session config parameter */
   u32 preallocated_sessions;
 
-#if SESSION_DBG
+#if SESSION_DEBUG
   /**
    * last event poll time by thread
    * Debug only. Will cause false cache-line sharing as-is
@@ -209,6 +275,10 @@ struct _session_manager_main
 
 extern session_manager_main_t session_manager_main;
 extern vlib_node_registration_t session_queue_node;
+extern vlib_node_registration_t session_queue_process_node;
+
+#define SESSION_Q_PROCESS_FLUSH_FRAMES	1
+#define SESSION_Q_PROCESS_STOP		2
 
 /*
  * Session manager function
@@ -345,6 +415,10 @@ session_has_transport (stream_session_t * s)
   return (session_get_transport_proto (s) != TRANSPORT_PROTO_NONE);
 }
 
+transport_service_type_t session_transport_service_type (stream_session_t *);
+transport_tx_fn_type_t session_transport_tx_fn_type (stream_session_t *);
+u8 session_tx_is_dgram (stream_session_t * s);
+
 /**
  * Acquires a lock that blocks a session pool from expanding.
  *
@@ -396,33 +470,25 @@ session_get_from_handle_safe (u64 handle)
     }
 }
 
-always_inline stream_session_t *
-stream_session_listener_get (u8 sst, u64 si)
-{
-  return pool_elt_at_index (session_manager_main.listen_sessions[sst], si);
-}
-
 always_inline u32
-stream_session_get_index (stream_session_t * s)
-{
-  if (s->session_state == SESSION_STATE_LISTENING)
-    return s - session_manager_main.listen_sessions[s->session_type];
-
-  return s - session_manager_main.sessions[s->thread_index];
-}
-
-always_inline u32
-stream_session_max_rx_enqueue (transport_connection_t * tc)
+transport_max_rx_enqueue (transport_connection_t * tc)
 {
   stream_session_t *s = session_get (tc->s_index, tc->thread_index);
   return svm_fifo_max_enqueue (s->server_rx_fifo);
 }
 
 always_inline u32
-stream_session_rx_fifo_size (transport_connection_t * tc)
+transport_rx_fifo_size (transport_connection_t * tc)
 {
   stream_session_t *s = session_get (tc->s_index, tc->thread_index);
   return s->server_rx_fifo->nitems;
+}
+
+always_inline u32
+transport_tx_fifo_size (transport_connection_t * tc)
+{
+  stream_session_t *s = session_get (tc->s_index, tc->thread_index);
+  return s->server_tx_fifo->nitems;
 }
 
 always_inline u32
@@ -454,14 +520,16 @@ session_clone_safe (u32 session_index, u32 thread_index)
 
 transport_connection_t *session_get_transport (stream_session_t * s);
 
-u32 stream_session_tx_fifo_max_dequeue (transport_connection_t * tc);
+u32 session_tx_fifo_max_dequeue (transport_connection_t * tc);
 
 int
 session_enqueue_stream_connection (transport_connection_t * tc,
 				   vlib_buffer_t * b, u32 offset,
 				   u8 queue_event, u8 is_in_order);
-int session_enqueue_dgram_connection (stream_session_t * s, vlib_buffer_t * b,
-				      u8 proto, u8 queue_event);
+int session_enqueue_dgram_connection (stream_session_t * s,
+				      session_dgram_hdr_t * hdr,
+				      vlib_buffer_t * b, u8 proto,
+				      u8 queue_event);
 int stream_session_peek_bytes (transport_connection_t * tc, u8 * buffer,
 			       u32 offset, u32 max_bytes);
 u32 stream_session_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
@@ -470,6 +538,7 @@ int session_stream_connect_notify (transport_connection_t * tc, u8 is_fail);
 int session_dgram_connect_notify (transport_connection_t * tc,
 				  u32 old_thread_index,
 				  stream_session_t ** new_session);
+int session_dequeue_notify (stream_session_t * s);
 void stream_session_init_fifos_pointers (transport_connection_t * tc,
 					 u32 rx_pointer, u32 tx_pointer);
 
@@ -485,9 +554,12 @@ int stream_session_stop_listen (stream_session_t * s);
 void stream_session_disconnect (stream_session_t * s);
 void stream_session_disconnect_transport (stream_session_t * s);
 void stream_session_cleanup (stream_session_t * s);
-void session_send_session_evt_to_thread (u64 session_handle,
-					 fifo_event_type_t evt_type,
-					 u32 thread_index);
+int session_send_io_evt_to_thread (svm_fifo_t * f,
+				   session_evt_type_t evt_type);
+int session_send_io_evt_to_thread_custom (svm_fifo_t * f, u32 thread_index,
+					  session_evt_type_t evt_type);
+void session_send_rpc_evt_to_thread (u32 thread_index, void *fp,
+				     void *rpc_args);
 ssvm_private_t *session_manager_get_evt_q_segment (void);
 
 u8 *format_stream_session (u8 * s, va_list * args);
@@ -501,71 +573,55 @@ void session_register_transport (transport_proto_t transport_proto,
 
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
 
-always_inline svm_queue_t *
+always_inline svm_msg_q_t *
 session_manager_get_vpp_event_queue (u32 thread_index)
 {
   return session_manager_main.vpp_event_queues[thread_index];
 }
 
 int session_manager_flush_enqueue_events (u8 proto, u32 thread_index);
+int session_manager_flush_all_enqueue_events (u8 transport_proto);
 
 always_inline u64
 listen_session_get_handle (stream_session_t * s)
 {
   ASSERT (s->session_state == SESSION_STATE_LISTENING);
-  return ((u64) s->session_type << 32) | s->session_index;
+  return session_handle (s);
 }
 
 always_inline stream_session_t *
 listen_session_get_from_handle (session_handle_t handle)
 {
-  session_manager_main_t *smm = &session_manager_main;
-  stream_session_t *s;
-  u32 type, index;
-  type = handle >> 32;
-  index = handle & 0xFFFFFFFF;
-
-  if (pool_is_free_index (smm->listen_sessions[type], index))
-    return 0;
-
-  s = pool_elt_at_index (smm->listen_sessions[type], index);
-  ASSERT (s->session_state == SESSION_STATE_LISTENING);
-  return s;
+  return session_get_from_handle (handle);
 }
 
 always_inline void
-listen_session_parse_handle (session_handle_t handle, u32 * type, u32 * index)
+listen_session_parse_handle (session_handle_t handle, u32 * index,
+			     u32 * thread_index)
 {
-  *type = handle >> 32;
-  *index = handle & 0xFFFFFFFF;
+  session_parse_handle (handle, index, thread_index);
 }
 
 always_inline stream_session_t *
-listen_session_new (session_type_t type)
+listen_session_new (u8 thread_index, session_type_t type)
 {
   stream_session_t *s;
-  pool_get_aligned (session_manager_main.listen_sessions[type], s,
-		    CLIB_CACHE_LINE_BYTES);
-  memset (s, 0, sizeof (*s));
-
+  s = session_alloc (thread_index);
   s->session_type = type;
   s->session_state = SESSION_STATE_LISTENING;
-  s->session_index = s - session_manager_main.listen_sessions[type];
-
   return s;
 }
 
 always_inline stream_session_t *
-listen_session_get (session_type_t type, u32 index)
+listen_session_get (u32 index)
 {
-  return pool_elt_at_index (session_manager_main.listen_sessions[type],
-			    index);
+  return session_get (index, 0);
 }
 
 always_inline void
 listen_session_del (stream_session_t * s)
 {
-  pool_put (session_manager_main.listen_sessions[s->session_type], s);
+  session_free (s);
 }
 
 transport_connection_t *listen_session_get_transport (stream_session_t * s);
@@ -574,13 +630,7 @@ int
 listen_session_get_local_session_endpoint (stream_session_t * listener,
 					   session_endpoint_t * sep);
 
-always_inline stream_session_t *
-session_manager_get_listener (u8 session_type, u32 index)
-{
-  return
-    pool_elt_at_index (session_manager_main.listen_sessions[session_type],
-		       index);
-}
+void session_flush_frames_main_thread (vlib_main_t * vm);
 
 always_inline u8
 session_manager_is_enabled ()

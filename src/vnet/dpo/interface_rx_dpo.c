@@ -15,6 +15,7 @@
 
 #include <vnet/dpo/interface_rx_dpo.h>
 #include <vnet/fib/fib_node.h>
+#include <vnet/l2/l2_input.h>
 
 /*
  * The 'DB' of interface DPOs.
@@ -234,17 +235,18 @@ typedef enum interface_rx_dpo_next_t_
 always_inline uword
 interface_rx_dpo_inline (vlib_main_t * vm,
                          vlib_node_runtime_t * node,
-                         vlib_frame_t * from_frame)
+                         vlib_frame_t * from_frame,
+			 u8 is_l2)
 {
     u32 n_left_from, next_index, * from, * to_next;
-    u32 thread_index = vlib_get_thread_index ();
+    u32 thread_index = vm->thread_index;
     vnet_interface_main_t *im;
 
     im = &vnet_get_main ()->interface_main;
     from = vlib_frame_vector_args (from_frame);
     n_left_from = from_frame->n_vectors;
 
-    next_index = node->cached_next_index;
+    next_index = INTERFACE_RX_DPO_INPUT;
 
     while (n_left_from > 0)
     {
@@ -278,6 +280,12 @@ interface_rx_dpo_inline (vlib_main_t * vm,
             vnet_buffer(b0)->sw_if_index[VLIB_RX] = ido0->ido_sw_if_index;
             vnet_buffer(b1)->sw_if_index[VLIB_RX] = ido1->ido_sw_if_index;
 
+	    if (is_l2)
+	    {
+		vnet_update_l2_len (b0);
+		vnet_update_l2_len (b1);
+	    }
+
             vlib_increment_combined_counter (im->combined_sw_if_counters
                                              + VNET_INTERFACE_COUNTER_RX,
                                              thread_index,
@@ -305,11 +313,6 @@ interface_rx_dpo_inline (vlib_main_t * vm,
                 tr1 = vlib_add_trace (vm, node, b1, sizeof (*tr1));
                 tr1->sw_if_index = ido1->ido_sw_if_index;
             }
-
-            vlib_validate_buffer_enqueue_x2(vm, node, next_index, to_next,
-                                            n_left_to_next, bi0, bi1,
-                                            INTERFACE_RX_DPO_INPUT,
-                                            INTERFACE_RX_DPO_INPUT);
         }
 
         while (n_left_from > 0 && n_left_to_next > 0)
@@ -334,6 +337,10 @@ interface_rx_dpo_inline (vlib_main_t * vm,
              * interface DPR represents */
             vnet_buffer(b0)->sw_if_index[VLIB_RX] = ido0->ido_sw_if_index;
 
+	    /* Update l2_len to make l2 tag rewrite work */
+	    if (is_l2)
+		vnet_update_l2_len (b0);
+
             /* Bump the interface's RX coutners */
             vlib_increment_combined_counter (im->combined_sw_if_counters
                                              + VNET_INTERFACE_COUNTER_RX,
@@ -349,10 +356,6 @@ interface_rx_dpo_inline (vlib_main_t * vm,
                 tr = vlib_add_trace (vm, node, b0, sizeof (*tr));
                 tr->sw_if_index = ido0->ido_sw_if_index;
             }
-
-            vlib_validate_buffer_enqueue_x1(vm, node, next_index, to_next,
-                                            n_left_to_next, bi0,
-                                            INTERFACE_RX_DPO_INPUT);
         }
         vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
@@ -377,7 +380,7 @@ interface_rx_dpo_ip4 (vlib_main_t * vm,
                       vlib_node_runtime_t * node,
                       vlib_frame_t * from_frame)
 {
-    return (interface_rx_dpo_inline(vm, node, from_frame));
+    return (interface_rx_dpo_inline(vm, node, from_frame, 0));
 }
 
 static uword
@@ -385,7 +388,7 @@ interface_rx_dpo_ip6 (vlib_main_t * vm,
                       vlib_node_runtime_t * node,
                       vlib_frame_t * from_frame)
 {
-    return (interface_rx_dpo_inline(vm, node, from_frame));
+    return (interface_rx_dpo_inline(vm, node, from_frame, 0));
 }
 
 static uword
@@ -393,7 +396,7 @@ interface_rx_dpo_l2 (vlib_main_t * vm,
                      vlib_node_runtime_t * node,
                      vlib_frame_t * from_frame)
 {
-    return (interface_rx_dpo_inline(vm, node, from_frame));
+    return (interface_rx_dpo_inline(vm, node, from_frame, 1));
 }
 
 VLIB_REGISTER_NODE (interface_rx_dpo_ip4_node) = {

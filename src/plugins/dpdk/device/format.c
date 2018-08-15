@@ -18,6 +18,9 @@
 #include <vlib/unix/cj.h>
 #include <assert.h>
 
+#define __USE_GNU
+#include <dlfcn.h>
+
 #include <vnet/ethernet/ethernet.h>
 #include <dpdk/device/dpdk.h>
 
@@ -163,6 +166,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
   char *device_name;
   u32 i = va_arg (*args, u32);
   struct rte_eth_dev_info dev_info;
+  struct rte_pci_device *pci_dev;
   u8 *ret;
 
   if (dm->conf->interface_name_format_decimal)
@@ -213,7 +217,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
       break;
 
     case VNET_DPDK_PORT_TYPE_ETH_BOND:
-      return format (s, "BondEthernet%d", dm->devices[i].port_id);
+      return format (s, "BondEthernet%d", dm->devices[i].bond_instance_num);
 
     case VNET_DPDK_PORT_TYPE_ETH_SWITCH:
       device_name = "EthernetSwitch";
@@ -225,7 +229,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
 
     case VNET_DPDK_PORT_TYPE_AF_PACKET:
       rte_eth_dev_info_get (i, &dev_info);
-      return format (s, "af_packet%d", dm->devices[i].port_id);
+      return format (s, "af_packet%d", dm->devices[i].af_packet_instance_num);
 
     case VNET_DPDK_PORT_TYPE_VIRTIO_USER:
       device_name = "VirtioUser";
@@ -235,6 +239,10 @@ format_dpdk_device_name (u8 * s, va_list * args)
       device_name = "VhostEthernet";
       break;
 
+    case VNET_DPDK_PORT_TYPE_FAILSAFE:
+      device_name = "FailsafeEthernet";
+      break;
+
     default:
     case VNET_DPDK_PORT_TYPE_UNKNOWN:
       device_name = "UnknownEthernet";
@@ -242,17 +250,32 @@ format_dpdk_device_name (u8 * s, va_list * args)
     }
 
   rte_eth_dev_info_get (i, &dev_info);
+  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
 
-  if (dev_info.pci_dev)
-    ret = format (s, devname_format, device_name, dev_info.pci_dev->addr.bus,
-		  dev_info.pci_dev->addr.devid,
-		  dev_info.pci_dev->addr.function);
+  if (pci_dev && dm->devices[i].port_type != VNET_DPDK_PORT_TYPE_FAILSAFE)
+    ret = format (s, devname_format, device_name, pci_dev->addr.bus,
+		  pci_dev->addr.devid, pci_dev->addr.function);
   else
-    ret = format (s, "%s%d", device_name, dm->devices[i].device_index);
+    ret = format (s, "%s%d", device_name, dm->devices[i].port_id);
 
   if (dm->devices[i].interface_name_suffix)
     return format (ret, "/%s", dm->devices[i].interface_name_suffix);
   return ret;
+}
+
+u8 *
+format_dpdk_device_flags (u8 * s, va_list * args)
+{
+  dpdk_device_t *xd = va_arg (*args, dpdk_device_t *);
+  u8 *t = 0;
+
+#define _(a, b, c) if (xd->flags & (1 << a)) \
+t = format (t, "%s%s", t ? " ":"", c);
+  foreach_dpdk_device_flags
+#undef _
+    s = format (s, "%v", t);
+  vec_free (t);
+  return s;
 }
 
 static u8 *
@@ -348,6 +371,18 @@ format_dpdk_device_type (u8 * s, va_list * args)
       dev_type = "AWS ENA VF";
       break;
 
+    case VNET_DPDK_PMD_FAILSAFE:
+      dev_type = "FailsafeEthernet";
+      break;
+
+    case VNET_DPDK_PMD_LIOVF_ETHER:
+      dev_type = "Cavium Lio VF";
+      break;
+
+    case VNET_DPDK_PMD_QEDE:
+      dev_type = "Cavium QLogic FastLinQ QL4xxxx";
+      break;
+
     default:
     case VNET_DPDK_PMD_UNKNOWN:
       dev_type = "### UNKNOWN ###";
@@ -368,7 +403,7 @@ format_dpdk_link_status (u8 * s, va_list * args)
   s = format (s, "%s ", l->link_status ? "up" : "down");
   if (l->link_status)
     {
-      u32 promisc = rte_eth_promiscuous_get (xd->device_index);
+      u32 promisc = rte_eth_promiscuous_get (xd->port_id);
 
       s = format (s, "%s duplex ", (l->link_duplex == ETH_LINK_FULL_DUPLEX) ?
 		  "full" : "half");
@@ -446,6 +481,17 @@ format_dpdk_device_errors (u8 * s, va_list * args)
   return s;
 }
 
+static const char *
+ptr2sname (void *p)
+{
+  Dl_info info = { 0 };
+
+  if (dladdr (p, &info) == 0)
+    return 0;
+
+  return info.dli_sname;
+}
+
 u8 *
 format_dpdk_device (u8 * s, va_list * args)
 {
@@ -461,10 +507,12 @@ format_dpdk_device (u8 * s, va_list * args)
   dpdk_update_link_state (xd, now);
 
   s = format (s, "%U\n%Ucarrier %U",
-	      format_dpdk_device_type, xd->device_index,
+	      format_dpdk_device_type, xd->port_id,
 	      format_white_space, indent + 2, format_dpdk_link_status, xd);
+  s = format (s, "%Uflags: %U\n",
+	      format_white_space, indent + 2, format_dpdk_device_flags, xd);
 
-  rte_eth_dev_info_get (xd->device_index, &di);
+  rte_eth_dev_info_get (xd->port_id, &di);
 
   if (verbose > 1 && xd->flags & DPDK_DEVICE_FLAG_PMD)
     {
@@ -474,10 +522,10 @@ format_dpdk_device (u8 * s, va_list * args)
       int retval;
 
       rss_conf.rss_key = 0;
-      retval = rte_eth_dev_rss_hash_conf_get (xd->device_index, &rss_conf);
+      retval = rte_eth_dev_rss_hash_conf_get (xd->port_id, &rss_conf);
       if (retval < 0)
 	clib_warning ("rte_eth_dev_rss_hash_conf_get returned %d", retval);
-      pci = di.pci_dev;
+      pci = RTE_DEV_TO_PCI (di.device);
 
       if (pci)
 	s =
@@ -498,9 +546,10 @@ format_dpdk_device (u8 * s, va_list * args)
       s =
 	format (s, "%Upromiscuous:       unicast %s all-multicast %s\n",
 		format_white_space, indent + 2,
-		rte_eth_promiscuous_get (xd->device_index) ? "on" : "off",
-		rte_eth_allmulticast_get (xd->device_index) ? "on" : "off");
-      vlan_off = rte_eth_dev_get_vlan_offload (xd->device_index);
+		rte_eth_promiscuous_get (xd->port_id) ?
+		"on" : "off",
+		rte_eth_allmulticast_get (xd->port_id) ? "on" : "off");
+      vlan_off = rte_eth_dev_get_vlan_offload (xd->port_id);
       s = format (s, "%Uvlan offload:      strip %s filter %s qinq %s\n",
 		  format_white_space, indent + 2,
 		  vlan_off & ETH_VLAN_STRIP_OFFLOAD ? "on" : "off",
@@ -518,6 +567,12 @@ format_dpdk_device (u8 * s, va_list * args)
 		  format_dpdk_rss_hf_name, rss_conf.rss_hf,
 		  format_white_space, indent + 2,
 		  format_dpdk_rss_hf_name, di.flow_type_rss_offloads);
+      s = format (s, "%Utx burst function: %s\n",
+		  format_white_space, indent + 2,
+		  ptr2sname (rte_eth_devices[xd->port_id].tx_pkt_burst));
+      s = format (s, "%Urx burst function: %s\n",
+		  format_white_space, indent + 2,
+		  ptr2sname (rte_eth_devices[xd->port_id].rx_pkt_burst));
     }
 
   s = format (s, "%Urx queues %d, rx desc %d, tx queues %d, tx desc %d\n",
@@ -546,9 +601,9 @@ format_dpdk_device (u8 * s, va_list * args)
   u32 i = 0;
   struct rte_eth_xstat *xstat, *last_xstat;
   struct rte_eth_xstat_name *xstat_names = 0;
-  int len = rte_eth_xstats_get_names (xd->device_index, NULL, 0);
+  int len = rte_eth_xstats_get_names (xd->port_id, NULL, 0);
   vec_validate (xstat_names, len - 1);
-  rte_eth_xstats_get_names (xd->device_index, xstat_names, len);
+  rte_eth_xstats_get_names (xd->port_id, xstat_names, len);
 
   ASSERT (vec_len (xd->xstats) == vec_len (xd->last_cleared_xstats));
 
@@ -591,16 +646,16 @@ format_dpdk_device (u8 * s, va_list * args)
 }
 
 u8 *
-format_dpdk_tx_dma_trace (u8 * s, va_list * va)
+format_dpdk_tx_trace (u8 * s, va_list * va)
 {
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*va, vlib_main_t *);
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*va, vlib_node_t *);
   CLIB_UNUSED (vnet_main_t * vnm) = vnet_get_main ();
-  dpdk_tx_dma_trace_t *t = va_arg (*va, dpdk_tx_dma_trace_t *);
+  dpdk_tx_trace_t *t = va_arg (*va, dpdk_tx_trace_t *);
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, t->device_index);
   u32 indent = format_get_indent (s);
-  vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->vlib_sw_if_index);
+  vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->sw_if_index);
 
   s = format (s, "%U tx queue %d",
 	      format_vnet_sw_interface_name, vnm, sw, t->queue_index);
@@ -621,17 +676,17 @@ format_dpdk_tx_dma_trace (u8 * s, va_list * va)
 }
 
 u8 *
-format_dpdk_rx_dma_trace (u8 * s, va_list * va)
+format_dpdk_rx_trace (u8 * s, va_list * va)
 {
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*va, vlib_main_t *);
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*va, vlib_node_t *);
   CLIB_UNUSED (vnet_main_t * vnm) = vnet_get_main ();
-  dpdk_rx_dma_trace_t *t = va_arg (*va, dpdk_rx_dma_trace_t *);
+  dpdk_rx_trace_t *t = va_arg (*va, dpdk_rx_trace_t *);
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, t->device_index);
   format_function_t *f;
   u32 indent = format_get_indent (s);
-  vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->vlib_sw_if_index);
+  vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->sw_if_index);
 
   s = format (s, "%U rx queue %d",
 	      format_vnet_sw_interface_name, vnm, sw, t->queue_index);
@@ -739,12 +794,15 @@ format_dpdk_rte_mbuf (u8 * s, va_list * va)
 
   s = format (s, "PKT MBUF: port %d, nb_segs %d, pkt_len %d"
 	      "\n%Ubuf_len %d, data_len %d, ol_flags 0x%lx, data_off %d, phys_addr 0x%x"
-	      "\n%Upacket_type 0x%x l2_len %u l3_len %u outer_l2_len %u outer_l3_len %u",
+	      "\n%Upacket_type 0x%x l2_len %u l3_len %u outer_l2_len %u outer_l3_len %u"
+	      "\n%Urss 0x%x fdir.hi 0x%x fdir.lo 0x%x",
 	      mb->port, mb->nb_segs, mb->pkt_len,
 	      format_white_space, indent,
 	      mb->buf_len, mb->data_len, mb->ol_flags, mb->data_off,
 	      mb->buf_physaddr, format_white_space, indent, mb->packet_type,
-	      mb->l2_len, mb->l3_len, mb->outer_l2_len, mb->outer_l3_len);
+	      mb->l2_len, mb->l3_len, mb->outer_l2_len, mb->outer_l3_len,
+	      format_white_space, indent, mb->hash.rss, mb->hash.fdir.hi,
+	      mb->hash.fdir.lo);
 
   if (mb->ol_flags)
     s = format (s, "\n%U%U", format_white_space, indent,

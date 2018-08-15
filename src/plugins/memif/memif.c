@@ -77,7 +77,8 @@ memif_disconnect (memif_if_t * mif, clib_error_t * err)
   if (mif == 0)
     return;
 
-  DBG ("disconnect %u (%v)", mif->dev_instance, err ? err->what : 0);
+  vlib_log_debug (mm->log_class, "disconnect %u (%v)", mif->dev_instance,
+		  err ? err->what : 0);
 
   if (err)
     {
@@ -106,40 +107,50 @@ memif_disconnect (memif_if_t * mif, clib_error_t * err)
       clib_error_t *err;
       err = clib_socket_close (mif->sock);
       if (err)
-	clib_error_report (err);
+	{
+	  vlib_log_err (mm->log_class, "%U", format_clib_error, err);
+	  clib_error_free (err);
+	}
       clib_mem_free (mif->sock);
     }
 
+  /* *INDENT-OFF* */
   vec_foreach_index (i, mif->rx_queues)
-  {
-    mq = vec_elt_at_index (mif->rx_queues, i);
-    if (mq->ring)
-      {
-	int rv;
-	rv = vnet_hw_interface_unassign_rx_thread (vnm, mif->hw_if_index, i);
-	if (rv)
-	  DBG ("Warning: unable to unassign interface %d, "
-	       "queue %d: rc=%d", mif->hw_if_index, i, rv);
-	mq->ring = 0;
-      }
-  }
+    {
+      mq = vec_elt_at_index (mif->rx_queues, i);
+      if (mq->ring)
+	{
+	  int rv;
+	  rv = vnet_hw_interface_unassign_rx_thread (vnm, mif->hw_if_index, i);
+	  if (rv)
+	    vlib_log_warn (mm->log_class,
+			   "Unable to unassign interface %d, queue %d: rc=%d",
+			   mif->hw_if_index, i, rv);
+	  mq->ring = 0;
+	}
+    }
 
   /* free tx and rx queues */
-  vec_foreach (mq, mif->rx_queues) memif_queue_intfd_close (mq);
+  vec_foreach (mq, mif->rx_queues)
+    memif_queue_intfd_close (mq);
   vec_free (mif->rx_queues);
 
-  vec_foreach (mq, mif->tx_queues) memif_queue_intfd_close (mq);
+  vec_foreach (mq, mif->tx_queues)
+    memif_queue_intfd_close (mq);
   vec_free (mif->tx_queues);
 
   /* free memory regions */
   vec_foreach (mr, mif->regions)
-  {
-    int rv;
-    if ((rv = munmap (mr->shm, mr->region_size)))
-      clib_warning ("munmap failed, rv = %d", rv);
-    if (mr->fd > -1)
-      close (mr->fd);
-  }
+    {
+      int rv;
+      if (mr->is_external)
+	continue;
+      if ((rv = munmap (mr->shm, mr->region_size)))
+	clib_warning ("munmap failed, rv = %d", rv);
+      if (mr->fd > -1)
+	close (mr->fd);
+    }
+  /* *INDENT-ON* */
   vec_free (mif->regions);
   vec_free (mif->remote_name);
   vec_free (mif->remote_if_name);
@@ -160,7 +171,7 @@ memif_int_fd_read_ready (clib_file_t * uf)
   size = read (uf->file_descriptor, &b, sizeof (b));
   if (size < 0)
     {
-      DBG_UNIX_LOG ("Failed to read from socket");
+      vlib_log_debug (mm->log_class, "Failed to read form socket");
       return 0;
     }
 
@@ -174,74 +185,94 @@ memif_int_fd_read_ready (clib_file_t * uf)
 clib_error_t *
 memif_connect (memif_if_t * mif)
 {
+  memif_main_t *mm = &memif_main;
   vnet_main_t *vnm = vnet_get_main ();
   clib_file_t template = { 0 };
   memif_region_t *mr;
   int i;
+  clib_error_t *err = NULL;
 
-  DBG ("connect %u", mif->dev_instance);
+  vlib_log_debug (mm->log_class, "connect %u", mif->dev_instance);
 
   vec_free (mif->local_disc_string);
   vec_free (mif->remote_disc_string);
 
+  /* *INDENT-OFF* */
   vec_foreach (mr, mif->regions)
-  {
-    if (mr->shm)
-      continue;
+    {
+      if (mr->shm)
+	continue;
 
-    if (mr->fd < 0)
-      clib_error_return (0, "no memory region fd");
+      if (mr->fd < 0)
+	{
+	  err = clib_error_return (0, "no memory region fd");
+	  goto error;
+	}
 
-    if ((mr->shm = mmap (NULL, mr->region_size, PROT_READ | PROT_WRITE,
-			 MAP_SHARED, mr->fd, 0)) == MAP_FAILED)
-      return clib_error_return_unix (0, "mmap");
-  }
+      if ((mr->shm = mmap (NULL, mr->region_size, PROT_READ | PROT_WRITE,
+			   MAP_SHARED, mr->fd, 0)) == MAP_FAILED)
+	{
+	  err = clib_error_return_unix (0, "mmap");
+	  goto error;
+	}
+    }
+  /* *INDENT-ON* */
 
   template.read_function = memif_int_fd_read_ready;
 
+  /* *INDENT-OFF* */
   vec_foreach_index (i, mif->tx_queues)
-  {
-    memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
+    {
+      memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
 
-    mq->ring = mif->regions[mq->region].shm + mq->offset;
-    if (mq->ring->cookie != MEMIF_COOKIE)
-      return clib_error_return (0, "wrong cookie on tx ring %u", i);
-  }
+      mq->ring = mif->regions[mq->region].shm + mq->offset;
+      if (mq->ring->cookie != MEMIF_COOKIE)
+	{
+	  err = clib_error_return (0, "wrong cookie on tx ring %u", i);
+	  goto error;
+	}
+    }
 
   vec_foreach_index (i, mif->rx_queues)
-  {
-    memif_queue_t *mq = vec_elt_at_index (mif->rx_queues, i);
-    int rv;
+    {
+      memif_queue_t *mq = vec_elt_at_index (mif->rx_queues, i);
+      int rv;
 
-    mq->ring = mif->regions[mq->region].shm + mq->offset;
-    if (mq->ring->cookie != MEMIF_COOKIE)
-      return clib_error_return (0, "wrong cookie on tx ring %u", i);
+      mq->ring = mif->regions[mq->region].shm + mq->offset;
+      if (mq->ring->cookie != MEMIF_COOKIE)
+	{
+	  err = clib_error_return (0, "wrong cookie on tx ring %u", i);
+	  goto error;
+	}
 
-    if (mq->int_fd > -1)
-      {
-	template.file_descriptor = mq->int_fd;
-	template.private_data = (mif->dev_instance << 16) | (i & 0xFFFF);
-	template.description = format (0, "%U rx %u int",
-				       format_memif_device_name,
-				       mif->dev_instance, i);
-	memif_file_add (&mq->int_clib_file_index, &template);
-      }
-    vnet_hw_interface_assign_rx_thread (vnm, mif->hw_if_index, i, ~0);
-    rv = vnet_hw_interface_set_rx_mode (vnm, mif->hw_if_index, i,
-					VNET_HW_INTERFACE_RX_MODE_DEFAULT);
-    if (rv)
-      clib_warning
-	("Warning: unable to set rx mode for interface %d queue %d: "
-	 "rc=%d", mif->hw_if_index, i, rv);
-    else
-      {
-	vnet_hw_interface_rx_mode rxmode;
-	vnet_hw_interface_get_rx_mode (vnm, mif->hw_if_index, i, &rxmode);
+      if (mq->int_fd > -1)
+	{
+	  template.file_descriptor = mq->int_fd;
+	  template.private_data = (mif->dev_instance << 16) | (i & 0xFFFF);
+	  template.description = format (0, "%U rx %u int",
+					 format_memif_device_name,
+					 mif->dev_instance, i);
+	  memif_file_add (&mq->int_clib_file_index, &template);
+	}
+      vnet_hw_interface_assign_rx_thread (vnm, mif->hw_if_index, i, ~0);
+      rv = vnet_hw_interface_set_rx_mode (vnm, mif->hw_if_index, i,
+					  VNET_HW_INTERFACE_RX_MODE_DEFAULT);
+      if (rv)
+	clib_warning
+	  ("Warning: unable to set rx mode for interface %d queue %d: "
+	   "rc=%d", mif->hw_if_index, i, rv);
+      else
+	{
+	  vnet_hw_interface_rx_mode rxmode;
+	  vnet_hw_interface_get_rx_mode (vnm, mif->hw_if_index, i, &rxmode);
 
-	if (rxmode == VNET_HW_INTERFACE_RX_MODE_POLLING)
-	  mq->ring->flags |= MEMIF_RING_FLAG_MASK_INT;
-      }
-  }
+	  if (rxmode == VNET_HW_INTERFACE_RX_MODE_POLLING)
+	    mq->ring->flags |= MEMIF_RING_FLAG_MASK_INT;
+	  else
+	    vnet_device_input_set_interrupt_pending (vnm, mif->hw_if_index, i);
+	}
+    }
+  /* *INDENT-ON* */
 
   mif->flags &= ~MEMIF_IF_FLAG_CONNECTING;
   mif->flags |= MEMIF_IF_FLAG_CONNECTED;
@@ -249,6 +280,10 @@ memif_connect (memif_if_t * mif)
   vnet_hw_interface_set_flags (vnm, mif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
   return 0;
+
+error:
+  vlib_log_err (mm->log_class, "%U", format_clib_error, err);
+  return err;
 }
 
 static_always_inline memif_ring_t *
@@ -268,6 +303,8 @@ memif_get_ring (memif_if_t * mif, memif_ring_type_t type, u16 ring_num)
 clib_error_t *
 memif_init_regions_and_queues (memif_if_t * mif)
 {
+  vlib_main_t *vm = vlib_get_main ();
+  memif_main_t *mm = &memif_main;
   memif_ring_t *ring = NULL;
   int i, j;
   u64 buffer_offset;
@@ -275,16 +312,18 @@ memif_init_regions_and_queues (memif_if_t * mif)
   clib_mem_vm_alloc_t alloc = { 0 };
   clib_error_t *err;
 
-  vec_validate_aligned (mif->regions, 0, CLIB_CACHE_LINE_BYTES);
-  r = vec_elt_at_index (mif->regions, 0);
+  ASSERT (vec_len (mif->regions) == 0);
+  vec_add2_aligned (mif->regions, r, 1, CLIB_CACHE_LINE_BYTES);
 
   buffer_offset = (mif->run.num_s2m_rings + mif->run.num_m2s_rings) *
     (sizeof (memif_ring_t) +
      sizeof (memif_desc_t) * (1 << mif->run.log2_ring_size));
 
-  r->region_size = buffer_offset +
-    mif->run.buffer_size * (1 << mif->run.log2_ring_size) *
-    (mif->run.num_s2m_rings + mif->run.num_m2s_rings);
+  r->region_size = buffer_offset;
+
+  if ((mif->flags & MEMIF_IF_FLAG_ZERO_COPY) == 0)
+    r->region_size += mif->run.buffer_size * (1 << mif->run.log2_ring_size) *
+      (mif->run.num_s2m_rings + mif->run.num_m2s_rings);
 
   alloc.name = "memif region";
   alloc.size = r->region_size;
@@ -292,23 +331,44 @@ memif_init_regions_and_queues (memif_if_t * mif)
 
   err = clib_mem_vm_ext_alloc (&alloc);
   if (err)
-    return err;
+    goto error;
 
   r->fd = alloc.fd;
   r->shm = alloc.addr;
+
+  if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
+    {
+      vlib_buffer_pool_t *bp;
+      /* *INDENT-OFF* */
+      vec_foreach (bp, buffer_main.buffer_pools)
+	{
+	  vlib_physmem_region_t *pr;
+	  pr = vlib_physmem_get_region (vm, bp->physmem_region);
+	  vec_add2_aligned (mif->regions, r, 1, CLIB_CACHE_LINE_BYTES);
+	  r->fd = pr->fd;
+	  r->region_size = pr->size;
+	  r->shm = pr->mem;
+	  r->is_external = 1;
+	}
+      /* *INDENT-ON* */
+    }
 
   for (i = 0; i < mif->run.num_s2m_rings; i++)
     {
       ring = memif_get_ring (mif, MEMIF_RING_S2M, i);
       ring->head = ring->tail = 0;
       ring->cookie = MEMIF_COOKIE;
+
+      if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
+	continue;
+
       for (j = 0; j < (1 << mif->run.log2_ring_size); j++)
 	{
 	  u16 slot = i * (1 << mif->run.log2_ring_size) + j;
 	  ring->desc[j].region = 0;
 	  ring->desc[j].offset =
 	    buffer_offset + (u32) (slot * mif->run.buffer_size);
-	  ring->desc[j].buffer_length = mif->run.buffer_size;
+	  ring->desc[j].length = mif->run.buffer_size;
 	}
     }
   for (i = 0; i < mif->run.num_m2s_rings; i++)
@@ -316,6 +376,10 @@ memif_init_regions_and_queues (memif_if_t * mif)
       ring = memif_get_ring (mif, MEMIF_RING_M2S, i);
       ring->head = ring->tail = 0;
       ring->cookie = MEMIF_COOKIE;
+
+      if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
+	continue;
+
       for (j = 0; j < (1 << mif->run.log2_ring_size); j++)
 	{
 	  u16 slot =
@@ -323,45 +387,67 @@ memif_init_regions_and_queues (memif_if_t * mif)
 	  ring->desc[j].region = 0;
 	  ring->desc[j].offset =
 	    buffer_offset + (u32) (slot * mif->run.buffer_size);
-	  ring->desc[j].buffer_length = mif->run.buffer_size;
+	  ring->desc[j].length = mif->run.buffer_size;
 	}
     }
 
   ASSERT (mif->tx_queues == 0);
   vec_validate_aligned (mif->tx_queues, mif->run.num_s2m_rings - 1,
 			CLIB_CACHE_LINE_BYTES);
+
+  /* *INDENT-OFF* */
   vec_foreach_index (i, mif->tx_queues)
-  {
-    memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
-    if ((mq->int_fd = eventfd (0, EFD_NONBLOCK)) < 0)
-      return clib_error_return_unix (0, "eventfd[tx queue %u]", i);
-    mq->int_clib_file_index = ~0;
-    mq->ring = memif_get_ring (mif, MEMIF_RING_S2M, i);
-    mq->log2_ring_size = mif->cfg.log2_ring_size;
-    mq->region = 0;
-    mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
-    mq->last_head = 0;
-    mq->type = MEMIF_RING_S2M;
-  }
+    {
+      memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
+      if ((mq->int_fd = eventfd (0, EFD_NONBLOCK)) < 0)
+	{
+	  err = clib_error_return_unix (0, "eventfd[tx queue %u]", i);
+	  goto error;
+	}
+      mq->int_clib_file_index = ~0;
+      mq->ring = memif_get_ring (mif, MEMIF_RING_S2M, i);
+      mq->log2_ring_size = mif->cfg.log2_ring_size;
+      mq->region = 0;
+      mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
+      mq->last_head = 0;
+      mq->type = MEMIF_RING_S2M;
+      if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
+	vec_validate_aligned (mq->buffers, 1 << mq->log2_ring_size,
+			      CLIB_CACHE_LINE_BYTES);
+    }
+  /* *INDENT-ON* */
 
   ASSERT (mif->rx_queues == 0);
   vec_validate_aligned (mif->rx_queues, mif->run.num_m2s_rings - 1,
 			CLIB_CACHE_LINE_BYTES);
+
+  /* *INDENT-OFF* */
   vec_foreach_index (i, mif->rx_queues)
-  {
-    memif_queue_t *mq = vec_elt_at_index (mif->rx_queues, i);
-    if ((mq->int_fd = eventfd (0, EFD_NONBLOCK)) < 0)
-      return clib_error_return_unix (0, "eventfd[rx queue %u]", i);
-    mq->int_clib_file_index = ~0;
-    mq->ring = memif_get_ring (mif, MEMIF_RING_M2S, i);
-    mq->log2_ring_size = mif->cfg.log2_ring_size;
-    mq->region = 0;
-    mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
-    mq->last_head = 0;
-    mq->type = MEMIF_RING_M2S;
-  }
+    {
+      memif_queue_t *mq = vec_elt_at_index (mif->rx_queues, i);
+      if ((mq->int_fd = eventfd (0, EFD_NONBLOCK)) < 0)
+	{
+	  err = clib_error_return_unix (0, "eventfd[rx queue %u]", i);
+	  goto error;
+	}
+      mq->int_clib_file_index = ~0;
+      mq->ring = memif_get_ring (mif, MEMIF_RING_M2S, i);
+      mq->log2_ring_size = mif->cfg.log2_ring_size;
+      mq->region = 0;
+      mq->offset = (void *) mq->ring - (void *) mif->regions[mq->region].shm;
+      mq->last_head = 0;
+      mq->type = MEMIF_RING_M2S;
+      if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
+	vec_validate_aligned (mq->buffers, 1 << mq->log2_ring_size,
+			      CLIB_CACHE_LINE_BYTES);
+    }
+  /* *INDENT-ON* */
 
   return 0;
+
+error:
+  vlib_log_err (mm->log_class, "%U", format_clib_error, err);
+  return err;
 }
 
 static uword
@@ -470,7 +556,6 @@ VLIB_REGISTER_NODE (memif_process_node,static) = {
 };
 /* *INDENT-ON* */
 
-
 static int
 memif_add_socket_file (u32 sock_id, u8 * socket_filename)
 {
@@ -491,8 +576,6 @@ memif_add_socket_file (u32 sock_id, u8 * socket_filename)
       /* But don't allow a direct add of a different filename. */
       return VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
     }
-
-  DBG ("creating socket file (uninitialized) %s", msf->filename);
 
   pool_get (mm->socket_files, msf);
   memset (msf, 0, sizeof (memif_socket_file_t));
@@ -537,7 +620,12 @@ memif_delete_socket_file (u32 sock_id)
 int
 memif_socket_filename_add_del (u8 is_add, u32 sock_id, u8 * sock_filename)
 {
-  if (sock_id == 0 || sock_id == ~0)
+  struct stat file_stat;
+  char *dir = 0, *tmp;
+  u32 idx = 0;
+
+  /* allow adding socket id 0 */
+  if ((sock_id == 0 && is_add == 0) || sock_id == ~0)
     {
       return VNET_API_ERROR_INVALID_ARGUMENT;
     }
@@ -555,7 +643,23 @@ memif_socket_filename_add_del (u8 is_add, u32 sock_id, u8 * sock_filename)
   if (sock_filename[0] != '/')
     {
       clib_error_t *error;
-      error = vlib_unix_recursive_mkdir (vlib_unix_get_runtime_dir ());
+
+      /* copy runtime dir path */
+      vec_add (dir, vlib_unix_get_runtime_dir (),
+	       strlen (vlib_unix_get_runtime_dir ()));
+      vec_add1 (dir, '/');
+
+      /* if sock_filename contains dirs, add them to path */
+      tmp = strrchr ((char *) sock_filename, '/');
+      if (tmp)
+	{
+	  idx = tmp - (char *) sock_filename;
+	  vec_add (dir, sock_filename, idx);
+	}
+
+      vec_add1 (dir, '\0');
+      /* create socket dir */
+      error = vlib_unix_recursive_mkdir (dir);
       if (error)
 	{
 	  clib_error_free (error);
@@ -568,7 +672,24 @@ memif_socket_filename_add_del (u8 is_add, u32 sock_id, u8 * sock_filename)
   else
     {
       sock_filename = vec_dup (sock_filename);
+
+      /* check if directory exists */
+      tmp = strrchr ((char *) sock_filename, '/');
+      if (tmp)
+	{
+	  idx = tmp - (char *) sock_filename;
+	  vec_add (dir, sock_filename, idx);
+	  vec_add1 (dir, '\0');
+	}
+
+      if (((stat (dir, &file_stat) == -1) || (!S_ISDIR (file_stat.st_mode)))
+	  && (idx != 0))
+	{
+	  vec_free (dir);
+	  return VNET_API_ERROR_INVALID_ARGUMENT;
+	}
     }
+  vec_free (dir);
 
   return memif_add_socket_file (sock_id, sock_filename);
 }
@@ -614,10 +735,10 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
       if (msf->is_listener)
 	{
 	  int i;
+	  /* *INDENT-OFF* */
 	  vec_foreach_index (i, msf->pending_clients)
-	  {
 	    memif_socket_close (msf->pending_clients + i);
-	  }
+	  /* *INDENT-ON* */
 	  memif_socket_close (&msf->sock);
 	  vec_free (msf->pending_clients);
 	}
@@ -627,7 +748,10 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
 	{
 	  err = clib_socket_close (msf->sock);
 	  if (err)
-	    clib_error_report (err);
+	    {
+	      vlib_log_err (mm->log_class, "%U", format_clib_error, err);
+	      clib_error_free (err);
+	    }
 	  clib_mem_free (msf->sock);
 	}
     }
@@ -708,7 +832,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 	    {
 	      error = clib_error_return (0, "File exists for %s",
 					 msf->filename);
-	      clib_error_report (error);
 	      rv = VNET_API_ERROR_VALUE_EXIST;
 	      goto done;
 	    }
@@ -719,7 +842,37 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
       msf->dev_instance_by_fd = hash_create (0, sizeof (uword));
       msf->is_listener = (args->is_master != 0);
 
-      DBG ("initializing socket file %s", msf->filename);
+      vlib_log_debug (mm->log_class, "initializing socket file %s",
+		      msf->filename);
+    }
+
+  if (mm->per_thread_data == 0)
+    {
+      int i;
+      vlib_buffer_free_list_t *fl;
+
+      vec_validate_aligned (mm->per_thread_data, tm->n_vlib_mains - 1,
+			    CLIB_CACHE_LINE_BYTES);
+
+      fl =
+	vlib_buffer_get_free_list (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
+      for (i = 0; i < tm->n_vlib_mains; i++)
+	{
+	  memif_per_thread_data_t *ptd =
+	    vec_elt_at_index (mm->per_thread_data, i);
+	  vlib_buffer_t *bt = &ptd->buffer_template;
+	  vlib_buffer_init_for_free_list (bt, fl);
+	  bt->flags = VLIB_BUFFER_TOTAL_LENGTH_VALID;
+	  bt->total_length_not_including_first_buffer = 0;
+	  vnet_buffer (bt)->sw_if_index[VLIB_TX] = (u32) ~ 0;
+
+	  /* initially prealloc copy_ops so we can use
+	     _vec_len instead of vec_elen */
+	  vec_validate_aligned (ptd->copy_ops, 0, CLIB_CACHE_LINE_BYTES);
+	  vec_reset_length (ptd->copy_ops);
+	  vec_validate_aligned (ptd->buffers, 0, CLIB_CACHE_LINE_BYTES);
+	  vec_reset_length (ptd->buffers);
+	}
     }
 
   pool_get (mm->interfaces, mif);
@@ -767,7 +920,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 
   if (error)
     {
-      clib_error_report (error);
       ret = VNET_API_ERROR_SYSCALL_ERROR_2;
       goto error;
     }
@@ -801,7 +953,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 
       if ((error = clib_socket_init (s)))
 	{
-	  clib_error_report (error);
 	  ret = VNET_API_ERROR_SYSCALL_ERROR_4;
 	  goto error;
 	}
@@ -823,7 +974,11 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
   msf->ref_cnt++;
 
   if (args->is_master == 0)
-    mif->flags |= MEMIF_IF_FLAG_IS_SLAVE;
+    {
+      mif->flags |= MEMIF_IF_FLAG_IS_SLAVE;
+      if (args->is_zero_copy)
+	mif->flags |= MEMIF_IF_FLAG_ZERO_COPY;
+    }
 
   hw = vnet_get_hw_interface (vnm, mif->hw_if_index);
   hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
@@ -849,21 +1004,26 @@ error:
       mif->hw_if_index = ~0;
     }
   memif_delete_if (vm, mif);
+  if (error)
+    {
+      vlib_log_err (mm->log_class, "%U", format_clib_error, error);
+      clib_error_free (error);
+    }
   return ret;
 
 done:
   return rv;
 }
 
-
 static clib_error_t *
 memif_init (vlib_main_t * vm)
 {
   memif_main_t *mm = &memif_main;
-  vlib_thread_main_t *tm = vlib_get_thread_main ();
-  u8 *filename;
 
   memset (mm, 0, sizeof (memif_main_t));
+
+  mm->log_class = vlib_log_register_class ("memif_plugin", 0);
+  vlib_log_debug (mm->log_class, "initialized");
 
   /* initialize binary API */
   memif_plugin_api_hookup (vm);
@@ -873,13 +1033,7 @@ memif_init (vlib_main_t * vm)
    * for socket-id 0 to MEMIF_DEFAULT_SOCKET_FILENAME in the
    * default run-time directory.
    */
-  filename = format (0, "%s/%s%c",
-		     vlib_unix_get_runtime_dir (),
-		     MEMIF_DEFAULT_SOCKET_FILENAME, 0);
-  memif_add_socket_file (0, filename);
-
-  vec_validate_aligned (mm->rx_buffers, tm->n_vlib_mains - 1,
-			CLIB_CACHE_LINE_BYTES);
+  memif_socket_filename_add_del (1, 0, (u8 *) MEMIF_DEFAULT_SOCKET_FILENAME);
 
   return 0;
 }
