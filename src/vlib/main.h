@@ -98,7 +98,7 @@ typedef struct vlib_main_t
   clib_error_t *main_loop_error;
 
   /* Name for e.g. syslog. */
-  char *name;
+  char *name;//进程名称
 
   /* Start of the heap. */
   void *heap_base;
@@ -175,7 +175,7 @@ typedef struct vlib_main_t
   clib_random_buffer_t random_buffer;
 
   /* Hash table to record which init functions have been called. */
-  uword *init_functions_called;
+  uword *init_functions_called;//设置初始化函数的指针
 
   /* to compare with node runtime */
   u32 thread_index;
@@ -193,7 +193,7 @@ typedef struct vlib_main_t
   volatile u32 queue_signal_pending;
   volatile u32 api_queue_nonempty;
   void (*queue_signal_callback) (struct vlib_main_t *);
-  u8 **argv;
+  u8 **argv;//命令行参数
 
   /* debugging */
   volatile int parked_at_barrier;

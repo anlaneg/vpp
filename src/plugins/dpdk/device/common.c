@@ -36,6 +36,7 @@ dpdk_device_error (dpdk_device_t * xd, char *str, int rv)
 				  str, xd->port_id, rv, rte_strerror (rv));
 }
 
+//配置并创建设备
 void
 dpdk_device_setup (dpdk_device_t * xd)
 {
@@ -51,6 +52,7 @@ dpdk_device_setup (dpdk_device_t * xd)
   clib_error_free (xd->errors);
   sw->flags &= ~VNET_SW_INTERFACE_FLAG_ERROR;
 
+  //要设置admin_up,则先停止设备
   if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
     {
       vnet_hw_interface_set_flags (dm->vnet_main, xd->hw_if_index, 0);
@@ -66,6 +68,7 @@ dpdk_device_setup (dpdk_device_t * xd)
 	xd->port_conf.fdir_conf.mode = RTE_FDIR_MODE_NONE;
     }
 
+  //配置设备
   rv = rte_eth_dev_configure (xd->port_id, xd->rx_q_used,
 			      xd->tx_q_used, &xd->port_conf);
 
@@ -78,6 +81,7 @@ dpdk_device_setup (dpdk_device_t * xd)
   /* Set up one TX-queue per worker thread */
   for (j = 0; j < xd->tx_q_used; j++)
     {
+	  //创建tx队列（优先尝试xd->cpu_socket,失败，则尝试任意socket)
       rv =
 	rte_eth_tx_queue_setup (xd->port_id, j, xd->nb_tx_desc,
 				xd->cpu_socket, &xd->tx_conf);
@@ -102,6 +106,7 @@ dpdk_device_setup (dpdk_device_t * xd)
       unsigned lcore = vlib_worker_threads[tidx].lcore_id;
       u16 socket_id = rte_lcore_to_socket_id (lcore);
 
+      //创建rx队列（优先尝试xd->cpu_socket,失败，则尝试任意socket)
       rv =
 	rte_eth_rx_queue_setup (xd->port_id, j, xd->nb_rx_desc,
 				xd->cpu_socket, 0,
@@ -124,8 +129,10 @@ dpdk_device_setup (dpdk_device_t * xd)
   if (vec_len (xd->errors))
     goto error;
 
+  //设置mtu
   rte_eth_dev_set_mtu (xd->port_id, hi->max_packet_bytes);
 
+  //设置接口up
   if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
     dpdk_device_start (xd);
 
@@ -147,6 +154,7 @@ dpdk_device_start (dpdk_device_t * xd)
   if (xd->flags & DPDK_DEVICE_FLAG_PMD_INIT_FAIL)
     return;
 
+  //启动设备
   rv = rte_eth_dev_start (xd->port_id);
 
   if (rv)
@@ -155,6 +163,7 @@ dpdk_device_start (dpdk_device_t * xd)
       return;
     }
 
+  //设置mac地址
   if (xd->default_mac_address)
     rv =
       rte_eth_dev_default_mac_addr_set (xd->port_id,
@@ -164,11 +173,13 @@ dpdk_device_start (dpdk_device_t * xd)
   if (rv)
     dpdk_device_error (xd, "rte_eth_dev_default_mac_addr_set", rv);
 
+  //设置混杂模式
   if (xd->flags & DPDK_DEVICE_FLAG_PROMISC)
     rte_eth_promiscuous_enable (xd->port_id);
   else
     rte_eth_promiscuous_disable (xd->port_id);
 
+  //开启组播
   rte_eth_allmulticast_enable (xd->port_id);
 
   if (xd->pmd == VNET_DPDK_PMD_BOND)

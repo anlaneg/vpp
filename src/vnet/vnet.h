@@ -56,7 +56,7 @@ typedef struct vnet_main_t
   vnet_interface_main_t interface_main;
 
   /* set up by constructors */
-  vnet_device_class_t *device_class_registrations;
+  vnet_device_class_t *device_class_registrations;//系统注册的所有device class链表
   vnet_hw_interface_class_t *hw_interface_class_registrations;
     _vnet_interface_function_list_elt_t
     * hw_interface_add_del_functions[VNET_ITF_FUNC_N_PRIO];

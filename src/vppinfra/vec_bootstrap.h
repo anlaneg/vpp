@@ -134,7 +134,7 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
    _vec_len (v) does not check for null, but can be used as a lvalue
    (e.g. _vec_len (v) = 99).
 */
-
+//取出vector的长度
 #define _vec_len(v)	(_vec_find(v)->len)
 
 /** \brief Number of elements in vector (rvalue-only, NULL tolerant)
@@ -142,7 +142,7 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
     vec_len (v) checks for NULL, but cannot be used as an lvalue.
     If in doubt, use vec_len...
 */
-
+//取vector长度（支持NULL)
 #define vec_len(v)	((v) ? _vec_len(v) : 0)
 
 /** \brief Reset vector length to zero

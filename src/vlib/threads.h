@@ -328,7 +328,7 @@ typedef struct
   u32 n_threads;
 
   /* Number of cores to skip, must match the core mask */
-  u32 skip_cores;
+  u32 skip_cores;//需要跳过的core数目，
 
   /* Thread prefix name */
   u8 *thread_prefix;

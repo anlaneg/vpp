@@ -61,26 +61,26 @@ typedef CLIB_PACKED(struct {
   u8 default_disabled;
   const char version[32];
   const char version_required[32];
-  const char *early_init;
+  const char *early_init;//初始化函数名称
   const char *description;
 }) vlib_plugin_registration_t;
 /* *INDENT-ON* */
 
 typedef struct
 {
-  u8 *name;
-  u8 *filename;
-  struct stat file_info;
-  void *handle;
+  u8 *name;//插件名称
+  u8 *filename;//插件路径地址
+  struct stat file_info;//插件路径stat
+  void *handle;//插件so handle
 
   /* plugin registration */
-  vlib_plugin_registration_t *reg;
+  vlib_plugin_registration_t *reg;//插件提供的注册参数
   char *version;
 } plugin_info_t;
 
 typedef struct
 {
-  char *name;
+  char *name;//插件名称
   u8 is_disabled;
   u8 is_enabled;
   u8 skip_version_check;

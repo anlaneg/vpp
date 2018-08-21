@@ -25,21 +25,21 @@
 
 typedef struct
 {
-  u8 *name;
-  u8 *filename;
+  u8 *name;//配置信息
+  u8 *filename;//插件文件路径
   struct stat file_info;
-  void *handle;
+  void *handle;//插件so handle
 } plugin_info_t;
 
 typedef struct
 {
   /* loaded plugin info */
-  plugin_info_t *plugin_info;
-  uword *plugin_by_name_hash;
+  plugin_info_t *plugin_info;//各插件配置
+  uword *plugin_by_name_hash;//hash表（通过名称查找插件，返回plugin_info_t类型）
 
   /* path and name filter */
-  u8 *plugin_path;
-  u8 *plugin_name_filter;
+  u8 *plugin_path;//插件地址
+  u8 *plugin_name_filter;//需要过滤的插件配置
 
   /* convenience */
   vat_main_t *vat_main;

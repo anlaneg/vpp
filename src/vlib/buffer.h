@@ -169,6 +169,7 @@ typedef struct
                                                Must come directly before packet data.
                                             */
 
+  //指向报文数据
   u8 data[0]; /**< Packet data. Hardware DMA here */
 } vlib_buffer_t;		/* Must be a multiple of 64B. */
 
@@ -428,7 +429,7 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Virtual memory address and size of buffer memory, used for calculating
      buffer index */
-  uword buffer_mem_start;
+  uword buffer_mem_start;//记录报文buffer
   uword buffer_mem_size;
   vlib_buffer_pool_t *buffer_pools;
 

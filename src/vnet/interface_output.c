@@ -157,6 +157,7 @@ vnet_interface_output_trace (vlib_main_t * vm,
     }
 }
 
+//计算checksum
 static_always_inline void
 calc_checksums (vlib_main_t * vm, vlib_buffer_t * b)
 {
@@ -168,13 +169,16 @@ calc_checksums (vlib_main_t * vm, vlib_buffer_t * b)
   int is_ip4 = (b->flags & VNET_BUFFER_F_IS_IP4) != 0;
   int is_ip6 = (b->flags & VNET_BUFFER_F_IS_IP6) != 0;
 
+  //每个报文，不能既是ipv4,也是ipv6
   ASSERT (!(is_ip4 && is_ip6));
 
+  //取ip头部，取tcp或udp头部
   ip4 = (ip4_header_t *) (b->data + vnet_buffer (b)->l3_hdr_offset);
   ip6 = (ip6_header_t *) (b->data + vnet_buffer (b)->l3_hdr_offset);
   th = (tcp_header_t *) (b->data + vnet_buffer (b)->l4_hdr_offset);
   uh = (udp_header_t *) (b->data + vnet_buffer (b)->l4_hdr_offset);
 
+  //处理ip层checksum,transport层checksum
   if (is_ip4)
     {
       ip4 = (ip4_header_t *) (b->data + vnet_buffer (b)->l3_hdr_offset);
@@ -194,6 +198,7 @@ calc_checksums (vlib_main_t * vm, vlib_buffer_t * b)
 	uh->checksum = ip6_tcp_udp_icmp_compute_checksum (vm, b, ip6, &bogus);
     }
 
+  //清掉checksum flag
   b->flags &= ~VNET_BUFFER_F_OFFLOAD_TCP_CKSUM;
   b->flags &= ~VNET_BUFFER_F_OFFLOAD_UDP_CKSUM;
   b->flags &= ~VNET_BUFFER_F_OFFLOAD_IP_CKSUM;
@@ -284,12 +289,13 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	  u32 or_flags;
 
 	  /* Prefetch next iteration. */
+	  //预取下一组buffer
 	  vlib_prefetch_buffer_with_index (vm, from[4], LOAD);
 	  vlib_prefetch_buffer_with_index (vm, from[5], LOAD);
 	  vlib_prefetch_buffer_with_index (vm, from[6], LOAD);
 	  vlib_prefetch_buffer_with_index (vm, from[7], LOAD);
 
-	  bi0 = from[0];
+	  bi0 = from[0];//提取报文buffer
 	  bi1 = from[1];
 	  bi2 = from[2];
 	  bi3 = from[3];
@@ -301,6 +307,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	  to_tx += 4;
 	  n_left_to_tx -= 4;
 
+	  //提取buffer
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b1 = vlib_get_buffer (vm, bi1);
 	  b2 = vlib_get_buffer (vm, bi2);
@@ -313,6 +320,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	  ASSERT (b2->current_length > 0);
 	  ASSERT (b3->current_length > 0);
 
+	  //报文长度
 	  n_bytes_b0 = vlib_buffer_length_in_chain (vm, b0);
 	  n_bytes_b1 = vlib_buffer_length_in_chain (vm, b1);
 	  n_bytes_b2 = vlib_buffer_length_in_chain (vm, b2);
@@ -322,6 +330,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	  tx_swif2 = vnet_buffer (b2)->sw_if_index[VLIB_TX];
 	  tx_swif3 = vnet_buffer (b3)->sw_if_index[VLIB_TX];
 
+	  //计算统计计数
 	  n_bytes += n_bytes_b0 + n_bytes_b1;
 	  n_bytes += n_bytes_b2 + n_bytes_b3;
 	  n_packets += 4;
@@ -377,6 +386,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 
 	  if (do_tx_offloads)
 	    {
+		  //采用软件计算checksum
 	      if (or_flags &
 		  (VNET_BUFFER_F_OFFLOAD_TCP_CKSUM |
 		   VNET_BUFFER_F_OFFLOAD_UDP_CKSUM |
@@ -390,6 +400,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	    }
 	}
 
+      //之前4个一组处理，会剩下3,2,1,0种情况，此时遍历处理
       while (from + 1 <= from_end && n_left_to_tx >= 1)
 	{
 	  u32 bi0;
@@ -432,6 +443,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 	    calc_checksums (vm, b0);
 	}
 
+      //check sum计算完成，准备输出
       vlib_put_next_frame (vm, node, next_index, n_left_to_tx);
     }
 

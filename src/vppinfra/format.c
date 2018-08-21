@@ -415,6 +415,7 @@ va_format (u8 * s, const char *fmt, va_list * va)
   return s;
 }
 
+//格式化fmt,并将结果输出到s
 u8 *
 format (u8 * s, const char *fmt, ...)
 {

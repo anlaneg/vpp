@@ -642,6 +642,7 @@ vlib_unix_main (int argc, char *argv[])
     (((uword) vm->heap_base) & ~(VLIB_FRAME_ALIGN - 1));
   ASSERT (vm->heap_base);
 
+  //将多个参数合关到一串字符串
   unformat_init_command_line (&input, (char **) vm->argv);
   if ((e = vlib_plugin_config (vm, &input)))
     {
@@ -650,6 +651,7 @@ vlib_unix_main (int argc, char *argv[])
     }
   unformat_free (&input);
 
+  //插件初始化（加载插件，并执行初始化）
   i = vlib_plugin_early_init (vm);
   if (i)
     return i;

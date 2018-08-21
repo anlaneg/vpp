@@ -23,6 +23,7 @@
 
 plugin_main_t vat_plugin_main;
 
+//打开so，并调用vat_plugin_register
 static int
 load_one_vat_plugin (plugin_main_t * pm, plugin_info_t * pi)
 {
@@ -30,6 +31,7 @@ load_one_vat_plugin (plugin_main_t * pm, plugin_info_t * pi)
   clib_error_t *(*fp) (vat_main_t *);
   clib_error_t *error;
 
+  //打开so
   handle = dlopen ((char *) pi->filename, RTLD_LAZY);
 
   /*
@@ -45,6 +47,7 @@ load_one_vat_plugin (plugin_main_t * pm, plugin_info_t * pi)
 
   pi->handle = handle;
 
+  //取vat_plugin_register函数
   register_handle = dlsym (pi->handle, "vat_plugin_register");
   if (register_handle == 0)
     {
@@ -55,6 +58,7 @@ load_one_vat_plugin (plugin_main_t * pm, plugin_info_t * pi)
 
   fp = register_handle;
 
+  //调用注册
   error = (*fp) (pm->vat_main);
 
   if (error)
@@ -69,6 +73,7 @@ load_one_vat_plugin (plugin_main_t * pm, plugin_info_t * pi)
   return 0;
 }
 
+//将plugin_path按':'分拆开，返回插件路径集
 static u8 **
 split_plugin_path (plugin_main_t * pm)
 {
@@ -81,9 +86,10 @@ split_plugin_path (plugin_main_t * pm)
     {
       if (path[i] != ':')
 	{
-	  vec_add1 (this, path[i]);
+	  vec_add1 (this, path[i]);//将元素存入vector
 	  continue;
 	}
+      //由于遇到':',加入'\0'
       vec_add1 (this, 0);
       vec_add1 (rv, this);
       this = 0;
@@ -107,8 +113,10 @@ vat_load_new_plugins (plugin_main_t * pm)
   u8 **plugin_path;
   int i;
 
+  //取插件路径集
   plugin_path = split_plugin_path (pm);
 
+  //遍历插件路径
   for (i = 0; i < vec_len (plugin_path); i++)
     {
       dp = opendir ((char *) plugin_path[i]);
@@ -116,6 +124,7 @@ vat_load_new_plugins (plugin_main_t * pm)
       if (dp == 0)
 	continue;
 
+      //遍历其路径
       while ((entry = readdir (dp)))
 	{
 	  u8 *plugin_name;
@@ -126,13 +135,15 @@ vat_load_new_plugins (plugin_main_t * pm)
 	      int j;
 	      for (j = 0; j < vec_len (pm->plugin_name_filter); j++)
 		if (entry->d_name[j] != pm->plugin_name_filter[j])
-		  goto next;
+		  goto next;//跳过被filter指定的文件
 	    }
 
+	  //取配置文件路径，配置文件
 	  file_name = format (0, "%s/%s%c", plugin_path[i], entry->d_name, 0);
 	  plugin_name = format (0, "%s%c", entry->d_name, 0);
 
 	  /* unreadable */
+	  //取文件state
 	  if (stat ((char *) file_name, &statb) < 0)
 	    {
 	    ignore:
@@ -142,6 +153,7 @@ vat_load_new_plugins (plugin_main_t * pm)
 	    }
 
 	  /* a dir or other things which aren't plugins */
+	  //仅考虑规则文件
 	  if (!S_ISREG (statb.st_mode))
 	    goto ignore;
 
@@ -149,10 +161,11 @@ vat_load_new_plugins (plugin_main_t * pm)
 	  if (p == 0)
 	    {
 	      vec_add2 (pm->plugin_info, pi, 1);
-	      pi->name = plugin_name;
-	      pi->filename = file_name;
-	      pi->file_info = statb;
+	      pi->name = plugin_name;//插件名称
+	      pi->filename = file_name;//插件路径
+	      pi->file_info = statb;//文件信息
 
+	      //加载配置文件
 	      if (load_one_vat_plugin (pm, pi))
 		{
 		  vec_free (file_name);

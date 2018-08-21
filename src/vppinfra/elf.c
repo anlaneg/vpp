@@ -1336,13 +1336,16 @@ elf_read_file (elf_main_t * em, char *file_name)
 
   elf_main_init (em);
 
+  //打开elf文件
   fd = open (file_name, 0);
   if (fd < 0)
     {
+	  //打开文件失败
       error = clib_error_return_unix (0, "open `%s'", file_name);
       goto done;
     }
 
+  //取文件stat
   if (fstat (fd, &fd_stat) < 0)
     {
       error = clib_error_return_unix (0, "fstat `%s'", file_name);
@@ -1350,6 +1353,7 @@ elf_read_file (elf_main_t * em, char *file_name)
     }
   mmap_length = fd_stat.st_size;
 
+  //将文件映射进内存
   data = mmap (0, mmap_length, PROT_READ, MAP_SHARED, fd, /* offset */ 0);
   if (~pointer_to_uword (data) == 0)
     {
@@ -1363,9 +1367,11 @@ elf_read_file (elf_main_t * em, char *file_name)
   if (error)
     goto done;
 
+  //解析符号
   elf_parse_symbols (em);
   elf_parse_dynamic (em);
 
+  //确定解析器
   em->interpreter = elf_find_interpreter (em, data);
 
   munmap (data, mmap_length);

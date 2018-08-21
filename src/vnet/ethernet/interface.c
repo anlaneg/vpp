@@ -285,9 +285,11 @@ ethernet_register_interface (vnet_main_t * vnm,
   clib_error_t *error = 0;
   u32 hw_if_index;
 
+  //获取一个以太网接口结构体
   pool_get (em->interfaces, ei);
   ei->flag_change = flag_change;
 
+  //注册interface
   hw_if_index = vnet_register_interface
     (vnm,
      dev_class_index, dev_instance,

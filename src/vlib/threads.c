@@ -288,6 +288,7 @@ sort_registrations_by_no_clone (void *a0, void *a1)
 	  - ((i32) ((*tr1)->no_data_structure_clone)));
 }
 
+//读取文件，返回一个bitmap
 static uword *
 clib_sysfs_list_to_bitmap (char *filename)
 {
@@ -298,6 +299,7 @@ clib_sysfs_list_to_bitmap (char *filename)
 
   if (fp != NULL)
     {
+	  //读取行数据
       u8 *buffer = 0;
       vec_validate (buffer, 256 - 1);
       if (fgets ((char *) buffer, 256, fp))
@@ -330,11 +332,14 @@ vlib_thread_init (vlib_main_t * vm)
   uword *avail_cpu;
 
   /* get bitmaps of active cpu cores and sockets */
+  //提取在线cpu的bitmap
   tm->cpu_core_bitmap =
     clib_sysfs_list_to_bitmap ("/sys/devices/system/cpu/online");
+  //提取在线node的bitmap
   tm->cpu_socket_bitmap =
     clib_sysfs_list_to_bitmap ("/sys/devices/system/node/online");
 
+  //产生一个新的幅本
   avail_cpu = clib_bitmap_dup (tm->cpu_core_bitmap);
 
   /* skip cores */

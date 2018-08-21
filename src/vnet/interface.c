@@ -770,6 +770,7 @@ setup_output_node (vlib_main_t * vm,
 }
 
 /* Register an interface instance. */
+//接口注册
 u32
 vnet_register_interface (vnet_main_t * vnm,
 			 u32 dev_class_index,
@@ -778,6 +779,7 @@ vnet_register_interface (vnet_main_t * vnm,
 {
   vnet_interface_main_t *im = &vnm->interface_main;
   vnet_hw_interface_t *hw;
+  //取设备类型
   vnet_device_class_t *dev_class =
     vnet_get_device_class (vnm, dev_class_index);
   vnet_hw_interface_class_t *hw_class =
@@ -880,6 +882,7 @@ vnet_register_interface (vnet_main_t * vnm,
       });
       /* *INDENT-ON* */
 
+      //将node的function设置为设备的tx_function
       node = vlib_get_node (vm, hw->tx_node_index);
       node->function = dev_class->tx_function;
       node->format_trace = dev_class->format_tx_trace;
@@ -894,6 +897,7 @@ vnet_register_interface (vnet_main_t * vnm,
     }
   else
     {
+	  //构造并注册node
       vlib_node_registration_t r;
       vnet_interface_output_runtime_t rt = {
 	.hw_if_index = hw_index,

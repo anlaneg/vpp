@@ -968,6 +968,7 @@ parse_fail:
   return input_matches_format;
 }
 
+//自字符串格式中解析数据
 uword
 unformat (unformat_input_t * input, const char *fmt, ...)
 {
@@ -1003,6 +1004,7 @@ unformat_user (unformat_input_t * input, unformat_function_t * func, ...)
 }
 
 /* Setup for unformat of Unix style command line. */
+//将argv合并成一串字符串，填充到input->buffer
 void
 unformat_init_command_line (unformat_input_t * input, char *argv[])
 {
@@ -1011,6 +1013,7 @@ unformat_init_command_line (unformat_input_t * input, char *argv[])
   unformat_init (input, 0, 0);
 
   /* Concatenate argument strings with space in between. */
+  //将字参数构造成空格分隔的字符串
   for (i = 1; argv[i]; i++)
     {
       vec_add (input->buffer, argv[i], strlen (argv[i]));

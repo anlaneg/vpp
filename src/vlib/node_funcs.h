@@ -54,7 +54,7 @@
  @param i node index.
  @return pointer to the requested vlib_node_t.
 */
-
+//按索引取node
 always_inline vlib_node_t *
 vlib_get_node (vlib_main_t * vm, u32 i)
 {

@@ -76,6 +76,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (elf_read_file (&em, (char *) pi->filename))
     return -1;
 
+  //取指定段
   error = elf_get_section_by_name (&em, ".vlib_plugin_registration",
 				   &section);
   if (error)
@@ -138,6 +139,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   vec_free (data);
   elf_main_free (&em);
 
+  //打开插件
   handle = dlopen ((char *) pi->filename, RTLD_LAZY);
 
   if (handle == 0)
@@ -153,6 +155,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 
   if (reg == 0)
     {
+	  //无vlib_plugin_registration,报错
       /* This should never happen unless somebody chagnes registration macro */
       clib_warning ("Missing plugin registration in plugin '%s'", pi->name);
       dlclose (pi->handle);
@@ -168,11 +171,12 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
       clib_error_t *(*ei) (vlib_main_t *);
       void *h;
 
+      //查找$early_init函数
       h = dlsym (pi->handle, reg->early_init);
       if (h)
 	{
 	  ei = h;
-	  error = (*ei) (pm->vlib_main);
+	  error = (*ei) (pm->vlib_main);//调用初始化函数
 	  if (error)
 	    {
 	      clib_error_report (error);
@@ -197,6 +201,7 @@ error:
   return -1;
 }
 
+//split 插件路径
 static u8 **
 split_plugin_path (plugin_main_t * pm)
 {
@@ -233,6 +238,7 @@ plugin_name_sort_cmp (void *a1, void *a2)
   return strcmp ((char *) p1->name, (char *) p2->name);
 }
 
+//插件加载
 int
 vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
 {
@@ -247,29 +253,33 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
 
   plugin_path = split_plugin_path (pm);
 
+  //遍历插件路径
   for (i = 0; i < vec_len (plugin_path); i++)
     {
       dp = opendir ((char *) plugin_path[i]);
 
       if (dp == 0)
-	continue;
+	continue;//打开目录失败，继续
 
       while ((entry = readdir (dp)))
 	{
 	  u8 *plugin_name;
 	  u8 *filename;
 
+	  //跳过filter的插件名称
 	  if (pm->plugin_name_filter)
 	    {
 	      int j;
 	      for (j = 0; j < vec_len (pm->plugin_name_filter); j++)
-		if (entry->d_name[j] != pm->plugin_name_filter[j])
+		if (entry->d_name[j] != pm->plugin_name_filter[j])//此段代码是错的（应为 ==,而非!=)
 		  goto next;
 	    }
 
+	  //构造插件名称
 	  filename = format (0, "%s/%s%c", plugin_path[i], entry->d_name, 0);
 
 	  /* Only accept .so */
+	  //必须为.so文件
 	  char *ext = strrchr ((const char *) filename, '.');
 	  /* unreadable */
 	  if (!ext || (strcmp (ext, ".so") != 0) ||
@@ -280,15 +290,18 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
 	      continue;
 	    }
 
+	  //必须为文件
 	  /* a dir or other things which aren't plugins */
 	  if (!S_ISREG (statb.st_mode))
 	    goto ignore;
 
+	  //取插件名称
 	  plugin_name = format (0, "%s%c", entry->d_name, 0);
 	  /* Have we seen this plugin already? */
 	  p = hash_get_mem (pm->plugin_by_name_hash, plugin_name);
 	  if (p == 0)
 	    {
+		  //此插件不存在，注册它
 	      /* No, add it to the plugin vector */
 	      vec_add2 (pm->plugin_info, pi, 1);
 	      pi->name = plugin_name;
@@ -312,6 +325,7 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
    * Loading plugins in directory (vs. alphabetical) order
    * makes trace replay incredibly fragile.
    */
+  //按插件名称进行排序
   vec_sort_with_function (pm->plugin_info, plugin_name_sort_cmp);
 
   /*
@@ -319,6 +333,7 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
    */
   for (i = 0; i < vec_len (pm->plugin_info); i++)
     {
+	  //取$i对应的插件配置
       pi = vec_elt_at_index (pm->plugin_info, i);
 
       if (load_one_plugin (pm, pi, from_early_init))
@@ -355,6 +370,7 @@ vlib_plugin_early_init (vlib_main_t * vm)
 {
   plugin_main_t *pm = &vlib_plugin_main;
 
+  //设置插件路径
   if (pm->plugin_path == 0)
     pm->plugin_path = format (0, "%s%c", vlib_plugin_path, 0);
 
@@ -435,10 +451,12 @@ config_one_plugin (vlib_main_t * vm, char *name, unformat_input_t * input)
   if (pm->config_index_by_name == 0)
     pm->config_index_by_name = hash_create_string (0, sizeof (uword));
 
+  //通过名称找插件
   p = hash_get_mem (pm->config_index_by_name, name);
 
   if (p)
     {
+	  //插件已注册，报错
       error = clib_error_return (0, "plugin '%s' already configured", name);
       goto done;
     }
@@ -466,6 +484,7 @@ config_one_plugin (vlib_main_t * vm, char *name, unformat_input_t * input)
       goto done;
     }
 
+  //注册$name插件
   vec_add2 (pm->configs, pc, 1);
   hash_set_mem (pm->config_index_by_name, name, pc - pm->configs);
   pc->is_enabled = is_enable;
@@ -515,7 +534,7 @@ done:
       unformat_input_t sub_input;
       u8 *s = 0;
       if (unformat (input, "path %s", &s))
-	pm->plugin_path = s;
+	pm->plugin_path = s;//设置插件地址
       else if (unformat (input, "name-filter %s", &s))
 	pm->plugin_name_filter = s;
       else if (unformat (input, "vat-path %s", &s))

@@ -279,6 +279,7 @@ static void __vlib_rm_config_function_##x (void)                \
     clib_error_t * _error = 0;						\
     if (! hash_get (vm->init_functions_called, _f))			\
       {									\
+    	/*设置初始化函数*/\
 	hash_set1 (vm->init_functions_called, _f);			\
 	_error = _f (vm);						\
       }									\

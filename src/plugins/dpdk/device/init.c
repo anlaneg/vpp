@@ -235,6 +235,7 @@ dpdk_lib_init (dpdk_main_t * dm)
   vec_validate_aligned (dm->devices_by_hqos_cpu, tm->n_vlib_mains - 1,
 			CLIB_CACHE_LINE_BYTES);
 
+  //获得识别的接口数
   nports = rte_eth_dev_count_avail ();
 
   if (nports < 1)
@@ -242,6 +243,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       dpdk_log_notice ("DPDK drivers found no ports...");
     }
 
+  //显示识别的接口数
   if (CLIB_DEBUG > 0)
     dpdk_log_notice ("DPDK drivers found %d ports...", nports);
 
@@ -263,6 +265,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       vnet_buffer (&ptd->buffer_template)->sw_if_index[VLIB_TX] = (u32) ~ 0;
     }
 
+  //遍历每个dev
   /* *INDENT-OFF* */
   RTE_ETH_FOREACH_DEV(i)
     {
@@ -275,18 +278,22 @@ dpdk_lib_init (dpdk_main_t * dm)
       vlib_pci_addr_t pci_addr;
       uword *p = 0;
 
+      //跳过无效port
       if (!rte_eth_dev_is_valid_port(i))
 	continue;
 
+      //取设备状态
       rte_eth_link_get_nowait (i, &l);
       rte_eth_dev_info_get (i, &dev_info);
 
+      //跳过无法获取状态的设备
       if (dev_info.device == 0)
 	{
 	  clib_warning ("DPDK bug: missing device info. Skipping  %s device",
 			dev_info.driver_name);
 	  continue;
 	}
+      //取设备对应的pci地址，并由pci地址获取设备配置
       pci_dev = RTE_DEV_TO_PCI (dev_info.device);
 
       if (pci_dev)	/* bonded interface has no pci info */
@@ -300,11 +307,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 		      pci_addr.as_u32);
 	}
 
+      //获取设备配置
       if (p)
 	devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
       else
 	devconf = &dm->conf->default_devconf;
 
+      //设置描述符数量
       /* Create vnet interface */
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
       xd->nb_rx_desc = DPDK_NB_RX_DESC_DEFAULT;
@@ -382,10 +391,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  && dev_info.max_rx_queues >= devconf->num_rx_queues)
 	{
 	  xd->rx_q_used = devconf->num_rx_queues;
-	  xd->port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+	  xd->port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;//设置收包rss模式
 	  if (devconf->rss_fn == 0)
 	    xd->port_conf.rx_adv_conf.rss_conf.rss_hf =
-	      ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP;
+	      ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP;//支持ip,udp,tcp rsshash
 	  else
 	    xd->port_conf.rx_adv_conf.rss_conf.rss_hf = devconf->rss_fn;
 	}
@@ -418,6 +427,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  xd->nb_rx_desc = DPDK_NB_RX_DESC_DEFAULT;
 	  xd->nb_tx_desc = DPDK_NB_TX_DESC_DEFAULT;
 
+	  //依据驱动名称，设置接口类型
 	  switch (xd->pmd)
 	    {
 	      /* Drivers with valid speed_capa set */
@@ -561,6 +571,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    xd->nb_tx_desc = devconf->num_tx_desc;
 	}
 
+      //生成或者获取接口对应的mac地址
       if (xd->pmd == VNET_DPDK_PMD_AF_PACKET)
 	{
 	  f64 now = vlib_time_now (vm);
@@ -620,6 +631,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       /* count the number of descriptors used for this device */
       nb_desc += xd->nb_rx_desc + xd->nb_tx_desc * xd->tx_q_used;
 
+      //注册以太网接口
       error = ethernet_register_interface
 	(dm->vnet_main, dpdk_device_class.index, xd->device_index,
 	 /* ethernet address */ addr,
@@ -738,6 +750,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	if (xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD && hi != NULL)
 	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
 
+      //配置并启动设备
       dpdk_device_setup (xd);
 
       if (vec_len (xd->errors))
@@ -769,6 +782,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       else if (devconf->vlan_strip_offload == DPDK_DEVICE_VLAN_STRIP_ON)
 	vlan_strip = 1;
 
+      //处理vlan strip
       if (vlan_strip)
 	{
 	  int vlan_off;
@@ -782,6 +796,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  else
 	    xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_VLAN_STRIP;
 #endif
+      //设置vlan的硬件offload
 	  if (rte_eth_dev_set_vlan_offload (xd->port_id, vlan_off) == 0)
 	    dpdk_log_info ("VLAN strip enabled for interface\n");
 	  else
@@ -808,6 +823,7 @@ dpdk_lib_init (dpdk_main_t * dm)
   return 0;
 }
 
+//将设备绑定到uio
 static void
 dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 {
@@ -1607,6 +1623,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     }
 }
 
+//dpdk node处理
 static uword
 dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 {
@@ -1795,9 +1812,10 @@ dpdk_init (vlib_main_t * vm)
   dm->vnet_main = vnet_get_main ();
   dm->conf = &dpdk_config_main;
 
+  //设置通道数目，mbuf数量
   dm->conf->nchannels = 4;
   dm->conf->num_mbufs = dm->conf->num_mbufs ? dm->conf->num_mbufs : NB_MBUF;
-  vec_add1 (dm->conf->eal_init_args, (u8 *) "vnet");
+  vec_add1 (dm->conf->eal_init_args, (u8 *) "vnet");//加入到"vnet"
 
   vec_validate (dm->recycle, tm->n_thread_stacks - 1);
 

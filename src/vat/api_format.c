@@ -363,6 +363,7 @@ unformat_ipsec_crypto_alg (unformat_input_t * input, va_list * args)
   return 1;
 }
 
+//格式化加密算法
 u8 *
 format_ipsec_crypto_alg (u8 * s, va_list * args)
 {
@@ -380,6 +381,7 @@ format_ipsec_crypto_alg (u8 * s, va_list * args)
   return format (s, "%s", t);
 }
 
+//由算法字符串获得算法编号
 uword
 unformat_ipsec_integ_alg (unformat_input_t * input, va_list * args)
 {
@@ -15078,6 +15080,7 @@ api_ipsec_spd_add_del_entry (vat_main_t * vam)
   return ret;
 }
 
+//添加删除配置
 static int
 api_ipsec_sad_add_del_entry (vat_main_t * vam)
 {

@@ -886,7 +886,7 @@ typedef struct
 
   u8 parsed_symbols;
 
-  char *file_name;
+  char *file_name;//elf文件名称
 
   elf_first_header_t first_header;
 

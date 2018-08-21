@@ -185,7 +185,7 @@ typedef struct _vnet_device_class
   vnet_interface_function_t *interface_add_del_function;
 
   /* Function to bring device administratively up/down. */
-  vnet_interface_function_t *admin_up_down_function;
+  vnet_interface_function_t *admin_up_down_function;//设置接口up/down
 
   /* Function to call when sub-interface is added/deleted */
   vnet_subif_add_del_function_t *subif_add_del_function;
@@ -200,7 +200,7 @@ typedef struct _vnet_device_class
   u32 redistribute;
 
   /* Transmit function. */
-  vlib_node_function_t *tx_function;
+  vlib_node_function_t *tx_function;//接口发包函数
 
   /* Transmit function candidate registration with priority */
   vlib_node_fn_registration_t *tx_fn_registrations;
@@ -249,7 +249,7 @@ typedef struct _vnet_device_class
 			       u32 hw_if_index, u32 node_index);
 
   /* Link-list of all device classes set up by constructors created below */
-  struct _vnet_device_class *next_class_registration;
+  struct _vnet_device_class *next_class_registration;//用于串连其它device_class
 
   /* Function to set mac address. */
   vnet_interface_set_mac_address_function_t *mac_addr_change_function;
@@ -257,15 +257,18 @@ typedef struct _vnet_device_class
 
 #ifndef CLIB_MARCH_VARIANT
 #define VNET_DEVICE_CLASS(x,...)                                        \
+	/*声明device_class*/                                                 \
   __VA_ARGS__ vnet_device_class_t x;                                    \
 static void __vnet_add_device_class_registration_##x (void)             \
     __attribute__((__constructor__)) ;                                  \
+/*实现device class注册，通过定义全局变量，各全局变量通过next_class_registration串连起来*/\
 static void __vnet_add_device_class_registration_##x (void)             \
 {                                                                       \
     vnet_main_t * vnm = vnet_get_main();                                \
     x.next_class_registration = vnm->device_class_registrations;        \
     vnm->device_class_registrations = &x;                               \
 }                                                                       \
+/*实现device class解注册*/                                                \
 static void __vnet_rm_device_class_registration_##x (void)              \
     __attribute__((__destructor__)) ;                                   \
 static void __vnet_rm_device_class_registration_##x (void)              \
@@ -274,6 +277,7 @@ static void __vnet_rm_device_class_registration_##x (void)              \
     VLIB_REMOVE_FROM_LINKED_LIST (vnm->device_class_registrations,      \
                                   &x, next_class_registration);         \
 }                                                                       \
+/*展开宏，初始化device_class*/\
 __VA_ARGS__ vnet_device_class_t x
 #else
 /* create unused pointer to silence compiler warnings and get whole

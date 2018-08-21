@@ -23,6 +23,7 @@
 
 plugin_main_t vat_plugin_main;
 
+//加载plugin
 static int
 load_one_plugin (plugin_main_t * pm, plugin_info_t * pi)
 {
@@ -70,6 +71,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi)
   return 0;
 }
 
+//拆分插件路径
 static u8 **
 split_plugin_path (plugin_main_t * pm)
 {
@@ -110,6 +112,7 @@ vat_load_new_plugins (plugin_main_t * pm)
 
   plugin_path = split_plugin_path (pm);
 
+  //遍历每个插件路径
   for (i = 0; i < vec_len (plugin_path); i++)
     {
       dp = opendir ((char *) plugin_path[i]);
@@ -144,9 +147,11 @@ vat_load_new_plugins (plugin_main_t * pm)
 	  if (!S_ISREG (statb.st_mode))
 	    goto ignore;
 
+	  //提取插件
 	  p = hash_get_mem (pm->plugin_by_name_hash, plugin_name);
 	  if (p == 0)
 	    {
+		  //未查询出插件
 	      vec_add2 (pm->plugin_info, pi, 1);
 	      pi->name = plugin_name;
 	      pi->file_info = statb;

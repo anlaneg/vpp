@@ -119,7 +119,7 @@ _vec_resize_inline (void *v,
 		    word length_increment,
 		    uword data_bytes, uword header_bytes, uword data_align)
 {
-  vec_header_t *vh = _vec_find (v);
+  vec_header_t *vh = _vec_find (v);//取vector头部
   uword new_data_bytes, aligned_header_bytes;
 
   aligned_header_bytes = vec_header_bytes (header_bytes);
@@ -511,6 +511,7 @@ do {								\
 do {									\
   word _v(l) = vec_len (V);						\
   V = _vec_resize ((V), 1, (_v(l) + 1) * sizeof ((V)[0]), (H), (A));	\
+  /*将E放在V的尾部*/\
   (V)[_v(l)] = (E);							\
 } while (0)
 
@@ -575,6 +576,7 @@ do {										\
 
 /** \brief Add N elements to end of vector V (general version)
 
+	V指向vector,添加N个elements（E）到V的尾部
     @param V pointer to a vector
     @param E pointer to element(s) to add
     @param N number of elements to add
@@ -585,6 +587,7 @@ do {										\
 #define vec_add_ha(V,E,N,H,A)							\
 do {										\
   word _v(n) = (N);								\
+  /*取出vecotr的长度*/\
   word _v(l) = vec_len (V);							\
   V = _vec_resize ((V), _v(n), (_v(l) + _v(n)) * sizeof ((V)[0]), (H), (A));	\
   clib_memcpy ((V) + _v(l), (E), _v(n) * sizeof ((V)[0]));			\

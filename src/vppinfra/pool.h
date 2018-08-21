@@ -225,6 +225,7 @@ do {                                                                    \
 } while (0)
 
 /** Allocate an object E from a pool P (unspecified alignment). */
+//自pool中获取一个元素
 #define pool_get(P,E) pool_get_aligned(P,E,0)
 
 /** See if pool_get will expand the pool or not */

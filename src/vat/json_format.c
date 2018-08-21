@@ -31,6 +31,7 @@ typedef struct vat_print_ctx_s
 } vat_print_ctx_t;
 
 /* Format an IP4 address. */
+//格式化ipv4地址
 static u8 *
 vat_json_format_ip4_address (u8 * s, va_list * args)
 {

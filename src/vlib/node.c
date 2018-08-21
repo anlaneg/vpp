@@ -309,6 +309,7 @@ node_elog_init (vlib_main_t * vm, uword ni)
 #define STACK_ALIGN CLIB_CACHE_LINE_BYTES
 #endif
 
+//注册vpp中的node
 static void
 register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 {
@@ -352,7 +353,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   memset (n, 0, sizeof (n[0]));
   n->index = vec_len (nm->nodes);
 
-  //放入对应索引（n被加入***）
+  //放入对应索引（node被加入***）
   vec_add1 (nm->nodes, n);
 
   /* Name is always a vector so it can be formatted with %v. */
@@ -368,6 +369,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 
   /* Node names must be unique. */
   {
+	//此名称对应的node应不存在，如存在，则报错
     vlib_node_t *o = vlib_get_node_by_name (vm, n->name);
     if (o)
       clib_error ("more than one node named `%v'", n->name);

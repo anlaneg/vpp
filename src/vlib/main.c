@@ -925,6 +925,7 @@ dispatch_node (vlib_main_t * vm,
   if (CLIB_DEBUG > 0)
     {
       vlib_node_t *n = vlib_get_node (vm, node->node_index);
+      //断言node->node_index号node的类型为$type
       ASSERT (n->type == type);
     }
 
@@ -1027,6 +1028,7 @@ dispatch_node (vlib_main_t * vm,
 	      !(node->flags &
 		VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE))
 	    {
+		  //取相应的node
 	      vlib_node_t *n = vlib_get_node (vm, node->node_index);
 	      n->state = VLIB_NODE_STATE_POLLING;
 	      node->state = VLIB_NODE_STATE_POLLING;
@@ -1624,12 +1626,14 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
     }
 }
 
+//控制线程或者worker线程loop
 static void
 vlib_main_loop (vlib_main_t * vm)
 {
   vlib_main_or_worker_loop (vm, /* is_main */ 1);
 }
 
+//worker线程loop
 void
 vlib_worker_loop (vlib_main_t * vm)
 {

@@ -53,13 +53,15 @@
     @param buffer_index - (u32) buffer index
     @return - (vlib_buffer_t *) buffer pointer
 */
+//给出索引取对应的buffer
 always_inline vlib_buffer_t *
 vlib_get_buffer (vlib_main_t * vm, u32 buffer_index)
 {
   vlib_buffer_main_t *bm = &buffer_main;
-  uword offset = ((uword) buffer_index) << CLIB_LOG2_CACHE_LINE_BYTES;
+  uword offset = ((uword) buffer_index) << CLIB_LOG2_CACHE_LINE_BYTES;//64字节对齐
   ASSERT (offset < bm->buffer_mem_size);
 
+  //取对应的buffer
   return uword_to_pointer (bm->buffer_mem_start + offset, void *);
 }
 

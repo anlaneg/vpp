@@ -436,7 +436,7 @@ typedef struct
   /* convenience */
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
-  dpdk_config_main_t *conf;
+  dpdk_config_main_t *conf;//配置
 
   /* mempool */
   struct rte_mempool **pktmbuf_pools;

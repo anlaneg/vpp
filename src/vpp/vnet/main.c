@@ -29,7 +29,7 @@
 /*
  * Load plugins from /usr/lib/vpp_plugins by default
  */
-char *vlib_plugin_path = "/usr/lib/vpp_plugins";
+char *vlib_plugin_path = "/usr/lib/vpp_plugins";//vpp插件目录
 char *vlib_plugin_app_version = VPP_BUILD_VER;
 
 static void
