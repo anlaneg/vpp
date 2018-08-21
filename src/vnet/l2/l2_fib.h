@@ -162,6 +162,7 @@ l2fib_compute_hash_bucket (l2fib_entry_key_t * key)
  * The 6-Bytes mac-address is cast into an 8-Bytes u64, with 2 additional Bytes.
  * l2fib_make_key() does read those two Bytes but does not use them.
  */
+//将mac与u16合并成一个u64
 always_inline u64 __attribute__ ((no_sanitize_address))
 l2fib_make_key (u8 * mac_address, u16 bd_index)
 {

@@ -303,6 +303,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  b3 = vlib_get_buffer (vm, bi3);
 
 	  /* RX interface handles */
+	  //获取报文入口地址
 	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 	  sw_if_index1 = vnet_buffer (b1)->sw_if_index[VLIB_RX];
 	  sw_if_index2 = vnet_buffer (b2)->sw_if_index[VLIB_RX];
@@ -310,6 +311,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  /* Process 4 x pkts */
 
+	  //指向报文头部
 	  h0 = vlib_buffer_get_current (b0);
 	  h1 = vlib_buffer_get_current (b1);
 	  h2 = vlib_buffer_get_current (b2);
