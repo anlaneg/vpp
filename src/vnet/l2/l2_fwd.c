@@ -292,6 +292,7 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  n_left_from -= 4;
 	  n_left_to_next -= 4;
 
+	  //取报文
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b1 = vlib_get_buffer (vm, bi1);
 	  b2 = vlib_get_buffer (vm, bi2);
@@ -353,6 +354,7 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  em->counters[node_counter_base_index + L2FWD_ERROR_L2FWD] += 4;
 #endif
 	  /* *INDENT-OFF* */
+	  //查询fib表
 	  l2fib_lookup_4 (msm->mac_table, &cached_key, &cached_result,
 			  h0->dst_address, h1->dst_address,
 			  h2->dst_address, h3->dst_address,
