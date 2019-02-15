@@ -49,20 +49,18 @@ Release: %{_release}
 Requires: vpp-lib = %{_version}-%{_release}, vpp-selinux-policy = %{_version}-%{_release}, net-tools, pciutils, python
 BuildRequires: systemd, chrpath
 BuildRequires: check, check-devel
-%if 0%{?fedora} >= 26
+%if 0%{?fedora}
 BuildRequires: subunit, subunit-devel
 BuildRequires: compat-openssl10-devel
 BuildRequires: python2-devel, python2-virtualenv, python2-ply
 BuildRequires: mbedtls-devel
+BuildRequires: cmake
 %else
-%if 0%{?fedora} == 25
-BuildRequires: subunit, subunit-devel
-BuildRequires: openssl-devel
-BuildRequires: python-devel, python2-virtualenv, python2-ply
-BuildRequires: mbedtls-devel
-%else
+%if 0%{rhel} == 7
+BuildRequires: devtoolset-7-toolchain
 BuildREquires: openssl-devel
 BuildRequires: python-devel, python-virtualenv, python-ply
+BuildRequires: cmake3
 %endif
 %endif
 BuildRequires: libffi-devel
@@ -157,6 +155,9 @@ This package contains a tailored VPP SELinux policy
 groupadd -f -r vpp
 
 %build
+%if 0%{?rhel}
+. /opt/rh/devtoolset-7/enable
+%endif
 %if %{with aesni}
     make bootstrap
     make -C build-root PLATFORM=vpp TAG=%{_vpp_tag} install-packages
@@ -192,7 +193,7 @@ install -p -m 644 %{_mu_build_dir}/../src/vpp/conf/80-vpp.conf %{buildroot}/etc/
 mkdir -p -m755 %{buildroot}%{_libdir}
 mkdir -p -m755 %{buildroot}/etc/bash_completion.d
 mkdir -p -m755 %{buildroot}/usr/share/vpp
-for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/*/lib* -type f -name '*.so.*.*.*' -print )
+for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/*/lib* -type f -name '*.so.*.*' -print )
 do
 	install -p -m 755 $file %{buildroot}%{_libdir}
 done
@@ -208,8 +209,6 @@ for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/vpp/share/vpp/api  -type
 do
 	install -p -m 644 $file %{buildroot}/usr/share/vpp/api
 done
-install -p -m 644 %{_mu_build_dir}/../src/scripts/vppctl_completion %{buildroot}/etc/bash_completion.d
-install -p -m 644 %{_mu_build_dir}/../src/scripts/vppctl-cmd-list %{buildroot}/usr/share/vpp
 
 # Lua bindings
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/lua/examples/cli
@@ -265,8 +264,8 @@ for i in $(ls %{_mu_build_dir}/../extras/japi/java/jvpp/gen/jvppgen/*.py); do
    install -p -m666 ${i} %{buildroot}%{python2_sitelib}/jvppgen
 done;
 
-install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/C.py %{buildroot}/usr/share/vpp
-install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/JSON.py %{buildroot}/usr/share/vpp
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/vppapigen_c.py %{buildroot}/usr/share/vpp
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/vppapigen_json.py %{buildroot}/usr/share/vpp
 
 # sample plugin
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/sample-plugin/sample
@@ -284,22 +283,22 @@ mkdir -p -m755 %{buildroot}%{_localstatedir}/log/vpp
 
 #
 # vpp-plugins
-# 
+#
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_plugins
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_api_test_plugins
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins && find -type f -print)
 do
-        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_plugins/$file \
+        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins/$file \
            %{buildroot}/usr/lib/vpp_plugins/$file
 done
 
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_api_test_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins && find -type f -print)
 do
-        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_api_test_plugins/$file \
+        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins/$file \
            %{buildroot}/usr/lib/vpp_api_test_plugins/$file
 done
 
-for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/plugins -type f -name '*.api.json' -print )
+for file in $(find %{_mu_build_dir}/%{_vpp_install_dir}/vpp/share/vpp/api/plugins -type f -name '*.api.json' -print )
 do
 	install -p -m 644 $file %{buildroot}/usr/share/vpp/api
 done
@@ -384,8 +383,6 @@ fi
 %exclude %{_libdir}/vpp_api_test_plugins
 %{_libdir}/*
 /usr/share/vpp/api/*
-/etc/bash_completion.d/vppctl_completion
-/usr/share/vpp/vppctl-cmd-list
 
 %files api-lua
 %defattr(644,root,root,644)
@@ -396,7 +393,7 @@ fi
 /usr/share/java/*
 
 %files api-python
-%defattr(644,root,root)
+%defattr(644,root,root,755)
 %{python2_sitelib}/vpp_*
 
 %files selinux-policy

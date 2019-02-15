@@ -47,6 +47,8 @@ typedef enum fib_node_type_t_ {
     FIB_NODE_TYPE_UDP_ENCAP,
     FIB_NODE_TYPE_BIER_FMASK,
     FIB_NODE_TYPE_BIER_ENTRY,
+    FIB_NODE_TYPE_VXLAN_GBP_TUNNEL,
+    FIB_NODE_TYPE_IPSEC_SA,
     /**
      * Marker. New types before this one. leave the test last.
      */
@@ -74,6 +76,8 @@ typedef enum fib_node_type_t_ {
     [FIB_NODE_TYPE_UDP_ENCAP] = "udp-encap",			\
     [FIB_NODE_TYPE_BIER_FMASK] = "bier-fmask",			\
     [FIB_NODE_TYPE_BIER_ENTRY] = "bier-entry",			\
+    [FIB_NODE_TYPE_VXLAN_GBP_TUNNEL] = "vxlan-gbp-tunnel",	\
+    [FIB_NODE_TYPE_IPSEC_SA] = "ipsec-sa"                       \
 }
 
 /**
@@ -154,11 +158,14 @@ typedef enum fib_node_bw_reason_flag_t_ {
 STATIC_ASSERT(sizeof(fib_node_bw_reason_flag_t) < 2,
 	      "BW Reason enum < 2 byte. Consequences for cover_upd_res_t");
 
+extern u8 *format_fib_node_bw_reason(u8 *s, va_list *args);
+
 /**
  * Flags on the walk
  */
 typedef enum fib_node_bw_flags_t_
 {
+    FIB_NODE_BW_FLAG_NONE = 0,
     /**
      * Force the walk to be synchronous
      */

@@ -19,6 +19,7 @@
 #ifndef __included_nat_inlines_h__
 #define __included_nat_inlines_h__
 
+#include <vnet/fib/ip4_fib.h>
 #include <nat/nat.h>
 
 always_inline u32
@@ -120,7 +121,8 @@ nat_send_all_to_node (vlib_main_t * vm, u32 * bi_vector,
 	  to_next += 1;
 	  n_left_to_next -= 1;
 	  vlib_buffer_t *p0 = vlib_get_buffer (vm, bi0);
-	  p0->error = *error;
+	  if (error)
+	    p0->error = *error;
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, next);
 	}
@@ -157,6 +159,8 @@ nat44_delete_user_with_no_session (snat_main_t * sm, snat_user_t * u,
       pool_put_index (tsm->list_pool, u->sessions_per_user_list_head_index);
       pool_put (tsm->users, u);
       clib_bihash_add_del_8_8 (&tsm->user_hash, &kv, 0);
+      vlib_set_simple_counter (&sm->total_users, thread_index, 0,
+			       pool_elts (tsm->users));
     }
 }
 
@@ -175,6 +179,8 @@ nat44_delete_session (snat_main_t * sm, snat_session_t * ses,
   clib_dlist_remove (tsm->list_pool, ses->per_user_index);
   pool_put_index (tsm->list_pool, ses->per_user_index);
   pool_put (tsm->sessions, ses);
+  vlib_set_simple_counter (&sm->total_sessions, thread_index, 0,
+			   pool_elts (tsm->sessions));
 
   u_key.addr = ses->in2out.addr;
   u_key.fib_index = ses->in2out.fib_index;
@@ -198,6 +204,15 @@ always_inline int
 nat44_set_tcp_session_state_i2o (snat_main_t * sm, snat_session_t * ses,
 				 tcp_header_t * tcp, u32 thread_index)
 {
+  if ((ses->state == 0) && (tcp->flags & TCP_FLAG_RST))
+    ses->state = NAT44_SES_RST;
+  if ((ses->state == NAT44_SES_RST) && !(tcp->flags & TCP_FLAG_RST))
+    ses->state = 0;
+  if ((tcp->flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
+      (ses->state & NAT44_SES_O2I_SYN))
+    ses->state = 0;
+  if (tcp->flags & TCP_FLAG_SYN)
+    ses->state |= NAT44_SES_I2O_SYN;
   if (tcp->flags & TCP_FLAG_FIN)
     {
       ses->i2o_fin_seq = clib_net_to_host_u32 (tcp->seq_number);
@@ -208,7 +223,8 @@ nat44_set_tcp_session_state_i2o (snat_main_t * sm, snat_session_t * ses,
       if (clib_net_to_host_u32 (tcp->ack_number) > ses->o2i_fin_seq)
 	ses->state |= NAT44_SES_O2I_FIN_ACK;
     }
-  if (nat44_is_ses_closed (ses))
+  if (nat44_is_ses_closed (ses)
+      && !(ses->flags & SNAT_SESSION_FLAG_OUTPUT_FEATURE))
     {
       nat_log_debug ("TCP close connection %U", format_snat_session,
 		     &sm->per_thread_data[thread_index], ses);
@@ -223,6 +239,15 @@ always_inline int
 nat44_set_tcp_session_state_o2i (snat_main_t * sm, snat_session_t * ses,
 				 tcp_header_t * tcp, u32 thread_index)
 {
+  if ((ses->state == 0) && (tcp->flags & TCP_FLAG_RST))
+    ses->state = NAT44_SES_RST;
+  if ((ses->state == NAT44_SES_RST) && !(tcp->flags & TCP_FLAG_RST))
+    ses->state = 0;
+  if ((tcp->flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
+      (ses->state & NAT44_SES_O2I_SYN))
+    ses->state = 0;
+  if (tcp->flags & TCP_FLAG_SYN)
+    ses->state |= NAT44_SES_O2I_SYN;
   if (tcp->flags & TCP_FLAG_FIN)
     {
       ses->o2i_fin_seq = clib_net_to_host_u32 (tcp->seq_number);
@@ -241,6 +266,29 @@ nat44_set_tcp_session_state_o2i (snat_main_t * sm, snat_session_t * ses,
       nat44_delete_session (sm, ses, thread_index);
       return 1;
     }
+  return 0;
+}
+
+always_inline u32
+nat44_session_get_timeout (snat_main_t * sm, snat_session_t * s)
+{
+  switch (s->in2out.protocol)
+    {
+    case SNAT_PROTOCOL_ICMP:
+      return sm->icmp_timeout;
+    case SNAT_PROTOCOL_UDP:
+      return sm->udp_timeout;
+    case SNAT_PROTOCOL_TCP:
+      {
+	if (s->state)
+	  return sm->tcp_transitory_timeout;
+	else
+	  return sm->tcp_established_timeout;
+      }
+    default:
+      return sm->udp_timeout;
+    }
+
   return 0;
 }
 
@@ -293,6 +341,126 @@ make_sm_kv (clib_bihash_kv_8_8_t * kv, ip4_address_t * addr, u8 proto,
 
   kv->key = key.as_u64;
   kv->value = ~0ULL;
+}
+
+always_inline void
+mss_clamping (snat_main_t * sm, tcp_header_t * tcp, ip_csum_t * sum)
+{
+  u8 *data;
+  u8 opt_len, opts_len, kind;
+  u16 mss;
+
+  if (!(sm->mss_clamping && tcp_syn (tcp)))
+    return;
+
+  opts_len = (tcp_doff (tcp) << 2) - sizeof (tcp_header_t);
+  data = (u8 *) (tcp + 1);
+  for (; opts_len > 0; opts_len -= opt_len, data += opt_len)
+    {
+      kind = data[0];
+
+      if (kind == TCP_OPTION_EOL)
+	break;
+      else if (kind == TCP_OPTION_NOOP)
+	{
+	  opt_len = 1;
+	  continue;
+	}
+      else
+	{
+	  if (opts_len < 2)
+	    return;
+	  opt_len = data[1];
+
+	  if (opt_len < 2 || opt_len > opts_len)
+	    return;
+	}
+
+      if (kind == TCP_OPTION_MSS)
+	{
+	  mss = *(u16 *) (data + 2);
+	  if (clib_net_to_host_u16 (mss) > sm->mss_clamping)
+	    {
+	      *sum =
+		ip_csum_update (*sum, mss, sm->mss_value_net, ip4_header_t,
+				length);
+	      clib_memcpy_fast (data + 2, &sm->mss_value_net, 2);
+	    }
+	  return;
+	}
+    }
+}
+
+/**
+ * @brief Check if packet should be translated
+ *
+ * Packets aimed at outside interface and external address with active session
+ * should be translated.
+ *
+ * @param sm            NAT main
+ * @param rt            NAT runtime data
+ * @param sw_if_index0  index of the inside interface
+ * @param ip0           IPv4 header
+ * @param proto0        NAT protocol
+ * @param rx_fib_index0 RX FIB index
+ *
+ * @returns 0 if packet should be translated otherwise 1
+ */
+static inline int
+snat_not_translate_fast (snat_main_t * sm, vlib_node_runtime_t * node,
+			 u32 sw_if_index0, ip4_header_t * ip0, u32 proto0,
+			 u32 rx_fib_index0)
+{
+  if (sm->out2in_dpo)
+    return 0;
+
+  fib_node_index_t fei = FIB_NODE_INDEX_INVALID;
+  nat_outside_fib_t *outside_fib;
+  fib_prefix_t pfx = {
+    .fp_proto = FIB_PROTOCOL_IP4,
+    .fp_len = 32,
+    .fp_addr = {
+		.ip4.as_u32 = ip0->dst_address.as_u32,
+		}
+    ,
+  };
+
+  /* Don't NAT packet aimed at the intfc address */
+  if (PREDICT_FALSE (is_interface_addr (sm, node, sw_if_index0,
+					ip0->dst_address.as_u32)))
+    return 1;
+
+  fei = fib_table_lookup (rx_fib_index0, &pfx);
+  if (FIB_NODE_INDEX_INVALID != fei)
+    {
+      u32 sw_if_index = fib_entry_get_resolving_interface (fei);
+      if (sw_if_index == ~0)
+	{
+	  vec_foreach (outside_fib, sm->outside_fibs)
+	  {
+	    fei = fib_table_lookup (outside_fib->fib_index, &pfx);
+	    if (FIB_NODE_INDEX_INVALID != fei)
+	      {
+		sw_if_index = fib_entry_get_resolving_interface (fei);
+		if (sw_if_index != ~0)
+		  break;
+	      }
+	  }
+	}
+      if (sw_if_index == ~0)
+	return 1;
+
+      snat_interface_t *i;
+      pool_foreach (i, sm->interfaces, (
+					 {
+					 /* NAT packet aimed at outside interface */
+					 if ((nat_interface_is_outside (i))
+					     && (sw_if_index ==
+						 i->sw_if_index)) return 0;}
+		    ));
+    }
+
+  return 1;
 }
 
 #endif /* __included_nat_inlines_h__ */

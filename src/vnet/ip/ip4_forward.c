@@ -123,9 +123,6 @@ VLIB_NODE_FN (ip4_load_balance_node) (vlib_main_t * vm,
   n_left_from = frame->n_vectors;
   next = node->cached_next_index;
 
-  if (node->flags & VLIB_NODE_FLAG_TRACE)
-    ip4_forward_next_trace (vm, node, frame, VLIB_TX);
-
   while (n_left_from > 0)
     {
       vlib_get_next_frame (vm, node, next, to_next, n_left_to_next);
@@ -293,6 +290,9 @@ VLIB_NODE_FN (ip4_load_balance_node) (vlib_main_t * vm,
 
       vlib_put_next_frame (vm, node, next, n_left_to_next);
     }
+
+  if (node->flags & VLIB_NODE_FLAG_TRACE)
+    ip4_forward_next_trace (vm, node, frame, VLIB_TX);
 
   return frame->n_vectors;
 }
@@ -711,6 +711,7 @@ VNET_FEATURE_ARC_INIT (ip4_unicast, static) =
 {
   .arc_name = "ip4-unicast",
   .start_nodes = VNET_FEATURES ("ip4-input", "ip4-input-no-checksum"),
+  .last_in_arc = "ip4-lookup",
   .arc_index_ptr = &ip4_main.lookup_main.ucast_feature_arc_index,
 };
 
@@ -753,13 +754,13 @@ VNET_FEATURE_INIT (ip4_policer_classify, static) =
 {
   .arc_name = "ip4-unicast",
   .node_name = "ip4-policer-classify",
-  .runs_before = VNET_FEATURES ("ipsec-input-ip4"),
+  .runs_before = VNET_FEATURES ("ipsec4-input-feature"),
 };
 
 VNET_FEATURE_INIT (ip4_ipsec, static) =
 {
   .arc_name = "ip4-unicast",
-  .node_name = "ipsec-input-ip4",
+  .node_name = "ipsec4-input-feature",
   .runs_before = VNET_FEATURES ("vpath-input-ip4"),
 };
 
@@ -796,6 +797,7 @@ VNET_FEATURE_ARC_INIT (ip4_multicast, static) =
 {
   .arc_name = "ip4-multicast",
   .start_nodes = VNET_FEATURES ("ip4-input", "ip4-input-no-checksum"),
+  .last_in_arc = "ip4-mfib-forward-lookup",
   .arc_index_ptr = &ip4_main.lookup_main.mcast_feature_arc_index,
 };
 
@@ -825,6 +827,7 @@ VNET_FEATURE_ARC_INIT (ip4_output, static) =
 {
   .arc_name = "ip4-output",
   .start_nodes = VNET_FEATURES ("ip4-rewrite", "ip4-midchain", "ip4-dvr-dpo"),
+  .last_in_arc = "interface-output",
   .arc_index_ptr = &ip4_main.lookup_main.output_feature_arc_index,
 };
 
@@ -839,13 +842,13 @@ VNET_FEATURE_INIT (ip4_outacl, static) =
 {
   .arc_name = "ip4-output",
   .node_name = "ip4-outacl",
-  .runs_before = VNET_FEATURES ("ipsec-output-ip4"),
+  .runs_before = VNET_FEATURES ("ipsec4-output-feature"),
 };
 
 VNET_FEATURE_INIT (ip4_ipsec_output, static) =
 {
   .arc_name = "ip4-output",
-  .node_name = "ipsec-output-ip4",
+  .node_name = "ipsec4-output-feature",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
@@ -897,7 +900,9 @@ ip4_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
 VNET_SW_INTERFACE_ADD_DEL_FUNCTION (ip4_sw_interface_add_del);
 
 /* Global IP4 main. */
+#ifndef CLIB_MARCH_VARIANT
 ip4_main_t ip4_main;
+#endif /* CLIB_MARCH_VARIANT */
 
 static clib_error_t *
 ip4_lookup_init (vlib_main_t * vm)
@@ -943,11 +948,7 @@ ip4_lookup_init (vlib_main_t * vm)
   {
     ethernet_arp_header_t h;
 
-    memset (&h, 0, sizeof (h));
-
-    /* Set target ethernet address to all zeros. */
-    memset (h.ip4_over_ethernet[1].ethernet, 0,
-	    sizeof (h.ip4_over_ethernet[1].ethernet));
+    clib_memset (&h, 0, sizeof (h));
 
 #define _16(f,v) h.f = clib_host_to_net_u16 (v);
 #define _8(f,v) h.f = v;
@@ -1072,9 +1073,9 @@ ip4_forward_next_trace (vlib_main_t * vm,
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b0)->sw_if_index[VLIB_RX]);
 
-	  clib_memcpy (t0->packet_data,
-		       vlib_buffer_get_current (b0),
-		       sizeof (t0->packet_data));
+	  clib_memcpy_fast (t0->packet_data,
+			    vlib_buffer_get_current (b0),
+			    sizeof (t0->packet_data));
 	}
       if (b1->flags & VLIB_BUFFER_IS_TRACED)
 	{
@@ -1086,8 +1087,8 @@ ip4_forward_next_trace (vlib_main_t * vm,
 	     (u32) ~ 0) ? vnet_buffer (b1)->sw_if_index[VLIB_TX] :
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b1)->sw_if_index[VLIB_RX]);
-	  clib_memcpy (t1->packet_data, vlib_buffer_get_current (b1),
-		       sizeof (t1->packet_data));
+	  clib_memcpy_fast (t1->packet_data, vlib_buffer_get_current (b1),
+			    sizeof (t1->packet_data));
 	}
       from += 2;
       n_left -= 2;
@@ -1113,8 +1114,8 @@ ip4_forward_next_trace (vlib_main_t * vm,
 	     (u32) ~ 0) ? vnet_buffer (b0)->sw_if_index[VLIB_TX] :
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b0)->sw_if_index[VLIB_RX]);
-	  clib_memcpy (t0->packet_data, vlib_buffer_get_current (b0),
-		       sizeof (t0->packet_data));
+	  clib_memcpy_fast (t0->packet_data, vlib_buffer_get_current (b0),
+			    sizeof (t0->packet_data));
 	}
       from += 1;
       n_left -= 1;
@@ -1212,6 +1213,7 @@ VNET_FEATURE_ARC_INIT (ip4_local) =
 {
   .arc_name  = "ip4-local",
   .start_nodes = VNET_FEATURES ("ip4-local"),
+  .last_in_arc = "ip4-local-end-of-arc",
 };
 /* *INDENT-ON* */
 
@@ -1330,6 +1332,7 @@ typedef struct
   ip4_address_t src;
   u32 lbi;
   u8 error;
+  u8 first;
 } ip4_local_last_check_t;
 
 static inline void
@@ -1346,7 +1349,8 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
     vnet_buffer (b)->sw_if_index[VLIB_TX] != ~0 ?
     vnet_buffer (b)->sw_if_index[VLIB_TX] : vnet_buffer (b)->ip.fib_index;
 
-  if (PREDICT_FALSE (last_check->src.as_u32 != ip0->src_address.as_u32))
+  if (PREDICT_FALSE (last_check->first ||
+		     (last_check->src.as_u32 != ip0->src_address.as_u32)))
     {
       mtrie0 = &ip4_fib_get (vnet_buffer (b)->ip.fib_index)->mtrie;
       leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, &ip0->src_address);
@@ -1388,6 +1392,7 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
       vnet_buffer (b)->ip.adj_index[VLIB_TX] = last_check->lbi;
       vnet_buffer (b)->ip.adj_index[VLIB_RX] = last_check->lbi;
       *error0 = last_check->error;
+      last_check->first = 0;
     }
 }
 
@@ -1399,9 +1404,10 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
   ip4_fib_mtrie_t *mtrie[2];
   const dpo_id_t *dpo[2];
   load_balance_t *lb[2];
-  u32 not_last_hit = 0;
+  u32 not_last_hit;
   u32 lbi[2];
 
+  not_last_hit = last_check->first;
   not_last_hit |= ip[0]->src_address.as_u32 ^ last_check->src.as_u32;
   not_last_hit |= ip[1]->src_address.as_u32 ^ last_check->src.as_u32;
 
@@ -1478,7 +1484,41 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
 
       error[0] = last_check->error;
       error[1] = last_check->error;
+      last_check->first = 0;
     }
+}
+
+enum ip_local_packet_type_e
+{
+  IP_LOCAL_PACKET_TYPE_L4,
+  IP_LOCAL_PACKET_TYPE_NAT,
+  IP_LOCAL_PACKET_TYPE_FRAG,
+};
+
+/**
+ * Determine packet type and next node.
+ *
+ * The expectation is that all packets that are not L4 will skip
+ * checksums and source checks.
+ */
+always_inline u8
+ip4_local_classify (vlib_buffer_t * b, ip4_header_t * ip, u16 * next)
+{
+  ip_lookup_main_t *lm = &ip4_main.lookup_main;
+
+  if (PREDICT_FALSE (ip4_is_fragment (ip)))
+    {
+      *next = IP_LOCAL_NEXT_REASSEMBLY;
+      return IP_LOCAL_PACKET_TYPE_FRAG;
+    }
+  if (PREDICT_FALSE (b->flags & VNET_BUFFER_F_IS_NATED))
+    {
+      *next = lm->local_next_by_ip_protocol[ip->protocol];
+      return IP_LOCAL_PACKET_TYPE_NAT;
+    }
+
+  *next = lm->local_next_by_ip_protocol[ip->protocol];
+  return IP_LOCAL_PACKET_TYPE_L4;
 }
 
 static inline uword
@@ -1486,20 +1526,25 @@ ip4_local_inline (vlib_main_t * vm,
 		  vlib_node_runtime_t * node,
 		  vlib_frame_t * frame, int head_of_feature_arc)
 {
-  ip4_main_t *im = &ip4_main;
-  ip_lookup_main_t *lm = &im->lookup_main;
   u32 *from, n_left_from;
   vlib_node_runtime_t *error_node =
     vlib_node_get_runtime (vm, ip4_input_node.index);
   u16 nexts[VLIB_FRAME_SIZE], *next;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   ip4_header_t *ip[2];
-  u8 error[2];
+  u8 error[2], pt[2];
 
   ip4_local_last_check_t last_check = {
+    /*
+     * 0.0.0.0 can appear as the source address of an IP packet,
+     * as can any other address, hence the need to use the 'first'
+     * member to make sure the .lbi is initialised for the first
+     * packet.
+     */
     .src = {.as_u32 = 0},
     .lbi = ~0,
-    .error = IP4_ERROR_UNKNOWN_PROTOCOL
+    .error = IP4_ERROR_UNKNOWN_PROTOCOL,
+    .first = 1,
   };
 
   from = vlib_frame_vector_args (frame);
@@ -1514,7 +1559,7 @@ ip4_local_inline (vlib_main_t * vm,
 
   while (n_left_from >= 6)
     {
-      u32 is_nat, not_batch = 0;
+      u8 not_batch = 0;
 
       /* Prefetch next iteration. */
       {
@@ -1533,10 +1578,12 @@ ip4_local_inline (vlib_main_t * vm,
       vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
       vnet_buffer (b[1])->l3_hdr_offset = b[1]->current_data;
 
-      is_nat = b[0]->flags & VNET_BUFFER_F_IS_NATED;
-      not_batch |= is_nat ^ (b[1]->flags & VNET_BUFFER_F_IS_NATED);
+      pt[0] = ip4_local_classify (b[0], ip[0], &next[0]);
+      pt[1] = ip4_local_classify (b[1], ip[1], &next[1]);
 
-      if (head_of_feature_arc == 0 || (is_nat && not_batch == 0))
+      not_batch = pt[0] ^ pt[1];
+
+      if (head_of_feature_arc == 0 || (pt[0] && not_batch == 0))
 	goto skip_checks;
 
       if (PREDICT_TRUE (not_batch == 0))
@@ -1546,12 +1593,12 @@ ip4_local_inline (vlib_main_t * vm,
 	}
       else
 	{
-	  if (!(b[0]->flags & VNET_BUFFER_F_IS_NATED))
+	  if (!pt[0])
 	    {
 	      ip4_local_check_l4_csum (vm, b[0], ip[0], &error[0]);
 	      ip4_local_check_src (b[0], ip[0], &last_check, &error[0]);
 	    }
-	  if (!(b[1]->flags & VNET_BUFFER_F_IS_NATED))
+	  if (!pt[1])
 	    {
 	      ip4_local_check_l4_csum (vm, b[1], ip[1], &error[1]);
 	      ip4_local_check_src (b[1], ip[1], &last_check, &error[1]);
@@ -1560,8 +1607,6 @@ ip4_local_inline (vlib_main_t * vm,
 
     skip_checks:
 
-      next[0] = lm->local_next_by_ip_protocol[ip[0]->protocol];
-      next[1] = lm->local_next_by_ip_protocol[ip[1]->protocol];
       ip4_local_set_next_and_error (error_node, b[0], &next[0], error[0],
 				    head_of_feature_arc);
       ip4_local_set_next_and_error (error_node, b[1], &next[1], error[1],
@@ -1578,8 +1623,9 @@ ip4_local_inline (vlib_main_t * vm,
 
       ip[0] = vlib_buffer_get_current (b[0]);
       vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
+      pt[0] = ip4_local_classify (b[0], ip[0], &next[0]);
 
-      if (head_of_feature_arc == 0 || (b[0]->flags & VNET_BUFFER_F_IS_NATED))
+      if (head_of_feature_arc == 0 || pt[0])
 	goto skip_check;
 
       ip4_local_check_l4_csum (vm, b[0], ip[0], &error[0]);
@@ -1587,7 +1633,6 @@ ip4_local_inline (vlib_main_t * vm,
 
     skip_check:
 
-      next[0] = lm->local_next_by_ip_protocol[ip[0]->protocol];
       ip4_local_set_next_and_error (error_node, b[0], &next[0], error[0],
 				    head_of_feature_arc);
 
@@ -1619,6 +1664,7 @@ VLIB_REGISTER_NODE (ip4_local_node) =
     [IP_LOCAL_NEXT_PUNT] = "ip4-punt",
     [IP_LOCAL_NEXT_UDP_LOOKUP] = "ip4-udp-lookup",
     [IP_LOCAL_NEXT_ICMP] = "ip4-icmp-input",
+    [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-reassembly",
   },
 };
 /* *INDENT-ON* */
@@ -1718,22 +1764,12 @@ ip4_arp_inline (vlib_main_t * vm,
   u32 *from, *to_next_drop;
   uword n_left_from, n_left_to_next_drop, next_index;
   u32 thread_index = vm->thread_index;
-  u32 seed;
-  f64 time_now;
+  u64 seed;
 
   if (node->flags & VLIB_NODE_FLAG_TRACE)
     ip4_forward_next_trace (vm, node, frame, VLIB_TX);
 
-  time_now = vlib_time_now (vm);
-  if (time_now - im->arp_throttle_last_seed_change_time[thread_index] > 1e-3)
-    {
-      (void) random_u32 (&im->arp_throttle_seeds[thread_index]);
-      memset (im->arp_throttle_bitmaps[thread_index], 0,
-	      ARP_THROTTLE_BITS / BITS (u8));
-
-      im->arp_throttle_last_seed_change_time[thread_index] = time_now;
-    }
-  seed = im->arp_throttle_seeds[thread_index];
+  seed = throttle_seed (&im->arp_throttle, thread_index, vlib_time_now (vm));
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -1748,44 +1784,16 @@ ip4_arp_inline (vlib_main_t * vm,
 
       while (n_left_from > 0 && n_left_to_next_drop > 0)
 	{
-	  u32 pi0, adj_index0, r0, w0, sw_if_index0, drop0;
-	  uword m0;
+	  u32 pi0, bi0, adj_index0, sw_if_index0;
 	  ip_adjacency_t *adj0;
-	  vlib_buffer_t *p0;
-	  ip4_header_t *ip0;
+	  vlib_buffer_t *p0, *b0;
+	  ip4_address_t resolve0;
+	  ethernet_arp_header_t *h0;
+	  vnet_hw_interface_t *hw_if0;
+	  u64 r0;
 
 	  pi0 = from[0];
-
 	  p0 = vlib_get_buffer (vm, pi0);
-
-	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-	  adj0 = adj_get (adj_index0);
-	  ip0 = vlib_buffer_get_current (p0);
-
-	  sw_if_index0 = adj0->rewrite_header.sw_if_index;
-	  vnet_buffer (p0)->sw_if_index[VLIB_TX] = sw_if_index0;
-
-	  if (PREDICT_TRUE (is_glean))
-	    {
-	      /*
-	       * this is the Glean case, so we are ARPing for the
-	       * packet's destination
-	       */
-	      r0 = ip0->dst_address.data_u32;
-	    }
-	  else
-	    {
-	      r0 = adj0->sub_type.nbr.next_hop.ip4.data_u32;
-	    }
-
-	  r0 ^= seed;
-	  /* Select bit number */
-	  r0 &= ARP_THROTTLE_BITS - 1;
-	  w0 = r0 / BITS (uword);
-	  m0 = (uword) 1 << (r0 % BITS (uword));
-
-	  drop0 = (im->arp_throttle_bitmaps[thread_index][w0] & m0) != 0;
-	  im->arp_throttle_bitmaps[thread_index][w0] |= m0;
 
 	  from += 1;
 	  n_left_from -= 1;
@@ -1793,19 +1801,41 @@ ip4_arp_inline (vlib_main_t * vm,
 	  to_next_drop += 1;
 	  n_left_to_next_drop -= 1;
 
-	  p0->error =
-	    node->errors[drop0 ? IP4_ARP_ERROR_DROP :
-			 IP4_ARP_ERROR_REQUEST_SENT];
+	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
+	  adj0 = adj_get (adj_index0);
+
+	  if (is_glean)
+	    {
+	      /* resolve the packet's destination */
+	      ip4_header_t *ip0 = vlib_buffer_get_current (p0);
+	      resolve0 = ip0->dst_address;
+	    }
+	  else
+	    {
+	      /* resolve the incomplete adj */
+	      resolve0 = adj0->sub_type.nbr.next_hop.ip4;
+	    }
+
+	  /* combine the address and interface for the hash key */
+	  sw_if_index0 = adj0->rewrite_header.sw_if_index;
+	  r0 = (u64) resolve0.data_u32 << 32;
+	  r0 |= sw_if_index0;
+
+	  if (throttle_check (&im->arp_throttle, thread_index, r0, seed))
+	    {
+	      p0->error = node->errors[IP4_ARP_ERROR_THROTTLED];
+	      continue;
+	    }
 
 	  /*
 	   * the adj has been updated to a rewrite but the node the DPO that got
 	   * us here hasn't - yet. no big deal. we'll drop while we wait.
 	   */
 	  if (IP_LOOKUP_NEXT_REWRITE == adj0->lookup_next_index)
-	    continue;
-
-	  if (drop0)
-	    continue;
+	    {
+	      p0->error = node->errors[IP4_ARP_ERROR_RESOLVED];
+	      continue;
+	    }
 
 	  /*
 	   * Can happen if the control-plane is programming tables
@@ -1815,77 +1845,63 @@ ip4_arp_inline (vlib_main_t * vm,
 	      || (!is_glean && adj0->lookup_next_index != IP_LOOKUP_NEXT_ARP))
 	    {
 	      p0->error = node->errors[IP4_ARP_ERROR_NON_ARP_ADJ];
+	      continue;
+	    }
+	  /* Send ARP request. */
+	  h0 =
+	    vlib_packet_template_get_packet (vm,
+					     &im->ip4_arp_request_packet_template,
+					     &bi0);
+	  b0 = vlib_get_buffer (vm, bi0);
+
+	  /* copy the persistent fields from the original */
+	  clib_memcpy_fast (b0->opaque2, p0->opaque2, sizeof (p0->opaque2));
+
+	  /* Seems we're out of buffers */
+	  if (PREDICT_FALSE (!h0))
+	    {
+	      p0->error = node->errors[IP4_ARP_ERROR_NO_BUFFERS];
+	      continue;
+	    }
+
+	  /* Add rewrite/encap string for ARP packet. */
+	  vnet_rewrite_one_header (adj0[0], h0, sizeof (ethernet_header_t));
+
+	  hw_if0 = vnet_get_sup_hw_interface (vnm, sw_if_index0);
+
+	  /* Src ethernet address in ARP header. */
+	  mac_address_from_bytes (&h0->ip4_over_ethernet[0].mac,
+				  hw_if0->hw_address);
+	  if (is_glean)
+	    {
+	      /* The interface's source address is stashed in the Glean Adj */
+	      h0->ip4_over_ethernet[0].ip4 =
+		adj0->sub_type.glean.receive_addr.ip4;
 	    }
 	  else
-	    /* Send ARP request. */
 	    {
-	      u32 bi0 = 0;
-	      vlib_buffer_t *b0;
-	      ethernet_arp_header_t *h0;
-	      vnet_hw_interface_t *hw_if0;
-
-	      h0 =
-		vlib_packet_template_get_packet (vm,
-						 &im->ip4_arp_request_packet_template,
-						 &bi0);
-
-	      /* Seems we're out of buffers */
-	      if (PREDICT_FALSE (!h0))
-		continue;
-
-	      /* Add rewrite/encap string for ARP packet. */
-	      vnet_rewrite_one_header (adj0[0], h0,
-				       sizeof (ethernet_header_t));
-
-	      hw_if0 = vnet_get_sup_hw_interface (vnm, sw_if_index0);
-
-	      /* Src ethernet address in ARP header. */
-	      clib_memcpy (h0->ip4_over_ethernet[0].ethernet,
-			   hw_if0->hw_address,
-			   sizeof (h0->ip4_over_ethernet[0].ethernet));
-
-	      if (is_glean)
+	      /* Src IP address in ARP header. */
+	      if (ip4_src_address_for_packet (lm, sw_if_index0,
+					      &h0->ip4_over_ethernet[0].ip4))
 		{
-		  /* The interface's source address is stashed in the Glean Adj */
-		  h0->ip4_over_ethernet[0].ip4 =
-		    adj0->sub_type.glean.receive_addr.ip4;
-
-		  /* Copy in destination address we are requesting. This is the
-		   * glean case, so it's the packet's destination.*/
-		  h0->ip4_over_ethernet[1].ip4.data_u32 =
-		    ip0->dst_address.data_u32;
+		  /* No source address available */
+		  p0->error = node->errors[IP4_ARP_ERROR_NO_SOURCE_ADDRESS];
+		  vlib_buffer_free (vm, &bi0, 1);
+		  continue;
 		}
-	      else
-		{
-		  /* Src IP address in ARP header. */
-		  if (ip4_src_address_for_packet (lm, sw_if_index0,
-						  &h0->
-						  ip4_over_ethernet[0].ip4))
-		    {
-		      /* No source address available */
-		      p0->error =
-			node->errors[IP4_ARP_ERROR_NO_SOURCE_ADDRESS];
-		      vlib_buffer_free (vm, &bi0, 1);
-		      continue;
-		    }
-
-		  /* Copy in destination address we are requesting from the
-		     incomplete adj */
-		  h0->ip4_over_ethernet[1].ip4.data_u32 =
-		    adj0->sub_type.nbr.next_hop.ip4.as_u32;
-		}
-
-	      vlib_buffer_copy_trace_flag (vm, p0, bi0);
-	      b0 = vlib_get_buffer (vm, bi0);
-	      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
-	      vnet_buffer (b0)->sw_if_index[VLIB_TX] = sw_if_index0;
-
-	      vlib_buffer_advance (b0, -adj0->rewrite_header.data_bytes);
-
-	      vlib_set_next_frame_buffer (vm, node,
-					  adj0->rewrite_header.next_index,
-					  bi0);
 	    }
+	  h0->ip4_over_ethernet[1].ip4 = resolve0;
+
+	  p0->error = node->errors[IP4_ARP_ERROR_REQUEST_SENT];
+
+	  vlib_buffer_copy_trace_flag (vm, p0, bi0);
+	  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
+	  vnet_buffer (b0)->sw_if_index[VLIB_TX] = sw_if_index0;
+
+	  vlib_buffer_advance (b0, -adj0->rewrite_header.data_bytes);
+
+	  vlib_set_next_frame_buffer (vm, node,
+				      adj0->rewrite_header.next_index, bi0);
 	}
 
       vlib_put_next_frame (vm, node, IP4_ARP_NEXT_DROP, n_left_to_next_drop);
@@ -1907,11 +1923,11 @@ VLIB_NODE_FN (ip4_glean_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 static char *ip4_arp_error_strings[] = {
-  [IP4_ARP_ERROR_DROP] = "address overflow drops",
+  [IP4_ARP_ERROR_THROTTLED] = "ARP requests throttled",
+  [IP4_ARP_ERROR_RESOLVED] = "ARP requests resolved",
+  [IP4_ARP_ERROR_NO_BUFFERS] = "ARP requests out of buffer",
   [IP4_ARP_ERROR_REQUEST_SENT] = "ARP requests sent",
   [IP4_ARP_ERROR_NON_ARP_ADJ] = "ARPs to non-ARP adjacencies",
-  [IP4_ARP_ERROR_REPLICATE_DROP] = "ARP replication completed",
-  [IP4_ARP_ERROR_REPLICATE_FAIL] = "ARP replication failed",
   [IP4_ARP_ERROR_NO_SOURCE_ADDRESS] = "no source address for ARP request",
 };
 
@@ -1945,10 +1961,12 @@ VLIB_REGISTER_NODE (ip4_glean_node) =
 /* *INDENT-ON* */
 
 #define foreach_notrace_ip4_arp_error           \
-_(DROP)                                         \
+_(THROTTLED)                                    \
+_(RESOLVED)                                     \
+_(NO_BUFFERS)                                   \
 _(REQUEST_SENT)                                 \
-_(REPLICATE_DROP)                               \
-_(REPLICATE_FAIL)
+_(NON_ARP_ADJ)                                  \
+_(NO_SOURCE_ADDRESS)
 
 static clib_error_t *
 arp_notrace_init (vlib_main_t * vm)
@@ -2025,8 +2043,7 @@ ip4_probe_neighbor (vlib_main_t * vm, ip4_address_t * dst, u32 sw_if_index,
 				sw_if_index);
     }
 
-  clib_memcpy (h->ip4_over_ethernet[0].ethernet, hi->hw_address,
-	       sizeof (h->ip4_over_ethernet[0].ethernet));
+  mac_address_from_bytes (&h->ip4_over_ethernet[0].mac, hi->hw_address);
 
   h->ip4_over_ethernet[0].ip4 = src[0];
   h->ip4_over_ethernet[1].ip4 = dst[0];
@@ -2099,7 +2116,7 @@ typedef enum
 
 always_inline void
 ip4_mtu_check (vlib_buffer_t * b, u16 packet_len,
-	       u16 adj_packet_bytes, bool df, u32 * next, u32 * error)
+	       u16 adj_packet_bytes, bool df, u16 * next, u32 * error)
 {
   if (packet_len > adj_packet_bytes)
     {
@@ -2115,12 +2132,58 @@ ip4_mtu_check (vlib_buffer_t * b, u16 packet_len,
       else
 	{
 	  /* IP fragmentation */
-	  ip_frag_set_vnet_buffer (b, 0, adj_packet_bytes,
-				   IP4_FRAG_NEXT_IP4_LOOKUP, 0);
+	  ip_frag_set_vnet_buffer (b, adj_packet_bytes,
+				   IP4_FRAG_NEXT_IP4_REWRITE, 0);
 	  *next = IP4_REWRITE_NEXT_FRAGMENT;
 	}
     }
 }
+
+/* Decrement TTL & update checksum.
+   Works either endian, so no need for byte swap. */
+static_always_inline void
+ip4_ttl_and_checksum_check (vlib_buffer_t * b, ip4_header_t * ip, u16 * next,
+			    u32 * error)
+{
+  i32 ttl;
+  u32 checksum;
+  if (PREDICT_FALSE (b->flags & VNET_BUFFER_F_LOCALLY_ORIGINATED))
+    {
+      b->flags &= ~VNET_BUFFER_F_LOCALLY_ORIGINATED;
+      return;
+    }
+
+  ttl = ip->ttl;
+
+  /* Input node should have reject packets with ttl 0. */
+  ASSERT (ip->ttl > 0);
+
+  checksum = ip->checksum + clib_host_to_net_u16 (0x0100);
+  checksum += checksum >= 0xffff;
+
+  ip->checksum = checksum;
+  ttl -= 1;
+  ip->ttl = ttl;
+
+  /*
+   * If the ttl drops below 1 when forwarding, generate
+   * an ICMP response.
+   */
+  if (PREDICT_FALSE (ttl <= 0))
+    {
+      *error = IP4_ERROR_TIME_EXPIRED;
+      vnet_buffer (b)->sw_if_index[VLIB_TX] = (u32) ~ 0;
+      icmp4_error_set_vnet_buffer (b, ICMP4_time_exceeded,
+				   ICMP4_time_exceeded_ttl_exceeded_in_transit,
+				   0);
+      *next = IP4_REWRITE_NEXT_ICMP_ERROR;
+    }
+
+  /* Verify checksum. */
+  ASSERT ((ip->checksum == ip4_header_checksum (ip)) ||
+	  (b->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM));
+}
+
 
 always_inline uword
 ip4_rewrite_inline (vlib_main_t * vm,
@@ -2130,406 +2193,275 @@ ip4_rewrite_inline (vlib_main_t * vm,
 {
   ip_lookup_main_t *lm = &ip4_main.lookup_main;
   u32 *from = vlib_frame_vector_args (frame);
-  u32 n_left_from, n_left_to_next, *to_next, next_index;
+  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
+  u16 nexts[VLIB_FRAME_SIZE], *next;
+  u32 n_left_from;
   vlib_node_runtime_t *error_node =
     vlib_node_get_runtime (vm, ip4_input_node.index);
 
   n_left_from = frame->n_vectors;
-  next_index = node->cached_next_index;
   u32 thread_index = vm->thread_index;
+
+  vlib_get_buffers (vm, from, bufs, n_left_from);
+  clib_memset_u16 (nexts, IP4_REWRITE_NEXT_DROP, n_left_from);
+
+  if (n_left_from >= 6)
+    {
+      int i;
+      for (i = 2; i < 6; i++)
+	vlib_prefetch_buffer_header (bufs[i], LOAD);
+    }
+
+  next = nexts;
+  b = bufs;
+  while (n_left_from >= 8)
+    {
+      ip_adjacency_t *adj0, *adj1;
+      ip4_header_t *ip0, *ip1;
+      u32 rw_len0, error0, adj_index0;
+      u32 rw_len1, error1, adj_index1;
+      u32 tx_sw_if_index0, tx_sw_if_index1;
+      u8 *p;
+
+      vlib_prefetch_buffer_header (b[6], LOAD);
+      vlib_prefetch_buffer_header (b[7], LOAD);
+
+      adj_index0 = vnet_buffer (b[0])->ip.adj_index[VLIB_TX];
+      adj_index1 = vnet_buffer (b[1])->ip.adj_index[VLIB_TX];
+
+      /*
+       * pre-fetch the per-adjacency counters
+       */
+      if (do_counters)
+	{
+	  vlib_prefetch_combined_counter (&adjacency_counters,
+					  thread_index, adj_index0);
+	  vlib_prefetch_combined_counter (&adjacency_counters,
+					  thread_index, adj_index1);
+	}
+
+      ip0 = vlib_buffer_get_current (b[0]);
+      ip1 = vlib_buffer_get_current (b[1]);
+
+      error0 = error1 = IP4_ERROR_NONE;
+
+      ip4_ttl_and_checksum_check (b[0], ip0, next + 0, &error0);
+      ip4_ttl_and_checksum_check (b[1], ip1, next + 1, &error1);
+
+      /* Rewrite packet header and updates lengths. */
+      adj0 = adj_get (adj_index0);
+      adj1 = adj_get (adj_index1);
+
+      /* Worth pipelining. No guarantee that adj0,1 are hot... */
+      rw_len0 = adj0[0].rewrite_header.data_bytes;
+      rw_len1 = adj1[0].rewrite_header.data_bytes;
+      vnet_buffer (b[0])->ip.save_rewrite_length = rw_len0;
+      vnet_buffer (b[1])->ip.save_rewrite_length = rw_len1;
+
+      p = vlib_buffer_get_current (b[2]);
+      CLIB_PREFETCH (p - CLIB_CACHE_LINE_BYTES, CLIB_CACHE_LINE_BYTES, STORE);
+      CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+
+      p = vlib_buffer_get_current (b[3]);
+      CLIB_PREFETCH (p - CLIB_CACHE_LINE_BYTES, CLIB_CACHE_LINE_BYTES, STORE);
+      CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+
+      /* Check MTU of outgoing interface. */
+      ip4_mtu_check (b[0], clib_net_to_host_u16 (ip0->length),
+		     adj0[0].rewrite_header.max_l3_packet_bytes,
+		     ip0->flags_and_fragment_offset &
+		     clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
+		     next + 0, &error0);
+      ip4_mtu_check (b[1], clib_net_to_host_u16 (ip1->length),
+		     adj1[0].rewrite_header.max_l3_packet_bytes,
+		     ip1->flags_and_fragment_offset &
+		     clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
+		     next + 1, &error1);
+
+      if (is_mcast)
+	{
+	  error0 = ((adj0[0].rewrite_header.sw_if_index ==
+		     vnet_buffer (b[0])->sw_if_index[VLIB_RX]) ?
+		    IP4_ERROR_SAME_INTERFACE : error0);
+	  error1 = ((adj1[0].rewrite_header.sw_if_index ==
+		     vnet_buffer (b[1])->sw_if_index[VLIB_RX]) ?
+		    IP4_ERROR_SAME_INTERFACE : error1);
+	}
+
+      b[0]->error = error_node->errors[error0];
+      b[1]->error = error_node->errors[error1];
+      /* Don't adjust the buffer for ttl issue; icmp-error node wants
+       * to see the IP headerr */
+      if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
+	{
+	  u32 next_index = adj0[0].rewrite_header.next_index;
+	  b[0]->current_data -= rw_len0;
+	  b[0]->current_length += rw_len0;
+	  tx_sw_if_index0 = adj0[0].rewrite_header.sw_if_index;
+	  vnet_buffer (b[0])->sw_if_index[VLIB_TX] = tx_sw_if_index0;
+
+	  if (PREDICT_FALSE
+	      (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+	    vnet_feature_arc_start (lm->output_feature_arc_index,
+				    tx_sw_if_index0, &next_index, b[0]);
+	  next[0] = next_index;
+	}
+      if (PREDICT_TRUE (error1 == IP4_ERROR_NONE))
+	{
+	  u32 next_index = adj1[0].rewrite_header.next_index;
+	  b[1]->current_data -= rw_len1;
+	  b[1]->current_length += rw_len1;
+
+	  tx_sw_if_index1 = adj1[0].rewrite_header.sw_if_index;
+	  vnet_buffer (b[1])->sw_if_index[VLIB_TX] = tx_sw_if_index1;
+
+	  if (PREDICT_FALSE
+	      (adj1[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+	    vnet_feature_arc_start (lm->output_feature_arc_index,
+				    tx_sw_if_index1, &next_index, b[1]);
+	  next[1] = next_index;
+	}
+
+      /* Guess we are only writing on simple Ethernet header. */
+      vnet_rewrite_two_headers (adj0[0], adj1[0],
+				ip0, ip1, sizeof (ethernet_header_t));
+
+      /*
+       * Bump the per-adjacency counters
+       */
+      if (do_counters)
+	{
+	  vlib_increment_combined_counter
+	    (&adjacency_counters,
+	     thread_index,
+	     adj_index0, 1, vlib_buffer_length_in_chain (vm, b[0]) + rw_len0);
+
+	  vlib_increment_combined_counter
+	    (&adjacency_counters,
+	     thread_index,
+	     adj_index1, 1, vlib_buffer_length_in_chain (vm, b[1]) + rw_len1);
+	}
+
+      if (is_midchain)
+	{
+	  adj0->sub_type.midchain.fixup_func
+	    (vm, adj0, b[0], adj0->sub_type.midchain.fixup_data);
+	  adj1->sub_type.midchain.fixup_func
+	    (vm, adj1, b[1], adj1->sub_type.midchain.fixup_data);
+	}
+
+      if (is_mcast)
+	{
+	  /*
+	   * copy bytes from the IP address into the MAC rewrite
+	   */
+	  vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
+				      adj0->rewrite_header.dst_mcast_offset,
+				      &ip0->dst_address.as_u32, (u8 *) ip0);
+	  vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
+				      adj1->rewrite_header.dst_mcast_offset,
+				      &ip1->dst_address.as_u32, (u8 *) ip1);
+	}
+
+      next += 2;
+      b += 2;
+      n_left_from -= 2;
+    }
 
   while (n_left_from > 0)
     {
-      vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
+      ip_adjacency_t *adj0;
+      ip4_header_t *ip0;
+      u32 rw_len0, adj_index0, error0;
+      u32 tx_sw_if_index0;
 
-      while (n_left_from >= 4 && n_left_to_next >= 2)
+      adj_index0 = vnet_buffer (b[0])->ip.adj_index[VLIB_TX];
+
+      adj0 = adj_get (adj_index0);
+
+      if (do_counters)
+	vlib_prefetch_combined_counter (&adjacency_counters,
+					thread_index, adj_index0);
+
+      ip0 = vlib_buffer_get_current (b[0]);
+
+      error0 = IP4_ERROR_NONE;
+
+      ip4_ttl_and_checksum_check (b[0], ip0, next + 0, &error0);
+
+
+      /* Update packet buffer attributes/set output interface. */
+      rw_len0 = adj0[0].rewrite_header.data_bytes;
+      vnet_buffer (b[0])->ip.save_rewrite_length = rw_len0;
+
+      /* Check MTU of outgoing interface. */
+      ip4_mtu_check (b[0], clib_net_to_host_u16 (ip0->length),
+		     adj0[0].rewrite_header.max_l3_packet_bytes,
+		     ip0->flags_and_fragment_offset &
+		     clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
+		     next + 0, &error0);
+
+      if (is_mcast)
 	{
-	  ip_adjacency_t *adj0, *adj1;
-	  vlib_buffer_t *p0, *p1;
-	  ip4_header_t *ip0, *ip1;
-	  u32 pi0, rw_len0, next0, error0, checksum0, adj_index0;
-	  u32 pi1, rw_len1, next1, error1, checksum1, adj_index1;
-	  u32 tx_sw_if_index0, tx_sw_if_index1;
+	  error0 = ((adj0[0].rewrite_header.sw_if_index ==
+		     vnet_buffer (b[0])->sw_if_index[VLIB_RX]) ?
+		    IP4_ERROR_SAME_INTERFACE : error0);
+	}
+      b[0]->error = error_node->errors[error0];
 
-	  /* Prefetch next iteration. */
-	  {
-	    vlib_buffer_t *p2, *p3;
+      /* Don't adjust the buffer for ttl issue; icmp-error node wants
+       * to see the IP headerr */
+      if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
+	{
+	  u32 next_index = adj0[0].rewrite_header.next_index;
+	  b[0]->current_data -= rw_len0;
+	  b[0]->current_length += rw_len0;
+	  tx_sw_if_index0 = adj0[0].rewrite_header.sw_if_index;
+	  vnet_buffer (b[0])->sw_if_index[VLIB_TX] = tx_sw_if_index0;
 
-	    p2 = vlib_get_buffer (vm, from[2]);
-	    p3 = vlib_get_buffer (vm, from[3]);
-
-	    vlib_prefetch_buffer_header (p2, STORE);
-	    vlib_prefetch_buffer_header (p3, STORE);
-
-	    CLIB_PREFETCH (p2->data, sizeof (ip0[0]), STORE);
-	    CLIB_PREFETCH (p3->data, sizeof (ip0[0]), STORE);
-	  }
-
-	  pi0 = to_next[0] = from[0];
-	  pi1 = to_next[1] = from[1];
-
-	  from += 2;
-	  n_left_from -= 2;
-	  to_next += 2;
-	  n_left_to_next -= 2;
-
-	  p0 = vlib_get_buffer (vm, pi0);
-	  p1 = vlib_get_buffer (vm, pi1);
-
-	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-	  adj_index1 = vnet_buffer (p1)->ip.adj_index[VLIB_TX];
-
-	  /*
-	   * pre-fetch the per-adjacency counters
-	   */
-	  if (do_counters)
-	    {
-	      vlib_prefetch_combined_counter (&adjacency_counters,
-					      thread_index, adj_index0);
-	      vlib_prefetch_combined_counter (&adjacency_counters,
-					      thread_index, adj_index1);
-	    }
-
-	  ip0 = vlib_buffer_get_current (p0);
-	  ip1 = vlib_buffer_get_current (p1);
-
-	  error0 = error1 = IP4_ERROR_NONE;
-	  next0 = next1 = IP4_REWRITE_NEXT_DROP;
-
-	  /* Decrement TTL & update checksum.
-	     Works either endian, so no need for byte swap. */
-	  if (PREDICT_TRUE (!(p0->flags & VNET_BUFFER_F_LOCALLY_ORIGINATED)))
-	    {
-	      i32 ttl0 = ip0->ttl;
-
-	      /* Input node should have reject packets with ttl 0. */
-	      ASSERT (ip0->ttl > 0);
-
-	      checksum0 = ip0->checksum + clib_host_to_net_u16 (0x0100);
-	      checksum0 += checksum0 >= 0xffff;
-
-	      ip0->checksum = checksum0;
-	      ttl0 -= 1;
-	      ip0->ttl = ttl0;
-
-	      /*
-	       * If the ttl drops below 1 when forwarding, generate
-	       * an ICMP response.
-	       */
-	      if (PREDICT_FALSE (ttl0 <= 0))
-		{
-		  error0 = IP4_ERROR_TIME_EXPIRED;
-		  vnet_buffer (p0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
-		  icmp4_error_set_vnet_buffer (p0, ICMP4_time_exceeded,
-					       ICMP4_time_exceeded_ttl_exceeded_in_transit,
-					       0);
-		  next0 = IP4_REWRITE_NEXT_ICMP_ERROR;
-		}
-
-	      /* Verify checksum. */
-	      ASSERT ((ip0->checksum == ip4_header_checksum (ip0)) ||
-		      (p0->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM));
-	    }
-	  else
-	    {
-	      p0->flags &= ~VNET_BUFFER_F_LOCALLY_ORIGINATED;
-	    }
-	  if (PREDICT_TRUE (!(p1->flags & VNET_BUFFER_F_LOCALLY_ORIGINATED)))
-	    {
-	      i32 ttl1 = ip1->ttl;
-
-	      /* Input node should have reject packets with ttl 0. */
-	      ASSERT (ip1->ttl > 0);
-
-	      checksum1 = ip1->checksum + clib_host_to_net_u16 (0x0100);
-	      checksum1 += checksum1 >= 0xffff;
-
-	      ip1->checksum = checksum1;
-	      ttl1 -= 1;
-	      ip1->ttl = ttl1;
-
-	      /*
-	       * If the ttl drops below 1 when forwarding, generate
-	       * an ICMP response.
-	       */
-	      if (PREDICT_FALSE (ttl1 <= 0))
-		{
-		  error1 = IP4_ERROR_TIME_EXPIRED;
-		  vnet_buffer (p1)->sw_if_index[VLIB_TX] = (u32) ~ 0;
-		  icmp4_error_set_vnet_buffer (p1, ICMP4_time_exceeded,
-					       ICMP4_time_exceeded_ttl_exceeded_in_transit,
-					       0);
-		  next1 = IP4_REWRITE_NEXT_ICMP_ERROR;
-		}
-
-	      /* Verify checksum. */
-	      ASSERT ((ip1->checksum == ip4_header_checksum (ip1)) ||
-		      (p1->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM));
-	    }
-	  else
-	    {
-	      p1->flags &= ~VNET_BUFFER_F_LOCALLY_ORIGINATED;
-	    }
-
-	  /* Rewrite packet header and updates lengths. */
-	  adj0 = adj_get (adj_index0);
-	  adj1 = adj_get (adj_index1);
-
-	  /* Worth pipelining. No guarantee that adj0,1 are hot... */
-	  rw_len0 = adj0[0].rewrite_header.data_bytes;
-	  rw_len1 = adj1[0].rewrite_header.data_bytes;
-	  vnet_buffer (p0)->ip.save_rewrite_length = rw_len0;
-	  vnet_buffer (p1)->ip.save_rewrite_length = rw_len1;
-
-	  /* Check MTU of outgoing interface. */
-	  ip4_mtu_check (p0, clib_net_to_host_u16 (ip0->length),
-			 adj0[0].rewrite_header.max_l3_packet_bytes,
-			 ip0->flags_and_fragment_offset &
-			 clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
-			 &next0, &error0);
-	  ip4_mtu_check (p1, clib_net_to_host_u16 (ip1->length),
-			 adj1[0].rewrite_header.max_l3_packet_bytes,
-			 ip1->flags_and_fragment_offset &
-			 clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
-			 &next1, &error1);
-
-	  if (is_mcast)
-	    {
-	      error0 = ((adj0[0].rewrite_header.sw_if_index ==
-			 vnet_buffer (p0)->sw_if_index[VLIB_RX]) ?
-			IP4_ERROR_SAME_INTERFACE : error0);
-	      error1 = ((adj1[0].rewrite_header.sw_if_index ==
-			 vnet_buffer (p1)->sw_if_index[VLIB_RX]) ?
-			IP4_ERROR_SAME_INTERFACE : error1);
-	    }
-
-	  p0->error = error_node->errors[error0];
-	  p1->error = error_node->errors[error1];
-	  /* Don't adjust the buffer for ttl issue; icmp-error node wants
-	   * to see the IP headerr */
-	  if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
-	    {
-	      next0 = adj0[0].rewrite_header.next_index;
-	      p0->current_data -= rw_len0;
-	      p0->current_length += rw_len0;
-	      tx_sw_if_index0 = adj0[0].rewrite_header.sw_if_index;
-	      vnet_buffer (p0)->sw_if_index[VLIB_TX] = tx_sw_if_index0;
-
-	      if (PREDICT_FALSE
-		  (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
-		vnet_feature_arc_start (lm->output_feature_arc_index,
-					tx_sw_if_index0, &next0, p0);
-	    }
-	  if (PREDICT_TRUE (error1 == IP4_ERROR_NONE))
-	    {
-	      next1 = adj1[0].rewrite_header.next_index;
-	      p1->current_data -= rw_len1;
-	      p1->current_length += rw_len1;
-
-	      tx_sw_if_index1 = adj1[0].rewrite_header.sw_if_index;
-	      vnet_buffer (p1)->sw_if_index[VLIB_TX] = tx_sw_if_index1;
-
-	      if (PREDICT_FALSE
-		  (adj1[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
-		vnet_feature_arc_start (lm->output_feature_arc_index,
-					tx_sw_if_index1, &next1, p1);
-	    }
-
-	  /* Guess we are only writing on simple Ethernet header. */
-	  vnet_rewrite_two_headers (adj0[0], adj1[0],
-				    ip0, ip1, sizeof (ethernet_header_t));
-
-	  /*
-	   * Bump the per-adjacency counters
-	   */
-	  if (do_counters)
-	    {
-	      vlib_increment_combined_counter
-		(&adjacency_counters,
-		 thread_index,
-		 adj_index0, 1,
-		 vlib_buffer_length_in_chain (vm, p0) + rw_len0);
-
-	      vlib_increment_combined_counter
-		(&adjacency_counters,
-		 thread_index,
-		 adj_index1, 1,
-		 vlib_buffer_length_in_chain (vm, p1) + rw_len1);
-	    }
-
-	  if (is_midchain)
-	    {
-	      adj0->sub_type.midchain.fixup_func
-		(vm, adj0, p0, adj0->sub_type.midchain.fixup_data);
-	      adj1->sub_type.midchain.fixup_func
-		(vm, adj1, p1, adj0->sub_type.midchain.fixup_data);
-	    }
-	  if (is_mcast)
-	    {
-	      /*
-	       * copy bytes from the IP address into the MAC rewrite
-	       */
-	      vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
-					  adj0->
-					  rewrite_header.dst_mcast_offset,
-					  &ip0->dst_address.as_u32,
-					  (u8 *) ip0);
-	      vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
-					  adj0->
-					  rewrite_header.dst_mcast_offset,
-					  &ip1->dst_address.as_u32,
-					  (u8 *) ip1);
-	    }
-
-	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
-					   to_next, n_left_to_next,
-					   pi0, pi1, next0, next1);
+	  if (PREDICT_FALSE
+	      (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+	    vnet_feature_arc_start (lm->output_feature_arc_index,
+				    tx_sw_if_index0, &next_index, b[0]);
+	  next[0] = next_index;
 	}
 
-      while (n_left_from > 0 && n_left_to_next > 0)
+      /* Guess we are only writing on simple Ethernet header. */
+      vnet_rewrite_one_header (adj0[0], ip0, sizeof (ethernet_header_t));
+
+      if (do_counters)
+	vlib_increment_combined_counter
+	  (&adjacency_counters,
+	   thread_index, adj_index0, 1,
+	   vlib_buffer_length_in_chain (vm, b[0]) + rw_len0);
+
+      if (is_midchain)
 	{
-	  ip_adjacency_t *adj0;
-	  vlib_buffer_t *p0;
-	  ip4_header_t *ip0;
-	  u32 pi0, rw_len0, adj_index0, next0, error0, checksum0;
-	  u32 tx_sw_if_index0;
-
-	  pi0 = to_next[0] = from[0];
-
-	  p0 = vlib_get_buffer (vm, pi0);
-
-	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-
-	  adj0 = adj_get (adj_index0);
-
-	  ip0 = vlib_buffer_get_current (p0);
-
-	  error0 = IP4_ERROR_NONE;
-	  next0 = IP4_REWRITE_NEXT_DROP;	/* drop on error */
-
-	  /* Decrement TTL & update checksum. */
-	  if (PREDICT_TRUE (!(p0->flags & VNET_BUFFER_F_LOCALLY_ORIGINATED)))
-	    {
-	      i32 ttl0 = ip0->ttl;
-
-	      checksum0 = ip0->checksum + clib_host_to_net_u16 (0x0100);
-
-	      checksum0 += checksum0 >= 0xffff;
-
-	      ip0->checksum = checksum0;
-
-	      ASSERT (ip0->ttl > 0);
-
-	      ttl0 -= 1;
-
-	      ip0->ttl = ttl0;
-
-	      ASSERT ((ip0->checksum == ip4_header_checksum (ip0)) ||
-		      (p0->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM));
-
-	      if (PREDICT_FALSE (ttl0 <= 0))
-		{
-		  /*
-		   * If the ttl drops below 1 when forwarding, generate
-		   * an ICMP response.
-		   */
-		  error0 = IP4_ERROR_TIME_EXPIRED;
-		  next0 = IP4_REWRITE_NEXT_ICMP_ERROR;
-		  vnet_buffer (p0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
-		  icmp4_error_set_vnet_buffer (p0, ICMP4_time_exceeded,
-					       ICMP4_time_exceeded_ttl_exceeded_in_transit,
-					       0);
-		}
-	    }
-	  else
-	    {
-	      p0->flags &= ~VNET_BUFFER_F_LOCALLY_ORIGINATED;
-	    }
-
-	  if (do_counters)
-	    vlib_prefetch_combined_counter (&adjacency_counters,
-					    thread_index, adj_index0);
-
-	  /* Guess we are only writing on simple Ethernet header. */
-	  vnet_rewrite_one_header (adj0[0], ip0, sizeof (ethernet_header_t));
-	  if (is_mcast)
-	    {
-	      /*
-	       * copy bytes from the IP address into the MAC rewrite
-	       */
-	      vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
-					  adj0->
-					  rewrite_header.dst_mcast_offset,
-					  &ip0->dst_address.as_u32,
-					  (u8 *) ip0);
-	    }
-
-	  /* Update packet buffer attributes/set output interface. */
-	  rw_len0 = adj0[0].rewrite_header.data_bytes;
-	  vnet_buffer (p0)->ip.save_rewrite_length = rw_len0;
-
-	  if (do_counters)
-	    vlib_increment_combined_counter
-	      (&adjacency_counters,
-	       thread_index, adj_index0, 1,
-	       vlib_buffer_length_in_chain (vm, p0) + rw_len0);
-
-	  /* Check MTU of outgoing interface. */
-	  ip4_mtu_check (p0, clib_net_to_host_u16 (ip0->length),
-			 adj0[0].rewrite_header.max_l3_packet_bytes,
-			 ip0->flags_and_fragment_offset &
-			 clib_host_to_net_u16 (IP4_HEADER_FLAG_DONT_FRAGMENT),
-			 &next0, &error0);
-
-	  if (is_mcast)
-	    {
-	      error0 = ((adj0[0].rewrite_header.sw_if_index ==
-			 vnet_buffer (p0)->sw_if_index[VLIB_RX]) ?
-			IP4_ERROR_SAME_INTERFACE : error0);
-	    }
-	  p0->error = error_node->errors[error0];
-
-	  /* Don't adjust the buffer for ttl issue; icmp-error node wants
-	   * to see the IP headerr */
-	  if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
-	    {
-	      p0->current_data -= rw_len0;
-	      p0->current_length += rw_len0;
-	      tx_sw_if_index0 = adj0[0].rewrite_header.sw_if_index;
-
-	      vnet_buffer (p0)->sw_if_index[VLIB_TX] = tx_sw_if_index0;
-	      next0 = adj0[0].rewrite_header.next_index;
-
-	      if (is_midchain)
-		{
-		  adj0->sub_type.midchain.fixup_func
-		    (vm, adj0, p0, adj0->sub_type.midchain.fixup_data);
-		}
-
-	      if (PREDICT_FALSE
-		  (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
-		vnet_feature_arc_start (lm->output_feature_arc_index,
-					tx_sw_if_index0, &next0, p0);
-
-	    }
-
-	  from += 1;
-	  n_left_from -= 1;
-	  to_next += 1;
-	  n_left_to_next -= 1;
-
-	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
-					   to_next, n_left_to_next,
-					   pi0, next0);
+	  adj0->sub_type.midchain.fixup_func
+	    (vm, adj0, b[0], adj0->sub_type.midchain.fixup_data);
 	}
 
-      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
+      if (is_mcast)
+	{
+	  /*
+	   * copy bytes from the IP address into the MAC rewrite
+	   */
+	  vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
+				      adj0->rewrite_header.dst_mcast_offset,
+				      &ip0->dst_address.as_u32, (u8 *) ip0);
+	}
+
+      next += 1;
+      b += 1;
+      n_left_from -= 1;
     }
+
 
   /* Need to do trace after rewrites to pick up new packet data. */
   if (node->flags & VLIB_NODE_FLAG_TRACE)
     ip4_forward_next_trace (vm, node, frame, VLIB_TX);
 
+  vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
   return frame->n_vectors;
 }
 

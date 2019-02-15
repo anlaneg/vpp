@@ -156,7 +156,7 @@ igmp_listen (vlib_main_t * vm,
 	    format_vnet_sw_if_index_name, vnet_get_main (),
 	    sw_if_index, format_igmp_filter_mode, mode);
   /*
-   * find configuration, if it dosn't exist, then this interface is
+   * find configuration, if it doesn't exist, then this interface is
    * not IGMP enabled
    */
   config = igmp_config_lookup (sw_if_index);
@@ -172,7 +172,7 @@ igmp_listen (vlib_main_t * vm,
       goto error;
     }
 
-  /* find igmp group, if it dosn't exist, create new */
+  /* find igmp group, if it doesn't exist, create new */
   group = igmp_group_lookup (config, gaddr);
 
   if (!group)
@@ -292,7 +292,7 @@ igmp_listen (vlib_main_t * vm,
 	  /*
 	   * The control plane is excluding some sources.
 	   *  - First; check for those that are present in the include list
-	   *  - Second; check add them to the exlude list
+	   *  - Second; check add them to the exclude list
 	   *
 	   * TODO
 	   */
@@ -364,7 +364,7 @@ igmp_enable_disable (u32 sw_if_index, u8 enable, igmp_mode_t mode)
       .frp_weight = 1,
     };
   /* *INDENT-ON* */
-  /* find configuration, if it dosn't exist, create new */
+  /* find configuration, if it doesn't exist, create new */
   config = igmp_config_lookup (sw_if_index);
   mfib_index = mfib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4,
 						     sw_if_index);
@@ -375,12 +375,13 @@ igmp_enable_disable (u32 sw_if_index, u8 enable, igmp_mode_t mode)
       vec_validate_init_empty (im->igmp_config_by_sw_if_index,
 			       sw_if_index, ~0);
       pool_get (im->configs, config);
-      memset (config, 0, sizeof (igmp_config_t));
+      clib_memset (config, 0, sizeof (igmp_config_t));
       config->sw_if_index = sw_if_index;
       config->igmp_group_by_key =
 	hash_create_mem (0, sizeof (igmp_key_t), sizeof (uword));
       config->robustness_var = IGMP_DEFAULT_ROBUSTNESS_VARIABLE;
       config->mode = mode;
+      config->proxy_device_id = ~0;
 
       for (ii = 0; ii < IGMP_CONFIG_N_TIMERS; ii++)
 	config->timers[ii] = IGMP_TIMER_ID_INVALID;
@@ -445,10 +446,26 @@ igmp_enable_disable (u32 sw_if_index, u8 enable, igmp_mode_t mode)
       mfib_table_entry_path_remove (mfib_index,
 				    &mpfx_report,
 				    MFIB_SOURCE_IGMP, &via_itf_path);
+
+      /*
+       * remove interface from proxy device
+       * if this device is upstream, delete proxy device
+       */
+      if (config->mode == IGMP_MODE_ROUTER)
+	igmp_proxy_device_add_del_interface (config->proxy_device_id,
+					     config->sw_if_index, 0);
+      else if (config->mode == IGMP_MODE_HOST)
+	igmp_proxy_device_add_del (config->proxy_device_id,
+				   config->sw_if_index, 0);
+
       igmp_clear_config (config);
       im->igmp_config_by_sw_if_index[config->sw_if_index] = ~0;
       hash_free (config->igmp_group_by_key);
       pool_put (im->configs, config);
+    }
+  else
+    {
+      return -1;
     }
 
   return (0);

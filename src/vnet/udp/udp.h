@@ -57,6 +57,7 @@ _ (4500, ipsec)                                 \
 _ (4739, ipfix)                                 \
 _ (4789, vxlan)					\
 _ (4789, vxlan6)				\
+_ (48879, vxlan_gbp)				\
 _ (4790, VXLAN_GPE)				\
 _ (6633, vpath_3)				\
 _ (6081, geneve)				\
@@ -72,6 +73,7 @@ _ (3784, bfd6)                                  \
 _ (3785, bfd_echo6)                             \
 _ (4341, lisp_gpe6)                             \
 _ (4342, lisp_cp6)                          	\
+_ (48879, vxlan6_gbp)				\
 _ (4790, VXLAN6_GPE)                            \
 _ (6633, vpath6_3)				\
 _ (6081, geneve6)				\
@@ -105,6 +107,9 @@ typedef struct
 
   /* Next index for this type. */
   u32 next_index;
+
+  /* Parser for packet generator edits for this protocol */
+  unformat_function_t *unformat_pg_edit;
 } udp_dst_port_info_t;
 
 typedef enum
@@ -223,7 +228,7 @@ udp_connection_clone_safe (u32 connection_index, u32 thread_index)
    */
   udp_pool_add_peeker (thread_index);
   old_c = udp_main.connections[thread_index] + connection_index;
-  clib_memcpy (new_c, old_c, sizeof (*new_c));
+  clib_memcpy_fast (new_c, old_c, sizeof (*new_c));
   udp_pool_remove_peeker (thread_index);
   new_c->c_thread_index = current_thread_index;
   new_c->c_c_index = udp_connection_index (new_c);
@@ -247,6 +252,7 @@ void udp_register_dst_port (vlib_main_t * vm,
 			    u32 node_index, u8 is_ip4);
 void udp_unregister_dst_port (vlib_main_t * vm,
 			      udp_dst_port_t dst_port, u8 is_ip4);
+bool udp_is_valid_dst_port (udp_dst_port_t dst_port, u8 is_ip4);
 
 void udp_punt_unknown (vlib_main_t * vm, u8 is_ip4, u8 is_add);
 
@@ -254,12 +260,15 @@ always_inline void *
 vlib_buffer_push_udp (vlib_buffer_t * b, u16 sp, u16 dp, u8 offload_csum)
 {
   udp_header_t *uh;
+  u16 udp_len = sizeof (udp_header_t) + b->current_length;
+  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_TOTAL_LENGTH_VALID))
+    udp_len += b->total_length_not_including_first_buffer;
 
   uh = vlib_buffer_push_uninit (b, sizeof (udp_header_t));
   uh->src_port = sp;
   uh->dst_port = dp;
   uh->checksum = 0;
-  uh->length = clib_host_to_net_u16 (b->current_length);
+  uh->length = clib_host_to_net_u16 (udp_len);
   if (offload_csum)
     {
       b->flags |= VNET_BUFFER_F_OFFLOAD_UDP_CKSUM;
@@ -335,7 +344,7 @@ ip_udp_encap_one (vlib_main_t * vm, vlib_buffer_t * b0, u8 * ec0, word ec_len,
       ip0 = vlib_buffer_get_current (b0);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
       ip_udp_fixup_one (vm, b0, 1);
     }
   else
@@ -345,7 +354,7 @@ ip_udp_encap_one (vlib_main_t * vm, vlib_buffer_t * b0, u8 * ec0, word ec_len,
       ip0 = vlib_buffer_get_current (b0);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
       ip_udp_fixup_one (vm, b0, 0);
     }
 }
@@ -372,8 +381,8 @@ ip_udp_encap_two (vlib_main_t * vm, vlib_buffer_t * b0, vlib_buffer_t * b1,
       ip1 = vlib_buffer_get_current (b1);
 
       /* Apply the encap string */
-      clib_memcpy (ip0, ec0, ec_len);
-      clib_memcpy (ip1, ec1, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip1, ec1, ec_len);
 
       /* fix the <bleep>ing outer-IP checksum */
       sum0 = ip0->checksum;
@@ -416,8 +425,8 @@ ip_udp_encap_two (vlib_main_t * vm, vlib_buffer_t * b0, vlib_buffer_t * b1,
       ip1 = vlib_buffer_get_current (b1);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
-      clib_memcpy (ip1, ec1, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip1, ec1, ec_len);
 
       new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain (vm, b0)
 				     - sizeof (*ip0));

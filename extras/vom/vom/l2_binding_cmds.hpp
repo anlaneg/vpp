@@ -35,7 +35,10 @@ public:
   /**
    * Constructor
    */
-  bind_cmd(HW::item<bool>& item, const handle_t& itf, uint32_t bd, bool is_bvi);
+  bind_cmd(HW::item<bool>& item,
+           const handle_t& itf,
+           uint32_t bd,
+           const l2_binding::l2_port_type_t& port_type);
 
   /**
    * Issue the command to VPP/HW
@@ -63,9 +66,9 @@ private:
   uint32_t m_bd;
 
   /**
-   * Is it a BVI interface that is being bound
+   * What is the port type i.e. normal, bvi, uu-fwd that is being bound
    */
-  bool m_is_bvi;
+  const l2_binding::l2_port_type_t& m_port_type;
 };
 
 /**
@@ -81,7 +84,7 @@ public:
   unbind_cmd(HW::item<bool>& item,
              const handle_t& itf,
              uint32_t bd,
-             bool is_bvi);
+             const l2_binding::l2_port_type_t& port_type);
 
   /**
    * Issue the command to VPP/HW
@@ -109,50 +112,9 @@ private:
   uint32_t m_bd;
 
   /**
-   * Is it a BVI interface that is being bound
+   * What is the port type i.e. bvi, normal or uu-fwd that is being bound
    */
-  bool m_is_bvi;
-};
-
-/**
- * A cmd class sets the VTR operation
- */
-class set_vtr_op_cmd : public rpc_cmd<HW::item<l2_binding::l2_vtr_op_t>,
-                                      vapi::L2_interface_vlan_tag_rewrite>
-{
-public:
-  /**
-   * Constructor
-   */
-  set_vtr_op_cmd(HW::item<l2_binding::l2_vtr_op_t>& item,
-                 const handle_t& itf,
-                 uint16_t tag);
-
-  /**
-   * Issue the command to VPP/HW
-   */
-  rc_t issue(connection& con);
-
-  /**
-   * convert to string format for debug purposes
-   */
-  std::string to_string() const;
-
-  /**
-   * Comparison operator - only used for UT
-   */
-  bool operator==(const set_vtr_op_cmd& i) const;
-
-private:
-  /**
-   * The interface to bind
-   */
-  const handle_t m_itf;
-
-  /**
-   * The tag for the operation
-   */
-  uint16_t m_tag;
+  const l2_binding::l2_port_type_t& m_port_type;
 };
 
 }; // namespace l2_binding_cmds

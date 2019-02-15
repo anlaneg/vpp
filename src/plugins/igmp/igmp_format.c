@@ -62,6 +62,21 @@ format_igmp_filter_mode (u8 * s, va_list * args)
 }
 
 u8 *
+format_igmp_mode (u8 * s, va_list * args)
+{
+  igmp_mode_t mode = va_arg (*args, igmp_mode_t);
+
+  switch (mode)
+    {
+#define _(n,f)  case IGMP_MODE_##f: return (format (s, "%s", #f));
+      foreach_igmp_mode
+#undef _
+    }
+  return (format (s, "unknown:%d", mode));
+
+}
+
+u8 *
 format_igmp_header (u8 * s, va_list * args)
 {
   igmp_header_t *hdr = va_arg (*args, igmp_header_t *);
@@ -190,6 +205,16 @@ format_igmp_key (u8 * s, va_list * args)
   const igmp_key_t *key = va_arg (*args, const igmp_key_t *);
 
   s = format (s, "%U", format_ip46_address, key, IP46_TYPE_ANY);
+
+  return (s);
+}
+
+u8 *
+format_igmp_proxy_device_id (u8 * s, va_list * args)
+{
+  u32 id = va_arg (*args, u32);
+
+  s = (id == ~0) ? s : format (s, "proxy device: %u", id);
 
   return (s);
 }

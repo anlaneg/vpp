@@ -46,7 +46,6 @@ typedef CLIB_PACKED (struct
   f64 last_heard;
   u64 total_bytes;
   u32 total_pkts;
-  u32 outside_address_index;
 }) dslite_session_t;
 /* *INDENT-ON* */
 
@@ -87,6 +86,10 @@ typedef struct
   u32 num_workers;
   u32 first_worker_index;
   u16 port_per_thread;
+
+  /* counters/gauges */
+  vlib_simple_counter_main_t total_b4s;
+  vlib_simple_counter_main_t total_sessions;
 
   /* If set then the DSLite component behaves as CPE/B4
    * otherwise it behaves as AFTR */

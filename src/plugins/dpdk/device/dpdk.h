@@ -44,7 +44,7 @@
 #include <rte_bus_pci.h>
 #include <rte_flow.h>
 
-#include <vnet/unix/pcap.h>
+#include <vppinfra/pcap.h>
 #include <vnet/devices/devices.h>
 
 #if CLIB_DEBUG > 0
@@ -55,8 +55,6 @@
 
 #include <vlib/pci/pci.h>
 #include <vnet/flow/flow.h>
-
-#define NB_MBUF   (16<<10)
 
 extern vnet_device_class_t dpdk_device_class;
 extern vlib_node_registration_t dpdk_input_node;
@@ -86,7 +84,8 @@ extern vlib_node_registration_t admin_up_down_process_node;
   _ ("net_ena", ENA)              \
   _ ("net_failsafe", FAILSAFE)    \
   _ ("net_liovf", LIOVF_ETHER)    \
-  _ ("net_qede", QEDE)
+  _ ("net_qede", QEDE)		  \
+  _ ("net_netvsc", NETVSC)
 
 typedef enum
 {
@@ -116,6 +115,7 @@ typedef enum
   VNET_DPDK_PORT_TYPE_VIRTIO_USER,
   VNET_DPDK_PORT_TYPE_VHOST_ETHER,
   VNET_DPDK_PORT_TYPE_FAILSAFE,
+  VNET_DPDK_PORT_TYPE_NETVSC,
   VNET_DPDK_PORT_TYPE_UNKNOWN,
 } dpdk_port_type_t;
 
@@ -167,7 +167,8 @@ typedef struct
   _( 8, BOND_SLAVE_UP, "bond-slave-up") \
   _( 9, TX_OFFLOAD, "tx-offload") \
   _(10, INTEL_PHDR_CKSUM, "intel-phdr-cksum") \
-  _(11, RX_FLOW_OFFLOAD, "rx-flow-offload")
+  _(11, RX_FLOW_OFFLOAD, "rx-flow-offload") \
+  _(12, RX_IP4_CKSUM, "rx-ip4-cksum")
 
 enum
 {
@@ -215,6 +216,7 @@ typedef struct
   u16 nb_tx_desc;
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
 
+  u8 *name;
   u8 *interface_name_suffix;
 
   /* number of sub-interfaces */
@@ -313,7 +315,9 @@ typedef struct dpdk_device_config_hqos_t
 int dpdk_hqos_validate_mask (u64 mask, u32 n);
 void dpdk_device_config_hqos_pipe_profile_default (dpdk_device_config_hqos_t *
 						   hqos, u32 pipe_profile_id);
+#if 0
 void dpdk_device_config_hqos_default (dpdk_device_config_hqos_t * hqos);
+#endif
 clib_error_t *dpdk_port_setup_hqos (dpdk_device_t * xd,
 				    dpdk_device_config_hqos_t * hqos);
 void dpdk_hqos_metadata_set (dpdk_device_hqos_per_worker_thread_t * hqos,
@@ -329,6 +333,7 @@ void dpdk_hqos_metadata_set (dpdk_device_hqos_per_worker_thread_t * hqos,
 typedef struct
 {
   vlib_pci_addr_t pci_addr;
+  u8 *name;
   u8 is_blacklisted;
   u8 vlan_strip_offload;
 #define DPDK_DEVICE_VLAN_STRIP_DEFAULT 0
@@ -359,7 +364,7 @@ typedef struct
   u8 nchannels_set_manually;
   u32 coremask;
   u32 nchannels;
-  u32 num_mbufs;
+  u32 num_crypto_mbufs;
 
   /*
    * format interface names ala xxxEthernet%d/%d/%d instead of
@@ -371,6 +376,9 @@ typedef struct
   dpdk_device_config_t default_devconf;
   dpdk_device_config_t *dev_confs;
   uword *device_config_index_by_pci_addr;
+
+  /* devices blacklist by pci vendor_id, device_id */
+  u32 *blacklist_by_pci_vendor_and_device;
 
 } dpdk_config_main_t;
 
@@ -404,9 +412,6 @@ typedef struct
   dpdk_device_and_queue_t **devices_by_hqos_cpu;
   dpdk_per_thread_data_t *per_thread_data;
 
-  /* per-thread recycle lists */
-  u32 **recycle;
-
   /* buffer flags template, configurable to enable/disable tcp / udp cksum */
   u32 buffer_flags_template;
 
@@ -437,9 +442,6 @@ typedef struct
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
   dpdk_config_main_t *conf;//配置
-
-  /* mempool */
-  struct rte_mempool **pktmbuf_pools;
 
   /* API message ID base */
   u16 msg_id_base;
@@ -515,6 +517,9 @@ format_function_t format_dpdk_rx_trace;
 format_function_t format_dpdk_rte_mbuf;
 format_function_t format_dpdk_rx_rte_mbuf;
 format_function_t format_dpdk_flow;
+format_function_t format_dpdk_rss_hf_name;
+format_function_t format_dpdk_rx_offload_caps;
+format_function_t format_dpdk_tx_offload_caps;
 unformat_function_t unformat_dpdk_log_level;
 vnet_flow_dev_ops_function_t dpdk_flow_ops_fn;
 
@@ -522,14 +527,8 @@ clib_error_t *unformat_rss_fn (unformat_input_t * input, uword * rss_fn);
 clib_error_t *unformat_hqos (unformat_input_t * input,
 			     dpdk_device_config_hqos_t * hqos);
 
-clib_error_t *dpdk_pool_create (vlib_main_t * vm, u8 * pool_name,
-				u32 elt_size, u32 num_elts,
-				u32 pool_priv_size, u16 cache_size, u8 numa,
-				struct rte_mempool **_mp,
-				vlib_physmem_region_index_t * pri);
-
-clib_error_t *dpdk_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
-				       unsigned socket_id);
+struct rte_pci_device *dpdk_get_pci_device (const struct rte_eth_dev_info
+					    *info);
 
 #if CLI_DEBUG
 int dpdk_buffer_validate_trajectory_all (u32 * uninitialized);

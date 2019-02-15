@@ -205,7 +205,7 @@ pg_interface_add_or_get (pg_main_t * pg, uword if_id)
 
       rnd = (u32) (now * 1e6);
       rnd = random_u32 (&rnd);
-      clib_memcpy (hw_addr + 2, &rnd, sizeof (rnd));
+      clib_memcpy_fast (hw_addr + 2, &rnd, sizeof (rnd));
       hw_addr[0] = 2;
       hw_addr[1] = 0xfe;
 
@@ -333,10 +333,10 @@ pg_edit_group_get_fixed_packet_data (pg_stream_t * s,
 
   vec_foreach (e, g->edits) do_edit (s, g, e, /* want_commit */ 0);
 
-  clib_memcpy (packet_data, g->fixed_packet_data,
-	       vec_len (g->fixed_packet_data));
-  clib_memcpy (packet_data_mask, g->fixed_packet_data_mask,
-	       vec_len (g->fixed_packet_data_mask));
+  clib_memcpy_fast (packet_data, g->fixed_packet_data,
+		    vec_len (g->fixed_packet_data));
+  clib_memcpy_fast (packet_data_mask, g->fixed_packet_data_mask,
+		    vec_len (g->fixed_packet_data_mask));
 }
 
 static void
@@ -435,17 +435,13 @@ pg_stream_add (pg_main_t * pg, pg_stream_t * s_init)
   s->last_increment_packet_size = s->min_packet_bytes;
 
   {
-    pg_buffer_index_t *bi;
     int n;
 
-    s->buffer_bytes = VLIB_BUFFER_DEFAULT_FREE_LIST_BYTES;
+    s->buffer_bytes = vlib_buffer_get_default_data_size (vm);
     n = s->max_packet_bytes / s->buffer_bytes;
     n += (s->max_packet_bytes % s->buffer_bytes) != 0;
 
     vec_resize (s->buffer_indices, n);
-
-    vec_foreach (bi, s->buffer_indices)
-      bi->free_list_index = VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX;
   }
 
   /* Find an interface to use. */
@@ -485,6 +481,31 @@ pg_stream_del (pg_main_t * pg, uword index)
 
   pg_stream_free (s);
   pool_put (pg->streams, s);
+}
+
+void
+pg_stream_change (pg_main_t * pg, pg_stream_t * s)
+{
+  /* Determine packet size. */
+  switch (s->packet_size_edit_type)
+    {
+    case PG_EDIT_INCREMENT:
+    case PG_EDIT_RANDOM:
+      if (s->min_packet_bytes == s->max_packet_bytes)
+	s->packet_size_edit_type = PG_EDIT_FIXED;
+    case PG_EDIT_FIXED:
+      break;
+
+    default:
+      /* Get packet size from fixed edits. */
+      s->packet_size_edit_type = PG_EDIT_FIXED;
+      if (!s->replay_packet_templates)
+	s->min_packet_bytes = s->max_packet_bytes =
+	  vec_len (s->fixed_packet_data);
+      break;
+    }
+
+  s->last_increment_packet_size = s->min_packet_bytes;
 }
 
 

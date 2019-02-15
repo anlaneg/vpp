@@ -15,7 +15,6 @@
 #include <vnet/vnet.h>
 #include <vnet/ip/ip.h>
 #include <vnet/api_errno.h>
-#include <vnet/ipsec/ipsec.h>
 #include <vlib/node_funcs.h>
 #include <openssl/engine.h>
 #include <tlsopenssl/tls_openssl.h>
@@ -62,6 +61,7 @@ typedef struct openssl_async_
   openssl_evt_t ***evt_pool;
   openssl_async_status_t *status;
   void (*polling) (void);
+  void (*polling_conf) (void);
   u8 start_polling;
   ENGINE *engine;
 
@@ -69,6 +69,7 @@ typedef struct openssl_async_
 
 void qat_polling ();
 void qat_pre_init ();
+void qat_polling_config ();
 void dasync_polling ();
 
 struct engine_polling
@@ -76,11 +77,12 @@ struct engine_polling
   char *engine;
   void (*polling) (void);
   void (*pre_init) (void);
+  void (*polling_conf) (void);
 };
 
 struct engine_polling engine_list[] = {
-  {"qat", qat_polling, qat_pre_init},
-  {"dasync", dasync_polling, NULL}
+  {"qat", qat_polling, qat_pre_init, qat_polling_config},
+  {"dasync", dasync_polling, NULL, NULL}
 };
 
 openssl_async_t openssl_async_main;
@@ -133,12 +135,14 @@ openssl_engine_register (char *engine_name, char *algorithm)
       if (!strcmp (engine_list[i].engine, engine_name))
 	{
 	  om->polling = engine_list[i].polling;
+	  om->polling_conf = engine_list[i].polling_conf;
 
 	  registered = i;
 	}
     }
   if (registered < 0)
     {
+      clib_error ("engine %s is not regisered in VPP", engine_name);
       return 0;
     }
 
@@ -148,6 +152,7 @@ openssl_engine_register (char *engine_name, char *algorithm)
 
   if (engine == NULL)
     {
+      clib_warning ("Failed to find engine ENGINE_by_id %s", engine_name);
       return 0;
     }
 
@@ -236,13 +241,13 @@ openssl_evt_alloc (void)
   if (!(*evt))
     *evt = clib_mem_alloc (sizeof (openssl_evt_t));
 
-  memset (*evt, 0, sizeof (openssl_evt_t));
+  clib_memset (*evt, 0, sizeof (openssl_evt_t));
   (*evt)->event_index = evt - tm->evt_pool[thread_index];
   return ((*evt)->event_index);
 }
 
 int
-openssl_async_run (void *evt)
+tls_async_openssl_callback (SSL * s, void *evt)
 {
   openssl_evt_t *event, *event_tail;
   openssl_async_t *om = &openssl_async_main;
@@ -296,7 +301,7 @@ vpp_add_async_pending_event (tls_ctx_t * ctx,
   event->handler = handler;
   event->cb_args.event_index = eidx;
   event->cb_args.thread_index = thread_id;
-  event->engine_callback.callback = openssl_async_run;
+  event->engine_callback.callback = tls_async_openssl_callback;
   event->engine_callback.arg = &event->cb_args;
 
   /* add to pending list */
@@ -323,11 +328,11 @@ vpp_add_async_run_event (tls_ctx_t * ctx, openssl_resume_handler * handler)
   event->handler = handler;
   event->cb_args.event_index = eidx;
   event->cb_args.thread_index = thread_id;
-  event->engine_callback.callback = openssl_async_run;
+  event->engine_callback.callback = tls_async_openssl_callback;
   event->engine_callback.arg = &event->cb_args;
 
   /* This is a retry event, and need to put to ring to make it run again */
-  return openssl_async_run (&event->cb_args);
+  return tls_async_openssl_callback (NULL, &event->cb_args);
 
 }
 
@@ -337,7 +342,7 @@ event_handler (void *tls_async)
 
   openssl_resume_handler *handler;
   openssl_evt_t *callback;
-  stream_session_t *tls_session;
+  session_t *tls_session;
   int thread_index;
   tls_ctx_t *ctx;
 
@@ -362,26 +367,10 @@ event_handler (void *tls_async)
 void
 dasync_polling ()
 {
-  openssl_async_t *om = &openssl_async_main;
-  openssl_evt_t *event;
-  int *evt_pending;
-  openssl_tls_callback_t *engine_cb;
-  u8 thread_index = vlib_get_thread_index ();
-
-  /* POC code here to simulate the engine to call callback */
-  evt_pending = &om->status[thread_index].evt_pending_head;
-  while (*evt_pending >= 0)
-    {
-      TLS_DBG (2, "polling... current head = %d\n", *evt_pending);
-      event = openssl_evt_get_w_thread (*evt_pending, thread_index);
-      *evt_pending = event->next;
-      if (event->status == SSL_ASYNC_PENDING)
-	{
-	  engine_cb = &event->engine_callback;
-	  (*engine_cb->callback) (engine_cb->arg);
-	}
-    }
-
+/* dasync is a fake async device, and could not be polled.
+ * We have added code in the dasync engine to triggered the callback already,
+ * so nothing can be done here
+ */
 }
 
 void
@@ -401,7 +390,7 @@ qat_polling_config ()
   int *config;
 
   config = &om->status[thread_index].poll_config;
-  if (*config)
+  if (PREDICT_TRUE (*config))
     return;
 
   ENGINE_ctrl_cmd (om->engine, "SET_INSTANCE_FOR_THREAD", thread_index,
@@ -421,7 +410,6 @@ qat_polling ()
 
   if (om->start_polling)
     {
-      qat_polling_config ();
       ENGINE_ctrl_cmd (om->engine, "POLL", 0, &poll_status, NULL, 0);
     }
 }
@@ -514,6 +502,8 @@ tls_async_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
   u8 thread_index;
   openssl_async_t *om = &openssl_async_main;
 
+  if (om->polling_conf)
+    (*om->polling_conf) ();
   thread_index = vlib_get_thread_index ();
   if (pool_elts (om->evt_pool[thread_index]) > 0)
     {

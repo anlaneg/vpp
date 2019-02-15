@@ -102,12 +102,15 @@ typedef struct
   u32 icmp_timeout;
   u32 tcp_trans_timeout;
   u32 tcp_est_timeout;
-  u32 tcp_incoming_syn_timeout;
 
   /* Total count of interfaces enabled */
   u32 total_enabled_count;
   /* The process node which orcherstrates the cleanup */
   u32 nat64_expire_walk_node_index;
+
+  /* counters/gauges */
+  vlib_simple_counter_main_t total_bibs;
+  vlib_simple_counter_main_t total_sessions;
 
   ip4_main_t *ip4_main;
   snat_main_t *sm;
@@ -120,13 +123,15 @@ extern vlib_node_registration_t nat64_out2in_node;
 /**
  * @brief Add/delete address to NAT64 pool.
  *
+ * @param thread_index Thread index used by ipfix nat logging (not address per thread).
  * @param addr   IPv4 address.
  * @param vrf_id VRF id of tenant, ~0 means independent of VRF.
  * @param is_add 1 if add, 0 if delete.
  *
  * @returns 0 on success, non-zero value otherwise.
  */
-int nat64_add_del_pool_addr (ip4_address_t * addr, u32 vrf_id, u8 is_add);
+int nat64_add_del_pool_addr (u32 thread_index,
+			     ip4_address_t * addr, u32 vrf_id, u8 is_add);
 
 /**
  * @brief Call back function when walking addresses in NAT64 pool, non-zero
@@ -256,11 +261,10 @@ u32 nat64_get_icmp_timeout (void);
  *
  * @param trans Transitory timeout in seconds (if 0 reset to default value 240sec).
  * @param est Established timeout in seconds (if 0 reset to default value 7440sec).
- * @param incoming_syn Incoming SYN timeout in seconds (if 0 reset to default value 6sec).
  *
  * @returns 0 on success, non-zero value otherwise.
  */
-int nat64_set_tcp_timeouts (u32 trans, u32 est, u32 incoming_syn);
+int nat64_set_tcp_timeouts (u32 trans, u32 est);
 
 /**
  * @brief Get TCP transitory timeout.
@@ -275,13 +279,6 @@ u32 nat64_get_tcp_trans_timeout (void);
  * @returns TCP established timeout in seconds.
  */
 u32 nat64_get_tcp_est_timeout (void);
-
-/**
- * @brief Get TCP incoming SYN timeout.
- *
- * @returns TCP incoming SYN timeout in seconds.
- */
-u32 nat64_get_tcp_incoming_syn_timeout (void);
 
 /**
  * @brief Reset NAT64 session timeout.

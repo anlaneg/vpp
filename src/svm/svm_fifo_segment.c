@@ -15,8 +15,6 @@
 
 #include <svm/svm_fifo_segment.h>
 
-svm_fifo_segment_main_t svm_fifo_segment_main;
-
 static void
 allocate_new_fifo_chunk (svm_fifo_segment_header_t * fsh,
 			 u32 data_size_in_bytes, int chunk_size)
@@ -190,7 +188,7 @@ svm_fifo_segment_init (svm_fifo_segment_private_t * s)
   oldheap = ssvm_push_heap (sh);
 
   fsh = clib_mem_alloc (sizeof (*fsh));
-  memset (fsh, 0, sizeof (*fsh));
+  clib_memset (fsh, 0, sizeof (*fsh));
   s->h = sh->opaque[0] = fsh;
 
   ssvm_pop_heap (oldheap);
@@ -203,15 +201,15 @@ svm_fifo_segment_init (svm_fifo_segment_private_t * s)
  * Create an svm fifo segment and initialize as master
  */
 int
-svm_fifo_segment_create (svm_fifo_segment_create_args_t * a)
+svm_fifo_segment_create (svm_fifo_segment_main_t * sm,
+			 svm_fifo_segment_create_args_t * a)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
   svm_fifo_segment_private_t *s;
   int rv;
 
   /* Allocate a fresh segment */
   pool_get (sm->segments, s);
-  memset (s, 0, sizeof (*s));
+  clib_memset (s, 0, sizeof (*s));
 
   s->ssvm.ssvm_size = a->segment_size;
   s->ssvm.i_am_master = 1;
@@ -237,9 +235,9 @@ svm_fifo_segment_create (svm_fifo_segment_create_args_t * a)
  * Create an svm fifo segment in process-private memory
  */
 int
-svm_fifo_segment_create_process_private (svm_fifo_segment_create_args_t * a)
+svm_fifo_segment_create_process_private (svm_fifo_segment_main_t * sm,
+					 svm_fifo_segment_create_args_t * a)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
   svm_fifo_segment_private_t *s;
   ssvm_shared_header_t *sh;
   u32 rnd_size = 0;
@@ -247,7 +245,7 @@ svm_fifo_segment_create_process_private (svm_fifo_segment_create_args_t * a)
   u32 pagesize = clib_mem_get_page_size ();
 
   pool_get (sm->segments, s);
-  memset (s, 0, sizeof (*s));
+  clib_memset (s, 0, sizeof (*s));
 
   rnd_size = (a->segment_size + (pagesize - 1)) & ~pagesize;
 
@@ -278,7 +276,7 @@ svm_fifo_segment_create_process_private (svm_fifo_segment_create_args_t * a)
   sh = clib_mem_alloc_aligned (sizeof (*sh), CLIB_CACHE_LINE_BYTES);
   s->ssvm.sh = sh;
 
-  memset (sh, 0, sizeof (*sh));
+  clib_memset (sh, 0, sizeof (*sh));
   sh->heap = heap;
 
   svm_fifo_segment_init (s);
@@ -291,15 +289,15 @@ svm_fifo_segment_create_process_private (svm_fifo_segment_create_args_t * a)
  * Attach as slave to an svm fifo segment
  */
 int
-svm_fifo_segment_attach (svm_fifo_segment_create_args_t * a)
+svm_fifo_segment_attach (svm_fifo_segment_main_t * sm,
+			 svm_fifo_segment_create_args_t * a)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
   svm_fifo_segment_private_t *s;
   int rv;
 
   /* Allocate a fresh segment */
   pool_get (sm->segments, s);
-  memset (s, 0, sizeof (*s));
+  clib_memset (s, 0, sizeof (*s));
 
   s->ssvm.ssvm_size = a->segment_size;
   s->ssvm.my_pid = getpid ();
@@ -324,12 +322,11 @@ svm_fifo_segment_attach (svm_fifo_segment_create_args_t * a)
 }
 
 void
-svm_fifo_segment_delete (svm_fifo_segment_private_t * s)
+svm_fifo_segment_delete (svm_fifo_segment_main_t * sm,
+			 svm_fifo_segment_private_t * s)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
-
   ssvm_delete (&s->ssvm);
-  memset (s, 0xfe, sizeof (*s));
+  clib_memset (s, 0xfe, sizeof (*s));
   pool_put (sm->segments, s);
 }
 
@@ -337,7 +334,7 @@ svm_fifo_segment_delete (svm_fifo_segment_private_t * s)
  * Allocate fifo in svm segment
  */
 svm_fifo_t *
-svm_fifo_segment_alloc_fifo (svm_fifo_segment_private_t * s,
+svm_fifo_segment_alloc_fifo (svm_fifo_segment_private_t * fs,
 			     u32 data_size_in_bytes,
 			     svm_fifo_segment_freelist_t list_index)
 {
@@ -361,7 +358,7 @@ svm_fifo_segment_alloc_fifo (svm_fifo_segment_private_t * s,
   freelist_index = max_log2 (data_size_in_bytes)
     - max_log2 (FIFO_SEGMENT_MIN_FIFO_SIZE);
 
-  sh = s->ssvm.sh;
+  sh = fs->ssvm.sh;
   ssvm_lock_non_recursive (sh, 1);
   fsh = (svm_fifo_segment_header_t *) sh->opaque[0];
 
@@ -387,9 +384,10 @@ svm_fifo_segment_alloc_fifo (svm_fifo_segment_private_t * s,
 	{
 	  fsh->free_fifos[freelist_index] = f->next;
 	  /* (re)initialize the fifo, as in svm_fifo_create */
-	  memset (f, 0, sizeof (*f));
+	  clib_memset (f, 0, sizeof (*f));
 	  f->nitems = data_size_in_bytes;
 	  f->ooos_list_head = OOO_SEGMENT_INVALID_INDEX;
+	  f->ct_session_index = SVM_FIFO_INVALID_SESSION_INDEX;
 	  f->refcnt = 1;
 	  f->freelist_index = freelist_index;
 	  goto found;
@@ -494,27 +492,26 @@ svm_fifo_segment_free_fifo (svm_fifo_segment_private_t * s, svm_fifo_t * f,
 }
 
 void
-svm_fifo_segment_main_init (u64 baseva, u32 timeout_in_seconds)
+svm_fifo_segment_main_init (svm_fifo_segment_main_t * sm, u64 baseva,
+			    u32 timeout_in_seconds)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
-
   sm->next_baseva = baseva;
   sm->timeout_in_seconds = timeout_in_seconds;
 }
 
 u32
-svm_fifo_segment_index (svm_fifo_segment_private_t * s)
+svm_fifo_segment_index (svm_fifo_segment_main_t * sm,
+			svm_fifo_segment_private_t * s)
 {
-  return s - svm_fifo_segment_main.segments;
+  return s - sm->segments;
 }
 
 /**
  * Retrieve svm segments pool. Used only for debug purposes.
  */
 svm_fifo_segment_private_t *
-svm_fifo_segment_segments_pool (void)
+svm_fifo_segment_segments_pool (svm_fifo_segment_main_t * sm)
 {
-  svm_fifo_segment_main_t *sm = &svm_fifo_segment_main;
   return sm->segments;
 }
 
@@ -578,8 +575,8 @@ svm_fifo_segment_num_free_fifos (svm_fifo_segment_private_t * fifo_segment,
 }
 
 void
-svm_fifo_segment_info (svm_fifo_segment_private_t * seg, uword * address,
-		       u64 * size)
+svm_fifo_segment_info (svm_fifo_segment_private_t * seg, char **address,
+		       size_t * size)
 {
   if (ssvm_type (&seg->ssvm) == SSVM_SEGMENT_PRIVATE)
     {
@@ -590,14 +587,12 @@ svm_fifo_segment_info (svm_fifo_segment_private_t * seg, uword * address,
       heap_header = mheap_header (seg->ssvm.sh->heap);
       *size = heap_header->max_size;
 #else
-      mspace_get_address_and_size (seg->ssvm.sh->heap,
-				   (unsigned long long *) address,
-				   (unsigned long long *) size);
+      mspace_get_address_and_size (seg->ssvm.sh->heap, address, size);
 #endif
     }
   else
     {
-      *address = seg->ssvm.sh->ssvm_va;
+      *address = (char *) seg->ssvm.sh->ssvm_va;
       *size = seg->ssvm.ssvm_size;
     }
 }

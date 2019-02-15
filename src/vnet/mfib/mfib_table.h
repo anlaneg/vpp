@@ -291,6 +291,21 @@ extern u32 mfib_table_get_index_for_sw_if_index(fib_protocol_t proto,
 
 /**
  * @brief
+ *  Get the Table-ID of the FIB from protocol and index
+ *
+ * @param fib_index
+ *  The FIB index
+ *
+ * @paran proto
+ *  The protocol of the FIB (and thus the entries therein)
+ *
+ * @return fib_index
+ *  The tableID of the FIB
+ */
+extern u32 mfib_table_get_table_id(u32 fib_index, fib_protocol_t proto);
+
+/**
+ * @brief
  *  Get the index of the FIB for a Table-ID. This DOES NOT create the
  * FIB if it does not exist.
  *
@@ -405,6 +420,22 @@ extern u32 mfib_table_get_num_entries(u32 fib_index,
 
 /**
  * @brief
+ *  Get the less specific (covering) prefix
+ *
+ * @param fib_index
+ *  The index of the FIB
+ *
+ * @param prefix
+ *  The prefix to lookup
+ *
+ * @return
+ *  The index of the less specific fib_entry_t.
+ */
+extern fib_node_index_t mfib_table_get_less_specific(u32 fib_index,
+						    const mfib_prefix_t *prefix);
+
+/**
+ * @brief
  * Get a pointer to a FIB table
  */
 extern mfib_table_t *mfib_table_get(fib_node_index_t index,
@@ -429,5 +460,12 @@ extern void mfib_table_walk(u32 fib_index,
  * @brief format (display) the memory usage for mfibs
  */
 extern u8 * format_mfib_table_memory(u8 * s, va_list * args);
+
+/**
+ * To assit UT
+ */
+extern u32 mfib_table_get_n_routes(fib_node_index_t index,
+                                   fib_protocol_t proto);
+
 
 #endif

@@ -18,7 +18,6 @@
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/ip6_fib.h>
 #include <vnet/adj/adj.h>
-#include <map/map_dpo.h>
 #include <vppinfra/crc32.h>
 #include <vnet/plugin/plugin.h>
 #include <vpp/app/version.h>
@@ -55,7 +54,7 @@ map_main_t map_main;
 /*
  * This code supports MAP-T:
  *
- * With DMR prefix length equal to 96.
+ * With a DMR prefix length of 64 or 96 (RFC6052).
  *
  */
 
@@ -74,41 +73,12 @@ map_create_domain (ip4_address_t * ip4_prefix,
 {
   u8 suffix_len, suffix_shift;
   map_main_t *mm = &map_main;
-  dpo_id_t dpo_v4 = DPO_INVALID;
-  dpo_id_t dpo_v6 = DPO_INVALID;
   map_domain_t *d;
-
-  /* Sanity check on the src prefix length */
-  if (flags & MAP_DOMAIN_TRANSLATION)
-    {
-      if (ip6_src_len != 96)
-	{
-	  clib_warning ("MAP-T only supports ip6_src_len = 96 for now.");
-	  return -1;
-	}
-      if ((flags & MAP_DOMAIN_RFC6052) && ip6_prefix_len != 96)
-	{
-	  clib_warning ("RFC6052 translation only supports ip6_prefix_len = "
-			"96 for now");
-	  return -1;
-	}
-    }
-  else
-    {
-      if (ip6_src_len != 128)
-	{
-	  clib_warning
-	    ("MAP-E requires a BR address, not a prefix (ip6_src_len should "
-	     "be 128).");
-	  return -1;
-	}
-    }
 
   /* How many, and which bits to grab from the IPv4 DA */
   if (ip4_prefix_len + ea_bits_len < 32)
     {
-      if (!(flags & MAP_DOMAIN_TRANSLATION))
-	flags |= MAP_DOMAIN_PREFIX;
+      flags |= MAP_DOMAIN_PREFIX;
       suffix_shift = 32 - ip4_prefix_len - ea_bits_len;
       suffix_len = ea_bits_len;
     }
@@ -128,15 +98,9 @@ map_create_domain (ip4_address_t * ip4_prefix,
       return -1;
     }
 
-  if (mm->is_ce && !(flags & MAP_DOMAIN_TRANSLATION))
-    {
-      clib_warning ("MAP-E CE is not supported yet");
-      return -1;
-    }
-
   /* Get domain index */
   pool_get_aligned (mm->domains, d, CLIB_CACHE_LINE_BYTES);
-  memset (d, 0, sizeof (*d));
+  clib_memset (d, 0, sizeof (*d));
   *map_domain_index = d - mm->domains;
 
   /* Init domain struct */
@@ -158,77 +122,13 @@ map_create_domain (ip4_address_t * ip4_prefix,
   d->psid_mask = (1 << d->psid_length) - 1;
   d->ea_shift = 64 - ip6_prefix_len - suffix_len - d->psid_length;
 
-  /* MAP data-plane object */
-  if (d->flags & MAP_DOMAIN_TRANSLATION)
-    map_t_dpo_create (DPO_PROTO_IP4, *map_domain_index, &dpo_v4);
-  else
-    map_dpo_create (DPO_PROTO_IP4, *map_domain_index, &dpo_v4);
+  /* MAP longest match lookup table (input feature / FIB) */
+  mm->ip4_prefix_tbl->add (mm->ip4_prefix_tbl, &d->ip4_prefix,
+			   d->ip4_prefix_len, *map_domain_index);
 
-  /* Create ip4 route */
-  u8 ip4_pfx_len;
-  ip4_address_t ip4_pfx;
-  if (mm->is_ce)
-    {
-      ip4_pfx_len = 0;
-      ip4_pfx.as_u32 = 0;
-    }
-  else
-    {
-      ip4_pfx_len = d->ip4_prefix_len;
-      ip4_pfx = d->ip4_prefix;
-    }
-  fib_prefix_t pfx = {
-    .fp_proto = FIB_PROTOCOL_IP4,
-    .fp_len = ip4_pfx_len,
-    .fp_addr = {
-		.ip4 = ip4_pfx,
-		}
-    ,
-  };
-  fib_table_entry_special_dpo_add (0, &pfx,
-				   FIB_SOURCE_MAP,
-				   FIB_ENTRY_FLAG_EXCLUSIVE, &dpo_v4);
-  dpo_reset (&dpo_v4);
-
-  /*
-   * construct a DPO to use the v6 domain
-   */
-  if (d->flags & MAP_DOMAIN_TRANSLATION)
-    map_t_dpo_create (DPO_PROTO_IP6, *map_domain_index, &dpo_v6);
-  else
-    map_dpo_create (DPO_PROTO_IP6, *map_domain_index, &dpo_v6);
-
-  /*
-   * Multiple MAP domains may share same source IPv6 TEP. Which is just dandy.
-   * We are not tracking the sharing. So a v4 lookup to find the correct
-   * domain post decap/trnaslate is always done
-   *
-   * Create ip6 route. This is a reference counted add. If the prefix
-   * already exists and is MAP sourced, it is now MAP source n+1 times
-   * and will need to be removed n+1 times.
-   */
-  u8 ip6_pfx_len;
-  ip6_address_t ip6_pfx;
-  if (mm->is_ce)
-    {
-      ip6_pfx_len = d->ip6_prefix_len;
-      ip6_pfx = d->ip6_prefix;
-    }
-  else
-    {
-      ip6_pfx_len = d->ip6_src_len;
-      ip6_pfx = d->ip6_src;
-    }
-  fib_prefix_t pfx6 = {
-    .fp_proto = FIB_PROTOCOL_IP6,
-    .fp_len = ip6_pfx_len,
-    .fp_addr.ip6 = ip6_pfx,
-  };
-
-  fib_table_entry_special_dpo_add (0, &pfx6,
-				   FIB_SOURCE_MAP,
-				   FIB_ENTRY_FLAG_EXCLUSIVE, &dpo_v6);
-  dpo_reset (&dpo_v6);
+  /* Really needed? Or always use FIB? */
+  mm->ip6_src_prefix_tbl->add (mm->ip6_src_prefix_tbl, &d->ip6_src,
+			       d->ip6_src_len, *map_domain_index);
 
   /* Validate packet/byte counters */
   map_domain_counter_lock (mm);
@@ -268,26 +168,10 @@ map_delete_domain (u32 map_domain_index)
     }
 
   d = pool_elt_at_index (mm->domains, map_domain_index);
-
-  fib_prefix_t pfx = {
-    .fp_proto = FIB_PROTOCOL_IP4,
-    .fp_len = d->ip4_prefix_len,
-    .fp_addr = {
-		.ip4 = d->ip4_prefix,
-		}
-    ,
-  };
-  fib_table_entry_special_remove (0, &pfx, FIB_SOURCE_MAP);
-
-  fib_prefix_t pfx6 = {
-    .fp_proto = FIB_PROTOCOL_IP6,
-    .fp_len = d->ip6_src_len,
-    .fp_addr = {
-		.ip6 = d->ip6_src,
-		}
-    ,
-  };
-  fib_table_entry_special_remove (0, &pfx6, FIB_SOURCE_MAP);
+  mm->ip4_prefix_tbl->delete (mm->ip4_prefix_tbl, &d->ip4_prefix,
+			      d->ip4_prefix_len);
+  mm->ip6_src_prefix_tbl->delete (mm->ip6_src_prefix_tbl, &d->ip6_src,
+				  d->ip6_src_len);
 
   /* Deleting rules */
   if (d->rules)
@@ -300,7 +184,7 @@ map_delete_domain (u32 map_domain_index)
 
 int
 map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
-		  u8 is_add)
+		  bool is_add)
 {
   map_domain_t *d;
   map_main_t *mm = &map_main;
@@ -322,7 +206,7 @@ map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
       d->rules = clib_mem_alloc_aligned (l, CLIB_CACHE_LINE_BYTES);
       if (!d->rules)
 	return -1;
-      memset (d->rules, 0, l);
+      clib_memset (d->rules, 0, l);
     }
 
   if (psid >= (0x1 << d->psid_length))
@@ -338,7 +222,7 @@ map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
     }
   else
     {
-      memset (&d->rules[psid], 0, sizeof (ip6_address_t));
+      clib_memset (&d->rules[psid], 0, sizeof (ip6_address_t));
     }
   return 0;
 }
@@ -477,8 +361,8 @@ map_fib_unresolve (map_main_pre_resolved_t * pr,
   pr->sibling = FIB_NODE_INDEX_INVALID;
 }
 
-static void
-map_pre_resolve (ip4_address_t * ip4, ip6_address_t * ip6, int is_del)
+void
+map_pre_resolve (ip4_address_t * ip4, ip6_address_t * ip6, bool is_del)
 {
   if (ip6 && (ip6->as_u64[0] != 0 || ip6->as_u64[1] != 0))
     {
@@ -513,8 +397,11 @@ map_security_check_command_fn (vlib_main_t * vm,
 			       vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
   clib_error_t *error = NULL;
+  bool enable = false;
+  bool check_frag = false;
+  bool saw_enable = false;
+  bool saw_frag = false;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -522,10 +409,26 @@ map_security_check_command_fn (vlib_main_t * vm,
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (line_input, "off"))
-	mm->sec_check = false;
-      else if (unformat (line_input, "on"))
-	mm->sec_check = true;
+      if (unformat (line_input, "enable"))
+	{
+	  enable = false;
+	  saw_enable = true;
+	}
+      else if (unformat (line_input, "disable"))
+	{
+	  enable = true;
+	  saw_enable = true;
+	}
+      else if (unformat (line_input, "fragments on"))
+	{
+	  check_frag = true;
+	  saw_frag = true;
+	}
+      else if (unformat (line_input, "fragments off"))
+	{
+	  check_frag = false;
+	  saw_frag = true;
+	}
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -534,44 +437,27 @@ map_security_check_command_fn (vlib_main_t * vm,
 	}
     }
 
-done:
-  unformat_free (line_input);
-
-  return error;
-}
-
-static clib_error_t *
-map_security_check_frag_command_fn (vlib_main_t * vm,
-				    unformat_input_t * input,
-				    vlib_cli_command_t * cmd)
-{
-  unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
-  clib_error_t *error = NULL;
-
-  /* Get a line of input. */
-  if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
-
-  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+  if (!saw_enable)
     {
-      if (unformat (line_input, "off"))
-	mm->sec_check_frag = false;
-      else if (unformat (line_input, "on"))
-	mm->sec_check_frag = true;
-      else
-	{
-	  error = clib_error_return (0, "unknown input `%U'",
-				     format_unformat_error, line_input);
-	  goto done;
-	}
+      error = clib_error_return (0,
+				 "Must specify enable 'enable' or 'disable'");
+      goto done;
     }
 
+  if (!saw_frag)
+    {
+      error = clib_error_return (0, "Must specify fragments 'on' or 'off'");
+      goto done;
+    }
+
+  map_param_set_security_check (enable, check_frag);
+
 done:
   unformat_free (line_input);
 
   return error;
 }
+
 
 static clib_error_t *
 map_add_domain_command_fn (vlib_main_t * vm,
@@ -622,10 +508,6 @@ map_add_domain_command_fn (vlib_main_t * vm,
 	num_m_args++;
       else if (unformat (line_input, "mtu %d", &mtu))
 	num_m_args++;
-      else if (unformat (line_input, "map-t"))
-	flags |= MAP_DOMAIN_TRANSLATION;
-      else if (unformat (line_input, "rfc6052"))
-	flags |= (MAP_DOMAIN_TRANSLATION | MAP_DOMAIN_RFC6052);
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -749,10 +631,10 @@ map_pre_resolve_command_fn (vlib_main_t * vm,
   ip4_address_t ip4nh, *p_v4 = NULL;
   ip6_address_t ip6nh, *p_v6 = NULL;
   clib_error_t *error = NULL;
-  int is_del = 0;
+  bool is_del = false;
 
-  memset (&ip4nh, 0, sizeof (ip4nh));
-  memset (&ip6nh, 0, sizeof (ip6nh));
+  clib_memset (&ip4nh, 0, sizeof (ip4nh));
+  clib_memset (&ip6nh, 0, sizeof (ip6nh));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -766,7 +648,7 @@ map_pre_resolve_command_fn (vlib_main_t * vm,
 	if (unformat (line_input, "ip6-nh %U", unformat_ip6_address, &ip6nh))
 	p_v6 = &ip6nh;
       else if (unformat (line_input, "del"))
-	is_del = 1;
+	is_del = true;
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -791,6 +673,7 @@ map_icmp_relay_source_address_command_fn (vlib_main_t * vm,
 {
   unformat_input_t _line_input, *line_input = &_line_input;
   ip4_address_t icmp_src_address;
+  ip4_address_t *p_icmp_addr = 0;
   map_main_t *mm = &map_main;
   clib_error_t *error = NULL;
 
@@ -804,7 +687,10 @@ map_icmp_relay_source_address_command_fn (vlib_main_t * vm,
     {
       if (unformat
 	  (line_input, "%U", unformat_ip4_address, &icmp_src_address))
-	mm->icmp4_src_address = icmp_src_address;
+	{
+	  mm->icmp4_src_address = icmp_src_address;
+	  p_icmp_addr = &icmp_src_address;
+	}
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -812,6 +698,8 @@ map_icmp_relay_source_address_command_fn (vlib_main_t * vm,
 	  goto done;
 	}
     }
+
+  map_param_set_icmp (p_icmp_addr);
 
 done:
   unformat_free (line_input);
@@ -825,9 +713,9 @@ map_icmp_unreachables_command_fn (vlib_main_t * vm,
 				  vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
   int num_m_args = 0;
   clib_error_t *error = NULL;
+  bool enabled = false;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -837,9 +725,9 @@ map_icmp_unreachables_command_fn (vlib_main_t * vm,
     {
       num_m_args++;
       if (unformat (line_input, "on"))
-	mm->icmp6_enabled = true;
+	enabled = true;
       else if (unformat (line_input, "off"))
-	mm->icmp6_enabled = false;
+	enabled = false;
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -852,19 +740,26 @@ map_icmp_unreachables_command_fn (vlib_main_t * vm,
   if (num_m_args != 1)
     error = clib_error_return (0, "mandatory argument(s) missing");
 
+
+  map_param_set_icmp6 (enabled);
+
 done:
   unformat_free (line_input);
 
   return error;
 }
 
+
 static clib_error_t *
 map_fragment_command_fn (vlib_main_t * vm,
 			 unformat_input_t * input, vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
   clib_error_t *error = NULL;
+  bool frag_inner = false;
+  bool frag_ignore_df = false;
+  bool saw_in_out = false;
+  bool saw_df = false;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -873,9 +768,25 @@ map_fragment_command_fn (vlib_main_t * vm,
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "inner"))
-	mm->frag_inner = true;
+	{
+	  frag_inner = true;
+	  saw_in_out = true;
+	}
       else if (unformat (line_input, "outer"))
-	mm->frag_inner = false;
+	{
+	  frag_inner = false;
+	  saw_in_out = true;
+	}
+      else if (unformat (line_input, "ignore-df"))
+	{
+	  frag_ignore_df = true;
+	  saw_df = true;
+	}
+      else if (unformat (line_input, "honor-df"))
+	{
+	  frag_ignore_df = false;
+	  saw_df = true;
+	}
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -884,38 +795,19 @@ map_fragment_command_fn (vlib_main_t * vm,
 	}
     }
 
-done:
-  unformat_free (line_input);
-
-  return error;
-}
-
-static clib_error_t *
-map_fragment_df_command_fn (vlib_main_t * vm,
-			    unformat_input_t * input,
-			    vlib_cli_command_t * cmd)
-{
-  unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
-  clib_error_t *error = NULL;
-
-  /* Get a line of input. */
-  if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
-
-  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+  if (!saw_in_out)
     {
-      if (unformat (line_input, "on"))
-	mm->frag_ignore_df = true;
-      else if (unformat (line_input, "off"))
-	mm->frag_ignore_df = false;
-      else
-	{
-	  error = clib_error_return (0, "unknown input `%U'",
-				     format_unformat_error, line_input);
-	  goto done;
-	}
+      error = clib_error_return (0, "Must specify 'inner' or 'outer'");
+      goto done;
     }
+
+  if (!saw_df)
+    {
+      error = clib_error_return (0, "Must specify 'ignore-df' or 'honor-df'");
+      goto done;
+    }
+
+  map_param_set_fragmentation (frag_inner, frag_ignore_df);
 
 done:
   unformat_free (line_input);
@@ -929,11 +821,10 @@ map_traffic_class_command_fn (vlib_main_t * vm,
 			      vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  map_main_t *mm = &map_main;
   u32 tc = 0;
   clib_error_t *error = NULL;
+  bool tc_copy = false;
 
-  mm->tc_copy = false;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -942,9 +833,9 @@ map_traffic_class_command_fn (vlib_main_t * vm,
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "copy"))
-	mm->tc_copy = true;
+	tc_copy = true;
       else if (unformat (line_input, "%x", &tc))
-	mm->tc = tc & 0xff;
+	tc = tc & 0xff;
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
@@ -952,6 +843,8 @@ map_traffic_class_command_fn (vlib_main_t * vm,
 	  goto done;
 	}
     }
+
+  map_param_set_traffic_class (tc_copy, tc);
 
 done:
   unformat_free (line_input);
@@ -962,12 +855,8 @@ done:
 static char *
 map_flags_to_string (u32 flags)
 {
-  if (flags & MAP_DOMAIN_RFC6052)
-    return "rfc6052";
   if (flags & MAP_DOMAIN_PREFIX)
     return "prefix";
-  if (flags & MAP_DOMAIN_TRANSLATION)
-    return "map-t";
   return "";
 }
 
@@ -980,12 +869,12 @@ format_map_domain (u8 * s, va_list * args)
   ip6_address_t ip6_prefix;
 
   if (d->rules)
-    memset (&ip6_prefix, 0, sizeof (ip6_prefix));
+    clib_memset (&ip6_prefix, 0, sizeof (ip6_prefix));
   else
     ip6_prefix = d->ip6_prefix;
 
   s = format (s,
-	      "[%d] ip4-pfx %U/%d ip6-pfx %U/%d ip6-src %U/%d ea_bits_len %d "
+	      "[%d] ip4-pfx %U/%d ip6-pfx %U/%d ip6-src %U/%d ea-bits-len %d "
 	      "psid-offset %d psid-len %d mtu %d %s",
 	      d - mm->domains,
 	      format_ip4_address, &d->ip4_prefix, d->ip4_prefix_len,
@@ -1094,9 +983,10 @@ show_map_domain_command_fn (vlib_main_t * vm, unformat_input_t * input,
 
   if (map_domain_index == ~0)
     {
-    /* *INDENT-OFF* */
-    pool_foreach(d, mm->domains, ({vlib_cli_output(vm, "%U", format_map_domain, d, counters);}));
-    /* *INDENT-ON* */
+      /* *INDENT-OFF* */
+      pool_foreach(d, mm->domains,
+	({vlib_cli_output(vm, "%U", format_map_domain, d, counters);}));
+      /* *INDENT-ON* */
     }
   else
     {
@@ -1158,7 +1048,7 @@ show_map_stats_command_fn (vlib_main_t * vm, unformat_input_t * input,
   map_main_t *mm = &map_main;
   map_domain_t *d;
   int domains = 0, rules = 0, domaincount = 0, rulecount = 0;
-  if (pool_elts (mm->domains) == 0)
+  if (pool_elts (mm->domains) <= 1)
     {
       vlib_cli_output (vm, "No MAP domains are configured...");
       return 0;
@@ -1193,6 +1083,9 @@ show_map_stats_command_fn (vlib_main_t * vm, unformat_input_t * input,
   else
     vlib_cli_output (vm, "MAP traffic-class: %x", mm->tc);
 
+  if (mm->tcp_mss)
+    vlib_cli_output (vm, "MAP TCP MSS clamping: %u", mm->tcp_mss);
+
   vlib_cli_output (vm,
 		   "MAP IPv6 inbound security check: %s, fragmented packet security check: %s",
 		   mm->sec_check ? "enabled" : "disabled",
@@ -1216,8 +1109,8 @@ show_map_stats_command_fn (vlib_main_t * vm, unformat_input_t * input,
   int which, i;
   vlib_counter_t v;
 
-  memset (total_pkts, 0, sizeof (total_pkts));
-  memset (total_bytes, 0, sizeof (total_bytes));
+  clib_memset (total_pkts, 0, sizeof (total_pkts));
+  clib_memset (total_bytes, 0, sizeof (total_bytes));
 
   map_domain_counter_lock (mm);
   vec_foreach (cm, mm->domain_counters)
@@ -1319,113 +1212,87 @@ map_params_reass_command_fn (vlib_main_t * vm, unformat_input_t * input,
 				  MAP_IP6_REASS_CONF_BUFFERS_MAX);
     }
 
-  if (ip4)
+  int rv;
+  u32 reass = 0, packets = 0;
+  rv = map_param_set_reassembly (!ip4, lifetime, pool_size, buffers, ht_ratio,
+				 &reass, &packets);
+
+  switch (rv)
     {
-      u32 reass = 0, packets = 0;
-      if (pool_size != ~0)
-	{
-	  if (map_ip4_reass_conf_pool_size (pool_size, &reass, &packets))
-	    {
-	      vlib_cli_output (vm, "Could not set ip4-reass pool-size");
-	    }
-	  else
-	    {
-	      vlib_cli_output (vm,
-			       "Setting ip4-reass pool-size (destroyed-reassembly=%u , dropped-fragments=%u)",
-			       reass, packets);
-	    }
-	}
-      if (ht_ratio != (MAP_IP4_REASS_CONF_HT_RATIO_MAX + 1))
-	{
-	  if (map_ip4_reass_conf_ht_ratio (ht_ratio, &reass, &packets))
-	    {
-	      vlib_cli_output (vm, "Could not set ip4-reass ht-log2len");
-	    }
-	  else
-	    {
-	      vlib_cli_output (vm,
-			       "Setting ip4-reass ht-log2len (destroyed-reassembly=%u , dropped-fragments=%u)",
-			       reass, packets);
-	    }
-	}
-      if (lifetime != ~0)
-	{
-	  if (map_ip4_reass_conf_lifetime (lifetime))
-	    vlib_cli_output (vm, "Could not set ip4-reass lifetime");
-	  else
-	    vlib_cli_output (vm, "Setting ip4-reass lifetime");
-	}
-      if (buffers != ~(0ull))
-	{
-	  if (map_ip4_reass_conf_buffers (buffers))
-	    vlib_cli_output (vm, "Could not set ip4-reass buffers");
-	  else
-	    vlib_cli_output (vm, "Setting ip4-reass buffers");
-	}
+    case 0:
+      vlib_cli_output (vm,
+		       "Note: destroyed-reassembly=%u , dropped-fragments=%u",
+		       reass, packets);
+      break;
 
-      if (map_main.ip4_reass_conf_buffers >
-	  map_main.ip4_reass_conf_pool_size *
-	  MAP_IP4_REASS_MAX_FRAGMENTS_PER_REASSEMBLY)
-	{
-	  vlib_cli_output (vm,
-			   "Note: 'ip4-reass buffers' > pool-size * max-fragments-per-reassembly.");
-	}
-    }
+    case MAP_ERR_BAD_POOL_SIZE:
+      return clib_error_return (0, "Could not set reass pool-size");
 
-  if (ip6)
-    {
-      u32 reass = 0, packets = 0;
-      if (pool_size != ~0)
-	{
-	  if (map_ip6_reass_conf_pool_size (pool_size, &reass, &packets))
-	    {
-	      vlib_cli_output (vm, "Could not set ip6-reass pool-size");
-	    }
-	  else
-	    {
-	      vlib_cli_output (vm,
-			       "Setting ip6-reass pool-size (destroyed-reassembly=%u , dropped-fragments=%u)",
-			       reass, packets);
-	    }
-	}
-      if (ht_ratio != (MAP_IP4_REASS_CONF_HT_RATIO_MAX + 1))
-	{
-	  if (map_ip6_reass_conf_ht_ratio (ht_ratio, &reass, &packets))
-	    {
-	      vlib_cli_output (vm, "Could not set ip6-reass ht-log2len");
-	    }
-	  else
-	    {
-	      vlib_cli_output (vm,
-			       "Setting ip6-reass ht-log2len (destroyed-reassembly=%u , dropped-fragments=%u)",
-			       reass, packets);
-	    }
-	}
-      if (lifetime != ~0)
-	{
-	  if (map_ip6_reass_conf_lifetime (lifetime))
-	    vlib_cli_output (vm, "Could not set ip6-reass lifetime");
-	  else
-	    vlib_cli_output (vm, "Setting ip6-reass lifetime");
-	}
-      if (buffers != ~(0ull))
-	{
-	  if (map_ip6_reass_conf_buffers (buffers))
-	    vlib_cli_output (vm, "Could not set ip6-reass buffers");
-	  else
-	    vlib_cli_output (vm, "Setting ip6-reass buffers");
-	}
+    case MAP_ERR_BAD_HT_RATIO:
+      return clib_error_return (0, "Could not set reass ht-log2len");
 
-      if (map_main.ip6_reass_conf_buffers >
-	  map_main.ip6_reass_conf_pool_size *
-	  MAP_IP6_REASS_MAX_FRAGMENTS_PER_REASSEMBLY)
-	{
-	  vlib_cli_output (vm,
-			   "Note: 'ip6-reass buffers' > pool-size * max-fragments-per-reassembly.");
-	}
+    case MAP_ERR_BAD_LIFETIME:
+      return clib_error_return (0, "Could not set ip6-reass lifetime");
+
+    case MAP_ERR_BAD_BUFFERS:
+      return clib_error_return (0, "Could not set ip6-reass buffers");
+
+    case MAP_ERR_BAD_BUFFERS_TOO_LARGE:
+      return clib_error_return (0,
+				"Note: 'ip6-reass buffers' > pool-size * max-fragments-per-reassembly.");
     }
 
   return 0;
+}
+
+
+static clib_error_t *
+map_if_command_fn (vlib_main_t * vm,
+		   unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = NULL;
+  bool is_enable = true, is_translation = false;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 sw_if_index = ~0;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat
+	  (line_input, "%U", unformat_vnet_sw_interface, vnm, &sw_if_index))
+	;
+      else if (unformat (line_input, "del"))
+	is_enable = false;
+      else if (unformat (line_input, "map-t"))
+	is_translation = true;
+      else
+	{
+	  error = clib_error_return (0, "unknown input `%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+done:
+  unformat_free (line_input);
+
+  if (sw_if_index == ~0)
+    {
+      error = clib_error_return (0, "unknown interface");
+      return error;
+    }
+
+  int rv = map_if_enable_disable (is_enable, sw_if_index, is_translation);
+  if (rv)
+    {
+      error = clib_error_return (0, "failure enabling MAP on interface");
+    }
+
+  return error;
 }
 
 
@@ -1813,7 +1680,7 @@ map_ip6_reass_add_fragment (map_ip6_reass_t * r, u32 pi,
       if (!prev_f)
 	return -1;
 
-      clib_memcpy (prev_f->next_data, data_start, copied_len);
+      clib_memcpy_fast (prev_f->next_data, data_start, copied_len);
       prev_f->next_data_len = copied_len;
       prev_f->next_data_offset = data_offset;
     }
@@ -1823,7 +1690,7 @@ map_ip6_reass_add_fragment (map_ip6_reass_t * r, u32 pi,
 	return -1;
 
       if (r->ip4_header.ip_version_and_header_length == 0)
-	clib_memcpy (&r->ip4_header, data_start, sizeof (ip4_header_t));
+	clib_memcpy_fast (&r->ip4_header, data_start, sizeof (ip4_header_t));
     }
 
   if (data_len > 20)
@@ -2013,6 +1880,45 @@ map_ip6_reass_conf_buffers (u32 buffers)
   return 0;
 }
 
+static clib_error_t *
+map_tcp_mss_command_fn (vlib_main_t * vm,
+			unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = NULL;
+  u32 tcp_mss = 0;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%u", &tcp_mss))
+	;
+      else
+	{
+	  error = clib_error_return (0, "unknown input `%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  if (tcp_mss >= (0x1 << 16))
+    {
+      error = clib_error_return (0, "invalid value `%u'", tcp_mss);
+      goto done;
+    }
+
+  map_param_set_tcp (tcp_mss);
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+
 /* *INDENT-OFF* */
 
 /*?
@@ -2049,6 +1955,22 @@ VLIB_CLI_COMMAND(map_traffic_class_command, static) = {
 };
 
 /*?
+ * TCP MSS clamping
+ *
+ * @cliexpar
+ * @cliexstart{map params tcp-mss}
+ *
+ * This command is used to set the TCP MSS in translated
+ * or encapsulated packets.
+ * @cliexend
+ ?*/
+VLIB_CLI_COMMAND(map_tcp_mss_command, static) = {
+  .path = "map params tcp-mss",
+  .short_help = "map params tcp-mss <value>",
+  .function = map_tcp_mss_command_fn,
+};
+
+/*?
  * Bypass IP4/IP6 lookup
  *
  * @cliexpar
@@ -2069,6 +1991,7 @@ VLIB_CLI_COMMAND(map_pre_resolve_command, static) = {
 
 /*?
  * Enable or disable the MAP-E inbound security check
+ * Specifiy if the inbound security check should be done on fragments
  *
  * @cliexpar
  * @cliexstart{map params security-check}
@@ -2076,13 +1999,19 @@ VLIB_CLI_COMMAND(map_pre_resolve_command, static) = {
  * By default, a decapsulated packet's IPv4 source address will be
  * verified against the outer header's IPv6 source address. Disabling
  * this feature will allow IPv4 source address spoofing.
+ *
+ * Typically the inbound on-decapsulation security check is only done
+ * on the first packet. The packet that contains the L4
+ * information. While a security check on every fragment is possible,
+ * it has a cost. State must be created on the first fragment.
  * @cliexend
  ?*/
 VLIB_CLI_COMMAND(map_security_check_command, static) = {
   .path = "map params security-check",
-  .short_help = "map params security-check on|off",
+  .short_help = "map params security-check enable|disable fragments on|off",
   .function = map_security_check_command_fn,
 };
+
 
 /*?
  * Specifiy the IPv4 source address used for relayed ICMP error messages
@@ -2122,19 +2051,6 @@ VLIB_CLI_COMMAND(map_icmp_unreachables_command, static) = {
  *
  * @cliexpar
  * @cliexstart{map params fragment}
- * @cliexend
- ?*/
-VLIB_CLI_COMMAND(map_fragment_command, static) = {
-  .path = "map params fragment",
-  .short_help = "map params fragment inner|outer",
-  .function = map_fragment_command_fn,
-};
-
-/*?
- * Ignore the IPv4 Don't fragment bit
- *
- * @cliexpar
- * @cliexstart{map params fragment ignore-df}
  *
  * Allows fragmentation of the IPv4 packet even if the DF bit is
  * set. The choice between inner or outer fragmentation of tunnel
@@ -2143,29 +2059,12 @@ VLIB_CLI_COMMAND(map_fragment_command, static) = {
  * endpoint.
  * @cliexend
  ?*/
-VLIB_CLI_COMMAND(map_fragment_df_command, static) = {
-  .path = "map params fragment ignore-df",
-  .short_help = "map params fragment ignore-df on|off",
-  .function = map_fragment_df_command_fn,
+VLIB_CLI_COMMAND(map_fragment_command, static) = {
+  .path = "map params fragment",
+  .short_help = "map params fragment inner|outer ignore-df|honor-df",
+  .function = map_fragment_command_fn,
 };
 
-/*?
- * Specifiy if the inbound security check should be done on fragments
- *
- * @cliexpar
- * @cliexstart{map params security-check fragments}
- *
- * Typically the inbound on-decapsulation security check is only done
- * on the first packet. The packet that contains the L4
- * information. While a security check on every fragment is possible,
- * it has a cost. State must be created on the first fragment.
- * @cliexend
- ?*/
-VLIB_CLI_COMMAND(map_security_check_frag_command, static) = {
-  .path = "map params security-check fragments",
-  .short_help = "map params security-check fragments on|off",
-  .function = map_security_check_frag_command_fn,
-};
 
 /*?
  * Add MAP domain
@@ -2178,7 +2077,7 @@ VLIB_CLI_COMMAND(map_add_domain_command, static) = {
   .path = "map add domain",
   .short_help = "map add domain ip4-pfx <ip4-pfx> ip6-pfx <ip6-pfx> "
       "ip6-src <ip6-pfx> ea-bits-len <n> psid-offset <n> psid-len <n> "
-      "[map-t] [map-ce] [mtu <mtu>]",
+      "[map-t] [mtu <mtu>]",
   .function = map_add_domain_command_fn,
 };
 
@@ -2247,34 +2146,22 @@ VLIB_CLI_COMMAND(show_map_fragments_command, static) = {
   .function = show_map_fragments_command_fn,
 };
 
+/*?
+ * Enable MAP processing on interface (input feature)
+ *
+ ?*/
+VLIB_CLI_COMMAND(map_if_command, static) = {
+  .path = "map interface",
+  .short_help = "map interface <interface-name> [map-t] [del]",
+  .function = map_if_command_fn,
+};
+
 VLIB_PLUGIN_REGISTER() = {
   .version = VPP_BUILD_VER,
   .description = "Mapping of address and port (MAP)",
 };
 
 /* *INDENT-ON* */
-
-static clib_error_t *
-map_config (vlib_main_t * vm, unformat_input_t * input)
-{
-  map_main_t *mm = &map_main;
-  u8 is_ce = false;
-
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (input, "customer edge"))
-	is_ce = true;
-      else
-	return clib_error_return (0, "unknown input '%U'",
-				  format_unformat_error, input);
-    }
-
-  mm->is_ce = is_ce;
-
-  return 0;
-}
-
-VLIB_CONFIG_FUNCTION (map_config, "map");
 
 /*
  * map_init
@@ -2284,6 +2171,9 @@ map_init (vlib_main_t * vm)
 {
   map_main_t *mm = &map_main;
   clib_error_t *error = 0;
+
+  memset (mm, 0, sizeof (*mm));
+
   mm->vnet_main = vnet_get_main ();
   mm->vlib_main = vm;
 
@@ -2307,18 +2197,17 @@ map_init (vlib_main_t * vm)
   /* ICMP6 Type 1, Code 5 for security check failure */
   mm->icmp6_enabled = false;
 
-  mm->is_ce = false;
-
   /* Inner or outer fragmentation */
   mm->frag_inner = false;
   mm->frag_ignore_df = false;
 
   vec_validate (mm->domain_counters, MAP_N_DOMAIN_COUNTER - 1);
-  mm->domain_counters[MAP_DOMAIN_COUNTER_RX].name = "rx";
-  mm->domain_counters[MAP_DOMAIN_COUNTER_TX].name = "tx";
+  mm->domain_counters[MAP_DOMAIN_COUNTER_RX].name = "/map/rx";
+  mm->domain_counters[MAP_DOMAIN_COUNTER_TX].name = "/map/tx";
 
   vlib_validate_simple_counter (&mm->icmp_relayed, 0);
   vlib_zero_simple_counter (&mm->icmp_relayed, 0);
+  mm->icmp_relayed.stat_segment_name = "/map/icmp-relayed";
 
   /* IP4 virtual reassembly */
   mm->ip4_reass_hash_table = 0;
@@ -2355,7 +2244,20 @@ map_init (vlib_main_t * vm)
 #ifdef MAP_SKIP_IP6_LOOKUP
   fib_node_register_type (FIB_NODE_TYPE_MAP_E, &map_vft);
 #endif
-  map_dpo_module_init ();
+
+  /* Create empty domain that's used in case of error */
+  map_domain_t *d;
+  pool_get_aligned (mm->domains, d, CLIB_CACHE_LINE_BYTES);
+  memset (d, 0, sizeof (*d));
+  d->ip6_src_len = 64;
+
+  /* LPM lookup tables */
+  mm->ip4_prefix_tbl = lpm_table_init (LPM_TYPE_KEY32);
+  mm->ip6_prefix_tbl = lpm_table_init (LPM_TYPE_KEY128);
+  mm->ip6_src_prefix_tbl = lpm_table_init (LPM_TYPE_KEY128);
+
+  mm->bm_trans_enabled_by_sw_if = 0;
+  mm->bm_encap_enabled_by_sw_if = 0;
 
   error = map_plugin_api_hookup (vm);
 

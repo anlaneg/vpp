@@ -292,9 +292,15 @@ fib_entry_src_adj_deactivate (fib_entry_src_t *src,
     /*
      * remove the depednecy on the covering entry
      */
-    ASSERT(FIB_NODE_INDEX_INVALID != src->u.adj.fesa_cover);
-    cover = fib_entry_get(src->u.adj.fesa_cover);
+    if (FIB_NODE_INDEX_INVALID == src->u.adj.fesa_cover)
+    {
+        /*
+         * this is the case if the entry is in the non-forwarding trie
+         */
+        return;
+    }
 
+    cover = fib_entry_get(src->u.adj.fesa_cover);
     fib_entry_cover_untrack(cover, src->u.adj.fesa_sibling);
 
     /*
@@ -348,6 +354,7 @@ fib_entry_src_adj_cover_change (fib_entry_src_t *src,
         res.bw_reason = FIB_NODE_BW_REASON_FLAG_EVALUATE;
     }
 
+    FIB_ENTRY_DBG(fib_entry, "adj-src-cover-changed");
     return (res);
 }
 
@@ -374,6 +381,8 @@ fib_entry_src_adj_cover_update (fib_entry_src_t *src,
     cover = fib_entry_get(src->u.adj.fesa_cover);
 
     res.install = (FIB_ENTRY_FLAG_ATTACHED & fib_entry_get_flags_i(cover));
+
+    FIB_ENTRY_DBG(fib_entry, "adj-src-cover-updated");
 
     return (res);
 }

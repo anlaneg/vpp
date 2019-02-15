@@ -18,7 +18,6 @@
 
 #include <vnet/session/application_interface.h>
 #include <vcl/vppcom.h>
-#include <vcl/vcl_event.h>
 #include <vcl/vcl_debug.h>
 
 #if (CLIB_DEBUG > 0)
@@ -34,6 +33,20 @@
 
 #define VPPCOM_DEBUG vcm->debug
 
+extern __thread uword __vcl_worker_index;
+
+static inline void
+vcl_set_worker_index (uword wrk_index)
+{
+  __vcl_worker_index = wrk_index;
+}
+
+static inline uword
+vcl_get_worker_index (void)
+{
+  return __vcl_worker_index;
+}
+
 /*
  * VPPCOM Private definitions and functions.
  */
@@ -43,41 +56,54 @@ typedef enum
   STATE_APP_CONN_VPP,
   STATE_APP_ENABLED,
   STATE_APP_ATTACHED,
+  STATE_APP_ADDING_WORKER,
+  STATE_APP_FAILED,
+  STATE_APP_READY
 } app_state_t;
 
 typedef enum
 {
-  STATE_START = 0x01,
-  STATE_CONNECT = 0x02,
-  STATE_LISTEN = 0x04,
-  STATE_ACCEPT = 0x08,
-  STATE_CLOSE_ON_EMPTY = 0x10,
-  STATE_DISCONNECT = 0x20,
-  STATE_FAILED = 0x40
-} session_state_t;
+  STATE_START = 0,
+  STATE_CONNECT = 0x01,
+  STATE_LISTEN = 0x02,
+  STATE_ACCEPT = 0x04,
+  STATE_VPP_CLOSING = 0x08,
+  STATE_DISCONNECT = 0x10,
+  STATE_FAILED = 0x20,
+  STATE_UPDATED = 0x40,
+  STATE_LISTEN_NO_MQ = 0x80,
+} vcl_session_state_t;
 
-#define SERVER_STATE_OPEN  (STATE_ACCEPT|STATE_CLOSE_ON_EMPTY)
-#define CLIENT_STATE_OPEN  (STATE_CONNECT|STATE_CLOSE_ON_EMPTY)
+#define SERVER_STATE_OPEN  (STATE_ACCEPT|STATE_VPP_CLOSING)
+#define CLIENT_STATE_OPEN  (STATE_CONNECT|STATE_VPP_CLOSING)
 #define STATE_OPEN (SERVER_STATE_OPEN | CLIENT_STATE_OPEN)
 
 typedef struct epoll_event vppcom_epoll_event_t;
 
 typedef struct
 {
-  u32 next_sid;
-  u32 prev_sid;
-  u32 vep_idx;
+  u32 next_sh;
+  u32 prev_sh;
+  u32 vep_sh;
   vppcom_epoll_event_t ev;
 #define VEP_DEFAULT_ET_MASK  (EPOLLIN|EPOLLOUT)
 #define VEP_UNSUPPORTED_EVENTS (EPOLLONESHOT|EPOLLEXCLUSIVE)
   u32 et_mask;
 } vppcom_epoll_t;
 
+/* Select uses the vcl_si_set as if a clib_bitmap. Make sure they are the
+ * same size */
+STATIC_ASSERT (sizeof (clib_bitmap_t) == sizeof (vcl_si_set),
+	       "vppcom bitmap size mismatch");
+
 typedef struct
 {
   u8 is_ip4;
   ip46_address_t ip46;
 } vppcom_ip46_t;
+
+#define VCL_ACCEPTED_F_CLOSED 	(1 << 0)
+#define VCL_ACCEPTED_F_RESET 	(1 << 1)
 
 typedef struct vcl_session_msg
 {
@@ -86,9 +112,10 @@ typedef struct vcl_session_msg
   {
     session_accepted_msg_t accepted_msg;
   };
+  u32 flags;
 } vcl_session_msg_t;
 
-enum
+typedef enum
 {
   VCL_SESS_ATTR_SERVER,
   VCL_SESS_ATTR_CUT_THRU,
@@ -104,6 +131,8 @@ enum
   VCL_SESS_ATTR_TCP_NODELAY,	// SOL_TCP,TCP_NODELAY
   VCL_SESS_ATTR_TCP_KEEPIDLE,	// SOL_TCP,TCP_KEEPIDLE
   VCL_SESS_ATTR_TCP_KEEPINTVL,	// SOL_TCP,TCP_KEEPINTVL
+  VCL_SESS_ATTR_SHUT_RD,
+  VCL_SESS_ATTR_SHUT_WR,
   VCL_SESS_ATTR_MAX
 } vppcom_session_attr_t;
 
@@ -120,8 +149,16 @@ do {                                            \
 #define VCL_SESS_ATTR_TEST(ATTR, VAL)           \
   ((ATTR) & (1 << (VAL)) ? 1 : 0)
 
+typedef struct vcl_shared_session_
+{
+  u32 ss_index;
+  u32 *workers;
+  u32 session_index;
+} vcl_shared_session_t;
+
 typedef struct
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
 #define _(type, name) type name;
   foreach_app_session_field
 #undef _
@@ -132,17 +169,18 @@ typedef struct
   u32 sm_seg_index;
   u32 client_context;
   u64 vpp_handle;
+  u32 vpp_thread_index;
 
   /* Socket configuration state */
   u8 is_vep;
   u8 is_vep_session;
+  u8 has_rx_evt;
   u32 attr;
   u32 wait_cont_idx;
   vppcom_epoll_t vep;
   int libc_epfd;
   svm_msg_q_t *our_evt_q;
   u64 options[16];
-  vce_event_handler_reg_t *poll_reg;
   vcl_session_msg_t *accept_evts_fifo;
 #if VCL_ELOG
   elog_track_t elog_track;
@@ -151,9 +189,10 @@ typedef struct
 
 typedef struct vppcom_cfg_t_
 {
-  u64 heapsize;
+  uword heapsize;
+  u32 max_workers;
   u32 vpp_api_q_length;
-  u64 segment_baseva;
+  uword segment_baseva;
   u32 segment_size;
   u32 add_segment_size;
   u32 preallocated_fifo_pairs;
@@ -194,24 +233,27 @@ typedef struct vcl_mq_evt_conn_
   int mq_fd;
 } vcl_mq_evt_conn_t;
 
-typedef struct vppcom_main_t_
+typedef struct vcl_worker_
 {
-  u8 init;
-  u32 debug;
-  int main_cpu;
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
 
-  /* FIFO for accepted connections - used in epoll/select */
-  clib_spinlock_t session_fifo_lockp;
-  u32 *client_session_index_fifo;
-
-  /* vpp input queue */
-  svm_queue_t *vl_input_queue;
-
-  /* API client handle */
-  u32 my_client_index;
   /* Session pool */
-  clib_spinlock_t sessions_lockp;
   vcl_session_t *sessions;
+
+  /** Worker/thread index in current process */
+  u32 wrk_index;
+
+  /** Worker index in vpp*/
+  u32 vpp_wrk_index;
+
+  /** API client handle */
+  u32 my_client_index;
+
+  /** State of the connection, shared between msg RX thread and main thread */
+  volatile app_state_t wrk_state;
+
+  /** VPP binary api input queue */
+  svm_queue_t *vl_input_queue;
 
   /** Message queues epoll fd. Initialized only if using mqs with eventfds */
   int mqs_epfd;
@@ -222,38 +264,22 @@ typedef struct vppcom_main_t_
   /** Per worker buffer for receiving mq epoll events */
   struct epoll_event *mq_events;
 
-  /* Hash table for disconnect processing */
+  /** Hash table for disconnect processing */
   uword *session_index_by_vpp_handles;
 
-  /* Select bitmaps */
+  /** Select bitmaps */
   clib_bitmap_t *rd_bitmap;
   clib_bitmap_t *wr_bitmap;
   clib_bitmap_t *ex_bitmap;
 
-  /* Our event queue */
+  /** Our event message queue */
   svm_msg_q_t *app_event_queue;
 
+  /** VPP workers event message queues */
   svm_msg_q_t **vpp_event_queues;
 
-  /* unique segment name counter */
-  u32 unique_segment_index;
-
-  /* For deadman timers */
+  /** For deadman timers */
   clib_time_t clib_time;
-
-  /* State of the connection, shared between msg RX thread and main thread */
-  volatile app_state_t app_state;
-
-  vppcom_cfg_t cfg;
-
-  /* Event thread */
-  vce_event_thread_t event_thread;
-
-  /* IO thread */
-  vppcom_session_io_thread_t session_io_thread;
-
-  /* pool of ctrl msgs */
-  vcl_session_msg_t *ctrl_evt_pool;
 
   /** Pool of cut through registrations */
   vcl_cut_through_registration_t *cut_through_registrations;
@@ -264,10 +290,62 @@ typedef struct vppcom_main_t_
   /** Cut-through registration by mq address hash table */
   uword *ct_registration_by_mq;
 
+  /** Vector acting as buffer for mq messages */
   svm_msg_q_msg_t *mq_msg_vector;
 
-  /** Flag indicating that a new segment is being mounted */
-  volatile u32 mounting_segment;
+  /** Vector of unhandled events */
+  session_event_t *unhandled_evts_vector;
+
+  u32 *pending_session_wrk_updates;
+
+  /** Used also as a thread stop key buffer */
+  pthread_t thread_id;
+
+  /** Current pid, may be different from main_pid if forked child */
+  pid_t current_pid;
+
+  u32 forked_child;
+
+} vcl_worker_t;
+
+typedef struct vppcom_main_t_
+{
+  u8 is_init;
+  u32 debug;
+  pthread_t main_cpu;
+
+  /** Main process pid */
+  pid_t main_pid;
+
+  /** App's index in vpp. It's used by vpp to identify the app */
+  u32 app_index;
+
+  /** State of the connection, shared between msg RX thread and main thread */
+  volatile app_state_t app_state;
+
+  u8 *app_name;
+
+  /** VCL configuration */
+  vppcom_cfg_t cfg;
+
+  volatile u32 forking;
+
+  /** Workers */
+  vcl_worker_t *workers;
+
+  /** Lock to protect worker registrations */
+  clib_spinlock_t workers_lock;
+
+  /** Pool of shared sessions */
+  vcl_shared_session_t *shared_sessions;
+
+  /** Lock to protect segment hash table */
+  clib_rwlock_t segment_table_lock;
+
+  /** Mapped segments table */
+  uword *segment_table;
+
+  svm_fifo_segment_main_t segment_main;
 
 #ifdef VCL_ELOG
   /* VPP Event-logger */
@@ -277,88 +355,148 @@ typedef struct vppcom_main_t_
 
   /* VNET_API_ERROR_FOO -> "Foo" hash table */
   uword *error_string_by_error_number;
+
 } vppcom_main_t;
 
 extern vppcom_main_t *vcm;
 
-#define VCL_SESSION_LOCK_AND_GET(I, S)                          \
-do {                                                            \
-  clib_spinlock_lock (&vcm->sessions_lockp);                    \
-  rv = vppcom_session_at_index (I, S);                          \
-  if (PREDICT_FALSE (rv))                                       \
-    {                                                           \
-      clib_spinlock_unlock (&vcm->sessions_lockp);              \
-      clib_warning ("VCL<%d>: ERROR: Invalid ##I (%u)!",        \
-                    getpid (), I);                              \
-      goto done;                                                \
-    }                                                           \
-} while (0)
-
-#define VCL_SESSION_LOCK() clib_spinlock_lock (&(vcm->sessions_lockp))
-#define VCL_SESSION_UNLOCK() clib_spinlock_unlock (&(vcm->sessions_lockp))
-
-#define VCL_IO_SESSIONS_LOCK() \
-  clib_spinlock_lock (&(vcm->session_io_thread.io_sessions_lockp))
-#define VCL_IO_SESSIONS_UNLOCK() \
-  clib_spinlock_unlock (&(vcm->session_io_thread.io_sessions_lockp))
-
-#define VCL_ACCEPT_FIFO_LOCK() clib_spinlock_lock (&(vcm->session_fifo_lockp))
-#define VCL_ACCEPT_FIFO_UNLOCK() \
-  clib_spinlock_unlock (&(vcm->session_fifo_lockp))
-
-#define VCL_EVENTS_LOCK() \
-  clib_spinlock_lock (&(vcm->event_thread.events_lockp))
-#define VCL_EVENTS_UNLOCK() \
-  clib_spinlock_unlock (&(vcm->event_thread.events_lockp))
-
 #define VCL_INVALID_SESSION_INDEX ((u32)~0)
+#define VCL_INVALID_SEGMENT_INDEX ((u32)~0)
+#define VCL_INVALID_SEGMENT_HANDLE ((u64)~0)
 
 static inline vcl_session_t *
-vcl_session_alloc (void)
+vcl_session_alloc (vcl_worker_t * wrk)
 {
   vcl_session_t *s;
-  pool_get (vcm->sessions, s);
+  pool_get (wrk->sessions, s);
   memset (s, 0, sizeof (*s));
+  s->session_index = s - wrk->sessions;
   return s;
 }
 
 static inline void
-vcl_session_free (vcl_session_t * s)
+vcl_session_free (vcl_worker_t * wrk, vcl_session_t * s)
 {
-  pool_put (vcm->sessions, s);
+  pool_put (wrk->sessions, s);
 }
 
 static inline vcl_session_t *
-vcl_session_get (u32 session_index)
+vcl_session_get (vcl_worker_t * wrk, u32 session_index)
 {
-  if (pool_is_free_index (vcm->sessions, session_index))
+  if (pool_is_free_index (wrk->sessions, session_index))
     return 0;
-  return pool_elt_at_index (vcm->sessions, session_index);
+  return pool_elt_at_index (wrk->sessions, session_index);
 }
 
-static inline u32
-vcl_session_index (vcl_session_t * s)
+static inline vcl_session_handle_t
+vcl_session_handle_from_index (u32 session_index)
 {
-  return (s - vcm->sessions);
+  ASSERT (session_index < 2 << 24);
+  return (vcl_get_worker_index () << 24 | session_index);
+}
+
+static inline vcl_session_handle_t
+vcl_session_handle (vcl_session_t * s)
+{
+  return vcl_session_handle_from_index (s->session_index);
+}
+
+static inline void
+vcl_session_handle_parse (u32 handle, u32 * wrk_index, u32 * session_index)
+{
+  *wrk_index = handle >> 24;
+  *session_index = handle & 0xFFFFFF;
 }
 
 static inline vcl_session_t *
-vcl_session_get_w_handle (u64 handle)
+vcl_session_get_w_handle (vcl_worker_t * wrk, u32 session_handle)
+{
+  u32 session_index, wrk_index;
+  vcl_session_handle_parse (session_handle, &wrk_index, &session_index);
+  ASSERT (wrk_index == wrk->wrk_index);
+  return vcl_session_get (wrk, session_index);
+}
+
+static inline vcl_session_t *
+vcl_session_get_w_vpp_handle (vcl_worker_t * wrk, u64 vpp_handle)
 {
   uword *p;
-  if ((p = hash_get (vcm->session_index_by_vpp_handles, handle)))
-    return vcl_session_get ((u32) p[0]);
+  if ((p = hash_get (wrk->session_index_by_vpp_handles, vpp_handle)))
+    return vcl_session_get (wrk, (u32) p[0]);
   return 0;
 }
 
 static inline u32
-vcl_session_get_index_from_handle (u64 handle)
+vcl_session_index_from_vpp_handle (vcl_worker_t * wrk, u64 vpp_handle)
 {
   uword *p;
-  if ((p = hash_get (vcm->session_index_by_vpp_handles, handle)))
+  if ((p = hash_get (wrk->session_index_by_vpp_handles, vpp_handle)))
     return p[0];
   return VCL_INVALID_SESSION_INDEX;
 }
+
+static inline void
+vcl_session_table_add_vpp_handle (vcl_worker_t * wrk, u64 handle, u32 value)
+{
+  hash_set (wrk->session_index_by_vpp_handles, handle, value);
+}
+
+static inline void
+vcl_session_table_del_vpp_handle (vcl_worker_t * wrk, u64 vpp_handle)
+{
+  hash_unset (wrk->session_index_by_vpp_handles, vpp_handle);
+}
+
+static inline uword *
+vcl_session_table_lookup_vpp_handle (vcl_worker_t * wrk, u64 handle)
+{
+  return hash_get (wrk->session_index_by_vpp_handles, handle);
+}
+
+static inline void
+vcl_session_table_add_listener (vcl_worker_t * wrk, u64 listener_handle,
+				u32 value)
+{
+  /* Session and listener handles have different formats. The latter has
+   * the thread index in the upper 32 bits while the former has the session
+   * type. Knowing that, for listeners we just flip the MSB to 1 */
+  listener_handle |= 1ULL << 63;
+  hash_set (wrk->session_index_by_vpp_handles, listener_handle, value);
+}
+
+static inline void
+vcl_session_table_del_listener (vcl_worker_t * wrk, u64 listener_handle)
+{
+  listener_handle |= 1ULL << 63;
+  hash_unset (wrk->session_index_by_vpp_handles, listener_handle);
+}
+
+static inline vcl_session_t *
+vcl_session_table_lookup_listener (vcl_worker_t * wrk, u64 listener_handle)
+{
+  uword *p;
+  u64 handle = listener_handle | (1ULL << 63);
+  vcl_session_t *session;
+
+  p = hash_get (wrk->session_index_by_vpp_handles, handle);
+  if (!p)
+    {
+      clib_warning ("VCL<%d>: couldn't find listen session: unknown vpp "
+		    "listener handle %llx", getpid (), listener_handle);
+      return 0;
+    }
+  if (pool_is_free_index (wrk->sessions, p[0]))
+    {
+      VDBG (1, "VCL<%d>: invalid listen session, sid (%u)", getpid (), p[0]);
+      return 0;
+    }
+
+  session = pool_elt_at_index (wrk->sessions, p[0]);
+  ASSERT (session->session_state & (STATE_LISTEN | STATE_LISTEN_NO_MQ));
+  return session;
+}
+
+const char *vppcom_session_state_str (vcl_session_state_t state);
 
 static inline u8
 vcl_session_is_ct (vcl_session_t * s)
@@ -366,75 +504,114 @@ vcl_session_is_ct (vcl_session_t * s)
   return (s->our_evt_q != 0);
 }
 
+static inline u8
+vcl_session_is_open (vcl_session_t * s)
+{
+  return ((s->session_state & STATE_OPEN)
+	  || (s->session_state == STATE_LISTEN
+	      && s->session_type == VPPCOM_PROTO_UDP));
+}
+
+static inline u8
+vcl_session_is_closing (vcl_session_t * s)
+{
+  return (s->session_state == STATE_VPP_CLOSING
+	  || s->session_state == STATE_DISCONNECT);
+}
+
 static inline int
-vppcom_session_at_index (u32 session_index, vcl_session_t * volatile *sess)
+vcl_session_closing_error (vcl_session_t * s)
 {
-  /* Assumes that caller has acquired spinlock: vcm->sessions_lockp */
-  if (PREDICT_FALSE ((session_index == ~0) ||
-		     pool_is_free_index (vcm->sessions, session_index)))
-    {
-      clib_warning ("VCL<%d>: invalid session, sid (%u) has been closed!",
-		    getpid (), session_index);
-      return VPPCOM_EBADFD;
-    }
-  *sess = pool_elt_at_index (vcm->sessions, session_index);
-  return VPPCOM_OK;
+  return s->session_state == STATE_DISCONNECT ? VPPCOM_ECONNRESET : 0;
 }
 
-static inline void
-vppcom_session_table_add_listener (u64 listener_handle, u32 value)
+static inline int
+vcl_session_closed_error (vcl_session_t * s)
 {
-  /* Session and listener handles have different formats. The latter has
-   * the thread index in the upper 32 bits while the former has the session
-   * type. Knowing that, for listeners we just flip the MSB to 1 */
-  listener_handle |= 1ULL << 63;
-  hash_set (vcm->session_index_by_vpp_handles, listener_handle, value);
+  return s->session_state == STATE_DISCONNECT
+    ? VPPCOM_ECONNRESET : VPPCOM_ENOTCONN;
 }
-
-static inline vcl_session_t *
-vppcom_session_table_lookup_listener (u64 listener_handle)
-{
-  uword *p;
-  u64 handle = listener_handle | (1ULL << 63);
-  vcl_session_t *session;
-
-  p = hash_get (vcm->session_index_by_vpp_handles, handle);
-  if (!p)
-    {
-      clib_warning ("VCL<%d>: couldn't find listen session: unknown vpp "
-		    "listener handle %llx", getpid (), listener_handle);
-      return 0;
-    }
-  if (pool_is_free_index (vcm->sessions, p[0]))
-    {
-      VDBG (1, "VCL<%d>: invalid listen session, sid (%u)", getpid (), p[0]);
-      return 0;
-    }
-
-  session = pool_elt_at_index (vcm->sessions, p[0]);
-  ASSERT (session->session_state & STATE_LISTEN);
-  return session;
-}
-
-const char *vppcom_session_state_str (session_state_t state);
 
 /*
  * Helpers
  */
-vcl_cut_through_registration_t *vcl_ct_registration_lock_and_alloc (void);
-void vcl_ct_registration_del (vcl_cut_through_registration_t * ctr);
-u32 vcl_ct_registration_index (vcl_cut_through_registration_t * ctr);
-void vcl_ct_registration_unlock (void);
-vcl_cut_through_registration_t *vcl_ct_registration_get (u32 ctr_index);
-vcl_cut_through_registration_t *vcl_ct_registration_lock_and_lookup (uword);
-void vcl_ct_registration_lookup_add (uword mq_addr, u32 ctr_index);
-void vcl_ct_registration_lookup_del (uword mq_addr);
-vcl_mq_evt_conn_t *vcl_mq_evt_conn_alloc (void);
-u32 vcl_mq_evt_conn_index (vcl_mq_evt_conn_t * mqc);
-vcl_mq_evt_conn_t *vcl_mq_evt_conn_get (u32 mq_conn_idx);
-int vcl_mq_epoll_add_evfd (svm_msg_q_t * mq);
-int vcl_mq_epoll_del_evfd (u32 mqc_index);
+int vcl_wait_for_app_state_change (app_state_t app_state);
+vcl_cut_through_registration_t
+  * vcl_ct_registration_lock_and_alloc (vcl_worker_t * wrk);
+void vcl_ct_registration_del (vcl_worker_t * wrk,
+			      vcl_cut_through_registration_t * ctr);
+u32 vcl_ct_registration_index (vcl_worker_t * wrk,
+			       vcl_cut_through_registration_t * ctr);
+void vcl_ct_registration_lock (vcl_worker_t * wrk);
+void vcl_ct_registration_unlock (vcl_worker_t * wrk);
+vcl_cut_through_registration_t
+  * vcl_ct_registration_lock_and_lookup (vcl_worker_t * wrk, uword mq_addr);
+void vcl_ct_registration_lookup_add (vcl_worker_t * wrk, uword mq_addr,
+				     u32 ctr_index);
+void vcl_ct_registration_lookup_del (vcl_worker_t * wrk, uword mq_addr);
+vcl_mq_evt_conn_t *vcl_mq_evt_conn_alloc (vcl_worker_t * wrk);
+u32 vcl_mq_evt_conn_index (vcl_worker_t * wrk, vcl_mq_evt_conn_t * mqc);
+vcl_mq_evt_conn_t *vcl_mq_evt_conn_get (vcl_worker_t * wrk, u32 mq_conn_idx);
+int vcl_mq_epoll_add_evfd (vcl_worker_t * wrk, svm_msg_q_t * mq);
+int vcl_mq_epoll_del_evfd (vcl_worker_t * wrk, u32 mqc_index);
 
+vcl_worker_t *vcl_worker_alloc_and_init (void);
+void vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp);
+int vcl_worker_register_with_vpp (void);
+int vcl_worker_set_bapi (void);
+void vcl_worker_share_sessions (vcl_worker_t * parent_wrk);
+int vcl_worker_unshare_session (vcl_worker_t * wrk, vcl_session_t * s);
+vcl_shared_session_t *vcl_shared_session_get (u32 ss_index);
+
+void vcl_flush_mq_events (void);
+void vcl_cleanup_bapi (void);
+int vcl_session_cleanup (vcl_worker_t * wrk, vcl_session_t * session,
+			 vcl_session_handle_t sh, u8 do_disconnect);
+
+void vcl_segment_table_add (u64 segment_handle, u32 svm_segment_index);
+u32 vcl_segment_table_lookup (u64 segment_handle);
+void vcl_segment_table_del (u64 segment_handle);
+
+int vcl_session_read_ready (vcl_session_t * session);
+int vcl_session_write_ready (vcl_session_t * session);
+
+static inline vcl_worker_t *
+vcl_worker_get (u32 wrk_index)
+{
+  return pool_elt_at_index (vcm->workers, wrk_index);
+}
+
+static inline vcl_worker_t *
+vcl_worker_get_if_valid (u32 wrk_index)
+{
+  if (pool_is_free_index (vcm->workers, wrk_index))
+    return 0;
+  return pool_elt_at_index (vcm->workers, wrk_index);
+}
+
+static inline vcl_worker_t *
+vcl_worker_get_current (void)
+{
+  return vcl_worker_get (vcl_get_worker_index ());
+}
+
+static inline u8
+vcl_n_workers (void)
+{
+  return pool_elts (vcm->workers);
+}
+
+static inline svm_msg_q_t *
+vcl_session_vpp_evt_q (vcl_worker_t * wrk, vcl_session_t * s)
+{
+  if (vcl_session_is_ct (s))
+    return wrk->vpp_event_queues[0];
+  else
+    return wrk->vpp_event_queues[s->vpp_thread_index];
+}
+
+void vcl_send_session_worker_update (vcl_worker_t * wrk, vcl_session_t * s,
+				     u32 wrk_index);
 /*
  * VCL Binary API
  */
@@ -443,19 +620,23 @@ void vppcom_init_error_string_table (void);
 void vppcom_send_session_enable_disable (u8 is_enable);
 void vppcom_app_send_attach (void);
 void vppcom_app_send_detach (void);
-void vppcom_send_connect_sock (vcl_session_t * session, u32 session_index);
-void vppcom_send_disconnect_session_reply (u64 vpp_handle, u32 session_index,
-					   int rv);
-void vppcom_send_disconnect_session (u64 vpp_handle, u32 session_index);
-void vppcom_send_bind_sock (vcl_session_t * session, u32 session_index);
-void vppcom_send_unbind_sock (u64 vpp_handle);
+void vppcom_send_connect_sock (vcl_session_t * session);
+void vppcom_send_disconnect_session (u64 vpp_handle);
+void vppcom_send_bind_sock (vcl_session_t * session);
+void vppcom_send_unbind_sock (vcl_worker_t * wrk, u64 vpp_handle);
 void vppcom_api_hookup (void);
-void vppcom_send_accept_session_reply (u64 handle, u32 context, int retval);
+void vppcom_send_application_tls_cert_add (vcl_session_t * session,
+					   char *cert, u32 cert_len);
+void vppcom_send_application_tls_key_add (vcl_session_t * session, char *key,
+					  u32 key_len);
+void vcl_send_app_worker_add_del (u8 is_add);
+void vcl_send_child_worker_del (vcl_worker_t * wrk);
 
 u32 vcl_max_nsid_len (void);
 
 u8 *format_api_error (u8 * s, va_list * args);
 
+void vls_init ();
 #endif /* SRC_VCL_VCL_PRIVATE_H_ */
 
 /*

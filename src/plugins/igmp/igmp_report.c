@@ -32,50 +32,69 @@ igmp_group_mk_source_list (const igmp_membership_group_v3_t * r)
   n = clib_net_to_host_u16 (r->n_src_addresses);
 
   if (0 == n)
-    return (NULL);
-
-  vec_validate (srcs, n - 1);
-  s = r->src_addresses;
-
-  for (ii = 0; ii < n; ii++)
     {
-      srcs[ii].ip4 = *s;
-      s++;
+      /* a (*,G) join has no source address specified */
+      vec_validate (srcs, 0);
+      srcs[0].ip4.as_u32 = 0;
+    }
+  else
+    {
+      vec_validate (srcs, n - 1);
+      s = r->src_addresses;
+
+      for (ii = 0; ii < n; ii++)
+	{
+	  srcs[ii].ip4 = *s;
+	  s++;
+	}
     }
 
   return (srcs);
 }
 
 static void
-igmp_handle_group_update (igmp_config_t * config,
-			  const igmp_membership_group_v3_t * igmp_group)
+igmp_handle_group_exclude (igmp_config_t * config,
+			   const igmp_membership_group_v3_t * igmp_group)
 {
-  ip46_address_t *src, *srcs;
-  igmp_group_t *group;
   ip46_address_t key = {
     .ip4 = igmp_group->group_address,
   };
+  u16 n;
 
-  srcs = igmp_group_mk_source_list (igmp_group);
-  group = igmp_group_lookup (config, &key);
+  /*
+   * treat an exclude all sources as a *,G join
+   */
+  n = clib_net_to_host_u16 (igmp_group->n_src_addresses);
 
-  IGMP_DBG (" ..group-update: %U (%U, %U)",
-	    format_vnet_sw_if_index_name,
-	    vnet_get_main (), config->sw_if_index,
-	    format_igmp_key, &key, format_igmp_src_addr_list, srcs);
-
-  if (NULL == group)
+  if (0 == n)
     {
-      group = igmp_group_alloc (config, &key, IGMP_FILTER_MODE_INCLUDE);
+      ip46_address_t *src, *srcs;
+      igmp_group_t *group;
+
+      group = igmp_group_lookup (config, &key);
+      srcs = igmp_group_mk_source_list (igmp_group);
+
+      IGMP_DBG (" ..group-update: %U (*, %U)",
+		format_vnet_sw_if_index_name,
+		vnet_get_main (), config->sw_if_index, format_igmp_key, &key);
+
+      if (NULL == group)
+	{
+	  group = igmp_group_alloc (config, &key, IGMP_FILTER_MODE_INCLUDE);
+	}
+      vec_foreach (src, srcs)
+      {
+	igmp_group_src_update (group, src, IGMP_MODE_ROUTER);
+      }
+
+      vec_free (srcs);
     }
-
-  /* create or update all sources */
-  vec_foreach (src, srcs)
-  {
-    igmp_group_src_update (group, src, IGMP_MODE_ROUTER);
-  }
-
-  vec_free (srcs);
+  else
+    {
+      IGMP_DBG (" ..group-update: %U (*, %U) source exclude ignored",
+		format_vnet_sw_if_index_name,
+		vnet_get_main (), config->sw_if_index, format_igmp_key, &key);
+    }
 }
 
 static void
@@ -101,7 +120,7 @@ igmp_handle_group_block (igmp_config_t * config,
     {
       igmp_src_t *src;
       /*
-       * sned a group+source specific query
+       * send a group+source specific query
        */
       igmp_pkt_build_query_init (&bq, config->sw_if_index);
       igmp_pkt_query_v3_add_group (&bq, group, srcs);
@@ -126,6 +145,46 @@ igmp_handle_group_block (igmp_config_t * config,
 }
 
 static void
+igmp_handle_group_update (igmp_config_t * config,
+			  const igmp_membership_group_v3_t * igmp_group)
+{
+  ip46_address_t *src, *srcs;
+  igmp_group_t *group;
+  ip46_address_t key = {
+    .ip4 = igmp_group->group_address,
+  };
+
+  /*
+   * treat a TO_INC({}) as a (*,G) leave
+   */
+  if (0 == clib_net_to_host_u16 (igmp_group->n_src_addresses))
+    {
+      return (igmp_handle_group_block (config, igmp_group));
+    }
+
+  srcs = igmp_group_mk_source_list (igmp_group);
+  group = igmp_group_lookup (config, &key);
+
+  IGMP_DBG (" ..group-update: %U (%U, %U)",
+	    format_vnet_sw_if_index_name,
+	    vnet_get_main (), config->sw_if_index,
+	    format_igmp_key, &key, format_igmp_src_addr_list, srcs);
+
+  if (NULL == group)
+    {
+      group = igmp_group_alloc (config, &key, IGMP_FILTER_MODE_INCLUDE);
+    }
+
+  /* create or update all sources */
+  vec_foreach (src, srcs)
+  {
+    igmp_group_src_update (group, src, IGMP_MODE_ROUTER);
+  }
+
+  vec_free (srcs);
+}
+
+static void
 igmp_handle_group (igmp_config_t * config,
 		   const igmp_membership_group_v3_t * igmp_group)
 {
@@ -145,6 +204,7 @@ igmp_handle_group (igmp_config_t * config,
       break;
     case IGMP_MEMBERSHIP_GROUP_mode_is_exclude:
     case IGMP_MEMBERSHIP_GROUP_change_to_exclude:
+      igmp_handle_group_exclude (config, igmp_group);
       break;
       /*
        * all other types ignored
@@ -190,6 +250,8 @@ igmp_handle_report (const igmp_report_args_t * args)
       igmp_group = group_cptr (igmp_group,
 			       igmp_membership_group_v3_length (igmp_group));
     }
+
+  igmp_proxy_device_merge_config (config, 0);
 }
 
 /*

@@ -147,8 +147,9 @@ snat_det_find_ses_by_in (snat_det_map_t * dm, ip4_address_t * in_addr,
 }
 
 always_inline snat_det_session_t *
-snat_det_ses_create (snat_det_map_t * dm, ip4_address_t * in_addr,
-		     u16 in_port, snat_det_out_key_t * out)
+snat_det_ses_create (u32 thread_index, snat_det_map_t * dm,
+		     ip4_address_t * in_addr, u16 in_port,
+		     snat_det_out_key_t * out)
 {
   u32 user_offset;
   u16 i;
@@ -159,19 +160,20 @@ snat_det_ses_create (snat_det_map_t * dm, ip4_address_t * in_addr,
     {
       if (!dm->sessions[i + user_offset].in_port)
 	{
-	  if (__sync_bool_compare_and_swap
+	  if (clib_atomic_bool_cmp_and_swap
 	      (&dm->sessions[i + user_offset].in_port, 0, in_port))
 	    {
 	      dm->sessions[i + user_offset].out.as_u64 = out->as_u64;
 	      dm->sessions[i + user_offset].state = SNAT_SESSION_UNKNOWN;
 	      dm->sessions[i + user_offset].expire = 0;
-	      __sync_add_and_fetch (&dm->ses_num, 1);
+	      clib_atomic_add_fetch (&dm->ses_num, 1);
 	      return &dm->sessions[i + user_offset];
 	    }
 	}
     }
 
-  snat_ipfix_logging_max_entries_per_user (SNAT_DET_SES_PER_USER,
+  snat_ipfix_logging_max_entries_per_user (thread_index,
+					   SNAT_DET_SES_PER_USER,
 					   in_addr->as_u32);
   return 0;
 }
@@ -179,10 +181,10 @@ snat_det_ses_create (snat_det_map_t * dm, ip4_address_t * in_addr,
 always_inline void
 snat_det_ses_close (snat_det_map_t * dm, snat_det_session_t * ses)
 {
-  if (__sync_bool_compare_and_swap (&ses->in_port, ses->in_port, 0))
+  if (clib_atomic_bool_cmp_and_swap (&ses->in_port, ses->in_port, 0))
     {
       ses->out.as_u64 = 0;
-      __sync_add_and_fetch (&dm->ses_num, -1);
+      clib_atomic_add_fetch (&dm->ses_num, -1);
     }
 }
 

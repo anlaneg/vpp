@@ -50,11 +50,6 @@ public:
                uint32_t vni);
 
     /**
-     * less-than operator for map storage
-     */
-    bool operator<(const endpoint_t& o) const;
-
-    /**
      * Comparison operator
      */
     bool operator==(const endpoint_t& o) const;
@@ -81,20 +76,32 @@ public:
   };
 
   /**
+   * mode for the tunnel
+   */
+  struct mode_t : public enum_base<mode_t>
+  {
+    ~mode_t() = default;
+    const static mode_t STANDARD;
+    const static mode_t GBP;
+    const static mode_t GPE;
+
+  private:
+    mode_t(int v, const std::string s);
+    mode_t() = default;
+  };
+
+  /**
    * Construct a new object matching the desried state
    */
   vxlan_tunnel(const boost::asio::ip::address& src,
                const boost::asio::ip::address& dst,
-               uint32_t vni);
-
-  /**
-   * Construct a new object matching the desried state with a handle
-   * read from VPP
-   */
-  vxlan_tunnel(const handle_t& hdl,
-               const boost::asio::ip::address& src,
+               uint32_t vni,
+               const mode_t& mode = mode_t::STANDARD);
+  vxlan_tunnel(const boost::asio::ip::address& src,
                const boost::asio::ip::address& dst,
-               uint32_t vni);
+               uint32_t vni,
+               const interface& mcast_itf,
+               const mode_t& mode = mode_t::STANDARD);
 
   /*
    * Destructor
@@ -105,6 +112,11 @@ public:
    * Copy constructor
    */
   vxlan_tunnel(const vxlan_tunnel& o);
+
+  /**
+   * comparison operator
+   */
+  bool operator==(const vxlan_tunnel& vx) const;
 
   /**
    * Return the matching 'singular instance'
@@ -122,9 +134,9 @@ public:
   const handle_t& handle() const;
 
   /**
-   * Dump all L3Configs into the stream provided
+   * Fond the singular instance of the interface in the DB by key
    */
-  static void dump(std::ostream& os);
+  static std::shared_ptr<vxlan_tunnel> find(const interface::key_t& k);
 
 private:
   /**
@@ -204,15 +216,22 @@ private:
   endpoint_t m_tep;
 
   /**
-   * A map of all VLAN tunnela against thier key
+   * The tunnel mode
    */
-  static singular_db<endpoint_t, vxlan_tunnel> m_db;
+  mode_t m_mode;
+
+  /**
+   * The interface on which to send the packets if the destination
+   * is multicast
+   */
+  std::shared_ptr<interface> m_mcast_itf;
 
   /**
    * Construct a unique name for the tunnel
    */
   static std::string mk_name(const boost::asio::ip::address& src,
                              const boost::asio::ip::address& dst,
+                             const mode_t& mode,
                              uint32_t vni);
 };
 

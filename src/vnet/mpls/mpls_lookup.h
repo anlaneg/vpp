@@ -18,11 +18,12 @@
 
 #include <vnet/mpls/mpls.h>
 #include <vnet/ip/ip.h>
+#include <vnet/bier/bier_fwd.h>
 
 /**
  * The arc/edge from the MPLS lookup node to the MPLS replicate node
  */
-u32 mpls_lookup_to_replicate_edge;
+extern u32 mpls_lookup_to_replicate_edge;
 
 /**
  * Enum of statically configred MPLS lookup next nodes
@@ -99,6 +100,10 @@ mpls_compute_flow_hash (const mpls_unicast_header_t * hdr,
         /* incorporate the v6 flow-hash */
         hash ^= ip6_compute_flow_hash ((const ip6_header_t *)hdr,
                                        IP_FLOW_HASH_DEFAULT);
+        break;
+    case 5:
+        /* incorporate the bier flow-hash */
+        hash ^= bier_compute_flow_hash ((const bier_hdr_t *)hdr);
         break;
     default:
         break;

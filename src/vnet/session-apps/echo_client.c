@@ -86,10 +86,12 @@ send_data_chunk (echo_client_main_t * ecm, eclient_session_t * s)
 
 	  hdr.data_length = rv;
 	  hdr.data_offset = 0;
-	  clib_memcpy (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
+	  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip,
+			    sizeof (ip46_address_t));
 	  hdr.is_ip4 = at->is_ip4;
 	  hdr.rmt_port = at->rmt_port;
-	  clib_memcpy (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
+	  clib_memcpy_fast (&hdr.lcl_ip, &at->lcl_ip,
+			    sizeof (ip46_address_t));
 	  hdr.lcl_port = at->lcl_port;
 	  svm_fifo_enqueue_nowait (f, sizeof (hdr), (u8 *) & hdr);
 	  svm_fifo_enqueue_nocopy (f, rv);
@@ -208,7 +210,7 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   connections_this_batch =
     ecm->connections_this_batch_by_thread[my_thread_index];
 
-  if ((ecm->run_test == 0) ||
+  if ((ecm->run_test != ECHO_CLIENTS_RUNNING) ||
       ((vec_len (connection_indices) == 0)
        && vec_len (connections_this_batch) == 0))
     return 0;
@@ -221,10 +223,10 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       ASSERT (nconnections_this_batch > 0);
       vec_validate (connections_this_batch, nconnections_this_batch - 1);
-      clib_memcpy (connections_this_batch,
-		   connection_indices + vec_len (connection_indices)
-		   - nconnections_this_batch,
-		   nconnections_this_batch * sizeof (u32));
+      clib_memcpy_fast (connections_this_batch,
+			connection_indices + vec_len (connection_indices)
+			- nconnections_this_batch,
+			nconnections_this_batch * sizeof (u32));
       _vec_len (connection_indices) -= nconnections_this_batch;
     }
 
@@ -261,10 +263,10 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	}
       if (PREDICT_FALSE (delete_session == 1))
 	{
-	  stream_session_t *s;
+	  session_t *s;
 
-	  __sync_fetch_and_add (&ecm->tx_total, sp->bytes_sent);
-	  __sync_fetch_and_add (&ecm->rx_total, sp->bytes_received);
+	  clib_atomic_fetch_add (&ecm->tx_total, sp->bytes_sent);
+	  clib_atomic_fetch_add (&ecm->rx_total, sp->bytes_received);
 	  s = session_get_from_handle_if_valid (sp->vpp_session_handle);
 
 	  if (s)
@@ -276,7 +278,7 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      vec_delete (connections_this_batch, 1, i);
 	      i--;
-	      __sync_fetch_and_add (&ecm->ready_connections, -1);
+	      clib_atomic_fetch_add (&ecm->ready_connections, -1);
 	    }
 	  else
 	    {
@@ -354,16 +356,20 @@ echo_clients_init (vlib_main_t * vm)
 
 static int
 echo_clients_session_connected_callback (u32 app_index, u32 api_context,
-					 stream_session_t * s, u8 is_fail)
+					 session_t * s, u8 is_fail)
 {
   echo_client_main_t *ecm = &echo_client_main;
   eclient_session_t *session;
   u32 session_index;
   u8 thread_index;
 
+  if (PREDICT_FALSE (ecm->run_test != ECHO_CLIENTS_STARTING))
+    return -1;
+
   if (is_fail)
     {
       clib_warning ("connection %d failed!", api_context);
+      ecm->run_test = ECHO_CLIENTS_EXITING;
       signal_evt_to_cli (-1);
       return 0;
     }
@@ -383,13 +389,13 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
   pool_get (ecm->sessions, session);
   clib_spinlock_unlock_if_init (&ecm->sessions_lock);
 
-  memset (session, 0, sizeof (*session));
+  clib_memset (session, 0, sizeof (*session));
   session_index = session - ecm->sessions;
   session->bytes_to_send = ecm->bytes_to_send;
   session->bytes_to_receive = ecm->no_return ? 0ULL : ecm->bytes_to_send;
-  session->data.rx_fifo = s->server_rx_fifo;
+  session->data.rx_fifo = s->rx_fifo;
   session->data.rx_fifo->client_session_index = session_index;
-  session->data.tx_fifo = s->server_tx_fifo;
+  session->data.tx_fifo = s->tx_fifo;
   session->data.tx_fifo->client_session_index = session_index;
   session->data.vpp_evt_q = ecm->vpp_event_queue[thread_index];
   session->vpp_session_handle = session_handle (s);
@@ -398,16 +404,16 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
     {
       transport_connection_t *tc;
       tc = session_get_transport (s);
-      clib_memcpy (&session->data.transport, tc,
-		   sizeof (session->data.transport));
+      clib_memcpy_fast (&session->data.transport, tc,
+			sizeof (session->data.transport));
       session->data.is_dgram = 1;
     }
 
   vec_add1 (ecm->connection_index_by_thread[thread_index], session_index);
-  __sync_fetch_and_add (&ecm->ready_connections, 1);
+  clib_atomic_fetch_add (&ecm->ready_connections, 1);
   if (ecm->ready_connections == ecm->expected_connections)
     {
-      ecm->run_test = 1;
+      ecm->run_test = ECHO_CLIENTS_RUNNING;
       /* Signal the CLI process that the action is starting... */
       signal_evt_to_cli (1);
     }
@@ -416,25 +422,14 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
 }
 
 static void
-echo_clients_session_reset_callback (stream_session_t * s)
-{
-  if (s->session_state == SESSION_STATE_READY)
-    clib_warning ("Reset active connection %U", format_stream_session, s, 2);
-  stream_session_cleanup (s);
-  return;
-}
-
-static int
-echo_clients_session_create_callback (stream_session_t * s)
-{
-  return 0;
-}
-
-static void
-echo_clients_session_disconnect_callback (stream_session_t * s)
+echo_clients_session_reset_callback (session_t * s)
 {
   echo_client_main_t *ecm = &echo_client_main;
-  vnet_disconnect_args_t _a, *a = &_a;
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
+
+  if (s->session_state == SESSION_STATE_READY)
+    clib_warning ("Reset active connection %U", format_stream_session, s, 2);
+
   a->handle = session_handle (s);
   a->app_index = ecm->app_index;
   vnet_disconnect_session (a);
@@ -442,26 +437,57 @@ echo_clients_session_disconnect_callback (stream_session_t * s)
 }
 
 static int
-echo_clients_rx_callback (stream_session_t * s)
+echo_clients_session_create_callback (session_t * s)
+{
+  return 0;
+}
+
+static void
+echo_clients_session_disconnect_callback (session_t * s)
+{
+  echo_client_main_t *ecm = &echo_client_main;
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
+  a->handle = session_handle (s);
+  a->app_index = ecm->app_index;
+  vnet_disconnect_session (a);
+  return;
+}
+
+void
+echo_clients_session_disconnect (session_t * s)
+{
+  echo_client_main_t *ecm = &echo_client_main;
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
+  a->handle = session_handle (s);
+  a->app_index = ecm->app_index;
+  vnet_disconnect_session (a);
+}
+
+static int
+echo_clients_rx_callback (session_t * s)
 {
   echo_client_main_t *ecm = &echo_client_main;
   eclient_session_t *sp;
 
-  sp = pool_elt_at_index (ecm->sessions,
-			  s->server_rx_fifo->client_session_index);
+  if (PREDICT_FALSE (ecm->run_test != ECHO_CLIENTS_RUNNING))
+    {
+      echo_clients_session_disconnect (s);
+      return -1;
+    }
+
+  sp = pool_elt_at_index (ecm->sessions, s->rx_fifo->client_session_index);
   receive_data_chunk (ecm, sp);
 
-  if (svm_fifo_max_dequeue (s->server_rx_fifo))
+  if (svm_fifo_max_dequeue (s->rx_fifo))
     {
-      if (svm_fifo_set_event (s->server_rx_fifo))
-	session_send_io_evt_to_thread (s->server_rx_fifo,
-				       FIFO_EVENT_BUILTIN_RX);
+      if (svm_fifo_set_event (s->rx_fifo))
+	session_send_io_evt_to_thread (s->rx_fifo, FIFO_EVENT_BUILTIN_RX);
     }
   return 0;
 }
 
 int
-echo_client_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
+echo_client_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   /* New heaps may be added */
   return 0;
@@ -485,10 +511,10 @@ echo_clients_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   echo_client_main_t *ecm = &echo_client_main;
   vnet_app_attach_args_t _a, *a = &_a;
   u64 options[16];
-  clib_error_t *error = 0;
+  int rv;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   a->api_client_index = ecm->my_client_index;
   a->session_cb_vft = &echo_clients;
@@ -515,8 +541,8 @@ echo_clients_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   a->options = options;
   a->namespace_id = appns_id;
 
-  if ((error = vnet_application_attach (a)))
-    return error;
+  if ((rv = vnet_application_attach (a)))
+    return clib_error_return (0, "attach returned %d", rv);
 
   ecm->app_index = a->app_index;
   return 0;
@@ -530,6 +556,7 @@ echo_clients_detach ()
   int rv;
 
   da->app_index = ecm->app_index;
+  da->api_client_index = ~0;
   rv = vnet_application_detach (da);
   ecm->test_client_attached = 0;
   ecm->app_index = ~0;
@@ -565,18 +592,17 @@ echo_clients_connect (vlib_main_t * vm, u32 n_clients)
 {
   echo_client_main_t *ecm = &echo_client_main;
   vnet_connect_args_t _a, *a = &_a;
-  clib_error_t *error = 0;
-  int i;
+  int i, rv;
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   for (i = 0; i < n_clients; i++)
     {
       a->uri = (char *) ecm->connect_uri;
       a->api_context = i;
       a->app_index = ecm->app_index;
 
-      if ((error = vnet_connect_uri (a)))
-	return error;
+      if ((rv = vnet_connect_uri (a)))
+	return clib_error_return (0, "connect returned: %d", rv);
 
       /* Crude pacing for call setups  */
       if ((i % 4) == 0)
@@ -624,6 +650,7 @@ echo_clients_command_fn (vlib_main_t * vm,
   ecm->vlib_main = vm;
   ecm->tls_engine = TLS_ENGINE_OPENSSL;
   ecm->no_copy = 0;
+  ecm->run_test = ECHO_CLIENTS_STARTING;
 
   if (thread_main->n_vlib_mains > 1)
     clib_spinlock_init (&ecm->sessions_lock);
@@ -745,7 +772,7 @@ echo_clients_command_fn (vlib_main_t * vm,
   /* Fire off connect requests */
   time_before_connects = vlib_time_now (vm);
   if ((error = echo_clients_connect (vm, n_clients)))
-    return error;
+    goto cleanup;
 
   /* Park until the sessions come up, or ten seconds elapse... */
   vlib_process_wait_for_event_or_clock (vm, syn_timeout);
@@ -825,7 +852,8 @@ echo_clients_command_fn (vlib_main_t * vm,
     error = clib_error_return (0, "failed: test bytes");
 
 cleanup:
-  ecm->run_test = 0;
+  ecm->run_test = ECHO_CLIENTS_EXITING;
+  vlib_process_wait_for_event_or_clock (vm, 10e-3);
   for (i = 0; i < vec_len (ecm->connection_index_by_thread); i++)
     {
       vec_reset_length (ecm->connection_index_by_thread[i]);

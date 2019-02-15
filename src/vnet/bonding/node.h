@@ -32,7 +32,7 @@
 #endif
 
 #define BOND_MODULO_SHORTCUT(a) \
-  (((a) == 2) || ((a) == 4) || ((a) == 8) || ((a) == 16))
+  (is_pow2 (a))
 
 #define foreach_bond_mode	    \
   _ (1, ROUND_ROBIN, "round-robin") \
@@ -51,13 +51,13 @@ typedef enum
 /* configurable load-balances */
 #define foreach_bond_lb	  \
   _ (2, L23, "l23", l23)  \
-  _ (1, l34 , "l34", l34) \
+  _ (1, L34 , "l34", l34) \
   _ (0, L2, "l2", l2)
 
 /* load-balance functions implemented in bond-output */
 #define foreach_bond_lb_algo			 \
   _ (0, L2, "l2", l2)                            \
-  _ (1, l34 , "l34", l34)                        \
+  _ (1, L34 , "l34", l34)                        \
   _ (2, L23, "l23", l23)                         \
   _ (3, RR, "round-robin", round_robin)          \
   _ (4, BC, "broadcast", broadcast)              \
@@ -70,13 +70,14 @@ typedef enum
 #undef _
 } bond_load_balance_t;
 
-enum
+typedef enum
 {
   BOND_SEND_GARP_NA = 1,
 } bond_send_garp_na_process_event_t;
 
 typedef struct
 {
+  u32 id;
   u8 hw_addr_set;
   u8 hw_addr[6];
   u8 mode;
@@ -112,6 +113,7 @@ typedef struct
 typedef struct
 {
   u32 sw_if_index;
+  u32 id;
   u8 interface_name[64];
   u8 mode;
   u8 lb;
@@ -139,9 +141,15 @@ typedef CLIB_PACKED (struct
 
 typedef struct
 {
-  vlib_frame_t **frame;
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  u32 buffers[VLIB_FRAME_SIZE];
+  u32 n_buffers;
+} bond_per_port_queue_t;
 
-} bond_if_per_thread_t;
+typedef struct
+{
+  bond_per_port_queue_t *per_port_queue;
+} bond_per_thread_data_t;
 
 typedef struct
 {
@@ -152,7 +160,12 @@ typedef struct
   /* the last slave index for the rr lb */
   u32 lb_rr_last_index;
 
+  /* Real device instance in interface vector */
   u32 dev_instance;
+
+  /* Interface ID being shown to user */
+  u32 id;
+
   u32 hw_if_index;
   u32 sw_if_index;
 
@@ -175,7 +188,6 @@ typedef struct
   u8 hw_address[6];
 
   clib_spinlock_t lockp;
-  bond_if_per_thread_t *per_thread_info;
 } bond_if_t;
 
 typedef struct
@@ -282,8 +294,6 @@ typedef struct
 
   /* bond mode */
   u8 mode;
-
-  clib_spinlock_t lockp;
 } slave_if_t;
 
 typedef void (*lacp_enable_disable_func) (vlib_main_t * vm, bond_if_t * bif,
@@ -294,7 +304,10 @@ typedef struct
   /* pool of bonding interfaces */
   bond_if_t *interfaces;
 
-  /* pool of lacp neighbors */
+  /* record used interface IDs */
+  uword *id_used;
+
+  /* pool of slave interfaces */
   slave_if_t *neighbors;
 
   /* rapidly find a bond by vlib software interface index */
@@ -310,6 +323,8 @@ typedef struct
   lacp_enable_disable_func lacp_enable_disable;
 
   uword *slave_by_sw_if_index;
+
+  bond_per_thread_data_t *per_thread_data;
 } bond_main_t;
 
 /* bond packet trace capture */

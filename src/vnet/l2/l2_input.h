@@ -35,23 +35,18 @@ typedef struct
     u32 output_sw_if_index;	/* for xconnect */
   };
 
+  /* config for which input features are configured on this interface */
+  u32 feature_bitmap;
+
+  /* split horizon group */
+  u8 shg;
+
   /* Interface mode. If both are 0, this interface is in L3 mode */
   u8 xconnect;
   u8 bridge;
 
   /* this is the bvi interface for the bridge-domain */
   u8 bvi;
-
-  /* config for which input features are configured on this interface */
-  u32 feature_bitmap;
-
-  /* some of these flags are also in the feature bitmap */
-  u8 learn_enable;
-  u8 fwd_enable;
-  u8 flood_enable;
-
-  /* split horizon group */
-  u8 shg;
 
 } l2_input_config_t;
 
@@ -110,17 +105,22 @@ l2input_bd_config (u32 bd_index)
  _(ARP_TERM,      "arp-term-l2bd")              \
  _(UU_FLOOD,      "l2-flood")                   \
  _(GBP_FWD,       "gbp-fwd")                    \
+ _(UU_FWD,        "l2-uu-fwd")                  \
  _(FWD,           "l2-fwd")                     \
  _(RW,            "l2-rw")                      \
  _(LEARN,         "l2-learn")                   \
  _(L2_EMULATION,  "l2-emulation")               \
+ _(GBP_LEARN,     "gbp-learn-l2")               \
  _(GBP_NULL_CLASSIFY, "gbp-null-classify")      \
  _(GBP_SRC_CLASSIFY,  "gbp-src-classify")       \
+ _(GBP_LPM_CLASSIFY,  "l2-gbp-lpm-classify")    \
+ _(GBP_SCLASS_2_ID, "l2-gbp-sclass-2-id")         \
  _(VTR,           "l2-input-vtr")               \
  _(L2_IP_QOS_RECORD, "l2-ip-qos-record")        \
  _(VPATH,         "vpath-input-l2")             \
  _(ACL,           "l2-input-acl")               \
  _(POLICER_CLAS,  "l2-policer-classify")	\
+ _(INPUT_FEAT_ARC, "l2-input-feat-arc")         \
  _(INPUT_CLASSIFY, "l2-input-classify")         \
  _(SPAN,          "span-l2-input")
 
@@ -138,6 +138,7 @@ STATIC_ASSERT (L2INPUT_N_FEAT <= 32, "too many l2 input features");
 /* Feature bit masks */
 typedef enum
 {
+  L2INPUT_FEAT_NONE = 0,
 #define _(sym,str) L2INPUT_FEAT_##sym = (1<<L2INPUT_FEAT_##sym##_BIT),
   foreach_l2input_feat
 #undef _
@@ -153,7 +154,7 @@ STATIC_ASSERT ((u64) L2INPUT_VALID_MASK == (1ull << L2INPUT_N_FEAT) - 1, "");
 /** Return an array of strings containing graph node names of each feature */
 char **l2input_get_feat_names (void);
 
-/* arg0 - u32 feature_bitmap */
+/* arg0 - u32 feature_bitmap, arg1 - u32 verbose */
 u8 *format_l2_input_features (u8 * s, va_list * args);
 
 static_always_inline u8
@@ -197,11 +198,15 @@ l2_input_config_t *l2input_intf_config (u32 sw_if_index);
 
 /* Enable (or disable) the feature in the bitmap for the given interface */
 u32 l2input_intf_bitmap_enable (u32 sw_if_index,
-				u32 feature_bitmap, u32 enable);
+				l2input_feat_masks_t feature_bitmap,
+				u32 enable);
 
 /* Sets modifies flags from a bridge domain */
 u32 l2input_set_bridge_features (u32 bd_index, u32 feat_mask, u32 feat_value);
 
+void l2input_interface_mac_change (u32 sw_if_index,
+				   const u8 * old_address,
+				   const u8 * new_address);
 
 #define MODE_L3        0
 #define MODE_L2_BRIDGE 1
@@ -215,7 +220,8 @@ u32 set_int_l2_mode (vlib_main_t * vm,
 		     vnet_main_t * vnet_main,
 		     u32 mode,
 		     u32 sw_if_index,
-		     u32 bd_index, u32 bvi, u32 shg, u32 xc_sw_if_index);
+		     u32 bd_index, l2_bd_port_type_t port_type,
+		     u32 shg, u32 xc_sw_if_index);
 
 static inline void
 vnet_update_l2_len (vlib_buffer_t * b)
@@ -224,7 +230,7 @@ vnet_update_l2_len (vlib_buffer_t * b)
   u16 ethertype;
   u8 vlan_count = 0;
 
-  /* point at currrent l2 hdr */
+  /* point at current l2 hdr */
   eth = vlib_buffer_get_current (b);
 
   /*
@@ -255,7 +261,7 @@ vnet_update_l2_len (vlib_buffer_t * b)
  * Compute flow hash of an ethernet packet, use 5-tuple hash if L3 packet
  * is ip4 or ip6. Otherwise hash on smac/dmac/etype.
  * The vlib buffer current pointer is expected to be at ethernet header
- * and vnet l2.l2_len is exppected to be setup already.
+ * and vnet l2.l2_len is expected to be setup already.
  */
 static inline u32
 vnet_l2_compute_flow_hash (vlib_buffer_t * b)

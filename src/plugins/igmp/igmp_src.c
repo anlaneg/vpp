@@ -58,6 +58,8 @@ igmp_src_exp (u32 obj, void *dat)
 
       igmp_event (IGMP_FILTER_MODE_EXCLUDE,
 		  config->sw_if_index, src->key, group->key);
+
+      igmp_proxy_device_block_src (config, group, src);
     }
 
   igmp_group_src_remove (group, src);
@@ -76,7 +78,7 @@ igmp_src_alloc (u32 group_index, const igmp_key_t * skey, igmp_mode_t mode)
   IGMP_DBG ("new-src: (%U)", format_igmp_key, skey);
 
   pool_get (im->srcs, src);
-  memset (src, 0, sizeof (igmp_src_t));
+  clib_memset (src, 0, sizeof (igmp_src_t));
   src->mode = mode;
   src->key = clib_mem_alloc (sizeof (*skey));
   src->group = group_index;
@@ -88,7 +90,7 @@ igmp_src_alloc (u32 group_index, const igmp_key_t * skey, igmp_mode_t mode)
       igmp_group_t *group;
       /*
        * start a timer that determines whether the source is still
-       * active o nthe link
+       * active on the link
        */
       src->timers[IGMP_SRC_TIMER_EXP] =
 	igmp_timer_schedule (igmp_timer_type_get (IGMP_TIMER_SRC),
@@ -141,6 +143,19 @@ igmp_src_index (igmp_src_t * src)
   return (src - igmp_main.srcs);
 }
 
+u8 *
+format_igmp_src (u8 * s, va_list * args)
+{
+  igmp_src_t *src = va_arg (*args, igmp_src_t *);
+  u32 indent = va_arg (*args, u32);
+
+  s = format (s, "%U%U %U",
+	      format_white_space, indent,
+	      format_igmp_key, src->key,
+	      format_igmp_timer_id, src->timers[IGMP_SRC_TIMER_EXP]);
+
+  return (s);
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

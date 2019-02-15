@@ -38,6 +38,7 @@
 #include "vom/prefix.hpp"
 #include "vom/route.hpp"
 #include "vom/route_cmds.hpp"
+#include "vom/mroute_cmds.hpp"
 #include "vom/route_domain.hpp"
 #include "vom/route_domain_cmds.hpp"
 #include "vom/vxlan_tunnel.hpp"
@@ -56,6 +57,12 @@
 #include "vom/arp_proxy_binding.hpp"
 #include "vom/arp_proxy_config_cmds.hpp"
 #include "vom/arp_proxy_binding_cmds.hpp"
+#include "vom/igmp_binding.hpp"
+#include "vom/igmp_binding_cmds.hpp"
+#include "vom/igmp_listen.hpp"
+#include "vom/igmp_listen_cmds.hpp"
+#include "vom/ip_punt_redirect.hpp"
+#include "vom/ip_punt_redirect_cmds.hpp"
 #include "vom/ip_unnumbered.hpp"
 #include "vom/ip_unnumbered_cmds.hpp"
 #include "vom/interface_ip6_nd.hpp"
@@ -89,10 +96,10 @@ public:
 class MockListener : public interface::event_listener,
                      public interface::stat_listener
 {
-    void handle_interface_stat(interface_cmds::stats_enable_cmd *cmd)
+    void handle_interface_stat(const interface& itf)
     {
     }
-    void handle_interface_event(interface_cmds::events_cmd *cmd)
+    void handle_interface_event(std::vector<VOM::interface::event> events)
     {
     }
 };
@@ -245,6 +252,14 @@ public:
                     {
                         rc = handle_derived<route::ip_route_cmds::delete_cmd>(f_exp, f_act);
                     }
+                    else if (typeid(*f_exp) == typeid(route::ip_mroute_cmds::update_cmd))
+                    {
+			rc = handle_derived<route::ip_mroute_cmds::update_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(route::ip_mroute_cmds::delete_cmd))
+                    {
+                        rc = handle_derived<route::ip_mroute_cmds::delete_cmd>(f_exp, f_act);
+                    }
                     else if (typeid(*f_exp) == typeid(neighbour_cmds::create_cmd))
                     {
 			rc = handle_derived<neighbour_cmds::create_cmd>(f_exp, f_act);
@@ -376,6 +391,30 @@ public:
                     else if (typeid(*f_exp) == typeid(arp_proxy_config_cmds::unconfig_cmd))
                     {
                         rc = handle_derived<arp_proxy_config_cmds::unconfig_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(igmp_binding_cmds::bind_cmd))
+                    {
+                        rc = handle_derived<igmp_binding_cmds::bind_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(igmp_binding_cmds::unbind_cmd))
+                    {
+                        rc = handle_derived<igmp_binding_cmds::unbind_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(igmp_listen_cmds::listen_cmd))
+                    {
+                        rc = handle_derived<igmp_listen_cmds::listen_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(igmp_listen_cmds::unlisten_cmd))
+                    {
+                        rc = handle_derived<igmp_listen_cmds::unlisten_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(ip_punt_redirect_cmds::config_cmd))
+                    {
+                        rc = handle_derived<ip_punt_redirect_cmds::config_cmd>(f_exp, f_act);
+                    }
+                    else if (typeid(*f_exp) == typeid(ip_punt_redirect_cmds::unconfig_cmd))
+                    {
+                        rc = handle_derived<ip_punt_redirect_cmds::unconfig_cmd>(f_exp, f_act);
                     }
                     else if (typeid(*f_exp) == typeid(ip_unnumbered_cmds::config_cmd))
                     {
@@ -926,7 +965,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     l2_binding *l2itf = new l2_binding(itf1, bd1);
     HW::item<bool> hw_l2_bind(true, rc_t::OK);
 
-    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind, hw_ifh.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind,
+                                         hw_ifh.data(),
+                                         hw_bd.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     TRY_CHECK_RC(OM::write(franz, *l2itf));
 
     /*
@@ -949,7 +991,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     HW::item<l2_binding::l2_vtr_op_t> hw_set_vtr(l2_binding::l2_vtr_op_t::L2_VTR_POP_1, rc_t::OK);
     l2itf2->set(l2_binding::l2_vtr_op_t::L2_VTR_POP_1, 68);
 
-    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind, hw_ifh2.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind,
+                                         hw_ifh2.data(),
+                                         hw_bd.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     ADD_EXPECT(l2_binding_cmds::set_vtr_op_cmd(hw_set_vtr, hw_ifh2.data(), 68));
     TRY_CHECK_RC(OM::write(dante, *l2itf2));
 
@@ -973,7 +1018,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     delete l2itf;
     HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN,
                                                   rc_t::OK);
-    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind, hw_ifh.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind,
+                                           hw_ifh.data(),
+                                           hw_bd.data(),
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
     ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh, itf1_name));
     TRY_CHECK(OM::remove(franz));
@@ -986,7 +1034,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     STRICT_ORDER_OFF();
     ADD_EXPECT(bridge_domain_arp_entry_cmds::delete_cmd(hw_be1, bd1.id(), mac1, ip1));
     ADD_EXPECT(bridge_domain_entry_cmds::delete_cmd(hw_be1, mac1, bd1.id(), false));
-    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind, hw_ifh2.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind,
+                                           hw_ifh2.data(),
+                                           hw_bd.data(),
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
 
     ADD_EXPECT(bridge_domain_cmds::delete_cmd(hw_bd));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh2));
@@ -1017,7 +1068,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     TRY_CHECK_RC(OM::write(jkr, itf3));
 
     l2_binding *l2itf3 = new l2_binding(itf3, bd2);
-    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind, hw_ifh3.data(), hw_bd2.data(), true));
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind,
+                                         hw_ifh3.data(),
+                                         hw_bd2.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_BVI));
     TRY_CHECK_RC(OM::write(jkr, *l2itf3));
 
     HW::item<bool> hw_be2(true, rc_t::OK);
@@ -1029,7 +1083,10 @@ BOOST_AUTO_TEST_CASE(test_bridge) {
     delete l2itf3;
     delete be2;
     STRICT_ORDER_OFF();
-    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind, hw_ifh3.data(), hw_bd2.data(), true));
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind,
+                                           hw_ifh3.data(),
+                                           hw_bd2.data(),
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_BVI));
     ADD_EXPECT(bridge_domain_entry_cmds::delete_cmd(hw_be2, mac2, bd2.id(), true));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh3));
     ADD_EXPECT(interface_cmds::loopback_delete_cmd(hw_ifh3));
@@ -1108,7 +1165,8 @@ BOOST_AUTO_TEST_CASE(test_vxlan) {
     vxlan_tunnel vxt(ep.src, ep.dst, ep.vni);
 
     HW::item<handle_t> hw_vxt(3, rc_t::OK);
-    ADD_EXPECT(vxlan_tunnel_cmds::create_cmd(hw_vxt, "don't-care", ep));
+    ADD_EXPECT(vxlan_tunnel_cmds::create_cmd(hw_vxt, "don't-care", ep,
+                                             handle_t::INVALID));
 
     TRY_CHECK_RC(OM::write(franz, vxt));
 
@@ -1133,14 +1191,20 @@ BOOST_AUTO_TEST_CASE(test_vxlan) {
     l2_binding *l2itf = new l2_binding(vxt, bd1);
     HW::item<bool> hw_l2_bind(true, rc_t::OK);
 
-    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind, hw_vxt.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_bind,
+                                         hw_vxt.data(),
+                                         hw_bd.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     TRY_CHECK_RC(OM::write(franz, *l2itf));
 
     // flush Franz's state
     delete l2itf;
     HW::item<handle_t> hw_vxtdel(3, rc_t::NOOP);
     STRICT_ORDER_OFF();
-    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind, hw_vxt.data(), hw_bd.data(), false));
+    ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_bind,
+                                           hw_vxt.data(),
+                                           hw_bd.data(),
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     ADD_EXPECT(bridge_domain_cmds::delete_cmd(hw_bd));
     ADD_EXPECT(vxlan_tunnel_cmds::delete_cmd(hw_vxtdel, ep));
     TRY_CHECK(OM::remove(franz));
@@ -1288,6 +1352,51 @@ BOOST_AUTO_TEST_CASE(test_acl) {
     TRY_CHECK(OM::remove(fyodor));
 }
 
+BOOST_AUTO_TEST_CASE(test_igmp) {
+    VppInit vi;
+    const std::string Isaiah = "IsaiahBerlin";
+    rc_t rc = rc_t::OK;
+
+    boost::asio::ip::address_v4 gaddr = boost::asio::ip::address_v4::from_string("232.0.0.1");
+    boost::asio::ip::address_v4 saddr1 = boost::asio::ip::address_v4::from_string("192.168.0.20");
+    boost::asio::ip::address_v4 saddr2 = boost::asio::ip::address_v4::from_string("192.168.0.30");
+
+    std::string itf3_name = "host3";
+    interface itf3(itf3_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+    HW::item<handle_t> hw_ifh(2, rc_t::OK);
+    HW::item<interface::admin_state_t> hw_as_up(interface::admin_state_t::UP, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh, itf3_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
+    TRY_CHECK_RC(OM::write(Isaiah, itf3));
+
+    igmp_binding *ib = new igmp_binding(itf3);
+    HW::item<bool> hw_binding(true, rc_t::OK);
+    ADD_EXPECT(igmp_binding_cmds::bind_cmd(hw_binding, hw_ifh.data()));
+    TRY_CHECK_RC(OM::write(Isaiah, *ib));
+
+    igmp_listen::src_addrs_t saddrs = {saddr1, saddr2};
+
+    igmp_listen *il = new igmp_listen(*ib, gaddr, saddrs);
+    HW::item<bool> hw_as_listen(true, rc_t::OK);
+    ADD_EXPECT(igmp_listen_cmds::listen_cmd(hw_as_listen, hw_ifh.data(), gaddr, saddrs));
+    TRY_CHECK_RC(OM::write(Isaiah, *il));
+
+    delete il;
+    delete ib;
+
+    HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN,
+                                                  rc_t::OK);
+    STRICT_ORDER_OFF();
+    ADD_EXPECT(igmp_listen_cmds::unlisten_cmd(hw_as_listen, hw_ifh.data(), gaddr));
+    ADD_EXPECT(igmp_binding_cmds::unbind_cmd(hw_binding, hw_ifh.data()));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh, itf3_name));
+
+    TRY_CHECK(OM::remove(Isaiah));
+}
+
 BOOST_AUTO_TEST_CASE(test_arp_proxy) {
     VppInit vi;
     const std::string kurt = "KurtVonnegut";
@@ -1327,6 +1436,58 @@ BOOST_AUTO_TEST_CASE(test_arp_proxy) {
     ADD_EXPECT(arp_proxy_config_cmds::unconfig_cmd(hw_ap_cfg, low, high));
 
     TRY_CHECK(OM::remove(kurt));
+}
+
+BOOST_AUTO_TEST_CASE(test_ip_punt_redirect) {
+    VppInit vi;
+    const std::string eliot = "EliotReed";
+    rc_t rc = rc_t::OK;
+
+    /*
+     * Interface 1 is the tx interface
+     */
+    std::string itf1_name = "tx-itf";
+    interface itf1(itf1_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+    HW::item<handle_t> hw_ifh(2, rc_t::OK);
+    HW::item<interface::admin_state_t> hw_as_up(interface::admin_state_t::UP, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh, itf1_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh));
+    TRY_CHECK_RC(OM::write(eliot, itf1));
+
+    boost::asio::ip::address addr = boost::asio::ip::address::from_string("192.168.0.20");
+
+    /*
+     * Interface 2 is the rx interface
+     */
+    std::string itf2_name = "rx-itf";
+    interface itf2(itf2_name,
+                   interface::type_t::AFPACKET,
+                   interface::admin_state_t::UP);
+
+    HW::item<handle_t> hw_ifh2(4, rc_t::OK);
+    ADD_EXPECT(interface_cmds::af_packet_create_cmd(hw_ifh2, itf2_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_up, hw_ifh2));
+    TRY_CHECK_RC(OM::write(eliot, itf2));
+
+    ip_punt_redirect *ip_punt = new ip_punt_redirect(itf2, itf1, addr);
+    HW::item<bool> hw_ip_cfg(true, rc_t::OK);
+    HW::item<bool> hw_ip_uncfg(false, rc_t::OK);
+    ADD_EXPECT(ip_punt_redirect_cmds::config_cmd(hw_ip_cfg, hw_ifh2.data(), hw_ifh.data(), addr));
+    TRY_CHECK_RC(OM::write(eliot, *ip_punt));
+
+    delete ip_punt;
+
+    HW::item<interface::admin_state_t> hw_as_down(interface::admin_state_t::DOWN, rc_t::OK);
+    STRICT_ORDER_OFF();
+    ADD_EXPECT(ip_punt_redirect_cmds::unconfig_cmd(hw_ip_uncfg, hw_ifh2.data(), hw_ifh.data(), addr));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh, itf1_name));
+    ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh2));
+    ADD_EXPECT(interface_cmds::af_packet_delete_cmd(hw_ifh2, itf2_name));
+
+    TRY_CHECK(OM::remove(eliot));
 }
 
 BOOST_AUTO_TEST_CASE(test_ip_unnumbered) {
@@ -1571,23 +1732,39 @@ BOOST_AUTO_TEST_CASE(test_routing) {
      * A route via interface 1 in the default table
      */
     route::prefix_t pfx_5("5.5.5.5", 32);
+    boost::asio::ip::address nh_9 = boost::asio::ip::address::from_string("10.10.10.9");
+    route::path *path_9 = new route::path(nh_9, itf1);
     boost::asio::ip::address nh_10 = boost::asio::ip::address::from_string("10.10.10.11");
     route::path *path_10 = new route::path(nh_10, itf1);
     route::ip_route *route_5 = new route::ip_route(pfx_5);
     route_5->add(*path_10);
+    route_5->add(*path_9);
     HW::item<bool> hw_route_5(true, rc_t::OK);
-    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5, 0, pfx_5, {*path_10}));
+    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5, 0, pfx_5, *path_9));
+    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5, 0, pfx_5, *path_10));
     TRY_CHECK_RC(OM::write(ian, *route_5));
+
+    route_5->remove(*path_9);
+    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5, 0, pfx_5, *path_9));
+    TRY_CHECK_RC(OM::write(ian, *route_5));
+
+    delete path_9;
 
     /*
      * A route via interface 2 in the non-default table
      */
     boost::asio::ip::address nh_11 = boost::asio::ip::address::from_string("11.11.11.10");
     route::path *path_11 = new route::path(nh_11, *itf2);
+    boost::asio::ip::address nh_12 = boost::asio::ip::address::from_string("11.11.11.12");
+    route::path *path_12 = new route::path(nh_12, *itf2);
     route::ip_route *route_5_2 = new route::ip_route(rd4, pfx_5);
     route_5_2->add(*path_11);
     HW::item<bool> hw_route_5_2(true, rc_t::OK);
-    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5_2, 1, pfx_5, {*path_11}));
+    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5_2, 1, pfx_5, *path_11));
+    TRY_CHECK_RC(OM::write(ian, *route_5_2));
+
+    route_5_2->add(*path_12);
+    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_5_2, 1, pfx_5, *path_12));
     TRY_CHECK_RC(OM::write(ian, *route_5_2));
 
     /*
@@ -1596,7 +1773,9 @@ BOOST_AUTO_TEST_CASE(test_routing) {
     HW::item<bool> hw_neighbour(true, rc_t::OK);
     mac_address_t mac_n({0,1,2,4,5,6});
     neighbour *ne = new neighbour(itf1, nh_10, mac_n);
-    ADD_EXPECT(neighbour_cmds::create_cmd(hw_neighbour, hw_ifh.data(), mac_n, nh_10));
+    ADD_EXPECT(neighbour_cmds::create_cmd(hw_neighbour, hw_ifh.data(),
+                                          mac_n, nh_10,
+                                          neighbour::flags_t::STATIC));
     TRY_CHECK_RC(OM::write(ian, *ne));
 
     /*
@@ -1607,8 +1786,28 @@ BOOST_AUTO_TEST_CASE(test_routing) {
     route::ip_route *route_dvr = new route::ip_route(pfx_6);
     route_dvr->add(*path_l2);
     HW::item<bool> hw_route_dvr(true, rc_t::OK);
-    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_dvr, 0, pfx_6, {*path_l2}));
+    ADD_EXPECT(route::ip_route_cmds::update_cmd(hw_route_dvr, 0, pfx_6, *path_l2));
     TRY_CHECK_RC(OM::write(ian, *route_dvr));
+
+    /*
+     * a multicast route
+     */
+    route::mprefix_t mpfx_4(boost::asio::ip::address::from_string("232.1.1.1"), 32);
+    route::ip_mroute *mroute_4 = new route::ip_mroute(mpfx_4);
+
+    route::path *mp1 = new route::path(itf1, nh_proto_t::IPV4);
+    route::path *mp2 = new route::path(*itf2, nh_proto_t::IPV4);
+    mroute_4->add(*mp1, route::itf_flags_t::FORWARD);
+    mroute_4->add(*mp1, route::itf_flags_t::ACCEPT);
+    mroute_4->add(*mp2, route::itf_flags_t::FORWARD);
+    HW::item<bool> hw_mroute_4(true, rc_t::OK);
+    ADD_EXPECT(route::ip_mroute_cmds::update_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp1, route::itf_flags_t::FORWARD));
+    ADD_EXPECT(route::ip_mroute_cmds::update_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp2, route::itf_flags_t::FORWARD));
+    ADD_EXPECT(route::ip_mroute_cmds::update_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp1, route::itf_flags_t::ACCEPT));
+    TRY_CHECK_RC(OM::write(ian, *mroute_4));
 
     STRICT_ORDER_OFF();
     // delete the stack objects that hold references to others
@@ -1617,16 +1816,34 @@ BOOST_AUTO_TEST_CASE(test_routing) {
     delete l3_10;
     delete itf2;
     delete route_5;
-    delete path_10;
     delete route_5_2;
-    delete path_11;
     delete route_dvr;
-    delete path_l2;
     delete ne;
-    ADD_EXPECT(neighbour_cmds::delete_cmd(hw_neighbour, hw_ifh.data(), mac_n, nh_10));
-    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_dvr, 0, pfx_6));
-    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5_2, 1, pfx_5));
-    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5, 0, pfx_5));
+    delete mroute_4;
+
+    ADD_EXPECT(route::ip_mroute_cmds::delete_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp1, route::itf_flags_t::FORWARD));
+    ADD_EXPECT(route::ip_mroute_cmds::delete_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp2, route::itf_flags_t::FORWARD));
+    ADD_EXPECT(route::ip_mroute_cmds::delete_cmd(hw_mroute_4, 0, mpfx_4,
+                                                 *mp1, route::itf_flags_t::ACCEPT));
+
+    delete mp1;
+    delete mp2;
+
+    ADD_EXPECT(neighbour_cmds::delete_cmd(hw_neighbour, hw_ifh.data(),
+                                          mac_n, nh_10,
+                                          neighbour::flags_t::STATIC));
+    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_dvr, 0, pfx_6, *path_l2));
+    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5_2, 1, pfx_5, *path_11));
+    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5_2, 1, pfx_5, *path_12));
+    ADD_EXPECT(route::ip_route_cmds::delete_cmd(hw_route_5, 0, pfx_5, *path_10));
+
+    delete path_10;
+    delete path_11;
+    delete path_12;
+    delete path_l2;
+
     ADD_EXPECT(l3_binding_cmds::unbind_cmd(hw_l3_10_unbind, hw_ifh.data(), pfx_10));
     ADD_EXPECT(l3_binding_cmds::unbind_cmd(hw_l3_11_unbind, hw_ifh2.data(), pfx_11));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_ifh));
@@ -1909,7 +2126,8 @@ BOOST_AUTO_TEST_CASE(test_pipes) {
 
     ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_1_bind,
                                          pipe1.east()->handle(),
-                                         hw_bd.data(), false));
+                                         hw_bd.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     TRY_CHECK_RC(OM::write(gk, *l2_1));
 
     l2_binding *l2_2 = new l2_binding(*pipe1.west(), bd1);
@@ -1917,7 +2135,8 @@ BOOST_AUTO_TEST_CASE(test_pipes) {
 
     ADD_EXPECT(l2_binding_cmds::bind_cmd(hw_l2_2_bind,
                                          pipe1.west()->handle(),
-                                         hw_bd.data(), false));
+                                         hw_bd.data(),
+                                         l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     TRY_CHECK_RC(OM::write(gk, *l2_2));
 
     STRICT_ORDER_OFF();
@@ -1927,11 +2146,11 @@ BOOST_AUTO_TEST_CASE(test_pipes) {
     ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_1_bind,
                                            pipe1.east()->handle(),
                                            hw_bd.data(),
-                                           false));
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     ADD_EXPECT(l2_binding_cmds::unbind_cmd(hw_l2_1_bind,
                                            pipe1.west()->handle(),
                                            hw_bd.data(),
-                                           false));
+                                           l2_binding::l2_port_type_t::L2_PORT_TYPE_NORMAL));
     ADD_EXPECT(interface_cmds::state_change_cmd(hw_as_down, hw_hdl));
     ADD_EXPECT(pipe_cmds::delete_cmd(hw_hdl, hw_hdl_pair));
     ADD_EXPECT(bridge_domain_cmds::delete_cmd(hw_bd));

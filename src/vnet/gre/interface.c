@@ -24,6 +24,7 @@
 #include <vnet/adj/adj_midchain.h>
 #include <vnet/adj/adj_nbr.h>
 #include <vnet/mpls/mpls.h>
+#include <vnet/l2/l2_input.h>
 
 static const char *gre_tunnel_type_names[] = GRE_TUNNEL_TYPE_NAMES;
 
@@ -146,44 +147,14 @@ gre_tunnel_stack (adj_index_t ai)
        VNET_HW_INTERFACE_FLAG_LINK_UP) == 0)
     {
       adj_nbr_midchain_unstack (ai);
-      return;
     }
-
-  dpo_id_t tmp = DPO_INVALID;
-  fib_forward_chain_type_t fib_fwd = (FIB_PROTOCOL_IP6 == adj->ia_nh_proto) ?
-    FIB_FORW_CHAIN_TYPE_UNICAST_IP6 : FIB_FORW_CHAIN_TYPE_UNICAST_IP4;
-
-  fib_entry_contribute_forwarding (gt->fib_entry_index, fib_fwd, &tmp);
-  if (DPO_LOAD_BALANCE == tmp.dpoi_type)
+  else
     {
-      /*
-       * post GRE rewrite we will load-balance. However, the GRE encap
-       * is always the same for this adjacency/tunnel and hence the IP/GRE
-       * src,dst hash is always the same result too. So we do that hash now and
-       * stack on the choice.
-       * If the choice is an incomplete adj then we will need a poke when
-       * it becomes complete. This happens since the adj update walk propagates
-       * as far a recursive paths.
-       */
-      const dpo_id_t *choice;
-      load_balance_t *lb;
-      int hash;
-
-      lb = load_balance_get (tmp.dpoi_index);
-
-      if (fib_fwd == FIB_FORW_CHAIN_TYPE_UNICAST_IP4)
-	hash = ip4_compute_flow_hash ((ip4_header_t *) adj_get_rewrite (ai),
-				      lb->lb_hash_config);
-      else
-	hash = ip6_compute_flow_hash ((ip6_header_t *) adj_get_rewrite (ai),
-				      lb->lb_hash_config);
-      choice =
-	load_balance_get_bucket_i (lb, hash & lb->lb_n_buckets_minus_1);
-      dpo_copy (&tmp, choice);
+      adj_nbr_midchain_stack_on_fib_entry (ai,
+					   gt->fib_entry_index,
+					   fib_forw_chain_type_from_fib_proto
+					   (gt->tunnel_dst.fp_proto));
     }
-
-  adj_nbr_midchain_stack (ai, &tmp);
-  dpo_reset (&tmp);
 }
 
 /**
@@ -280,7 +251,7 @@ vnet_gre_tunnel_add (vnet_gre_add_del_tunnel_args_t * a,
     return VNET_API_ERROR_IF_ALREADY_EXISTS;
 
   pool_get_aligned (gm->tunnels, t, CLIB_CACHE_LINE_BYTES);
-  memset (t, 0, sizeof (*t));
+  clib_memset (t, 0, sizeof (*t));
 
   /* Reconcile the real dev_instance and a possible requested instance */
   u32 t_idx = t - gm->tunnels;	/* tunnel index (or instance) */
@@ -422,7 +393,8 @@ vnet_gre_tunnel_delete (vnet_gre_add_del_tunnel_args_t * a,
   vnet_sw_interface_set_flags (vnm, sw_if_index, 0 /* down */ );
 
   /* make sure tunnel is removed from l2 bd or xconnect */
-  set_int_l2_mode (gm->vlib_main, vnm, MODE_L3, sw_if_index, 0, 0, 0, 0);
+  set_int_l2_mode (gm->vlib_main, vnm, MODE_L3, sw_if_index, 0,
+		   L2_BD_PORT_TYPE_NORMAL, 0, 0);
   gm->tunnel_index_by_sw_if_index[sw_if_index] = ~0;
 
   if (t->type == GRE_TUNNEL_TYPE_L3)
@@ -604,7 +576,7 @@ create_gre_tunnel_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->is_add = is_add;
   a->outer_fib_id = outer_fib_id;
   a->tunnel_type = t_type;

@@ -18,6 +18,7 @@
 
 #include "vom/acl_list.hpp"
 #include "vom/gbp_endpoint.hpp"
+#include "vom/gbp_rule.hpp"
 #include "vom/interface.hpp"
 #include "vom/singular_db.hpp"
 #include "vom/types.hpp"
@@ -31,16 +32,28 @@ class gbp_contract : public object_base
 {
 public:
   /**
+   * set of gbp rules
+   */
+  typedef std::set<gbp_rule> gbp_rules_t;
+
+  /**
    * The key for a contract is the pari of EPG-IDs
    */
   typedef std::pair<epg_id_t, epg_id_t> key_t;
+
+  /**
+   * A set of allowed ethertypes
+   */
+  typedef std::set<ethertype_t> ethertype_set_t;
 
   /**
    * Construct a GBP contract
    */
   gbp_contract(epg_id_t src_epg_id,
                epg_id_t dst_epg_id,
-               const ACL::l3_list& acl);
+               const ACL::l3_list& acl,
+               const gbp_rules_t& gpb_rules,
+               const ethertype_set_t& allowed_ethertypes);
 
   /**
    * Copy Construct
@@ -167,6 +180,16 @@ private:
    * The ACL applied to traffic between the gourps
    */
   std::shared_ptr<ACL::l3_list> m_acl;
+
+  /**
+   * The gbp rules applied to traffic between the gourps
+   */
+  gbp_rules_t m_gbp_rules;
+
+  /**
+   * the set of Ether-types allowed by this contract
+   */
+  ethertype_set_t m_allowed_ethertypes;
 
   /**
    * A map of all bridge_domains

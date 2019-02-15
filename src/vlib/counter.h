@@ -40,6 +40,8 @@
 #ifndef included_vlib_counter_h
 #define included_vlib_counter_h
 
+#include <vlib/counter_types.h>
+
 /** \file
 
     Optimized thread-safe counters.
@@ -49,9 +51,6 @@
 
     The idea is to drastically eliminate atomic operations.
 */
-
-/** 64bit counters */
-typedef u64 counter_t;
 
 /** A collection of simple counters */
 
@@ -83,6 +82,22 @@ vlib_increment_simple_counter (vlib_simple_counter_main_t * cm,
 
   my_counters = cm->counters[thread_index];
   my_counters[index] += increment;
+}
+
+/** Set a simple counter
+    @param cm - (vlib_simple_counter_main_t *) simple counter main pointer
+    @param thread_index - (u32) the current cpu index
+    @param index - (u32) index of the counter to increment
+    @param value - (u64) quantitiy to set to the counter
+*/
+always_inline void
+vlib_set_simple_counter (vlib_simple_counter_main_t * cm,
+			 u32 thread_index, u32 index, u64 value)
+{
+  counter_t *my_counters;
+
+  my_counters = cm->counters[thread_index];
+  my_counters[index] = value;
 }
 
 /** Get the value of a simple counter
@@ -134,14 +149,6 @@ vlib_zero_simple_counter (vlib_simple_counter_main_t * cm, u32 index)
       my_counters[index] = 0;
     }
 }
-
-/** Combined counter to hold both packets and byte differences.
- */
-typedef struct
-{
-  counter_t packets;			/**< packet counter */
-  counter_t bytes;			/**< byte counter  */
-} vlib_counter_t;
 
 /** Add two combined counters, results in the first counter
     @param [in,out] a - (vlib_counter_t *) dst counter

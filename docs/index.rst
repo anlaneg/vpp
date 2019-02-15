@@ -23,7 +23,10 @@ Finally it is useful both a software development kit or an appliance out of the 
    gettingstarted/index
    links/index
    usecases/index
+   featuresbyrelease/index
    troubleshooting/index
-   guides/index
    events/index
    reference/index
+   relatedprojects/index
+   archive/index
+   about.rst

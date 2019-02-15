@@ -40,16 +40,18 @@
 #ifndef included_ip_ip6_h
 #define included_ip_ip6_h
 
-#include <vlib/mc.h>
 #include <vlib/buffer.h>
 #include <vnet/ethernet/packet.h>
+#include <vnet/ethernet/mac_address.h>
 #include <vnet/ip/ip6_packet.h>
 #include <vnet/ip/ip6_hop_by_hop_packet.h>
 #include <vnet/ip/lookup.h>
 #include <stdbool.h>
 #include <vppinfra/bihash_24_8.h>
+#include <vppinfra/bihash_40_8.h>
 #include <vppinfra/bihash_template.h>
 #include <vnet/util/radix.h>
+#include <vnet/util/throttle.h>
 
 /*
  * Default size of the ip6 fib hash table
@@ -78,17 +80,14 @@ typedef struct
 
 typedef struct ip6_mfib_t
 {
+  /* required for pool_get_aligned. */
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+
   /* Table ID (hash key) for this FIB. */
   u32 table_id;
 
   /* Index into FIB vector. */
   u32 index;
-
-  /*
-   *  Pointer to the top of a radix tree.
-   * This cannot be realloc'd, hence it cannot be inlined with this table
-   */
-  struct radix_node_head *rhead;
 } ip6_mfib_t;
 
 struct ip6_main_t;
@@ -143,7 +142,7 @@ typedef enum ip6_fib_table_instance_type_t_
 typedef struct ip6_fib_table_instance_t_
 {
   /* The hash table */
-  BVT (clib_bihash) ip6_hash;
+  clib_bihash_24_8_t ip6_hash;
 
   /* bitmap / refcounts / vector of mask widths to search */
   uword *non_empty_dst_address_length_bitmap;
@@ -151,12 +150,31 @@ typedef struct ip6_fib_table_instance_t_
   i32 dst_address_length_refcounts[129];
 } ip6_fib_table_instance_t;
 
+/**
+ * A represenation of a single IP6 mfib table
+ */
+typedef struct ip6_mfib_table_instance_t_
+{
+  /* The hash table */
+  clib_bihash_40_8_t ip6_mhash;
+
+  /* bitmap / refcounts / vector of mask widths to search */
+  uword *non_empty_dst_address_length_bitmap;
+  u16 *prefix_lengths_in_search_order;
+  i32 dst_address_length_refcounts[257];
+} ip6_mfib_table_instance_t;
+
 typedef struct ip6_main_t
 {
   /**
    * The two FIB tables; fwding and non-fwding
    */
   ip6_fib_table_instance_t ip6_table[IP6_FIB_NUM_TABLES];
+
+  /**
+   * the single MFIB table
+   */
+  ip6_mfib_table_instance_t ip6_mtable;
 
   ip_lookup_main_t lookup_main;
 
@@ -221,10 +239,7 @@ typedef struct ip6_main_t
   u8 hbh_enabled;
 
   /** ND throttling */
-  uword **nd_throttle_bitmaps;
-  u64 *nd_throttle_seeds;
-  f64 *nd_throttle_last_seed_change_time;
-
+  throttle_t nd_throttle;
 } ip6_main_t;
 
 #define ND_THROTTLE_BITS 512
@@ -379,14 +394,34 @@ serialize_function_t serialize_vnet_ip6_main, unserialize_vnet_ip6_main;
 void ip6_ethernet_update_adjacency (vnet_main_t * vnm,
 				    u32 sw_if_index, u32 ai);
 
-
-void
+always_inline void
 ip6_link_local_address_from_ethernet_mac_address (ip6_address_t * ip,
-						  u8 * mac);
+						  u8 * mac)
+{
+  ip->as_u64[0] = clib_host_to_net_u64 (0xFE80000000000000ULL);
+  /* Invert the "u" bit */
+  ip->as_u8[8] = mac[0] ^ (1 << 1);
+  ip->as_u8[9] = mac[1];
+  ip->as_u8[10] = mac[2];
+  ip->as_u8[11] = 0xFF;
+  ip->as_u8[12] = 0xFE;
+  ip->as_u8[13] = mac[3];
+  ip->as_u8[14] = mac[4];
+  ip->as_u8[15] = mac[5];
+}
 
-void
+always_inline void
 ip6_ethernet_mac_address_from_link_local_address (u8 * mac,
-						  ip6_address_t * ip);
+						  ip6_address_t * ip)
+{
+  /* Invert the previously inverted "u" bit */
+  mac[0] = ip->as_u8[8] ^ (1 << 1);
+  mac[1] = ip->as_u8[9];
+  mac[2] = ip->as_u8[10];
+  mac[3] = ip->as_u8[13];
+  mac[4] = ip->as_u8[14];
+  mac[5] = ip->as_u8[15];
+}
 
 int vnet_set_ip6_flow_hash (u32 table_id,
 			    flow_hash_config_t flow_hash_config);
@@ -401,8 +436,13 @@ clib_error_t *set_ip6_link_local_address (vlib_main_t * vm,
 					  u32 sw_if_index,
 					  ip6_address_t * address);
 
+typedef int (*ip6_nd_change_event_cb_t) (u32 pool_index,
+					 const mac_address_t * new_mac,
+					 u32 sw_if_index,
+					 const ip6_address_t * address);
+
 int vnet_add_del_ip6_nd_change_event (vnet_main_t * vnm,
-				      void *data_callback,
+				      ip6_nd_change_event_cb_t data_callback,
 				      u32 pid,
 				      void *address_arg,
 				      uword node_index,
@@ -471,7 +511,6 @@ ip6_compute_flow_hash (const ip6_header_t * ip,
 
   a = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t2 : t1;
   b = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t1 : t2;
-  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? protocol : 0;
 
   t1 = is_tcp_udp ? tcp->src : 0;
   t2 = is_tcp_udp ? tcp->dst : 0;
@@ -479,6 +518,23 @@ ip6_compute_flow_hash (const ip6_header_t * ip,
   t1 = (flow_hash_config & IP_FLOW_HASH_SRC_PORT) ? t1 : 0;
   t2 = (flow_hash_config & IP_FLOW_HASH_DST_PORT) ? t2 : 0;
 
+  if (flow_hash_config & IP_FLOW_HASH_SYMMETRIC)
+    {
+      if (b < a)
+	{
+	  c = a;
+	  a = b;
+	  b = c;
+	}
+      if (t2 < t1)
+	{
+	  t2 += t1;
+	  t1 = t2 - t1;
+	  t2 = t2 - t1;
+	}
+    }
+
+  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? protocol : 0;
   c = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ?
     ((t1 << 16) | t2) : ((t2 << 16) | t1);
 
@@ -619,10 +675,10 @@ vlib_buffer_push_ip6 (vlib_main_t * vm, vlib_buffer_t * b,
 
   ip6h->hop_limit = 0xff;
   ip6h->protocol = proto;
-  clib_memcpy (ip6h->src_address.as_u8, src->as_u8,
-	       sizeof (ip6h->src_address));
-  clib_memcpy (ip6h->dst_address.as_u8, dst->as_u8,
-	       sizeof (ip6h->src_address));
+  clib_memcpy_fast (ip6h->src_address.as_u8, src->as_u8,
+		    sizeof (ip6h->src_address));
+  clib_memcpy_fast (ip6h->dst_address.as_u8, dst->as_u8,
+		    sizeof (ip6h->src_address));
   b->flags |= VNET_BUFFER_F_IS_IP6;
 
   return ip6h;

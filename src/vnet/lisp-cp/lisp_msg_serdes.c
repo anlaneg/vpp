@@ -27,13 +27,14 @@ lisp_msg_put_locators (vlib_buffer_t * b, locator_t * locators)
   vec_foreach (loc, locators)
   {
     u8 *p = vlib_buffer_put_uninit (b, sizeof (locator_hdr_t));
-    memset (p, 0, sizeof (locator_hdr_t));
+    clib_memset (p, 0, sizeof (locator_hdr_t));
     LOC_PRIORITY (p) = loc->priority;
     LOC_MPRIORITY (p) = loc->mpriority;
     LOC_WEIGHT (p) = loc->weight;
     LOC_MWEIGHT (p) = loc->mweight;
     LOC_LOCAL (p) = loc->local;
     LOC_PROBED (p) = loc->probed ? 1 : 0;
+    LOC_REACHABLE (p) = loc->state ? 1 : 0;
     lisp_msg_put_gid (b, &loc->address);
   }
 }
@@ -45,7 +46,7 @@ lisp_msg_put_mapping_record (vlib_buffer_t * b, mapping_t * record)
     vlib_buffer_put_uninit (b, sizeof (mapping_record_hdr_t));
   gid_address_t *eid = &record->eid;
 
-  memset (p, 0, sizeof (*p));
+  clib_memset (p, 0, sizeof (*p));
   MAP_REC_EID_PLEN (p) = gid_address_len (eid);
   MAP_REC_TTL (p) = clib_host_to_net_u32 (MAP_REGISTER_DEFAULT_TTL);
   MAP_REC_AUTH (p) = record->authoritative ? 1 : 0;
@@ -104,7 +105,7 @@ lisp_msg_put_eid_rec (vlib_buffer_t * b, gid_address_t * eid)
 {
   eid_record_hdr_t *h = vlib_buffer_put_uninit (b, sizeof (*h));
 
-  memset (h, 0, sizeof (*h));
+  clib_memset (h, 0, sizeof (*h));
   EID_REC_MLEN (h) = gid_address_len (eid);
   lisp_msg_put_gid (b, eid);
   return h;
@@ -119,7 +120,7 @@ nonce_build (u32 seed)
   struct timespec ts;
 
   /* Put nanosecond clock in lower 32-bits and put an XOR of the nanosecond
-   * clock with the seond clock in the upper 32-bits. */
+   * clock with the second clock in the upper 32-bits. */
   syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
   nonce_lower = ts.tv_nsec;
   nonce_upper = ts.tv_sec ^ clib_host_to_net_u32 (nonce_lower);
@@ -139,7 +140,7 @@ lisp_msg_put_map_reply (vlib_buffer_t * b, mapping_t * records, u64 nonce,
 {
   map_reply_hdr_t *h = vlib_buffer_put_uninit (b, sizeof (h[0]));
 
-  memset (h, 0, sizeof (h[0]));
+  clib_memset (h, 0, sizeof (h[0]));
   MREP_TYPE (h) = LISP_MAP_REPLY;
   MREP_NONCE (h) = nonce;
   MREP_REC_COUNT (h) = 1;
@@ -159,14 +160,14 @@ lisp_msg_put_map_register (vlib_buffer_t * b, mapping_t * records,
   /* Basic header init */
   map_register_hdr_t *h = vlib_buffer_put_uninit (b, sizeof (h[0]));
 
-  memset (h, 0, sizeof (h[0]));
+  clib_memset (h, 0, sizeof (h[0]));
   MREG_TYPE (h) = LISP_MAP_REGISTER;
   MREG_NONCE (h) = nonce_build (0);
   MREG_WANT_MAP_NOTIFY (h) = want_map_notify ? 1 : 0;
   MREG_REC_COUNT (h) = vec_len (records);
 
   auth_data = vlib_buffer_put_uninit (b, auth_data_len);
-  memset (auth_data, 0, auth_data_len);
+  clib_memset (auth_data, 0, auth_data_len);
 
   /* Put map register records */
   lisp_msg_put_mreg_records (b, records);
@@ -187,7 +188,7 @@ lisp_msg_put_mreq (lisp_cp_main_t * lcm, vlib_buffer_t * b,
   /* Basic header init */
   map_request_hdr_t *h = vlib_buffer_put_uninit (b, sizeof (h[0]));
 
-  memset (h, 0, sizeof (h[0]));
+  clib_memset (h, 0, sizeof (h[0]));
   MREQ_TYPE (h) = LISP_MAP_REQUEST;
   MREQ_NONCE (h) = nonce_build (0);
   MREQ_SMR_INVOKED (h) = is_smr_invoked ? 1 : 0;
@@ -219,8 +220,8 @@ lisp_msg_push_ecm (vlib_main_t * vm, vlib_buffer_t * b, int lp, int rp,
   if (gid_address_type (la) != GID_ADDR_IP_PREFIX)
     {
       /* empty ip4 */
-      memset (src_ip, 0, sizeof (src_ip[0]));
-      memset (dst_ip, 0, sizeof (dst_ip[0]));
+      clib_memset (src_ip, 0, sizeof (src_ip[0]));
+      clib_memset (dst_ip, 0, sizeof (dst_ip[0]));
     }
   else
     {
@@ -261,7 +262,7 @@ u32
 lisp_msg_parse_addr (vlib_buffer_t * b, gid_address_t * eid)
 {
   u32 len;
-  memset (eid, 0, sizeof (*eid));
+  clib_memset (eid, 0, sizeof (*eid));
   len = gid_address_parse (vlib_buffer_get_current (b), eid);
   if (len != ~0)
     vlib_buffer_pull (b, len);
@@ -273,7 +274,7 @@ lisp_msg_parse_eid_rec (vlib_buffer_t * b, gid_address_t * eid)
 {
   eid_record_hdr_t *h = vlib_buffer_get_current (b);
   u32 len;
-  memset (eid, 0, sizeof (*eid));
+  clib_memset (eid, 0, sizeof (*eid));
   len = gid_address_parse (EID_REC_ADDR (h), eid);
   if (len == ~0)
     return len;
@@ -333,7 +334,7 @@ lisp_msg_parse_mapping_record (vlib_buffer_t * b, gid_address_t * eid,
 
   vlib_buffer_pull (b, sizeof (mapping_record_hdr_t));
 
-  memset (eid, 0, sizeof (*eid));
+  clib_memset (eid, 0, sizeof (*eid));
   len = gid_address_parse (vlib_buffer_get_current (b), eid);
   if (len == ~0)
     return len;

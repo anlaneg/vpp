@@ -313,7 +313,7 @@ elog_event_data_inline (elog_main_t * em,
   ASSERT (is_pow2 (vec_len (em->event_ring)));
 
   if (em->lock)
-    ei = clib_smp_atomic_add (&em->n_total_events, 1);
+    ei = clib_atomic_fetch_add (&em->n_total_events, 1);
   else
     ei = em->n_total_events++;
 
@@ -515,7 +515,8 @@ void elog_merge (elog_main_t * dst, u8 * dst_tag,
 
 /* 2 arguments elog_main_t and elog_event_t to format event or track name. */
 u8 *format_elog_event (u8 * s, va_list * va);
-u8 *format_elog_track (u8 * s, va_list * va);
+u8 *format_elog_track_name (u8 * s, va_list * va);
+u8 *format_elog_track (u8 * s, va_list * args);
 
 void serialize_elog_main (serialize_main_t * m, va_list * va);
 void unserialize_elog_main (serialize_main_t * m, va_list * va);

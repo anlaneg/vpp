@@ -25,12 +25,16 @@
 u8 *
 format_avf_device_name (u8 * s, va_list * args)
 {
+  vlib_main_t *vm = vlib_get_main ();
   u32 i = va_arg (*args, u32);
   avf_main_t *am = &avf_main;
   avf_device_t *ad = vec_elt_at_index (am->devices, i);
-  vlib_pci_addr_t *addr = vlib_pci_get_addr (ad->pci_dev_handle);
+  vlib_pci_addr_t *addr = vlib_pci_get_addr (vm, ad->pci_dev_handle);
 
-  s = format (s, "AVF%x/%x/%x/%x",
+  if (ad->name)
+    return format (s, "%s", ad->name);
+
+  s = format (s, "avf-%x/%x/%x/%x",
 	      addr->domain, addr->bus, addr->slot, addr->function);
   return s;
 }
@@ -124,14 +128,23 @@ format_avf_input_trace (u8 * s, va_list * args)
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, t->hw_if_index);
   u32 indent = format_get_indent (s);
-  avf_rx_vector_entry_t *rxve = &t->rxve;
+  int i = 0;
 
   s = format (s, "avf: %v (%d) next-node %U",
 	      hi->name, t->hw_if_index, format_vlib_next_node_name, vm,
 	      node->index, t->next_index);
-  s = format (s, "\n%Ustatus 0x%x error 0x%x ptype 0x%x length %u",
-	      format_white_space, indent + 2, rxve->status, rxve->error,
-	      rxve->ptype, rxve->length);
+
+  do
+    {
+      s = format (s, "\n%Udesc %u: status 0x%x error 0x%x ptype 0x%x len %u",
+		  format_white_space, indent + 2, i,
+		  t->qw1s[i] & pow2_mask (19),
+		  (t->qw1s[i] >> AVF_RXD_ERROR_SHIFT) & pow2_mask (8),
+		  (t->qw1s[i] >> AVF_RXD_PTYPE_SHIFT) & pow2_mask (8),
+		  (t->qw1s[i] >> AVF_RXD_LEN_SHIFT));
+    }
+  while ((t->qw1s[i++] & AVF_RXD_STATUS_EOP) == 0 &&
+	 i < AVF_RX_MAX_DESC_IN_CHAIN);
 
   return s;
 }

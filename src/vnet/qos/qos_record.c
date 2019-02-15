@@ -18,6 +18,8 @@
 #include <vnet/ip/ip6_to_ip4.h>
 #include <vnet/feature/feature.h>
 #include <vnet/qos/qos_types.h>
+#include <vnet/l2/l2_input.h>
+#include <vnet/l2/feat_bitmap.h>
 
 /**
  * Per-interface, per-protocol vector of feature on/off configurations
@@ -99,7 +101,7 @@ qos_record_disable (u32 sw_if_index, qos_source_t input_source)
 }
 
 /*
- * Disable recording feautre for all protocols when the interface
+ * Disable recording feature for all protocols when the interface
  * is deleted
  */
 static clib_error_t *
@@ -133,7 +135,8 @@ typedef struct qos_record_trace_t_
 static inline uword
 qos_record_inline (vlib_main_t * vm,
 		   vlib_node_runtime_t * node,
-		   vlib_frame_t * frame, dpo_proto_t dproto, int is_l2)
+		   vlib_frame_t * frame,
+		   qos_source_t qos_src, dpo_proto_t dproto, int is_l2)
 {
   u32 n_left_from, *from, *to_next, next_index;
 
@@ -215,7 +218,7 @@ qos_record_inline (vlib_main_t * vm,
 	    }
 
 	  vnet_buffer2 (b0)->qos.bits = qos0;
-	  vnet_buffer2 (b0)->qos.source = QOS_SOURCE_IP;
+	  vnet_buffer2 (b0)->qos.source = qos_src;
 	  b0->flags |= VNET_BUFFER_F_QOS_DATA_VALID;
 
 	  if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE) &&
@@ -231,7 +234,7 @@ qos_record_inline (vlib_main_t * vm,
 	    {
 	      vlib_buffer_advance (b0, -l2_len);
 	      next0 = vnet_l2_feature_next (b0,
-					    l2_qos_input_next[QOS_SOURCE_IP],
+					    l2_qos_input_next[qos_src],
 					    L2INPUT_FEAT_L2_IP_QOS_RECORD);
 	    }
 	  else
@@ -266,49 +269,55 @@ static inline uword
 ip4_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_IP4, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_IP,
+			     DPO_PROTO_IP4, 0));
 }
 
 static inline uword
 ip6_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_IP6, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_IP,
+			     DPO_PROTO_IP6, 0));
 }
 
 static inline uword
 mpls_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		 vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_MPLS, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_MPLS,
+			     DPO_PROTO_MPLS, 0));
 }
 
 static inline uword
 vlan_ip4_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		     vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_ETHERNET, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_VLAN,
+			     DPO_PROTO_ETHERNET, 0));
 }
 
 static inline uword
 vlan_ip6_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		     vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_ETHERNET, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_VLAN,
+			     DPO_PROTO_ETHERNET, 0));
 }
 
 static inline uword
 vlan_mpls_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		      vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, DPO_PROTO_ETHERNET, 0));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_VLAN,
+			     DPO_PROTO_ETHERNET, 0));
 }
 
 static inline uword
 l2_ip_qos_record (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  vlib_frame_t * frame)
 {
-  return (qos_record_inline (vm, node, frame, 0, 1));
+  return (qos_record_inline (vm, node, frame, QOS_SOURCE_VLAN, 0, 1));
 }
 
 /* *INDENT-OFF* */
@@ -488,12 +497,15 @@ VLIB_NODE_FUNCTION_MULTIARCH (l2_ip_qos_record_node, l2_ip_qos_record);
 clib_error_t *
 l2_ip_qos_init (vlib_main_t * vm)
 {
+  qos_source_t qs;
+
   /* Initialize the feature next-node indexes */
-  feat_bitmap_init_next_nodes (vm,
-			       l2_ip_qos_record_node.index,
-			       L2INPUT_N_FEAT,
-			       l2input_get_feat_names (),
-			       l2_qos_input_next[QOS_SOURCE_IP]);
+  FOR_EACH_QOS_SOURCE (qs)
+    feat_bitmap_init_next_nodes (vm,
+				 l2_ip_qos_record_node.index,
+				 L2INPUT_N_FEAT,
+				 l2input_get_feat_names (),
+				 l2_qos_input_next[qs]);
   return 0;
 }
 
@@ -542,7 +554,7 @@ qos_record_cli (vlib_main_t * vm,
 /*?
  * Enable QoS bit recording on an interface using the packet's input DSCP bits
  * Which input QoS bits to use are either; IP, MPLS or VLAN. If more than
- * one protocol is chosen (which is foolish) the higer layers override the
+ * one protocol is chosen (which is foolish) the higher layers override the
  * lower.
  *
  * @cliexpar

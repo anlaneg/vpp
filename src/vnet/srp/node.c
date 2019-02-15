@@ -309,7 +309,7 @@ srp_topology_packet (vlib_main_t * vm, u32 sw_if_index, u8 ** contents)
     return SRP_ERROR_TOPOLOGY_BAD_LENGTH;
 
   /* Fill in our source MAC address. */
-  clib_memcpy (t->ethernet.src_address, hi->hw_address, vec_len (hi->hw_address));
+  clib_memcpy_fast (t->ethernet.src_address, hi->hw_address, vec_len (hi->hw_address));
 
   /* Make space for our MAC binding. */
   vec_resize (*contents, sizeof (srp_topology_mac_binding_t));
@@ -321,23 +321,30 @@ srp_topology_packet (vlib_main_t * vm, u32 sw_if_index, u8 ** contents)
   mb->flags =
     ((t->srp.is_inner_ring ? SRP_TOPOLOGY_MAC_BINDING_FLAG_IS_INNER_RING : 0)
      | (/* is wrapped FIXME */ 0));
-  clib_memcpy (mb->address, hi->hw_address, vec_len (hi->hw_address));
+  clib_memcpy_fast (mb->address, hi->hw_address, vec_len (hi->hw_address));
 
   t->control.checksum
     = ~ip_csum_fold (ip_incremental_checksum (0, &t->control,
 					      vec_len (*contents) - STRUCT_OFFSET_OF (srp_generic_control_header_t, control)));
 
   {
-    vlib_frame_t * f = vlib_get_frame_to_node (vm, hi->output_node_index);
+    vlib_frame_t * f; 
     vlib_buffer_t * b;
-    u32 * to_next = vlib_frame_vector_args (f);
-    u32 bi;
+    u32 * to_next;
+    u32 bi = ~0;
 
-    bi = vlib_buffer_add_data (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX,
-			       /* buffer to append to */ ~0,
-			       *contents, vec_len (*contents));
+    if (vlib_buffer_add_data (vm, /* buffer to append to */ &bi,
+                              *contents, vec_len (*contents)))
+      {
+        /* complete or partial buffer allocation failure */
+        if (bi != ~0)
+          vlib_buffer_free (vm, &bi, 1);
+        return SRP_ERROR_CONTROL_PACKETS_PROCESSED;
+      }
     b = vlib_get_buffer (vm, bi);
     vnet_buffer (b)->sw_if_index[VLIB_RX] = vnet_buffer (b)->sw_if_index[VLIB_TX] = sw_if_index;
+    f = vlib_get_frame_to_node (vm, hi->output_node_index);
+    to_next = vlib_frame_vector_args (f);
     to_next[0] = bi;
     f->n_vectors = 1;
     vlib_put_frame_to_node (vm, hi->output_node_index, f);
@@ -580,7 +587,7 @@ static void init_ips_packet (srp_interface_t * si,
 			     srp_ring_type_t tx_ring,
 			     srp_ips_header_t * i)
 {
-  memset (i, 0, sizeof (i[0]));
+  clib_memset (i, 0, sizeof (i[0]));
 
   i->srp.ttl = 1;
   i->srp.is_inner_ring = tx_ring;
@@ -588,7 +595,7 @@ static void init_ips_packet (srp_interface_t * si,
   i->srp.mode = SRP_MODE_control_locally_buffered_for_host;
   srp_header_compute_parity (&i->srp);
 
-  clib_memcpy (&i->ethernet.src_address, &si->my_address, sizeof (si->my_address));
+  clib_memcpy_fast (&i->ethernet.src_address, &si->my_address, sizeof (si->my_address));
   i->ethernet.type = clib_host_to_net_u16 (ETHERNET_TYPE_SRP_CONTROL);
 
   /* Checksum will be filled in later. */
@@ -596,7 +603,7 @@ static void init_ips_packet (srp_interface_t * si,
   i->control.type = SRP_CONTROL_PACKET_TYPE_ips;
   i->control.ttl = 255;
 
-  clib_memcpy (&i->originator_address, &si->my_address, sizeof (si->my_address));
+  clib_memcpy_fast (&i->originator_address, &si->my_address, sizeof (si->my_address));
 }
 
 static void tx_ips_packet (srp_interface_t * si,
@@ -609,7 +616,7 @@ static void tx_ips_packet (srp_interface_t * si,
   vnet_hw_interface_t * hi = vnet_get_hw_interface (vnm, si->rings[tx_ring].hw_if_index);
   vlib_frame_t * f;
   vlib_buffer_t * b;
-  u32 * to_next, bi;
+  u32 * to_next, bi = ~0;
 
   if (! vnet_sw_interface_is_admin_up (vnm, hi->sw_if_index))
     return;
@@ -620,9 +627,14 @@ static void tx_ips_packet (srp_interface_t * si,
     = ~ip_csum_fold (ip_incremental_checksum (0, &i->control,
 					      sizeof (i[0]) - STRUCT_OFFSET_OF (srp_ips_header_t, control)));
 
-  bi = vlib_buffer_add_data (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX,
-			     /* buffer to append to */ ~0,
-			     i, sizeof (i[0]));
+  if (vlib_buffer_add_data (vm, /* buffer to append to */ &bi, i,
+			    sizeof (i[0])))
+    {
+      /* complete or partial allocation failure */
+      if (bi != ~0)
+        vlib_buffer_free (vm, &bi, 1);
+      return;
+    }
 
   /* FIXME trace. */
   if (0)
@@ -639,63 +651,6 @@ static void tx_ips_packet (srp_interface_t * si,
   f->n_vectors = 1;
   vlib_put_frame_to_node (vm, hi->output_node_index, f);
 }
-
-static void serialize_srp_interface_state_msg (serialize_main_t * m, va_list * va)
-{
-  srp_interface_t * si = va_arg (*va, srp_interface_t *);
-  srp_main_t * sm = &srp_main;
-  int r;
-
-  ASSERT (! pool_is_free (sm->interface_pool, si));
-  serialize_integer (m, si - sm->interface_pool, sizeof (u32));
-  serialize_likely_small_unsigned_integer (m, si->current_ips_state);
-  for (r = 0; r < SRP_N_RING; r++)
-    {
-      srp_interface_ring_t * ir = &si->rings[r];
-      void * p;
-      serialize_likely_small_unsigned_integer (m, ir->rx_neighbor_address_valid);
-      if (ir->rx_neighbor_address_valid)
-	{
-	  p = serialize_get (m, sizeof (ir->rx_neighbor_address));
-	  clib_memcpy (p, ir->rx_neighbor_address, sizeof (ir->rx_neighbor_address));
-	}
-      serialize_likely_small_unsigned_integer (m, ir->waiting_to_restore);
-      if (ir->waiting_to_restore)
-	serialize (m, serialize_f64, ir->wait_to_restore_start_time);
-    }
-}
-
-static void unserialize_srp_interface_state_msg (serialize_main_t * m, va_list * va)
-{
-  CLIB_UNUSED (mc_main_t * mcm) = va_arg (*va, mc_main_t *);
-  srp_main_t * sm = &srp_main;
-  srp_interface_t * si;
-  u32 si_index, r;
-
-  unserialize_integer (m, &si_index, sizeof (u32));
-  si = pool_elt_at_index (sm->interface_pool, si_index);
-  si->current_ips_state = unserialize_likely_small_unsigned_integer (m);
-  for (r = 0; r < SRP_N_RING; r++)
-    {
-      srp_interface_ring_t * ir = &si->rings[r];
-      void * p;
-      ir->rx_neighbor_address_valid = unserialize_likely_small_unsigned_integer (m);
-      if (ir->rx_neighbor_address_valid)
-	{
-	  p = unserialize_get (m, sizeof (ir->rx_neighbor_address));
-	  clib_memcpy (ir->rx_neighbor_address, p, sizeof (ir->rx_neighbor_address));
-	}
-      ir->waiting_to_restore = unserialize_likely_small_unsigned_integer (m);
-      if (ir->waiting_to_restore)
-	unserialize (m, unserialize_f64, &ir->wait_to_restore_start_time);
-    }
-}
-
-MC_SERIALIZE_MSG (srp_interface_state_msg, static) = {
-  .name = "vnet_srp_interface_state",
-  .serialize = serialize_srp_interface_state_msg,
-  .unserialize = unserialize_srp_interface_state_msg,
-};
 
 static int requests_switch (srp_ips_request_type_t r)
 {
@@ -716,7 +671,6 @@ void srp_ips_rx_packet (u32 sw_if_index, srp_ips_header_t * h)
   srp_ring_type_t rx_ring;
   srp_interface_t * si = srp_get_interface (sw_if_index, &rx_ring);
   srp_interface_ring_t * ir = &si->rings[rx_ring];
-  int si_needs_broadcast = 0;
 
   /* FIXME trace. */
   if (0)
@@ -738,7 +692,7 @@ void srp_ips_rx_packet (u32 sw_if_index, srp_ips_header_t * h)
 	  ASSERT (0);
 	}
       ir->rx_neighbor_address_valid = 1;
-      clib_memcpy (ir->rx_neighbor_address, h->originator_address, sizeof (ir->rx_neighbor_address));
+      clib_memcpy_fast (ir->rx_neighbor_address, h->originator_address, sizeof (ir->rx_neighbor_address));
     }
 
   switch (si->current_ips_state)
@@ -751,7 +705,6 @@ void srp_ips_rx_packet (u32 sw_if_index, srp_ips_header_t * h)
 	{
 	  srp_ips_header_t to_tx[2];
 
-	  si_needs_broadcast = 1;
 	  si->current_ips_state = SRP_IPS_STATE_wrapped;
 	  si->hw_wrap_function (si->rings[SRP_SIDE_A].hw_if_index, /* enable_wrap */ 1);
 	  si->hw_wrap_function (si->rings[SRP_SIDE_B].hw_if_index, /* enable_wrap */ 1);
@@ -775,7 +728,6 @@ void srp_ips_rx_packet (u32 sw_if_index, srp_ips_header_t * h)
 	  && h->request_type == SRP_IPS_REQUEST_idle
 	  && h->status == SRP_IPS_STATUS_idle)
 	{
-	  si_needs_broadcast = 1;
 	  si->current_ips_state = SRP_IPS_STATE_idle;
 	  si->hw_wrap_function (si->rings[SRP_SIDE_A].hw_if_index, /* enable_wrap */ 0);
 	  si->hw_wrap_function (si->rings[SRP_SIDE_B].hw_if_index, /* enable_wrap */ 0);
@@ -790,10 +742,8 @@ void srp_ips_rx_packet (u32 sw_if_index, srp_ips_header_t * h)
       abort ();
       break;
     }
-
  done:
-  if (vm->mc_main && si_needs_broadcast)
-    mc_serialize (vm->mc_main, &srp_interface_state_msg, si);
+  ;
 }
 
 /* Preform local IPS request on given interface. */
@@ -801,11 +751,9 @@ void srp_ips_local_request (u32 sw_if_index, srp_ips_request_type_t request)
 {
   vnet_main_t * vnm = vnet_get_main();
   srp_main_t * sm = &srp_main;
-  vlib_main_t * vm = sm->vlib_main;
   srp_ring_type_t rx_ring;
   srp_interface_t * si = srp_get_interface (sw_if_index, &rx_ring);
   srp_interface_ring_t * ir = &si->rings[rx_ring];
-  int si_needs_broadcast = 0;
 
   if (request == SRP_IPS_REQUEST_wait_to_restore)
     {
@@ -815,13 +763,11 @@ void srp_ips_local_request (u32 sw_if_index, srp_ips_request_type_t request)
 	{
 	  ir->wait_to_restore_start_time = vlib_time_now (sm->vlib_main);
 	  ir->waiting_to_restore = 1;
-	  si_needs_broadcast = 1;
 	}
     }
   else
     {
       /* FIXME handle local signal fail. */
-      si_needs_broadcast = ir->waiting_to_restore;
       ir->wait_to_restore_start_time = 0;
       ir->waiting_to_restore = 0;
     }
@@ -832,8 +778,6 @@ void srp_ips_local_request (u32 sw_if_index, srp_ips_request_type_t request)
 		  format_vnet_sw_if_index_name, vnm, sw_if_index,
 		  format_srp_ips_request_type, request);
 
-  if (vm->mc_main && si_needs_broadcast)
-    mc_serialize (vm->mc_main, &srp_interface_state_msg, si);
 }
 
 static void maybe_send_ips_message (srp_interface_t * si)

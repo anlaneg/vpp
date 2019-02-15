@@ -12,32 +12,20 @@ import unittest
 from scapy.layers.inet6 import IPv6, Ether, IP, UDP, ICMPv6PacketTooBig
 from scapy.layers.inet import ICMP
 from framework import VppTestCase, VppTestRunner
-from vpp_ip_route import VppIpRoute, VppRoutePath, DpoProto
+from vpp_ip import DpoProto
+from vpp_ip_route import VppIpRoute, VppRoutePath
 from socket import AF_INET, AF_INET6, inet_pton
-import StringIO
+from util import reassemble4
+
 
 """ Test_mtu is a subclass of VPPTestCase classes.
     MTU tests.
 """
 
 
-def reassemble(listoffragments):
-    buffer = StringIO.StringIO()
-    first = listoffragments[0]
-    buffer.seek(20)
-    for pkt in listoffragments:
-        # pkt.show2()
-        buffer.seek(pkt[IP].frag*8)
-        buffer.write(pkt[IP].payload)
-    first.len = len(buffer.getvalue()) + 20
-    first.flags = 0
-    del(first.chksum)
-    header = str(first[IP])[:20]
-    return first[IP].__class__(header + buffer.getvalue())
-
-
 class TestMTU(VppTestCase):
     """ MTU Test Case """
+    maxDiff = None
 
     @classmethod
     def setUpClass(cls):
@@ -45,9 +33,9 @@ class TestMTU(VppTestCase):
         cls.create_pg_interfaces(range(2))
         cls.interfaces = list(cls.pg_interfaces)
 
-    def setUp(cls):
-        super(TestMTU, cls).setUp()
-        for i in cls.interfaces:
+    def setUp(self):
+        super(TestMTU, self).setUp()
+        for i in self.interfaces:
             i.admin_up()
             i.config_ip4()
             i.config_ip6()
@@ -64,7 +52,7 @@ class TestMTU(VppTestCase):
                 i.admin_down()
 
     def validate(self, rx, expected):
-        self.assertEqual(rx, expected.__class__(str(expected)))
+        self.assertEqual(rx, expected.__class__(expected))
 
     def validate_bytes(self, rx, expected):
         self.assertEqual(rx, expected)
@@ -110,14 +98,14 @@ class TestMTU(VppTestCase):
                           ttl=254, len=576, id=0) /
                        p_icmp4 / p_ip4 / p_payload)
         icmp4_reply[1].ttl -= 1
-        n = icmp4_reply.__class__(str(icmp4_reply))
-        s = str(icmp4_reply)
+        n = icmp4_reply.__class__(icmp4_reply)
+        s = bytes(icmp4_reply)
         icmp4_reply = s[0:576]
         rx = self.send_and_expect(self.pg0, p4*11, self.pg0)
         for p in rx:
             # p.show2()
             # n.show2()
-            self.validate_bytes(str(p[1]), icmp4_reply)
+            self.validate_bytes(bytes(p[1]), icmp4_reply)
 
         # Now with DF off. Expect fragments.
         # First go with 1500 byte packets.
@@ -133,7 +121,7 @@ class TestMTU(VppTestCase):
         self.pg0.add_stream(p4*1)
         self.pg_start()
         rx = self.pg1.get_capture(3)
-        reass_pkt = reassemble(rx)
+        reass_pkt = reassemble4(rx)
         self.validate(reass_pkt, p4_reply)
 
         '''
@@ -151,7 +139,7 @@ class TestMTU(VppTestCase):
         self.pg0.add_stream(p4*1)
         self.pg_start()
         rx = self.pg1.get_capture(16)
-        reass_pkt = reassemble(rx)
+        reass_pkt = reassemble4(rx)
         reass_pkt.show2()
         p4_reply.show2()
         self.validate(reass_pkt, p4_reply)
@@ -187,16 +175,16 @@ class TestMTU(VppTestCase):
         p_icmp6 = ICMPv6PacketTooBig(mtu=1280, cksum=0x4c7a)
         icmp6_reply = (IPv6(src=self.pg0.local_ip6,
                             dst=self.pg0.remote_ip6,
-                            hlim=254, plen=1240) /
+                            hlim=255, plen=1240) /
                        p_icmp6 / p_ip6 / p_payload)
         icmp6_reply[2].hlim -= 1
-        n = icmp6_reply.__class__(str(icmp6_reply))
-        s = str(icmp6_reply)
-        icmp6_reply = s[0:1280]
+        n = icmp6_reply.__class__(icmp6_reply)
+        s = bytes(icmp6_reply)
+        icmp6_reply_str = s[0:1280]
 
         rx = self.send_and_expect(self.pg0, p6*9, self.pg0)
         for p in rx:
-            self.validate_bytes(str(p[1]), icmp6_reply)
+            self.validate_bytes(bytes(p[1]), icmp6_reply_str)
 
         # Reset MTU
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index,

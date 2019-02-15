@@ -16,6 +16,7 @@
 #ifndef included_clib_cpu_h
 #define included_clib_cpu_h
 
+#include <sys/syscall.h>
 #include <vppinfra/format.h>
 
 /*
@@ -33,7 +34,7 @@
 #endif
 
 
-#if __GNUC__ > 4  && !__clang__
+#if __GNUC__ > 4  && !__clang__ && CLIB_DEBUG == 0
 #define CLIB_CPU_OPTIMIZED __attribute__ ((optimize ("O3")))
 #else
 #define CLIB_CPU_OPTIMIZED
@@ -44,12 +45,8 @@
   if (clib_cpu_supports_ ## arch())					\
     return & fn ## _ ##arch;
 
-#define CLIB_MULTIARCH_SELECT_FN(fn,...)                               \
-  __VA_ARGS__ void * fn ## _multiarch_select(void)                     \
-{                                                                      \
-  foreach_march_variant(CLIB_MULTIARCH_ARCH_CHECK, fn)                 \
-  return & fn;                                                         \
-}
+/* FIXME to be removed */
+#define CLIB_MULTIARCH_SELECT_FN(fn,...)
 
 #ifdef CLIB_MARCH_VARIANT
 #define __CLIB_MULTIARCH_FN(a,b) a##_##b
@@ -61,6 +58,62 @@
 
 #define CLIB_MARCH_SFX CLIB_MULTIARCH_FN
 
+typedef struct _clib_march_fn_registration
+{
+  void *function;
+  int priority;
+  struct _clib_march_fn_registration *next;
+  char *name;
+} clib_march_fn_registration;
+
+static_always_inline void *
+clib_march_select_fn_ptr (clib_march_fn_registration * r)
+{
+  void *rv = 0;
+  int last_prio = -1;
+
+  while (r)
+    {
+      if (last_prio < r->priority)
+	{
+	  last_prio = r->priority;
+	  rv = r->function;
+	}
+      r = r->next;
+    }
+  return rv;
+}
+
+#define CLIB_MARCH_FN_POINTER(fn) \
+  clib_march_select_fn_ptr (fn##_march_fn_registrations);
+
+#define _CLIB_MARCH_FN_REGISTRATION(fn) \
+static clib_march_fn_registration \
+CLIB_MARCH_SFX(fn##_march_fn_registration) = \
+{ \
+  .name = CLIB_MARCH_VARIANT_STR \
+}; \
+\
+static void __clib_constructor \
+fn##_march_register () \
+{ \
+  clib_march_fn_registration *r; \
+  r = & CLIB_MARCH_SFX (fn##_march_fn_registration); \
+  r->priority = CLIB_MARCH_FN_PRIORITY(); \
+  r->next = fn##_march_fn_registrations; \
+  r->function = CLIB_MARCH_SFX (fn); \
+  fn##_march_fn_registrations = r; \
+}
+
+#ifdef CLIB_MARCH_VARIANT
+#define CLIB_MARCH_FN_REGISTRATION(fn) \
+extern clib_march_fn_registration *fn##_march_fn_registrations; \
+_CLIB_MARCH_FN_REGISTRATION(fn)
+#else
+#define CLIB_MARCH_FN_REGISTRATION(fn) \
+clib_march_fn_registration *fn##_march_fn_registrations = 0; \
+_CLIB_MARCH_FN_REGISTRATION(fn)
+#endif
 #define foreach_x86_64_flags \
 _ (sse3,     1, ecx, 0)   \
 _ (ssse3,    1, ecx, 9)   \
@@ -98,6 +151,22 @@ _ (sm4,        19) \
 _ (asimddp,    20) \
 _ (sha512,     21) \
 _ (sve,        22)
+
+static inline u32
+clib_get_current_cpu_id ()
+{
+  unsigned cpu, node;
+  syscall (__NR_getcpu, &cpu, &node, 0);
+  return cpu;
+}
+
+static inline u32
+clib_get_current_numa_node ()
+{
+  unsigned cpu, node;
+  syscall (__NR_getcpu, &cpu, &node, 0);
+  return node;
+}
 
 #if defined(__x86_64__)
 #include "cpuid.h"
@@ -183,12 +252,131 @@ clib_cpu_march_priority_avx2 ()
   return -1;
 }
 
+static inline u32
+clib_cpu_implementer ()
+{
+  char buf[128];
+  static u32 implementer = -1;
+
+  if (-1 != implementer)
+    return implementer;
+
+  FILE *fp = fopen ("/proc/cpuinfo", "r");
+  if (!fp)
+    return implementer;
+
+  while (!feof (fp))
+    {
+      if (!fgets (buf, sizeof (buf), fp))
+	break;
+      buf[127] = '\0';
+      if (strstr (buf, "CPU implementer"))
+	implementer = (u32) strtol (memchr (buf, ':', 128) + 2, NULL, 0);
+      if (-1 != implementer)
+	break;
+    }
+  fclose (fp);
+
+  return implementer;
+}
+
+static inline u32
+clib_cpu_part ()
+{
+  char buf[128];
+  static u32 part = -1;
+
+  if (-1 != part)
+    return part;
+
+  FILE *fp = fopen ("/proc/cpuinfo", "r");
+  if (!fp)
+    return part;
+
+  while (!feof (fp))
+    {
+      if (!fgets (buf, sizeof (buf), fp))
+	break;
+      buf[127] = '\0';
+      if (strstr (buf, "CPU part"))
+	part = (u32) strtol (memchr (buf, ':', 128) + 2, NULL, 0);
+      if (-1 != part)
+	break;
+    }
+  fclose (fp);
+
+  return part;
+}
+
+#define AARCH64_CPU_IMPLEMENTER_THUNERDERX2 0x43
+#define AARCH64_CPU_PART_THUNERDERX2        0x0af
+#define AARCH64_CPU_IMPLEMENTER_QDF24XX     0x51
+#define AARCH64_CPU_PART_QDF24XX            0xc00
+#define AARCH64_CPU_IMPLEMENTER_CORTEXA72   0x41
+#define AARCH64_CPU_PART_CORTEXA72          0xd08
+
+static inline int
+clib_cpu_march_priority_thunderx2t99 ()
+{
+  if ((AARCH64_CPU_IMPLEMENTER_THUNERDERX2 == clib_cpu_implementer ()) &&
+      (AARCH64_CPU_PART_THUNERDERX2 == clib_cpu_part ()))
+    return 20;
+  return -1;
+}
+
+static inline int
+clib_cpu_march_priority_qdf24xx ()
+{
+  if ((AARCH64_CPU_IMPLEMENTER_QDF24XX == clib_cpu_implementer ()) &&
+      (AARCH64_CPU_PART_QDF24XX == clib_cpu_part ()))
+    return 20;
+  return -1;
+}
+
+static inline int
+clib_cpu_march_priority_cortexa72 ()
+{
+  if ((AARCH64_CPU_IMPLEMENTER_CORTEXA72 == clib_cpu_implementer ()) &&
+      (AARCH64_CPU_PART_CORTEXA72 == clib_cpu_part ()))
+    return 10;
+  return -1;
+}
+
 #ifdef CLIB_MARCH_VARIANT
 #define CLIB_MARCH_FN_PRIORITY() CLIB_MARCH_SFX(clib_cpu_march_priority)()
 #else
 #define CLIB_MARCH_FN_PRIORITY() 0
 #endif
 #endif /* included_clib_cpu_h */
+
+#define CLIB_MARCH_FN_CONSTRUCTOR(fn)					\
+static void __clib_constructor 						\
+CLIB_MARCH_SFX(fn ## _march_constructor) (void)				\
+{									\
+  if (CLIB_MARCH_FN_PRIORITY() > fn ## _selected_priority)		\
+    {									\
+      fn ## _selected = & CLIB_MARCH_SFX (fn ## _ma);			\
+      fn ## _selected_priority = CLIB_MARCH_FN_PRIORITY();		\
+    }									\
+}									\
+
+#ifndef CLIB_MARCH_VARIANT
+#define CLIB_MARCH_FN(fn, rtype, _args...)				\
+  static rtype CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (fn ## _ma)(_args);	\
+  rtype (*fn ## _selected) (_args) = & CLIB_MARCH_SFX (fn ## _ma);	\
+  int fn ## _selected_priority = 0;					\
+  static inline rtype CLIB_CPU_OPTIMIZED 				\
+  CLIB_MARCH_SFX (fn ## _ma)(_args)
+#else
+#define CLIB_MARCH_FN(fn, rtype, _args...)				\
+  static rtype CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (fn ## _ma)(_args);	\
+  extern int (*fn ## _selected) (_args);				\
+  extern int fn ## _selected_priority;					\
+  CLIB_MARCH_FN_CONSTRUCTOR (fn)					\
+  static rtype CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (fn ## _ma)(_args)
+#endif
+
+#define CLIB_MARCH_FN_SELECT(fn) (* fn ## _selected)
 
 format_function_t format_cpu_uarch;
 format_function_t format_cpu_model_name;

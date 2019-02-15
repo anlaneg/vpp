@@ -27,8 +27,7 @@ namespace gbp_endpoint_group_cmds {
 /**
 * A command class that creates or updates the GBP endpoint_group
 */
-class create_cmd
-  : public rpc_cmd<HW::item<bool>, vapi::Gbp_endpoint_group_add_del>
+class create_cmd : public rpc_cmd<HW::item<bool>, vapi::Gbp_endpoint_group_add>
 {
 public:
   /**
@@ -36,6 +35,7 @@ public:
    */
   create_cmd(HW::item<bool>& item,
              epg_id_t epg_id,
+             uint16_t sclass,
              uint32_t bd_id,
              route::table_id_t rd_id,
              const handle_t& itf);
@@ -57,6 +57,7 @@ public:
 
 private:
   const epg_id_t m_epg_id;
+  const uint16_t m_sclass;
   const uint32_t m_bd_id;
   const route::table_id_t m_rd_id;
   const handle_t m_itf;
@@ -65,8 +66,7 @@ private:
 /**
  * A cmd class that deletes a GBP endpoint_group
  */
-class delete_cmd
-  : public rpc_cmd<HW::item<bool>, vapi::Gbp_endpoint_group_add_del>
+class delete_cmd : public rpc_cmd<HW::item<bool>, vapi::Gbp_endpoint_group_del>
 {
 public:
   /**

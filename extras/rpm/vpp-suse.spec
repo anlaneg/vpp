@@ -18,7 +18,7 @@
 
 %define _vpp_build_dir       %{buildroot}/../../BUILD/vpp-%{version}/build-root
 %define _vpp_install_dir     %{_vpp_build_dir}/install-vpp-native/
-%define _vpp_plugins_lib_dir %{_vpp_install_dir}/vpp/lib64
+%define _vpp_plugins_lib_dir %{_vpp_install_dir}/vpp/lib
 
 %define lname libvpp0
 
@@ -125,17 +125,17 @@ Provides:       %{name}-any-api-lua = %{version}
 %description api-lua
 This package contains the lua bindings for the vpp api
 
-#%package api-java
-#Summary:        VPP api java bindings
-#Group:          Development/Libraries/Java
-#Requires:       %%{lname} = %%{version}
-#Requires:       %%{name} = %%{version}
-#Requires:       %%{name}-devel = %%{version}
-#Conflicts:      otherproviders(%%{name}-any-api-java)
-#Provides:       %%{name}-any-api-java = %%{version}
+%package api-java
+Summary:        VPP api java bindings
+Group:          Development/Libraries/Java
+Requires:       %{lname} = %{version}
+Requires:       %{name} = %{version}
+Requires:       %{name}-devel = %{version}
+Conflicts:      otherproviders(%{name}-any-api-java)
+Provides:       %{name}-any-api-java = %{version}
 
-#%description api-java
-#This package contains the java bindings for the vpp api
+%description api-java
+This package contains the java bindings for the vpp api
 
 %package api-python
 Summary:        VPP api python bindings
@@ -157,7 +157,7 @@ This package contains the python bindings for the vpp api
 export VPP_BUILD_USER=suse
 export VPP_BUILD_HOST=SUSE
 
-make V=1 PLATFORM=vpp build-release
+make -C build-root V=1 CC=gcc-7 CXX=g++-7 PLATFORM=vpp TAG=vpp install-packages
 
 cd %{_vpp_build_dir}/../src/vpp-api/python && %{py2_build}
 
@@ -182,7 +182,7 @@ mkdir -p -m755 %{buildroot}%{_datadir}/vpp/api
 #
 mkdir -p -m755 %{buildroot}%{_datadir}/vpp/api
 install -p -m 644 %{_vpp_install_dir}/vpp/share/vpp/api/core/*.api.json %{buildroot}%{_datadir}/vpp/api
-install -p -m 644 %{_vpp_install_dir}/vpp/share/vpp/api/plugins/*.api.json %{buildroot}%{_datadir}/vpp/api
+
 #
 # configs
 #
@@ -197,7 +197,7 @@ install -p -m 644 %{_vpp_build_dir}/../src/vpp/conf/80-vpp.conf %{buildroot}%{_s
 mkdir -p -m755 %{buildroot}%{_libdir}
 mkdir -p -m755 %{buildroot}%{_sysconfdir}/bash_completion.d
 mkdir -p -m755 %{buildroot}%{_datadir}/vpp
-for file in $(find %{_vpp_install_dir}/*/lib* -type f -name '*.so.*.*.*' -print )
+for file in $(find %{_vpp_install_dir}/*/lib* -type f -name '*.so.*.*' -print )
 do
 	install -p -m 755 $file %{buildroot}%{_libdir}
 done
@@ -213,8 +213,6 @@ for file in $(find %{_vpp_install_dir}/vpp/share/vpp/api  -type f -name '*.api.j
 do
         install -p -m 644 $file %{buildroot}%{_datadir}/vpp/api
 done
-install -p -m 644 %{_vpp_build_dir}/../src/scripts/vppctl_completion %{buildroot}%{_sysconfdir}/bash_completion.d
-install -p -m 644 %{_vpp_build_dir}/../src/scripts/vppctl-cmd-list %{buildroot}%{_datadir}/vpp
 
 # Lua bindings
 mkdir -p -m755 %{buildroot}%{_datadir}/doc/vpp/examples/lua/examples/cli
@@ -226,11 +224,11 @@ do
 done
 
 # Java bindings
-#mkdir -p -m755 %{buildroot}%{_datadir}/java
-#for file in $(find %{_vpp_install_dir}/japi/share/java -type f -name '*.jar' -print )
-#do
-#        install -p -m 644 $file %{buildroot}%{_datadir}/java
-#done
+mkdir -p -m755 %{buildroot}%{_datadir}/java
+for file in $(find %{_vpp_install_dir}/japi/share/java -type f -name '*.jar' -print )
+do
+        install -p -m 644 $file %{buildroot}%{_datadir}/java
+done
 
 # Python bindings
 cd %{_vpp_build_dir}/../src/vpp-api/python && %{py2_install}
@@ -257,11 +255,11 @@ do
 	done
 done
 
-#mkdir -p -m755 %{buildroot}%{python_sitelib}/jvppgen
-#install -p -m755 %{_vpp_build_dir}/../extras/japi/java/jvpp/gen/jvpp_gen.py %{buildroot}%{_prefix}/bin
-#for i in $(ls %{_vpp_build_dir}/../extras/japi/java/jvpp/gen/jvppgen/*.py); do
-#   install -p -m755 ${i} %{buildroot}%{python_sitelib}/jvppgen
-#done;
+mkdir -p -m755 %{buildroot}%{python_sitelib}/jvppgen
+install -p -m755 %{_vpp_build_dir}/../extras/japi/java/jvpp/gen/jvpp_gen.py %{buildroot}%{_prefix}/bin
+for i in $(ls %{_vpp_build_dir}/../extras/japi/java/jvpp/gen/jvppgen/*.py); do
+   install -p -m755 ${i} %{buildroot}%{python_sitelib}/jvppgen
+done;
 
 # sample plugin
 mkdir -p -m755 %{buildroot}%{_datadir}/doc/vpp/examples/sample-plugin/sample
@@ -288,7 +286,7 @@ do
            %{buildroot}/%{_libdir}/vpp_api_test_plugins/$file
 done
 
-for file in $(find %{_vpp_install_dir}/plugins -type f -name '*.api.json' -print )
+for file in $(find %{_vpp_install_dir}/vpp/share/vpp/api/plugins -type f -name '*.api.json' -print )
 do
         install -p -m 644 $file %{buildroot}%{_datadir}/vpp/api
 done
@@ -321,8 +319,6 @@ export NO_BRP_CHECK_RPATH=true
 %dir %{_sysconfdir}/vpp
 %config %{_sysconfdir}/sysctl.d/80-vpp.conf
 %config %{_sysconfdir}/vpp/startup.conf
-%{_sysconfdir}/bash_completion.d/vppctl_completion
-%{_datadir}/vpp/vppctl-cmd-list
 %license LICENSE
 
 %files -n %{lname}
@@ -333,20 +329,20 @@ export NO_BRP_CHECK_RPATH=true
 %files api-lua
 %{_datadir}/doc/vpp/examples/lua
 
-#%files api-java
-#%%{_datadir}/java/*
+%files api-java
+%{_datadir}/java/*
 
 %files api-python
 %dir %{python_sitelib}/vpp_papi*
 %{python_sitelib}/vpp_papi*
 
 %files devel
-#%dir %{python_sitelib}/jvppgen
-#%{python_sitelib}/jvppgen/*
+%dir %{python_sitelib}/jvppgen
+%{python_sitelib}/jvppgen/*
 %dir %{_datadir}/doc/vpp
 %dir %{_datadir}/doc/vpp/examples
 %{_libdir}/*.so
-#%{_bindir}/jvpp_gen.py
+%{_bindir}/jvpp_gen.py
 %{_includedir}/*
 %{_datadir}/doc/vpp/examples/sample-plugin
 %dir %{_datadir}/vpp

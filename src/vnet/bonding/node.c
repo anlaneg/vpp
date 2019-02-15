@@ -21,7 +21,9 @@
 #include <vnet/snap/snap.h>
 #include <vnet/bonding/node.h>
 
+#ifndef CLIB_MARCH_VARIANT
 bond_main_t bond_main;
+#endif /* CLIB_MARCH_VARIANT */
 
 #define foreach_bond_input_error \
   _(NONE, "no error")            \
@@ -202,14 +204,10 @@ VLIB_NODE_FN (bond_input_node) (vlib_main_t * vm,
       /* Prefetch next iteration */
       if (PREDICT_TRUE (n_left >= 16))
 	{
-	  CLIB_PREFETCH (vlib_buffer_get_current (b[8]),
-			 CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (vlib_buffer_get_current (b[9]),
-			 CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (vlib_buffer_get_current (b[10]),
-			 CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (vlib_buffer_get_current (b[11]),
-			 CLIB_CACHE_LINE_BYTES, LOAD);
+	  vlib_prefetch_buffer_data (b[8], LOAD);
+	  vlib_prefetch_buffer_data (b[9], LOAD);
+	  vlib_prefetch_buffer_data (b[10], LOAD);
+	  vlib_prefetch_buffer_data (b[11], LOAD);
 
 	  vlib_prefetch_buffer_header (b[12], LOAD);
 	  vlib_prefetch_buffer_header (b[13], LOAD);
@@ -334,8 +332,8 @@ VLIB_NODE_FN (bond_input_node) (vlib_main_t * vm,
 	    {
 	      t0 = vlib_add_trace (vm, node, b[0], sizeof (*t0));
 	      t0->sw_if_index = sw_if_index[0];
-	      clib_memcpy (&t0->ethernet, vlib_buffer_get_current (b[0]),
-			   sizeof (ethernet_header_t));
+	      clib_memcpy_fast (&t0->ethernet, vlib_buffer_get_current (b[0]),
+				sizeof (ethernet_header_t));
 	      t0->bond_sw_if_index = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
 	    }
 	  /* next */
@@ -400,19 +398,21 @@ bond_sw_interface_up_down (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
   if (sif)
     {
       sif->port_enabled = flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP;
+      if (sif->lacp_enabled)
+	return 0;
+
       if (sif->port_enabled == 0)
 	{
-	  if (sif->lacp_enabled == 0)
-	    {
-	      bond_disable_collecting_distributing (vm, sif);
-	    }
+	  bond_disable_collecting_distributing (vm, sif);
 	}
       else
 	{
-	  if (sif->lacp_enabled == 0)
-	    {
-	      bond_enable_collecting_distributing (vm, sif);
-	    }
+	  vnet_main_t *vnm = vnet_get_main ();
+	  vnet_hw_interface_t *hw =
+	    vnet_get_sup_hw_interface (vnm, sw_if_index);
+
+	  if (hw->flags & VNET_HW_INTERFACE_FLAG_LINK_UP)
+	    bond_enable_collecting_distributing (vm, sif);
 	}
     }
 
@@ -433,19 +433,16 @@ bond_hw_interface_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   sif = bond_get_slave_by_sw_if_index (sw->sw_if_index);
   if (sif)
     {
+      if (sif->lacp_enabled)
+	return 0;
+
       if (!(flags & VNET_HW_INTERFACE_FLAG_LINK_UP))
 	{
-	  if (sif->lacp_enabled == 0)
-	    {
-	      bond_disable_collecting_distributing (vm, sif);
-	    }
+	  bond_disable_collecting_distributing (vm, sif);
 	}
-      else
+      else if (sif->port_enabled)
 	{
-	  if (sif->lacp_enabled == 0)
-	    {
-	      bond_enable_collecting_distributing (vm, sif);
-	    }
+	  bond_enable_collecting_distributing (vm, sif);
 	}
     }
 

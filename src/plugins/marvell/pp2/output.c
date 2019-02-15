@@ -39,7 +39,7 @@ mrvl_pp2_interface_tx (vlib_main_t * vm,
     vec_elt_at_index (ppm->per_thread_data, thread_index);
   u8 qid = thread_index;
   mrvl_pp2_outq_t *outq = vec_elt_at_index (ppif->outqs, qid);
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   u16 n_desc = frame->n_vectors, n_left = n_desc, n_sent = n_desc, n_done;
   struct pp2_ppio_desc *d;
   u16 mask = outq->size - 1;
@@ -67,7 +67,7 @@ mrvl_pp2_interface_tx (vlib_main_t * vm,
     {
       u32 bi0 = buffers[0];
       vlib_buffer_t *b0 = vlib_get_buffer (vm, bi0);
-      u64 paddr = vlib_get_buffer_data_physical_address (vm, bi0);
+      u64 paddr = vlib_buffer_get_pa (vm, b0);
 
       pp2_ppio_outq_desc_reset (d);
       pp2_ppio_outq_desc_set_phys_addr (d, paddr + b0->current_data);
@@ -87,7 +87,7 @@ mrvl_pp2_interface_tx (vlib_main_t * vm,
   /* free unsent buffers */
   if (PREDICT_FALSE (n_sent != n_desc))
     {
-      vlib_buffer_free (vm, vlib_frame_args (frame) + n_sent,
+      vlib_buffer_free (vm, vlib_frame_vector_args (frame) + n_sent,
 			frame->n_vectors - n_sent);
       vlib_error_count (vm, node->node_index, MRVL_PP2_TX_ERROR_NO_FREE_SLOTS,
 			frame->n_vectors - n_sent);
@@ -98,13 +98,13 @@ mrvl_pp2_interface_tx (vlib_main_t * vm,
   if (n_sent)
     {
       u16 slot = outq->head & mask;
-      buffers = vlib_frame_args (frame);
+      buffers = vlib_frame_vector_args (frame);
       u16 n_copy = clib_min (outq->size - slot, n_sent);
 
-      clib_memcpy (outq->buffers + slot, buffers, n_copy * sizeof (u32));
+      vlib_buffer_copy_indices (outq->buffers + slot, buffers, n_copy);
       if (PREDICT_FALSE (n_copy < n_sent))
-	clib_memcpy (outq->buffers, buffers + n_copy,
-		     (n_sent - n_copy) * sizeof (u32));
+	clib_memcpy_fast (outq->buffers, buffers + n_copy,
+			  (n_sent - n_copy) * sizeof (u32));
 
       outq->head += n_sent;
     }

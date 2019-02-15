@@ -40,7 +40,7 @@ mpls_label_dpo_alloc (void)
     mpls_label_dpo_t *mld;
 
     pool_get_aligned(mpls_label_dpo_pool, mld, CLIB_CACHE_LINE_BYTES);
-    memset(mld, 0, sizeof(*mld));
+    clib_memset(mld, 0, sizeof(*mld));
 
     dpo_reset(&mld->mld_dpo);
 
@@ -205,7 +205,7 @@ format_mpls_label_dpo (u8 *s, va_list *args)
     }
 
     mld = mpls_label_dpo_get(index);
-    s = format(s, "mpls-label[%U%d]:",
+    s = format(s, "mpls-label[%U@%d]:",
                format_mpls_label_dpo_flags,
                (int) mld->mld_flags, index);
 
@@ -287,7 +287,7 @@ mpls_label_paint (vlib_buffer_t * b0,
     }
     else
     {
-        clib_memcpy(hdr0, mld0->mld_hdr, mld0->mld_n_hdr_bytes);
+        clib_memcpy_fast(hdr0, mld0->mld_hdr, mld0->mld_n_hdr_bytes);
         hdr0 = hdr0 + (mld0->mld_n_labels - 1);
     }
 
@@ -1218,7 +1218,7 @@ mpls_label_interpose (const dpo_id_t *original,
     mld = mpls_label_dpo_get(original->dpoi_index);
 
     mld_clone->mld_locks = 0;
-    clib_memcpy(&mld_clone->mld_hdr,
+    clib_memcpy_fast(&mld_clone->mld_hdr,
                 &mld->mld_hdr,
                 sizeof(mld_clone->mld_hdr));
     mld_clone->mld_payload_proto = mld->mld_payload_proto;

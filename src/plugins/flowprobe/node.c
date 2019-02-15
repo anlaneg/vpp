@@ -148,7 +148,7 @@ flowprobe_get_variant (flowprobe_variant_t which,
 /*
  * NTP rfc868 : 2 208 988 800 corresponds to 00:00  1 Jan 1970 GMT
  */
-#define NTP_TIMESTAMP 2208988800L
+#define NTP_TIMESTAMP 2208988800LU
 
 static inline u32
 flowprobe_common_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
@@ -157,33 +157,33 @@ flowprobe_common_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
 
   /* Ingress interface */
   u32 rx_if = clib_host_to_net_u32 (e->key.rx_sw_if_index);
-  clib_memcpy (to_b->data + offset, &rx_if, sizeof (rx_if));
+  clib_memcpy_fast (to_b->data + offset, &rx_if, sizeof (rx_if));
   offset += sizeof (rx_if);
 
   /* Egress interface */
   u32 tx_if = clib_host_to_net_u32 (e->key.tx_sw_if_index);
-  clib_memcpy (to_b->data + offset, &tx_if, sizeof (tx_if));
+  clib_memcpy_fast (to_b->data + offset, &tx_if, sizeof (tx_if));
   offset += sizeof (tx_if);
 
   /* packet delta count */
   u64 packetdelta = clib_host_to_net_u64 (e->packetcount);
-  clib_memcpy (to_b->data + offset, &packetdelta, sizeof (u64));
+  clib_memcpy_fast (to_b->data + offset, &packetdelta, sizeof (u64));
   offset += sizeof (u64);
 
   /* flowStartNanoseconds */
   u32 t = clib_host_to_net_u32 (e->flow_start.sec + NTP_TIMESTAMP);
-  clib_memcpy (to_b->data + offset, &t, sizeof (u32));
+  clib_memcpy_fast (to_b->data + offset, &t, sizeof (u32));
   offset += sizeof (u32);
   t = clib_host_to_net_u32 (e->flow_start.nsec);
-  clib_memcpy (to_b->data + offset, &t, sizeof (u32));
+  clib_memcpy_fast (to_b->data + offset, &t, sizeof (u32));
   offset += sizeof (u32);
 
   /* flowEndNanoseconds */
   t = clib_host_to_net_u32 (e->flow_end.sec + NTP_TIMESTAMP);
-  clib_memcpy (to_b->data + offset, &t, sizeof (u32));
+  clib_memcpy_fast (to_b->data + offset, &t, sizeof (u32));
   offset += sizeof (u32);
   t = clib_host_to_net_u32 (e->flow_end.nsec);
-  clib_memcpy (to_b->data + offset, &t, sizeof (u32));
+  clib_memcpy_fast (to_b->data + offset, &t, sizeof (u32));
   offset += sizeof (u32);
 
   return offset - start;
@@ -195,15 +195,15 @@ flowprobe_l2_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
   u16 start = offset;
 
   /* src mac address */
-  clib_memcpy (to_b->data + offset, &e->key.src_mac, 6);
+  clib_memcpy_fast (to_b->data + offset, &e->key.src_mac, 6);
   offset += 6;
 
   /* dst mac address */
-  clib_memcpy (to_b->data + offset, &e->key.dst_mac, 6);
+  clib_memcpy_fast (to_b->data + offset, &e->key.dst_mac, 6);
   offset += 6;
 
   /* ethertype */
-  clib_memcpy (to_b->data + offset, &e->key.ethertype, 2);
+  clib_memcpy_fast (to_b->data + offset, &e->key.ethertype, 2);
   offset += 2;
 
   return offset - start;
@@ -215,13 +215,13 @@ flowprobe_l3_ip6_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
   u16 start = offset;
 
   /* ip6 src address */
-  clib_memcpy (to_b->data + offset, &e->key.src_address,
-	       sizeof (ip6_address_t));
+  clib_memcpy_fast (to_b->data + offset, &e->key.src_address,
+		    sizeof (ip6_address_t));
   offset += sizeof (ip6_address_t);
 
   /* ip6 dst address */
-  clib_memcpy (to_b->data + offset, &e->key.dst_address,
-	       sizeof (ip6_address_t));
+  clib_memcpy_fast (to_b->data + offset, &e->key.dst_address,
+		    sizeof (ip6_address_t));
   offset += sizeof (ip6_address_t);
 
   /* Protocol */
@@ -229,7 +229,7 @@ flowprobe_l3_ip6_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
 
   /* octetDeltaCount */
   u64 octetdelta = clib_host_to_net_u64 (e->octetcount);
-  clib_memcpy (to_b->data + offset, &octetdelta, sizeof (u64));
+  clib_memcpy_fast (to_b->data + offset, &octetdelta, sizeof (u64));
   offset += sizeof (u64);
 
   return offset - start;
@@ -241,13 +241,13 @@ flowprobe_l3_ip4_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
   u16 start = offset;
 
   /* ip4 src address */
-  clib_memcpy (to_b->data + offset, &e->key.src_address.ip4,
-	       sizeof (ip4_address_t));
+  clib_memcpy_fast (to_b->data + offset, &e->key.src_address.ip4,
+		    sizeof (ip4_address_t));
   offset += sizeof (ip4_address_t);
 
   /* ip4 dst address */
-  clib_memcpy (to_b->data + offset, &e->key.dst_address.ip4,
-	       sizeof (ip4_address_t));
+  clib_memcpy_fast (to_b->data + offset, &e->key.dst_address.ip4,
+		    sizeof (ip4_address_t));
   offset += sizeof (ip4_address_t);
 
   /* Protocol */
@@ -255,7 +255,7 @@ flowprobe_l3_ip4_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
 
   /* octetDeltaCount */
   u64 octetdelta = clib_host_to_net_u64 (e->octetcount);
-  clib_memcpy (to_b->data + offset, &octetdelta, sizeof (u64));
+  clib_memcpy_fast (to_b->data + offset, &octetdelta, sizeof (u64));
   offset += sizeof (u64);
 
   return offset - start;
@@ -267,16 +267,16 @@ flowprobe_l4_add (vlib_buffer_t * to_b, flowprobe_entry_t * e, u16 offset)
   u16 start = offset;
 
   /* src port */
-  clib_memcpy (to_b->data + offset, &e->key.src_port, 2);
+  clib_memcpy_fast (to_b->data + offset, &e->key.src_port, 2);
   offset += 2;
 
   /* dst port */
-  clib_memcpy (to_b->data + offset, &e->key.dst_port, 2);
+  clib_memcpy_fast (to_b->data + offset, &e->key.dst_port, 2);
   offset += 2;
 
   /* tcp control bits */
   u16 control_bits = htons (e->prot.tcp.flags);
-  clib_memcpy (to_b->data + offset, &control_bits, 2);
+  clib_memcpy_fast (to_b->data + offset, &control_bits, 2);
   offset += 2;
 
   return offset - start;
@@ -394,8 +394,8 @@ add_to_flow_record_state (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (flags & FLOW_RECORD_L2)
     {
-      clib_memcpy (k.src_mac, eth->src_address, 6);
-      clib_memcpy (k.dst_mac, eth->dst_address, 6);
+      clib_memcpy_fast (k.src_mac, eth->src_address, 6);
+      clib_memcpy_fast (k.dst_mac, eth->dst_address, 6);
       k.ethertype = ethertype;
     }
   if (collect_ip6 && ethertype == ETHERNET_TYPE_IP6)
@@ -450,8 +450,8 @@ add_to_flow_record_state (vlib_main_t * vm, vlib_node_runtime_t * node,
     {
       t->rx_sw_if_index = k.rx_sw_if_index;
       t->tx_sw_if_index = k.tx_sw_if_index;
-      clib_memcpy (t->src_mac, k.src_mac, 6);
-      clib_memcpy (t->dst_mac, k.dst_mac, 6);
+      clib_memcpy_fast (t->src_mac, k.src_mac, 6);
+      clib_memcpy_fast (t->dst_mac, k.dst_mac, 6);
       t->ethertype = k.ethertype;
       t->src_address.ip4.as_u32 = k.src_address.ip4.as_u32;
       t->dst_address.ip4.as_u32 = k.dst_address.ip4.as_u32;
@@ -631,7 +631,6 @@ flowprobe_get_buffer (vlib_main_t * vm, flowprobe_variant_t which)
   flow_report_main_t *frm = &flow_report_main;
   vlib_buffer_t *b0;
   u32 bi0;
-  vlib_buffer_free_list_t *fl;
   u32 my_cpu_number = vm->thread_index;
 
   /* Find or allocate a buffer */
@@ -650,9 +649,6 @@ flowprobe_get_buffer (vlib_main_t * vm, flowprobe_variant_t which)
       /* Initialize the buffer */
       b0 = fm->context[which].buffers_per_worker[my_cpu_number] =
 	vlib_get_buffer (vm, bi0);
-      fl =
-	vlib_buffer_get_free_list (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
-      vlib_buffer_init_for_free_list (b0, fl);
       VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
 
       b0->current_data = 0;

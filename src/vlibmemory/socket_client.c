@@ -56,6 +56,7 @@ int
 vl_socket_client_read (int wait)
 {
   socket_client_main_t *scm = &socket_client_main;
+  u32 data_len = 0, msg_size;
   int n, current_rx_index;
   msgbuf_t *mbp = 0;
   f64 timeout;
@@ -68,10 +69,9 @@ vl_socket_client_read (int wait)
 
   while (1)
     {
-      current_rx_index = vec_len (scm->socket_rx_buffer);
-      while (vec_len (scm->socket_rx_buffer) <
-	     sizeof (*mbp) + 2 /* msg id */ )
+      while (vec_len (scm->socket_rx_buffer) < sizeof (*mbp))
 	{
+	  current_rx_index = vec_len (scm->socket_rx_buffer);
 	  vec_validate (scm->socket_rx_buffer, current_rx_index
 			+ scm->socket_buffer_size - 1);
 	  _vec_len (scm->socket_rx_buffer) = current_rx_index;
@@ -79,6 +79,9 @@ vl_socket_client_read (int wait)
 		    scm->socket_buffer_size);
 	  if (n < 0)
 	    {
+	      if (errno == EAGAIN)
+		continue;
+
 	      clib_unix_warning ("socket_read");
 	      return -1;
 	    }
@@ -90,20 +93,38 @@ vl_socket_client_read (int wait)
 	clib_warning ("read %d bytes", n);
 #endif
 
-      if (mbp == 0)
-	mbp = (msgbuf_t *) (scm->socket_rx_buffer);
+      mbp = (msgbuf_t *) (scm->socket_rx_buffer);
+      data_len = ntohl (mbp->data_len);
+      current_rx_index = vec_len (scm->socket_rx_buffer);
+      vec_validate (scm->socket_rx_buffer, current_rx_index + data_len);
+      _vec_len (scm->socket_rx_buffer) = current_rx_index;
+      mbp = (msgbuf_t *) (scm->socket_rx_buffer);
+      msg_size = data_len + sizeof (*mbp);
 
-      if (vec_len (scm->socket_rx_buffer) >= ntohl (mbp->data_len)
-	  + sizeof (*mbp))
+      while (vec_len (scm->socket_rx_buffer) < msg_size)
+	{
+	  n = read (scm->socket_fd,
+		    scm->socket_rx_buffer + vec_len (scm->socket_rx_buffer),
+		    msg_size - vec_len (scm->socket_rx_buffer));
+	  if (n < 0)
+	    {
+	      if (errno == EAGAIN)
+		continue;
+
+	      clib_unix_warning ("socket_read");
+	      return -1;
+	    }
+	  _vec_len (scm->socket_rx_buffer) += n;
+	}
+
+      if (vec_len (scm->socket_rx_buffer) >= data_len + sizeof (*mbp))
 	{
 	  vl_msg_api_socket_handler ((void *) (mbp->data));
 
-	  if (vec_len (scm->socket_rx_buffer) == ntohl (mbp->data_len)
-	      + sizeof (*mbp))
+	  if (vec_len (scm->socket_rx_buffer) == data_len + sizeof (*mbp))
 	    _vec_len (scm->socket_rx_buffer) = 0;
 	  else
-	    vec_delete (scm->socket_rx_buffer, ntohl (mbp->data_len)
-			+ sizeof (*mbp), 0);
+	    vec_delete (scm->socket_rx_buffer, data_len + sizeof (*mbp), 0);
 	  mbp = 0;
 
 	  /* Quit if we're out of data, and not expecting a ping reply */
@@ -111,7 +132,6 @@ vl_socket_client_read (int wait)
 	      && scm->control_pings_outstanding == 0)
 	    break;
 	}
-
       if (wait && clib_time_now (&scm->clib_time) >= timeout)
 	return -1;
     }
@@ -200,7 +220,7 @@ vl_sock_api_recv_fd_msg (int socket_fd, int fds[], int n_fds, u32 wait)
   mh.msg_control = ctl;
   mh.msg_controllen = sizeof (ctl);
 
-  memset (ctl, 0, sizeof (ctl));
+  clib_memset (ctl, 0, sizeof (ctl));
 
   if (wait != ~0)
     {
@@ -232,7 +252,7 @@ vl_sock_api_recv_fd_msg (int socket_fd, int fds[], int n_fds, u32 wait)
 	    }
 	  else if (cmsg->cmsg_type == SCM_RIGHTS)
 	    {
-	      clib_memcpy (fds, CMSG_DATA (cmsg), sizeof (int) * n_fds);
+	      clib_memcpy_fast (fds, CMSG_DATA (cmsg), sizeof (int) * n_fds);
 	    }
 	}
       cmsg = CMSG_NXTHDR (&mh, cmsg);
@@ -268,7 +288,7 @@ static void vl_api_sock_init_shm_reply_t_handler
       return;
     }
 
-  memset (memfd, 0, sizeof (*memfd));
+  clib_memset (memfd, 0, sizeof (*memfd));
   memfd->fd = my_fd;
 
   /* Note: this closes memfd.fd */
@@ -284,8 +304,18 @@ static void vl_api_sock_init_shm_reply_t_handler
 
   new_name = format (0, "%v[shm]%c", scm->name, 0);
   vl_client_install_client_message_handlers ();
-  vl_client_connect_to_vlib_no_map ("pvt", (char *) new_name,
-				    32 /* input_queue_length */ );
+  if (scm->want_shm_pthread)
+    {
+      vl_client_connect_to_vlib_no_map ("pvt", (char *) new_name,
+					32 /* input_queue_length */ );
+    }
+  else
+    {
+      vl_client_connect_to_vlib_no_rx_pthread_no_map ("pvt",
+						      (char *) new_name, 32
+						      /* input_queue_length */
+	);
+    }
   vl_socket_client_enable_disable (0);
   vec_free (new_name);
 }
@@ -295,7 +325,10 @@ vl_api_sockclnt_create_reply_t_handler (vl_api_sockclnt_create_reply_t * mp)
 {
   socket_client_main_t *scm = &socket_client_main;
   if (!mp->response)
-    scm->socket_enable = 1;
+    {
+      scm->socket_enable = 1;
+      scm->client_index = clib_net_to_host_u32 (mp->index);
+    }
 }
 
 #define foreach_sock_client_api_msg             		\
@@ -341,7 +374,8 @@ vl_socket_client_connect (char *socket_path, char *client_name,
 
   sock = &scm->client_socket;
   sock->config = socket_path;
-  sock->flags = CLIB_SOCKET_F_IS_CLIENT | CLIB_SOCKET_F_SEQPACKET;
+  sock->flags = CLIB_SOCKET_F_IS_CLIENT
+    | CLIB_SOCKET_F_SEQPACKET | CLIB_SOCKET_F_NON_BLOCKING_CONNECT;
 
   if ((error = clib_socket_init (sock)))
     {
@@ -366,28 +400,33 @@ vl_socket_client_connect (char *socket_path, char *client_name,
   mp->name[sizeof (mp->name) - 1] = 0;
   mp->context = 0xfeedface;
 
+  clib_time_init (&scm->clib_time);
+
   if (vl_socket_client_write () <= 0)
     return (-1);
 
-  if (vl_socket_client_read (1))
+  if (vl_socket_client_read (5))
     return (-1);
 
-  clib_time_init (&scm->clib_time);
   return (0);
 }
 
 int
-vl_socket_client_init_shm (vl_api_shm_elem_config_t * config)
+vl_socket_client_init_shm (vl_api_shm_elem_config_t * config,
+			   int want_pthread)
 {
+  socket_client_main_t *scm = &socket_client_main;
   vl_api_sock_init_shm_t *mp;
   int rv, i;
   u64 *cfg;
 
+  scm->want_shm_pthread = want_pthread;
+
   mp = vl_socket_client_msg_alloc (sizeof (*mp) +
 				   vec_len (config) * sizeof (u64));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = clib_host_to_net_u16 (VL_API_SOCK_INIT_SHM);
-  mp->client_index = ~0;
+  mp->client_index = clib_host_to_net_u32 (scm->client_index);
   mp->requested_size = 64 << 20;
 
   if (config)

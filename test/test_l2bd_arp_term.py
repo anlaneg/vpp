@@ -19,7 +19,7 @@ from scapy.layers.inet6 import IPv6, UDP, ICMPv6ND_NS, ICMPv6ND_RS, \
     ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types
 
 from framework import VppTestCase, VppTestRunner
-from util import Host, ppp, mactobinary
+from util import Host, ppp
 
 
 class TestL2bdArpTerm(VppTestCase):
@@ -69,9 +69,9 @@ class TestL2bdArpTerm(VppTestCase):
 
     def add_del_arp_term_hosts(self, entries, bd_id=1, is_add=1, is_ipv6=0):
         for e in entries:
-            ip = e.ip4n if is_ipv6 == 0 else e.ip6n
+            ip = e.ip4 if is_ipv6 == 0 else e.ip6
             self.vapi.bd_ip_mac_add_del(bd_id=bd_id,
-                                        mac=e.bin_mac,
+                                        mac=e.mac,
                                         ip=ip,
                                         is_ipv6=is_ipv6,
                                         is_add=is_add)
@@ -154,23 +154,22 @@ class TestL2bdArpTerm(VppTestCase):
     def arp_resp_hosts(self, src_host, pkts):
         return {self.arp_resp_host(src_host, p) for p in pkts}
 
-    def inttoip4(self, ip):
+    @staticmethod
+    def inttoip4(ip):
         o1 = int(ip / 16777216) % 256
         o2 = int(ip / 65536) % 256
         o3 = int(ip / 256) % 256
         o4 = int(ip) % 256
-        return '%(o1)s.%(o2)s.%(o3)s.%(o4)s' % locals()
+        return '%s.%s.%s.%s' % (o1, o2, o3, o4)
 
     def arp_event_host(self, e):
-        return Host(mac=':'.join(['%02x' % ord(char) for char in e.new_mac]),
-                    ip4=self.inttoip4(e.address))
+        return Host(str(e.mac), ip4=str(e.ip))
 
     def arp_event_hosts(self, evs):
         return {self.arp_event_host(e) for e in evs}
 
     def nd_event_host(self, e):
-        return Host(mac=':'.join(['%02x' % ord(char) for char in e.new_mac]),
-                    ip6=inet_ntop(AF_INET6, e.address))
+        return Host(str(e.mac), ip6=str(e.ip))
 
     def nd_event_hosts(self, evs):
         return {self.nd_event_host(e) for e in evs}
@@ -271,6 +270,7 @@ class TestL2bdArpTerm(VppTestCase):
         macs = self.mac_list(range(1, 5))
         hosts = self.ip4_hosts(4, 1, macs)
         self.add_del_arp_term_hosts(hosts, is_add=1)
+
         self.verify_arp(src_host, hosts, hosts)
         type(self).hosts = hosts
 
@@ -437,7 +437,7 @@ class TestL2bdArpTerm(VppTestCase):
     def test_l2bd_arp_term_12(self):
         """ L2BD ND term - send NS packets verify reports
         """
-        self.vapi.want_ip6_nd_events(address=inet_pton(AF_INET6, "::0"))
+        self.vapi.want_ip6_nd_events(ip="::")
         dst_host = self.ip6_host(50, 50, "00:00:11:22:33:44")
         self.bd_add_del(1, is_add=1)
         self.set_bd_flags(1, arp_term=True, flood=False,
@@ -473,8 +473,7 @@ class TestL2bdArpTerm(VppTestCase):
     def test_l2bd_arp_term_14(self):
         """ L2BD ND term - disable ip4 arp events,send ns, verify no events
         """
-        self.vapi.want_ip6_nd_events(enable_disable=0,
-                                     address=inet_pton(AF_INET6, "::0"))
+        self.vapi.want_ip6_nd_events(enable_disable=0, ip="::")
         dst_host = self.ip6_host(50, 50, "00:00:11:22:33:44")
         macs = self.mac_list(range(10, 15))
         hosts = self.ip6_hosts(5, 1, macs)

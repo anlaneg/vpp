@@ -45,7 +45,7 @@ udp_connection_alloc (u32 thread_index)
       pool_get_aligned (um->connections[thread_index], uc,
 			CLIB_CACHE_LINE_BYTES);
     }
-  memset (uc, 0, sizeof (*uc));
+  clib_memset (uc, 0, sizeof (*uc));
   uc->c_c_index = uc - um->connections[thread_index];
   uc->c_thread_index = thread_index;
   uc->c_proto = TRANSPORT_PROTO_UDP;
@@ -58,7 +58,7 @@ udp_connection_free (udp_connection_t * uc)
 {
   pool_put (udp_main.connections[uc->c_thread_index], uc);
   if (CLIB_DEBUG)
-    memset (uc, 0xFA, sizeof (*uc));
+    clib_memset (uc, 0xFA, sizeof (*uc));
 }
 
 u32
@@ -76,7 +76,7 @@ udp_session_bind (u32 session_index, transport_endpoint_t * lcl)
     return -1;
 
   pool_get (um->listener_pool, listener);
-  memset (listener, 0, sizeof (udp_connection_t));
+  clib_memset (listener, 0, sizeof (udp_connection_t));
 
   listener->c_lcl_port = lcl->port;
   listener->c_c_index = listener - um->listener_pool;
@@ -168,7 +168,7 @@ udp_session_close (u32 connection_index, u32 thread_index)
     {
       udp_unregister_dst_port (vm, clib_net_to_host_u16 (uc->c_lcl_port),
 			       uc->c_is_ip4);
-      stream_session_delete_notify (&uc->connection);
+      session_transport_delete_notify (&uc->connection);
       udp_connection_free (uc);
     }
 }
@@ -261,7 +261,7 @@ udp_send_space (transport_connection_t * t)
 }
 
 int
-udp_open_connection (transport_endpoint_t * rmt)
+udp_open_connection (transport_endpoint_cfg_t * rmt)
 {
   udp_main_t *um = vnet_get_udp_main ();
   vlib_main_t *vm = vlib_get_main ();
@@ -318,9 +318,9 @@ udp_session_get_half_open (u32 conn_index)
 
 /* *INDENT-OFF* */
 const static transport_proto_vft_t udp_proto = {
-  .bind = udp_session_bind,
-  .open = udp_open_connection,
-  .unbind = udp_session_unbind,
+  .start_listen = udp_session_bind,
+  .connect = udp_open_connection,
+  .stop_listen = udp_session_unbind,
   .push_header = udp_push_header,
   .get_connection = udp_session_get,
   .get_listener = udp_session_get_listener,
@@ -339,7 +339,7 @@ const static transport_proto_vft_t udp_proto = {
 
 
 int
-udpc_connection_open (transport_endpoint_t * rmt)
+udpc_connection_open (transport_endpoint_cfg_t * rmt)
 {
   udp_connection_t *uc;
   u32 uc_index;
@@ -362,9 +362,9 @@ udpc_connection_listen (u32 session_index, transport_endpoint_t * lcl)
 
 /* *INDENT-OFF* */
 const static transport_proto_vft_t udpc_proto = {
-  .bind = udpc_connection_listen,
-  .open = udpc_connection_open,
-  .unbind = udp_session_unbind,
+  .start_listen = udpc_connection_listen,
+  .stop_listen = udp_session_unbind,
+  .connect = udpc_connection_open,
   .push_header = udp_push_header,
   .get_connection = udp_session_get,
   .get_listener = udp_session_get_listener,
@@ -440,6 +440,66 @@ udp_init (vlib_main_t * vm)
 }
 
 VLIB_INIT_FUNCTION (udp_init);
+
+static clib_error_t *
+show_udp_punt_fn (vlib_main_t * vm, unformat_input_t * input,
+		  vlib_cli_command_t * cmd_arg)
+{
+  udp_main_t *um = vnet_get_udp_main ();
+
+  clib_error_t *error = NULL;
+
+  if (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    return clib_error_return (0, "unknown input `%U'", format_unformat_error,
+			      input);
+
+  udp_dst_port_info_t *port_info;
+  if (um->punt_unknown4)
+    {
+      vlib_cli_output (vm, "IPv4 UDP punt: enabled");
+    }
+  else
+    {
+      u8 *s = NULL;
+      vec_foreach (port_info, um->dst_port_infos[UDP_IP4])
+      {
+	if (udp_is_valid_dst_port (port_info->dst_port, 1))
+	  {
+	    s = format (s, (!s) ? "%d" : ", %d", port_info->dst_port);
+	  }
+      }
+      s = format (s, "%c", 0);
+      vlib_cli_output (vm, "IPV4 UDP ports punt : %s", s);
+    }
+
+  if (um->punt_unknown6)
+    {
+      vlib_cli_output (vm, "IPv6 UDP punt: enabled");
+    }
+  else
+    {
+      u8 *s = NULL;
+      vec_foreach (port_info, um->dst_port_infos[UDP_IP6])
+      {
+	if (udp_is_valid_dst_port (port_info->dst_port, 01))
+	  {
+	    s = format (s, (!s) ? "%d" : ", %d", port_info->dst_port);
+	  }
+      }
+      s = format (s, "%c", 0);
+      vlib_cli_output (vm, "IPV6 UDP ports punt : %s", s);
+    }
+
+  return (error);
+}
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (show_tcp_punt_command, static) =
+{
+  .path = "show udp punt",
+  .short_help = "show udp punt [ipv4|ipv6]",
+  .function = show_udp_punt_fn,
+};
+/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

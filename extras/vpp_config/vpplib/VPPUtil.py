@@ -11,17 +11,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
+
 """VPP util library"""
 import logging
 import re
 import subprocess
 import platform
+import requests
 
 from collections import Counter
-
-# VPP_VERSION = '1707'
-# VPP_VERSION = '1710'
-VPP_VERSION = '1801'
 
 
 class VPPUtil(object):
@@ -48,12 +47,18 @@ class VPPUtil(object):
                                stderr=subprocess.PIPE)
 
         with prc.stdout:
-            for line in iter(prc.stdout.readline, b''):
+            lines = prc.stdout.readlines()
+            for line in lines:
+                if type(line) != str:
+                    line = line.decode()
                 logging.info("  {}".format(line.strip('\n')))
                 out += line
 
         with prc.stderr:
-            for line in iter(prc.stderr.readline, b''):
+            lines = prc.stderr.readlines()
+            for line in lines:
+                if type(line) != str:
+                    line = line.decode()
                 logging.warn("  {}".format(line.strip('\n')))
                 err += line
 
@@ -112,16 +117,15 @@ class VPPUtil(object):
             raise RuntimeError('{} failed on node {} {} {}'.format(
                 cmd, node['host'], stdout, stderr))
 
-    def _install_vpp_ubuntu(self, node, fdio_release=VPP_VERSION,
-                            ubuntu_version='xenial'):
+    def _install_vpp_ubuntu(self, node, branch, ubuntu_version='xenial'):
         """
         Install the VPP packages
 
         :param node: Node dictionary with cpuinfo.
-        :param fdio_release: VPP release number
+        :param branch: VPP branch
         :param ubuntu_version: Ubuntu Version
         :type node: dict
-        :type fdio_release: string
+        :type branch: string
         :type ubuntu_version: string
         """
 
@@ -131,24 +135,18 @@ class VPPUtil(object):
         # Backup the sources list
         self._autoconfig_backup_file(sfile)
 
-        # Remove the current file
-        cmd = 'rm {}'.format(sfile)
-        (ret, stdout, stderr) = self.exec_command(cmd)
-        if ret != 0:
-            logging.debug('{} failed on node {} {}'.format(
-                cmd,
-                node['host'],
-                stderr))
+        reps = 'deb [trusted=yes] https://packagecloud.io/fdio/'
+        reps += '{}/ubuntu {} main ./\n'.format(branch, ubuntu_version)
 
-        reps = 'deb [trusted=yes] https://nexus.fd.io/content/'
-        # When using a stable branch
-        # reps += 'repositories/fd.io.stable.{}.ubuntu.{}.main/ ./\n'.format(fdio_release, ubuntu_version)
-        # When using release
-        reps += 'repositories/fd.io.ubuntu.{}.main/ ./\n'.format(ubuntu_version)
-        # When using master
-        # reps += 'repositories/fd.io.master.ubuntu.{}.main/ ./\n'.format(ubuntu_version)
+        with open(sfile, 'w') as sfd:
+            sfd.write(reps)
+            sfd.close()
 
-        cmd = 'echo "{0}" | sudo tee {1}'.format(reps, sfile)
+        # Add the key
+
+        key = requests.get(
+            'https://packagecloud.io/fdio/{}/gpgkey'.format(branch))
+        cmd = 'echo "{}" | apt-key add -'.format(key.content.decode(key.encoding))
         (ret, stdout, stderr) = self.exec_command(cmd)
         if ret != 0:
             raise RuntimeError('{} failed on node {} {}'.format(
@@ -168,26 +166,38 @@ class VPPUtil(object):
         self._install_vpp_pkg_ubuntu(node, 'vpp-lib')
         self._install_vpp_pkg_ubuntu(node, 'vpp')
         self._install_vpp_pkg_ubuntu(node, 'vpp-plugins')
-        self._install_vpp_pkg_ubuntu(node, 'vpp-dpdk-dkms')
-        self._install_vpp_pkg_ubuntu(node, 'vpp-dpdk-dev')
         self._install_vpp_pkg_ubuntu(node, 'vpp-api-python')
         self._install_vpp_pkg_ubuntu(node, 'vpp-api-java')
         self._install_vpp_pkg_ubuntu(node, 'vpp-api-lua')
         self._install_vpp_pkg_ubuntu(node, 'vpp-dev')
         self._install_vpp_pkg_ubuntu(node, 'vpp-dbg')
 
-    def _install_vpp_centos(self, node, fdio_release=VPP_VERSION,
-                            centos_version='centos7'):
+    def _install_vpp_centos(self, node, branch):
         """
         Install the VPP packages
 
         :param node: Node dictionary with cpuinfo.
-        :param fdio_release: VPP release number
-        :param centos_version: Ubuntu Version
+        :param branch: The branch name  release or master
         :type node: dict
-        :type fdio_release: string
-        :type centos_version: string
+        :type branch: string
         """
+
+        # Be sure the correct system packages are installed
+        cmd = 'yum -y update'
+        (ret, stdout, stderr) = self.exec_command(cmd)
+        if ret != 0:
+            logging.debug('{} failed on node {} {}'.format(
+                cmd,
+                node['host'],
+                stderr))
+
+        cmd = 'yum -y install pygpgme yum-utils'
+        (ret, stdout, stderr) = self.exec_command(cmd)
+        if ret != 0:
+            logging.debug('{} failed on node {} {}'.format(
+                cmd,
+                node['host'],
+                stderr))
 
         # Modify the sources list
         sfile = '/etc/yum.repos.d/fdio-release.repo'
@@ -204,60 +214,86 @@ class VPPUtil(object):
                 node['host'],
                 stderr))
 
-        # Latest
-        # reps = '[fdio-master]\n'
-        # reps += 'name=fd.io master branch latest merge\n'
-        # reps += 'baseurl=https://nexus.fd.io/content/repositories/fd.io.master.{}/\n'.format(centos_version)
-        # reps = '[fdio-stable-{}]\n'.format(fdio_release)
-        # reps += 'name=fd.io stable/{} branch latest merge\n'.format(fdio_release)
-        # When using stable
-        # reps += 'baseurl=https://nexus.fd.io/content/repositories/fd.io.stable.{}.{}/\n'.\
-        #     format(fdio_release, centos_version)
-        # When using release
-        reps = '[fdio-release]\n'
-        reps += 'name=fd.io release branch latest merge\n'
-        reps += 'baseurl=https://nexus.fd.io/content/repositories/fd.io.{}/\n'.format(centos_version)
-        reps += 'enabled=1\n'
-        reps += 'gpgcheck=0'
+        # Get the file contents
 
-        cmd = 'echo "{0}" | sudo tee {1}'.format(reps, sfile)
+        reps = '\n'.join([
+            '[fdio_{}]'.format(branch),
+            'name=fdio_{}'.format(branch),
+            'baseurl=https://packagecloud.io/fdio/{}/el/7/$basearch'.format(
+                branch),
+            'repo_gpgcheck=1',
+            'gpgcheck=0',
+            'enabled=1',
+            'gpgkey=https://packagecloud.io/fdio/{}/gpgkey'.format(branch),
+            'sslverify=1',
+            'sslcacert=/etc/pki/tls/certs/ca-bundle.crt',
+            'metadata_expire=300\n',
+            '[fdio_{}-source]'.format(branch),
+            'name=fdio_release-{}'.format(branch),
+            'baseurl=https://packagecloud.io/fdio/{}/el/7/SRPMS'.format(
+                branch),
+            'repo_gpgcheck=1',
+            'gpgcheck=0',
+            'enabled=1',
+            'gpgkey=https://packagecloud.io/fdio/{}/gpgkey'.format(branch),
+            'sslverify =1',
+            'sslcacert=/etc/pki/tls/certs/ca-bundle.crt',
+            'metadata_expire=300\n'
+        ])
+        with open(sfile, 'w') as sfd:
+            sfd.write(reps)
+            sfd.close()
+
+        # Update the fdio repo
+        cmd = 'yum clean all'
         (ret, stdout, stderr) = self.exec_command(cmd)
         if ret != 0:
-            raise RuntimeError('{} failed on node {} {}'.format(
+            logging.debug('{} failed on node {} {}'.format(
+                cmd,
+                node['host'],
+                stderr))
+
+        cmd = "yum -q makecache -y --disablerepo='*' " \
+              "--enablerepo='fdio_{}'".format(branch)
+        (ret, stdout, stderr) = self.exec_command(cmd)
+        if ret != 0:
+            logging.debug('{} failed on node {} {}'.format(
                 cmd,
                 node['host'],
                 stderr))
 
         # Install the packages
- 
+        self._install_vpp_pkg_centos(node, 'vpp-selinux-policy')
         self._install_vpp_pkg_centos(node, 'vpp-lib')
         self._install_vpp_pkg_centos(node, 'vpp')
         self._install_vpp_pkg_centos(node, 'vpp-plugins')
-        # jadfix Check with Ole
-        # self._install_vpp_pkg_centos(node, 'vpp-dpdk-devel')
         self._install_vpp_pkg_centos(node, 'vpp-api-python')
         self._install_vpp_pkg_centos(node, 'vpp-api-java')
         self._install_vpp_pkg_centos(node, 'vpp-api-lua')
         self._install_vpp_pkg_centos(node, 'vpp-devel')
+        self._install_vpp_pkg_centos(node, 'vpp-debuginfo')
 
-    def install_vpp(self, node):
+    def install_vpp(self, node, branch):
         """
         Install the VPP packages
 
         :param node: Node dictionary with cpuinfo.
+        :param branch: The branch name
         :type node: dict
+        :type branch: string
+
         """
         distro = self.get_linux_distro()
         logging.info("  {}".format(distro[0]))
         if distro[0] == 'Ubuntu':
             logging.info("Install Ubuntu")
-            self._install_vpp_ubuntu(node)
+            self._install_vpp_ubuntu(node, branch, ubuntu_version=distro[2])
         elif distro[0] == 'CentOS Linux':
             logging.info("Install CentOS")
-            self._install_vpp_centos(node)
+            self._install_vpp_centos(node, branch)
         else:
             logging.info("Install CentOS (default)")
-            self._install_vpp_centos(node)
+            self._install_vpp_centos(node, branch)
         return
 
     def _uninstall_vpp_pkg_ubuntu(self, node, pkg):
@@ -302,14 +338,12 @@ class VPPUtil(object):
         if len(pkgs) > 0:
             if 'version' in pkgs[0]:
                 logging.info("Uninstall Ubuntu Packages")
+                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dbg')
+                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dev')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp-api-python')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp-api-java')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp-api-lua')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp-plugins')
-                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dpdk-dev')
-                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dpdk-dkms')
-                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dev')
-                self._uninstall_vpp_pkg_ubuntu(node, 'vpp-dbg')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp')
                 self._uninstall_vpp_pkg_ubuntu(node, 'vpp-lib')
             else:
@@ -332,14 +366,15 @@ class VPPUtil(object):
         if len(pkgs) > 0:
             if 'version' in pkgs[0]:
                 logging.info("Uninstall CentOS Packages")
+                self._install_vpp_pkg_centos(node, 'vpp-debuginfo')
+                self._uninstall_vpp_pkg_centos(node, 'vpp-devel')
                 self._uninstall_vpp_pkg_centos(node, 'vpp-api-python')
                 self._uninstall_vpp_pkg_centos(node, 'vpp-api-java')
                 self._uninstall_vpp_pkg_centos(node, 'vpp-api-lua')
                 self._uninstall_vpp_pkg_centos(node, 'vpp-plugins')
-                self._uninstall_vpp_pkg_centos(node, 'vpp-dpdk-devel')
-                self._uninstall_vpp_pkg_centos(node, 'vpp-devel')
                 self._uninstall_vpp_pkg_centos(node, 'vpp')
                 self._uninstall_vpp_pkg_centos(node, 'vpp-lib')
+                self._uninstall_vpp_pkg_centos(node, 'vpp-selinux-policy')
             else:
                 logging.info("Uninstall locally installed CentOS Packages")
                 for pkg in pkgs:
@@ -404,14 +439,15 @@ class VPPUtil(object):
 
         :param node: VPP node.
         :type node: dict
-        :returns: Dictionary containing a list of VMs and the interfaces that are connected to VPP
+        :returns: Dictionary containing a list of VMs and the interfaces
+                  that are connected to VPP
         :rtype: dictionary
         """
 
         vmdict = {}
 
-        print "Need to implement get vms"
-        
+        print ("Need to implement get vms")
+
         return vmdict
 
     @staticmethod
@@ -503,27 +539,35 @@ class VPPUtil(object):
                 interfaces[name]['carrier'] = spl[1]
 
             # Socket
-            rfall = re.findall(r'cpu socket', line)
+            rfall = re.findall(r'numa \d+', line)
             if rfall:
-                spl = line.split('cpu socket ')
-                interfaces[name]['cpu socket'] = spl[1]
+                spl = rfall[0].split()
+                interfaces[name]['numa'] = rfall[0].split()[1]
 
             # Queues and Descriptors
-            rfall = re.findall(r'rx queues', line)
+            rfall = re.findall(r'rx\: queues \d+', line)
             if rfall:
-                spl = line.split(',')
-                interfaces[name]['rx queues'] = spl[0].lstrip(' ').split(' ')[2]
-                interfaces[name]['rx descs'] = spl[1].split(' ')[3]
-                interfaces[name]['tx queues'] = spl[2].split(' ')[3]
-                interfaces[name]['tx descs'] = spl[3].split(' ')[3]
+                interfaces[name]['rx queues'] = rfall[0].split()[2]
+                rdesc = re.findall(r'desc \d+', line)
+                if rdesc:
+                    interfaces[name]['rx descs'] = rdesc[0].split()[1]
+
+            rfall = re.findall(r'tx\: queues \d+', line)
+            if rfall:
+                interfaces[name]['tx queues'] = rfall[0].split()[2]
+                rdesc = re.findall(r'desc \d+', line)
+                if rdesc:
+                    interfaces[name]['tx descs'] = rdesc[0].split()[1]
 
         return interfaces
 
-    def _get_installed_vpp_pkgs_ubuntu(self):
+    def _get_installed_vpp_pkgs_ubuntu(self, distro):
         """
         Get the VPP hardware information and return it in a
         dictionary
 
+        :param distro: The linux distro
+        :type distro: dict
         :returns: List of the packages installed
         :rtype: list
         """
@@ -585,7 +629,7 @@ class VPPUtil(object):
 
         distro = self.get_linux_distro()
         if distro[0] == 'Ubuntu':
-            pkgs = self._get_installed_vpp_pkgs_ubuntu()
+            pkgs = self._get_installed_vpp_pkgs_ubuntu(distro)
         elif distro[0] == 'CentOS Linux':
             pkgs = self._get_installed_vpp_pkgs_centos()
         else:
@@ -598,8 +642,10 @@ class VPPUtil(object):
     def get_interfaces_numa_node(node, *iface_keys):
         """Get numa node on which are located most of the interfaces.
 
-        Return numa node with highest count of interfaces provided as arguments.
-        Return 0 if the interface does not have numa_node information available.
+        Return numa node with highest count of interfaces provided as
+        arguments.
+        Return 0 if the interface does not have numa_node information
+        available.
         If all interfaces have unknown location (-1), then return 0.
         If most of interfaces have unknown location (-1), but there are
         some interfaces with known location, then return the second most
@@ -673,9 +719,9 @@ class VPPUtil(object):
         cmd = 'service vpp stop'
         (ret, stdout, stderr) = VPPUtil.exec_command(cmd)
         if ret != 0:
-            raise RuntimeError('{} failed on node {} {} {}'.
-                               format(cmd, node['host'],
-                                      stdout, stderr))
+            logging.debug('{} failed on node {} {} {}'.
+                          format(cmd, node['host'],
+                                 stdout, stderr))
 
     # noinspection RegExpRedundantEscape
     @staticmethod
@@ -727,11 +773,12 @@ class VPPUtil(object):
 
         distro = platform.linux_distribution()
         if distro[0] == 'Ubuntu' or \
-                        distro[0] == 'CentOS Linux' or \
-                        distro[:7] == 'Red Hat':
+                distro[0] == 'CentOS Linux' or \
+                distro[:7] == 'Red Hat':
             return distro
         else:
-            raise RuntimeError('Linux Distribution {} is not supported'.format(distro[0]))
+            raise RuntimeError(
+                'Linux Distribution {} is not supported'.format(distro[0]))
 
     @staticmethod
     def version():
@@ -783,7 +830,7 @@ class VPPUtil(object):
         bridges = []
         for line in lines:
             if line == 'no bridge-domains in use':
-                print line
+                print (line)
                 return ifaces
             if len(line) == 0:
                 continue
@@ -804,8 +851,8 @@ class VPPUtil(object):
         for line in lines:
             iface = re.findall(r'[a-zA-z]+\d+/\d+/\d+', line)
             if len(iface):
-                ifcidx ={'name': iface[0], 'index': line.split()[1] }
+                ifcidx = {'name': iface[0], 'index': line.split()[1]}
                 ifaces.append(ifcidx)
 
-        print stdout
+        print (stdout)
         return ifaces

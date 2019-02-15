@@ -140,7 +140,7 @@ pipe_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
   pipe_t *pipe;
 
   n_left_from = frame->n_vectors;
-  from = vlib_frame_args (frame);
+  from = vlib_frame_vector_args (frame);
 
   while (n_left_from > 0)
     {
@@ -148,7 +148,7 @@ pipe_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 
       n_copy = clib_min (n_left_from, n_left_to_next);
 
-      clib_memcpy (to_next, from, n_copy * sizeof (from[0]));
+      clib_memcpy_fast (to_next, from, n_copy * sizeof (from[0]));
       n_left_to_next -= n_copy;
       n_left_from -= n_copy;
       i = 0;
@@ -359,38 +359,40 @@ pipe_rx (vlib_main_t * vm,
 	  pipe0 = &pipe_main.pipes[sw_if_index0];
 	  pipe1 = &pipe_main.pipes[sw_if_index1];
 
+	  vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
+	  vnet_buffer (b1)->l2_hdr_offset = b1->current_data;
+
 	  vnet_buffer (b0)->l3_hdr_offset =
-	    vnet_buffer (b0)->l2_hdr_offset + vnet_buffer (b0)->l2.l2_len;
+	    vnet_buffer (b0)->l2_hdr_offset + sizeof (ethernet_header_t);
 	  vnet_buffer (b1)->l3_hdr_offset =
-	    vnet_buffer (b1)->l2_hdr_offset + vnet_buffer (b1)->l2.l2_len;
-	  b0->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
-	  b1->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	    vnet_buffer (b1)->l2_hdr_offset + sizeof (ethernet_header_t);
+	  b0->flags |=
+	    VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+	    VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	  b1->flags |=
+	    VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+	    VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	  is_l20 = pipe0->subint.flags & SUBINT_CONFIG_L2;
 	  is_l21 = pipe1->subint.flags & SUBINT_CONFIG_L2;
+
+	  /*
+	   * from discussion with Neale - we do not support the tagged traffic.
+	   * So assume a simple ethernet header
+	   */
+	  vnet_buffer (b0)->l2.l2_len = sizeof (ethernet_header_t);
+	  vnet_buffer (b1)->l2.l2_len = sizeof (ethernet_header_t);
+	  vlib_buffer_advance (b0, is_l20 ? 0 : sizeof (ethernet_header_t));
+	  vlib_buffer_advance (b1, is_l21 ? 0 : sizeof (ethernet_header_t));
+
 	  pipe_determine_next_node (&ethernet_main, is_l20, type0, b0,
 				    &next0);
 	  pipe_determine_next_node (&ethernet_main, is_l21, type1, b1,
 				    &next1);
 
-	  if (!is_l20)
-	    vlib_buffer_advance (b0, sizeof (ethernet_header_t));
-	  else
-	    {
-	      u32 eth_start = vnet_buffer (b0)->l2_hdr_offset;
-	      vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
-	    }
-	  if (!is_l21)
-	    vlib_buffer_advance (b1, sizeof (ethernet_header_t));
-	  else
-	    {
-	      u32 eth_start = vnet_buffer (b1)->l2_hdr_offset;
-	      vnet_buffer (b1)->l2.l2_len = b1->current_data - eth_start;
-	    }
-
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
 					   to_next, n_left_to_next,
-					   bi0, bi1, next0, next0);
+					   bi0, bi1, next0, next1);
 	}
       while (n_left_from > 0 && n_left_to_next > 0)
 	{
@@ -416,21 +418,20 @@ pipe_rx (vlib_main_t * vm,
 	  type0 = clib_net_to_host_u16 (e0->type);
 	  pipe0 = &pipe_main.pipes[sw_if_index0];
 
+	  vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
 	  vnet_buffer (b0)->l3_hdr_offset =
-	    vnet_buffer (b0)->l2_hdr_offset + vnet_buffer (b0)->l2.l2_len;
-	  b0->flags |= VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	    vnet_buffer (b0)->l2_hdr_offset + sizeof (ethernet_header_t);
+	  b0->flags |=
+	    VNET_BUFFER_F_L2_HDR_OFFSET_VALID |
+	    VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	  is_l20 = pipe0->subint.flags & SUBINT_CONFIG_L2;
+
+	  vnet_buffer (b0)->l2.l2_len = sizeof (ethernet_header_t);
+	  vlib_buffer_advance (b0, is_l20 ? 0 : sizeof (ethernet_header_t));
+
 	  pipe_determine_next_node (&ethernet_main, is_l20, type0, b0,
 				    &next0);
-
-	  if (!is_l20)
-	    vlib_buffer_advance (b0, sizeof (ethernet_header_t));
-	  else
-	    {
-	      u32 eth_start = vnet_buffer (b0)->l2_hdr_offset;
-	      vnet_buffer (b0)->l2.l2_len = b0->current_data - eth_start;
-	    }
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 					   to_next, n_left_to_next,
@@ -526,7 +527,7 @@ pipe_create_sub_interface (vnet_hw_interface_t * hi,
 {
   vnet_sw_interface_t template;
 
-  memset (&template, 0, sizeof (template));
+  clib_memset (&template, 0, sizeof (template));
   template.type = VNET_SW_INTERFACE_TYPE_PIPE;
   template.flood_class = VNET_FLOOD_CLASS_NORMAL;
   template.sup_sw_if_index = hi->sw_if_index;
@@ -556,7 +557,7 @@ vnet_create_pipe_interface (u8 is_specified,
 
   ASSERT (parent_sw_if_index);
 
-  memset (address, 0, sizeof (address));
+  clib_memset (address, 0, sizeof (address));
 
   /*
    * Allocate a pipe instance.  Either select one dynamically

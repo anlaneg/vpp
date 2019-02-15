@@ -301,17 +301,20 @@ gre_update_adj (vnet_main_t * vnm, u32 sw_if_index, adj_index_t ai)
 {
   gre_main_t *gm = &gre_main;
   gre_tunnel_t *t;
-  u32 ti;
+  adj_flags_t af;
   u8 is_ipv6;
+  u32 ti;
 
   ti = gm->tunnel_index_by_sw_if_index[sw_if_index];
   t = pool_elt_at_index (gm->tunnels, ti);
   is_ipv6 = t->tunnel_dst.fp_proto == FIB_PROTOCOL_IP6 ? 1 : 0;
+  af = ADJ_FLAG_MIDCHAIN_IP_STACK;
+
+  if (VNET_LINK_ETHERNET == adj_get_link_type (ai))
+    af |= ADJ_FLAG_MIDCHAIN_NO_COUNT;
 
   adj_nbr_midchain_update_rewrite
-    (ai, !is_ipv6 ? gre4_fixup : gre6_fixup, NULL,
-     (VNET_LINK_ETHERNET == adj_get_link_type (ai) ?
-      ADJ_FLAG_MIDCHAIN_NO_COUNT : ADJ_FLAG_NONE),
+    (ai, !is_ipv6 ? gre4_fixup : gre6_fixup, NULL, af,
      gre_build_rewrite (vnm, sw_if_index, adj_get_link_type (ai), NULL));
 
   gre_tunnel_stack (ai);
@@ -406,7 +409,7 @@ gre_interface_tx (vlib_main_t * vm,
 	      /* Encap GRE seq# and ERSPAN type II header */
 	      vlib_buffer_advance (b0, -sizeof (erspan_t2_t));
 	      erspan_t2_t *h0 = vlib_buffer_get_current (b0);
-	      u32 seq_num = clib_smp_atomic_add (&gt0->gre_sn->seq_num, 1);
+	      u32 seq_num = clib_atomic_fetch_add (&gt0->gre_sn->seq_num, 1);
 	      u64 hdr = clib_host_to_net_u64 (ERSPAN_HDR2);
 	      h0->seq_num = clib_host_to_net_u32 (seq_num);
 	      h0->t2_u64 = hdr;
@@ -418,7 +421,7 @@ gre_interface_tx (vlib_main_t * vm,
 	      /* Encap GRE seq# and ERSPAN type II header */
 	      vlib_buffer_advance (b1, -sizeof (erspan_t2_t));
 	      erspan_t2_t *h1 = vlib_buffer_get_current (b1);
-	      u32 seq_num = clib_smp_atomic_add (&gt1->gre_sn->seq_num, 1);
+	      u32 seq_num = clib_atomic_fetch_add (&gt1->gre_sn->seq_num, 1);
 	      u64 hdr = clib_host_to_net_u64 (ERSPAN_HDR2);
 	      h1->seq_num = clib_host_to_net_u32 (seq_num);
 	      h1->t2_u64 = hdr;
@@ -473,7 +476,7 @@ gre_interface_tx (vlib_main_t * vm,
 	      /* Encap GRE seq# and ERSPAN type II header */
 	      vlib_buffer_advance (b0, -sizeof (erspan_t2_t));
 	      erspan_t2_t *h0 = vlib_buffer_get_current (b0);
-	      u32 seq_num = clib_smp_atomic_add (&gt0->gre_sn->seq_num, 1);
+	      u32 seq_num = clib_atomic_fetch_add (&gt0->gre_sn->seq_num, 1);
 	      u64 hdr = clib_host_to_net_u64 (ERSPAN_HDR2);
 	      h0->seq_num = clib_host_to_net_u32 (seq_num);
 	      h0->t2_u64 = hdr;
@@ -597,7 +600,7 @@ gre_init (vlib_main_t * vm)
   ip_main_t *im = &ip_main;
   ip_protocol_info_t *pi;
 
-  memset (gm, 0, sizeof (gm[0]));
+  clib_memset (gm, 0, sizeof (gm[0]));
   gm->vlib_main = vm;
   gm->vnet_main = vnet_get_main ();
 

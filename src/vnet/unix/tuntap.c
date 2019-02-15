@@ -146,7 +146,7 @@ static tuntap_main_t tuntap_main = {
 static uword
 tuntap_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_packets = frame->n_vectors;
   tuntap_main_t *tm = &tuntap_main;
   vnet_main_t *vnm = vnet_get_main ();
@@ -166,7 +166,8 @@ tuntap_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
       if (tm->is_ether && (!tm->have_normal_interface))
 	{
 	  vlib_buffer_reset (b);
-	  clib_memcpy (vlib_buffer_get_current (b), tm->ether_dst_mac, 6);
+	  clib_memcpy_fast (vlib_buffer_get_current (b), tm->ether_dst_mac,
+			    6);
 	}
 
       /* Re-set iovecs if present. */
@@ -242,7 +243,7 @@ tuntap_rx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
   tuntap_main_t *tm = &tuntap_main;
   vlib_buffer_t *b;
   u32 bi;
-  const uword buffer_size = VLIB_BUFFER_DATA_SIZE;
+  const uword buffer_size = vlib_buffer_get_default_data_size (vm);
   u16 thread_index = vm->thread_index;
 
   /** Make sure we have some RX buffers. */
@@ -445,7 +446,7 @@ tuntap_exit (vlib_main_t * vm)
   if (sfd < 0)
     clib_unix_warning ("provisioning socket");
 
-  memset (&ifr, 0, sizeof (ifr));
+  clib_memset (&ifr, 0, sizeof (ifr));
   strncpy (ifr.ifr_name, tm->tun_name, sizeof (ifr.ifr_name) - 1);
 
   /* get flags, modify to bring down interface... */
@@ -489,7 +490,7 @@ tuntap_config (vlib_main_t * vm, unformat_input_t * input)
   u8 *name;
   int flags = IFF_TUN | IFF_NO_PI;
   int is_enabled = 0, is_ether = 0, have_normal_interface = 0;
-  const uword buffer_size = VLIB_BUFFER_DATA_SIZE;
+  const uword buffer_size = vlib_buffer_get_default_data_size (vm);
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -535,7 +536,7 @@ tuntap_config (vlib_main_t * vm, unformat_input_t * input)
       goto done;
     }
 
-  memset (&ifr, 0, sizeof (ifr));
+  clib_memset (&ifr, 0, sizeof (ifr));
   strncpy (ifr.ifr_name, tm->tun_name, sizeof (ifr.ifr_name) - 1);
   ifr.ifr_flags = flags;
   if (ioctl (tm->dev_net_tun_fd, TUNSETIFF, (void *) &ifr) < 0)
@@ -563,7 +564,7 @@ tuntap_config (vlib_main_t * vm, unformat_input_t * input)
     struct ifreq ifr;
     struct sockaddr_ll sll;
 
-    memset (&ifr, 0, sizeof (ifr));
+    clib_memset (&ifr, 0, sizeof (ifr));
     strncpy (ifr.ifr_name, tm->tun_name, sizeof (ifr.ifr_name) - 1);
     if (ioctl (tm->dev_tap_fd, SIOCGIFINDEX, &ifr) < 0)
       {
@@ -572,7 +573,7 @@ tuntap_config (vlib_main_t * vm, unformat_input_t * input)
       }
 
     /* Bind the provisioning socket to the interface. */
-    memset (&sll, 0, sizeof (sll));
+    clib_memset (&sll, 0, sizeof (sll));
     sll.sll_family = AF_PACKET;
     sll.sll_ifindex = ifr.ifr_ifindex;
     sll.sll_protocol = htons (ETH_P_ALL);
@@ -626,7 +627,7 @@ tuntap_config (vlib_main_t * vm, unformat_input_t * input)
 	  goto done;
 	}
       else
-	clib_memcpy (tm->ether_dst_mac, ifr.ifr_hwaddr.sa_data, 6);
+	clib_memcpy_fast (tm->ether_dst_mac, ifr.ifr_hwaddr.sa_data, 6);
     }
 
   if (have_normal_interface)
@@ -711,7 +712,7 @@ tuntap_ip4_add_del_interface_address (ip4_main_t * im,
 
   /* if the address is being applied to an interface that is not in
    * the same table/VRF as this tap, then ignore it.
-   * If we don't do this overlapping address spaces in the diferent tables
+   * If we don't do this overlapping address spaces in the different tables
    * breaks the linux host's routing tables */
   if (fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4,
 					   sw_if_index) !=
@@ -719,9 +720,9 @@ tuntap_ip4_add_del_interface_address (ip4_main_t * im,
     return;
 
   /** See if we already know about this subif */
-  memset (&subif_addr, 0, sizeof (subif_addr));
+  clib_memset (&subif_addr, 0, sizeof (subif_addr));
   subif_addr.sw_if_index = sw_if_index;
-  clib_memcpy (&subif_addr.addr, address, sizeof (*address));
+  clib_memcpy_fast (&subif_addr.addr, address, sizeof (*address));
 
   p = mhash_get (&tm->subif_mhash, &subif_addr);
 
@@ -735,7 +736,7 @@ tuntap_ip4_add_del_interface_address (ip4_main_t * im,
     }
 
   /* Use subif pool index to select alias device. */
-  memset (&ifr, 0, sizeof (ifr));
+  clib_memset (&ifr, 0, sizeof (ifr));
   snprintf (ifr.ifr_name, sizeof (ifr.ifr_name),
 	    "%s:%d", tm->tun_name, (int) (ap - tm->subifs));
 
@@ -753,7 +754,7 @@ tuntap_ip4_add_del_interface_address (ip4_main_t * im,
 
       /* Set ipv4 address, netmask. */
       sin->sin_family = AF_INET;
-      clib_memcpy (&sin->sin_addr.s_addr, address, 4);
+      clib_memcpy_fast (&sin->sin_addr.s_addr, address, 4);
       if (ioctl (tm->dev_tap_fd, SIOCSIFADDR, &ifr) < 0)
 	clib_unix_warning ("ioctl SIOCSIFADDR");
 
@@ -796,7 +797,7 @@ struct in6_ifreq
  * @brief Add or Del tun/tap interface address.
  *
  * Both the v6 interface address API and the way ifconfig
- * displays subinterfaces differ from their v4 couterparts.
+ * displays subinterfaces differ from their v4 counterparts.
  * The code given here seems to work but YMMV.
  *
  * @param *im - ip6_main_t
@@ -827,7 +828,7 @@ tuntap_ip6_add_del_interface_address (ip6_main_t * im,
 
   /* if the address is being applied to an interface that is not in
    * the same table/VRF as this tap, then ignore it.
-   * If we don't do this overlapping address spaces in the diferent tables
+   * If we don't do this overlapping address spaces in the different tables
    * breaks the linux host's routing tables */
   if (fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP6,
 					   sw_if_index) !=
@@ -835,10 +836,10 @@ tuntap_ip6_add_del_interface_address (ip6_main_t * im,
     return;
 
   /* See if we already know about this subif */
-  memset (&subif_addr, 0, sizeof (subif_addr));
+  clib_memset (&subif_addr, 0, sizeof (subif_addr));
   subif_addr.sw_if_index = sw_if_index;
   subif_addr.is_v6 = 1;
-  clib_memcpy (&subif_addr.addr, address, sizeof (*address));
+  clib_memcpy_fast (&subif_addr.addr, address, sizeof (*address));
 
   p = mhash_get (&tm->subif_mhash, &subif_addr);
 
@@ -852,8 +853,8 @@ tuntap_ip6_add_del_interface_address (ip6_main_t * im,
     }
 
   /* Use subif pool index to select alias device. */
-  memset (&ifr, 0, sizeof (ifr));
-  memset (&ifr6, 0, sizeof (ifr6));
+  clib_memset (&ifr, 0, sizeof (ifr));
+  clib_memset (&ifr6, 0, sizeof (ifr6));
   snprintf (ifr.ifr_name, sizeof (ifr.ifr_name),
 	    "%s:%d", tm->tun_name, (int) (ap - tm->subifs));
 
@@ -874,7 +875,7 @@ tuntap_ip6_add_del_interface_address (ip6_main_t * im,
 
       ifr6.ifr6_ifindex = ifr.ifr_ifindex;
       ifr6.ifr6_prefixlen = address_length;
-      clib_memcpy (&ifr6.ifr6_addr, address, 16);
+      clib_memcpy_fast (&ifr6.ifr6_addr, address, 16);
 
       if (ioctl (sockfd, SIOCSIFADDR, &ifr6) < 0)
 	clib_unix_warning ("set address");
@@ -893,7 +894,7 @@ tuntap_ip6_add_del_interface_address (ip6_main_t * im,
 
       ifr6.ifr6_ifindex = ifr.ifr_ifindex;
       ifr6.ifr6_prefixlen = address_length;
-      clib_memcpy (&ifr6.ifr6_addr, address, 16);
+      clib_memcpy_fast (&ifr6.ifr6_addr, address, 16);
 
       if (ioctl (sockfd, SIOCDIFADDR, &ifr6) < 0)
 	clib_unix_warning ("del address");
@@ -934,7 +935,7 @@ static void
 tuntap_nopunt_frame (vlib_main_t * vm,
 		     vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_packets = frame->n_vectors;
   vlib_buffer_free (vm, buffers, n_packets);
   vlib_frame_free (vm, node, frame);
@@ -980,7 +981,7 @@ tuntap_intfc_tx (vlib_main_t * vm,
 		 vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
   tuntap_main_t *tm = &tuntap_main;
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_buffers = frame->n_vectors;
 
   /* Normal interface transmit happens only on the normal interface... */

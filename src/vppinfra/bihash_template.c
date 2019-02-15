@@ -23,13 +23,13 @@ static inline void *BV (alloc_aligned) (BVT (clib_bihash) * h, uword nbytes)
   nbytes += CLIB_CACHE_LINE_BYTES - 1;
   nbytes &= ~(CLIB_CACHE_LINE_BYTES - 1);
 
-  rv = h->alloc_arena_next;
-  h->alloc_arena_next += nbytes;
+  rv = alloc_arena_next (h);
+  alloc_arena_next (h) += nbytes;
 
-  if (rv >= (h->alloc_arena + h->alloc_arena_size))
+  if (rv >= alloc_arena_size (h))
     os_out_of_memory ();
 
-  return (void *) rv;
+  return (void *) (uword) (rv + alloc_arena (h));
 }
 
 
@@ -43,8 +43,6 @@ void BV (clib_bihash_init)
   h->name = (u8 *) name;
   h->nbuckets = nbuckets;
   h->log2_nbuckets = max_log2 (nbuckets);
-  h->cache_hits = 0;
-  h->cache_misses = 0;
 
   /*
    * Make sure the requested size is rational. The max table
@@ -54,9 +52,9 @@ void BV (clib_bihash_init)
    */
   ASSERT (memory_size < (1ULL << BIHASH_BUCKET_OFFSET_BITS));
 
-  h->alloc_arena = (uword) clib_mem_vm_alloc (memory_size);
-  h->alloc_arena_next = h->alloc_arena;
-  h->alloc_arena_size = memory_size;
+  alloc_arena (h) = (uword) clib_mem_vm_alloc (memory_size);
+  alloc_arena_next (h) = 0;
+  alloc_arena_size (h) = memory_size;
 
   bucket_size = nbuckets * sizeof (h->buckets[0]);
   h->buckets = BV (alloc_aligned) (h, bucket_size);
@@ -67,6 +65,128 @@ void BV (clib_bihash_init)
   h->fmt_fn = NULL;
 }
 
+#if BIHASH_32_64_SVM
+#if !defined (MFD_ALLOW_SEALING)
+#define MFD_ALLOW_SEALING 0x0002U
+#endif
+
+void BV (clib_bihash_master_init_svm)
+  (BVT (clib_bihash) * h, char *name, u32 nbuckets, u64 memory_size)
+{
+  uword bucket_size;
+  u8 *mmap_addr;
+  vec_header_t *freelist_vh;
+  int fd;
+
+  ASSERT (memory_size < (1ULL << 32));
+  /* Set up for memfd sharing */
+  if ((fd = memfd_create (name, MFD_ALLOW_SEALING)) == -1)
+    {
+      clib_unix_warning ("memfd_create");
+      return;
+    }
+
+  if (ftruncate (fd, memory_size) < 0)
+    {
+      clib_unix_warning ("ftruncate");
+      return;
+    }
+
+  /* Not mission-critical, complain and continue */
+  if ((fcntl (fd, F_ADD_SEALS, F_SEAL_SHRINK)) == -1)
+    clib_unix_warning ("fcntl (F_ADD_SEALS)");
+
+  mmap_addr = mmap (0, memory_size,
+		    PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 /* offset */ );
+
+  if (mmap_addr == MAP_FAILED)
+    {
+      clib_unix_warning ("mmap failed");
+      ASSERT (0);
+    }
+
+  h->sh = (void *) mmap_addr;
+  h->memfd = fd;
+  nbuckets = 1 << (max_log2 (nbuckets));
+
+  h->name = (u8 *) name;
+  h->sh->nbuckets = h->nbuckets = nbuckets;
+  h->log2_nbuckets = max_log2 (nbuckets);
+
+  alloc_arena (h) = (u64) (uword) mmap_addr;
+  alloc_arena_next (h) = CLIB_CACHE_LINE_BYTES;
+  alloc_arena_size (h) = memory_size;
+
+  bucket_size = nbuckets * sizeof (h->buckets[0]);
+  h->buckets = BV (alloc_aligned) (h, bucket_size);
+  h->sh->buckets_as_u64 = (u64) BV (clib_bihash_get_offset) (h, h->buckets);
+
+  h->alloc_lock = BV (alloc_aligned) (h, CLIB_CACHE_LINE_BYTES);
+  h->alloc_lock[0] = 0;
+
+  h->sh->alloc_lock_as_u64 =
+    (u64) BV (clib_bihash_get_offset) (h, (void *) h->alloc_lock);
+  freelist_vh =
+    BV (alloc_aligned) (h,
+			sizeof (vec_header_t) +
+			BIHASH_FREELIST_LENGTH * sizeof (u64));
+  freelist_vh->len = BIHASH_FREELIST_LENGTH;
+  freelist_vh->dlmalloc_header_offset = 0xDEADBEEF;
+  h->sh->freelists_as_u64 =
+    (u64) BV (clib_bihash_get_offset) (h, freelist_vh->vector_data);
+  h->freelists = (void *) (freelist_vh->vector_data);
+
+  h->fmt_fn = NULL;
+}
+
+void BV (clib_bihash_slave_init_svm)
+  (BVT (clib_bihash) * h, char *name, int fd)
+{
+  u8 *mmap_addr;
+  u64 memory_size;
+  BVT (clib_bihash_shared_header) * sh;
+
+  /* Trial mapping, to learn the segment size */
+  mmap_addr = mmap (0, 4096, PROT_READ, MAP_SHARED, fd, 0 /* offset */ );
+  if (mmap_addr == MAP_FAILED)
+    {
+      clib_unix_warning ("trial mmap failed");
+      ASSERT (0);
+    }
+
+  sh = (BVT (clib_bihash_shared_header) *) mmap_addr;
+
+  memory_size = sh->alloc_arena_size;
+
+  munmap (mmap_addr, 4096);
+
+  /* Actual mapping, at the required size */
+  mmap_addr = mmap (0, memory_size,
+		    PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 /* offset */ );
+
+  if (mmap_addr == MAP_FAILED)
+    {
+      clib_unix_warning ("mmap failed");
+      ASSERT (0);
+    }
+
+  (void) close (fd);
+
+  h->sh = (void *) mmap_addr;
+  alloc_arena (h) = (u64) (uword) mmap_addr;
+  h->memfd = -1;
+
+  h->name = (u8 *) name;
+  h->buckets = BV (clib_bihash_get_value) (h, h->sh->buckets_as_u64);
+  h->nbuckets = h->sh->nbuckets;
+  h->log2_nbuckets = max_log2 (h->nbuckets);
+
+  h->alloc_lock = BV (clib_bihash_get_value) (h, h->sh->alloc_lock_as_u64);
+  h->freelists = BV (clib_bihash_get_value) (h, h->sh->freelists_as_u64);
+  h->fmt_fn = NULL;
+}
+#endif /* BIHASH_32_64_SVM */
+
 void BV (clib_bihash_set_kvp_format_fn) (BVT (clib_bihash) * h,
 					 format_function_t * fmt_fn)
 {
@@ -76,9 +196,14 @@ void BV (clib_bihash_set_kvp_format_fn) (BVT (clib_bihash) * h,
 void BV (clib_bihash_free) (BVT (clib_bihash) * h)
 {
   vec_free (h->working_copies);
+#if BIHASH_32_64_SVM == 0
   vec_free (h->freelists);
-  clib_mem_vm_free ((void *) (h->alloc_arena), h->alloc_arena_size);
-  memset (h, 0, sizeof (*h));
+#else
+  if (h->memfd > 0)
+    (void) close (h->memfd);
+#endif
+  clib_mem_vm_free ((void *) (uword) (alloc_arena (h)), alloc_arena_size (h));
+  clib_memset (h, 0, sizeof (*h));
 }
 
 static
@@ -88,14 +213,19 @@ BV (value_alloc) (BVT (clib_bihash) * h, u32 log2_pages)
   BVT (clib_bihash_value) * rv = 0;
 
   ASSERT (h->alloc_lock[0]);
+
+#if BIHASH_32_64_SVM
+  ASSERT (log2_pages < vec_len (h->freelists));
+#endif
+
   if (log2_pages >= vec_len (h->freelists) || h->freelists[log2_pages] == 0)
     {
       vec_validate_init_empty (h->freelists, log2_pages, 0);
       rv = BV (alloc_aligned) (h, (sizeof (*rv) * (1 << log2_pages)));
       goto initialize;
     }
-  rv = h->freelists[log2_pages];
-  h->freelists[log2_pages] = rv->next_free;
+  rv = BV (clib_bihash_get_value) (h, (uword) h->freelists[log2_pages]);
+  h->freelists[log2_pages] = rv->next_free_as_u64;
 
 initialize:
   ASSERT (rv);
@@ -104,7 +234,7 @@ initialize:
    * if we replace (1<<log2_pages) with vec_len(rv).
    * No clue.
    */
-  memset (rv, 0xff, sizeof (*rv) * (1 << log2_pages));
+  clib_memset (rv, 0xff, sizeof (*rv) * (1 << log2_pages));
   return rv;
 }
 
@@ -117,10 +247,10 @@ BV (value_free) (BVT (clib_bihash) * h, BVT (clib_bihash_value) * v,
   ASSERT (vec_len (h->freelists) > log2_pages);
 
   if (CLIB_DEBUG > 0)
-    memset (v, 0xFE, sizeof (*v) * (1 << log2_pages));
+    clib_memset (v, 0xFE, sizeof (*v) * (1 << log2_pages));
 
-  v->next_free = h->freelists[log2_pages];
-  h->freelists[log2_pages] = v;
+  v->next_free_as_u64 = (u64) h->freelists[log2_pages];
+  h->freelists[log2_pages] = (u64) BV (clib_bihash_get_offset) (h, v);
 }
 
 static inline void
@@ -165,7 +295,7 @@ BV (make_working_copy) (BVT (clib_bihash) * h, BVT (clib_bihash_bucket) * b)
 
   v = BV (clib_bihash_get_value) (h, b->offset);
 
-  clib_memcpy (working_copy, v, sizeof (*v) * (1 << b->log2_pages));
+  clib_memcpy_fast (working_copy, v, sizeof (*v) * (1 << b->log2_pages));
   working_bucket.as_u64 = b->as_u64;
   working_bucket.offset = BV (clib_bihash_get_offset) (h, working_copy);
   CLIB_MEMORY_BARRIER ();
@@ -208,8 +338,8 @@ BV (split_and_rehash)
 	  /* Empty slot */
 	  if (BV (clib_bihash_is_free) (&(new_v->kvp[j])))
 	    {
-	      clib_memcpy (&(new_v->kvp[j]), &(old_values->kvp[i]),
-			   sizeof (new_v->kvp[j]));
+	      clib_memcpy_fast (&(new_v->kvp[j]), &(old_values->kvp[i]),
+				sizeof (new_v->kvp[j]));
 	      goto doublebreak;
 	    }
 	}
@@ -253,8 +383,8 @@ BV (split_and_rehash_linear)
 	  if (BV (clib_bihash_is_free) (&(new_values->kvp[j])))
 	    {
 	      /* Copy the old value and move along */
-	      clib_memcpy (&(new_values->kvp[j]), &(old_values->kvp[i]),
-			   sizeof (new_values->kvp[j]));
+	      clib_memcpy_fast (&(new_values->kvp[j]), &(old_values->kvp[i]),
+				sizeof (new_values->kvp[j]));
 	      j++;
 	      goto doublebreak;
 	    }
@@ -269,8 +399,9 @@ BV (split_and_rehash_linear)
   return new_values;
 }
 
-int BV (clib_bihash_add_del)
-  (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * add_v, int is_add)
+static inline int BV (clib_bihash_add_del_inline)
+  (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * add_v, int is_add,
+   int (*is_stale_cb) (BVT (clib_bihash_kv) *, void *), void *arg)
 {
   u32 bucket_index;
   BVT (clib_bihash_bucket) * b, tmp_b;
@@ -341,7 +472,7 @@ int BV (clib_bihash_add_del)
 	  if (!memcmp (&(v->kvp[i]), &add_v->key, sizeof (add_v->key)))
 	    {
 	      CLIB_MEMORY_BARRIER ();	/* Add a delay */
-	      clib_memcpy (&(v->kvp[i]), add_v, sizeof (*add_v));
+	      clib_memcpy_fast (&(v->kvp[i]), add_v, sizeof (*add_v));
 	      BV (clib_bihash_unlock_bucket) (b);
 	      return (0);
 	    }
@@ -357,13 +488,29 @@ int BV (clib_bihash_add_del)
 	       * Copy the value first, so that if a reader manages
 	       * to match the new key, the value will be right...
 	       */
-	      clib_memcpy (&(v->kvp[i].value),
-			   &add_v->value, sizeof (add_v->value));
+	      clib_memcpy_fast (&(v->kvp[i].value),
+				&add_v->value, sizeof (add_v->value));
 	      CLIB_MEMORY_BARRIER ();	/* Make sure the value has settled */
-	      clib_memcpy (&(v->kvp[i]), &add_v->key, sizeof (add_v->key));
+	      clib_memcpy_fast (&(v->kvp[i]), &add_v->key,
+				sizeof (add_v->key));
 	      b->refcnt++;
+	      ASSERT (b->refcnt > 0);
 	      BV (clib_bihash_unlock_bucket) (b);
 	      return (0);
+	    }
+	}
+      /* look for stale data to overwrite */
+      if (is_stale_cb)
+	{
+	  for (i = 0; i < limit; i++)
+	    {
+	      if (is_stale_cb (&(v->kvp[i]), arg))
+		{
+		  CLIB_MEMORY_BARRIER ();
+		  clib_memcpy_fast (&(v->kvp[i]), add_v, sizeof (*add_v));
+		  BV (clib_bihash_unlock_bucket) (b);
+		  return (0);
+		}
 	    }
 	}
       /* Out of space in this bucket, split the bucket... */
@@ -375,7 +522,7 @@ int BV (clib_bihash_add_del)
 	  /* Found the key? Kill it... */
 	  if (!memcmp (&(v->kvp[i]), &add_v->key, sizeof (add_v->key)))
 	    {
-	      memset (&(v->kvp[i]), 0xff, sizeof (*(add_v)));
+	      clib_memset (&(v->kvp[i]), 0xff, sizeof (*(add_v)));
 	      /* Is the bucket empty? */
 	      if (PREDICT_TRUE (b->refcnt > 1))
 		{
@@ -456,7 +603,7 @@ int BV (clib_bihash_add_del)
     {
       if (BV (clib_bihash_is_free) (&(new_v->kvp[i])))
 	{
-	  clib_memcpy (&(new_v->kvp[i]), add_v, sizeof (*add_v));
+	  clib_memcpy_fast (&(new_v->kvp[i]), add_v, sizeof (*add_v));
 	  goto expand_ok;
 	}
     }
@@ -477,11 +624,28 @@ expand_ok:
   tmp_b.offset = BV (clib_bihash_get_offset) (h, save_new_v);
   tmp_b.linear_search = mark_bucket_linear;
   tmp_b.refcnt = h->saved_bucket.refcnt + 1;
+  ASSERT (tmp_b.refcnt > 0);
   tmp_b.lock = 0;
   CLIB_MEMORY_BARRIER ();
   b->as_u64 = tmp_b.as_u64;
+  /* free the old bucket */
+  v = BV (clib_bihash_get_value) (h, h->saved_bucket.offset);
+  BV (value_free) (h, v, h->saved_bucket.log2_pages);
   BV (clib_bihash_alloc_unlock) (h);
   return (0);
+}
+
+int BV (clib_bihash_add_del)
+  (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * add_v, int is_add)
+{
+  return BV (clib_bihash_add_del_inline) (h, add_v, is_add, 0, 0);
+}
+
+int BV (clib_bihash_add_or_overwrite_stale)
+  (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * add_v,
+   int (*stale_callback) (BVT (clib_bihash_kv) *, void *), void *arg)
+{
+  return BV (clib_bihash_add_del_inline) (h, add_v, 1, stale_callback, arg);
 }
 
 int BV (clib_bihash_search)
@@ -561,7 +725,7 @@ u8 *BV (format_bihash) (u8 * s, va_list * args)
 
       if (verbose)
 	{
-	  s = format (s, "[%d]: heap offset %d, len %d, linear %d\n", i,
+	  s = format (s, "[%d]: heap offset %lld, len %d, linear %d\n", i,
 		      b->offset, (1 << b->log2_pages), b->linear_search);
 	}
 
@@ -606,27 +770,27 @@ u8 *BV (format_bihash) (u8 * s, va_list * args)
     {
       u32 nfree = 0;
       BVT (clib_bihash_value) * free_elt;
+      u64 free_elt_as_u64 = h->freelists[i];
 
-      free_elt = h->freelists[i];
-      while (free_elt)
+      while (free_elt_as_u64)
 	{
+	  free_elt = BV (clib_bihash_get_value) (h, free_elt_as_u64);
 	  nfree++;
-	  free_elt = free_elt->next_free;
+	  free_elt_as_u64 = free_elt->next_free_as_u64;
 	}
 
-      s = format (s, "       [len %d] %u free elts\n", 1 << i, nfree);
+      if (nfree || verbose)
+	s = format (s, "       [len %d] %u free elts\n", 1 << i, nfree);
     }
 
   s = format (s, "    %lld linear search buckets\n", linear_buckets);
-  s = format (s, "    %lld cache hits, %lld cache misses\n",
-	      h->cache_hits, h->cache_misses);
-  used_bytes = h->alloc_arena_next - h->alloc_arena;
+  used_bytes = alloc_arena_next (h);
   s = format (s,
 	      "    arena: base %llx, next %llx\n"
 	      "           used %lld b (%lld Mbytes) of %lld b (%lld Mbytes)\n",
-	      h->alloc_arena, h->alloc_arena_next,
+	      alloc_arena (h), alloc_arena_next (h),
 	      used_bytes, used_bytes >> 20,
-	      h->alloc_arena_size, h->alloc_arena_size >> 20);
+	      alloc_arena_size (h), alloc_arena_size (h) >> 20);
   return s;
 }
 

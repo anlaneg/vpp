@@ -2,8 +2,8 @@
 
 import socket
 import sys
+import os.path
 from abc import abstractmethod, ABCMeta
-from cStringIO import StringIO
 from scapy.utils6 import in6_mactoifaceid
 
 from scapy.layers.l2 import Ether
@@ -11,18 +11,17 @@ from scapy.packet import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment, IPv6ExtHdrRouting,\
     IPv6ExtHdrHopByHop
+from scapy.utils import hexdump
 from socket import AF_INET6
+from io import BytesIO
+from vpp_papi import mac_pton
 
 
 def ppp(headline, packet):
     """ Return string containing the output of scapy packet.show() call. """
-    o = StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = o
-    print(headline)
-    packet.show()
-    sys.stdout = old_stdout
-    return o.getvalue()
+    return '%s\n%s\n\n%s\n' % (headline,
+                               hexdump(packet, dump=True),
+                               packet.show(dump=True))
 
 
 def ppc(headline, capture, limit=10):
@@ -54,11 +53,6 @@ def ip4n_range(ip4n, s, e):
             for ip in ip4_range(ip4, s, e))
 
 
-def mactobinary(mac):
-    """ Convert the : separated format into binary packet data for the API """
-    return mac.replace(':', '').decode('hex')
-
-
 def mk_ll_addr(mac):
     euid = in6_mactoifaceid(mac)
     addr = "fe80::" + euid
@@ -70,19 +64,32 @@ def ip6_normalize(ip6):
                             socket.inet_pton(socket.AF_INET6, ip6))
 
 
-def check_core_path(logger, core_path):
+def get_core_path(tempdir):
+    return "%s/%s" % (tempdir, get_core_pattern())
+
+
+def is_core_present(tempdir):
+    return os.path.isfile(get_core_path(tempdir))
+
+
+def get_core_pattern():
     with open("/proc/sys/kernel/core_pattern", "r") as f:
-        corefmt = f.read()
-        if corefmt.startswith("|"):
-            logger.error(
-                "WARNING: redirecting the core dump through a"
-                " filter may result in truncated dumps.")
-            logger.error(
-                "   You may want to check the filter settings"
-                " or uninstall it and edit the"
-                " /proc/sys/kernel/core_pattern accordingly.")
-            logger.error(
-                "   current core pattern is: %s" % corefmt)
+        corefmt = f.read().strip()
+    return corefmt
+
+
+def check_core_path(logger, core_path):
+    corefmt = get_core_pattern()
+    if corefmt.startswith("|"):
+        logger.error(
+            "WARNING: redirecting the core dump through a"
+            " filter may result in truncated dumps.")
+        logger.error(
+            "   You may want to check the filter settings"
+            " or uninstall it and edit the"
+            " /proc/sys/kernel/core_pattern accordingly.")
+        logger.error(
+            "   current core pattern is: %s" % corefmt)
 
 
 class NumericConstant(object):
@@ -117,7 +124,7 @@ class Host(object):
     @property
     def bin_mac(self):
         """ MAC address """
-        return mactobinary(self._mac)
+        return mac_pton(self._mac)
 
     @property
     def ip4(self):
@@ -424,3 +431,29 @@ def fragment_rfc8200(packet, identification, fragsize, _logger=None):
     pkts[-1][IPv6ExtHdrFragment].m = 0  # reset more-flags in last fragment
 
     return pkts
+
+
+def reassemble4_core(listoffragments, return_ip):
+    buffer = BytesIO()
+    first = listoffragments[0]
+    buffer.seek(20)
+    for pkt in listoffragments:
+        buffer.seek(pkt[IP].frag*8)
+        buffer.write(bytes(pkt[IP].payload))
+    first.len = len(buffer.getvalue()) + 20
+    first.flags = 0
+    del(first.chksum)
+    if return_ip:
+        header = bytes(first[IP])[:20]
+        return first[IP].__class__(header + buffer.getvalue())
+    else:
+        header = bytes(first[Ether])[:34]
+        return first[Ether].__class__(header + buffer.getvalue())
+
+
+def reassemble4_ether(listoffragments):
+    return reassemble4_core(listoffragments, False)
+
+
+def reassemble4(listoffragments):
+    return reassemble4_core(listoffragments, True)

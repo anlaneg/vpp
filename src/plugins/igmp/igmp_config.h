@@ -22,20 +22,24 @@
 #include <igmp/igmp_timer.h>
 #include <igmp/igmp_group.h>
 
+/**
+ * GENERAL_REPORT = On expiry send a general report
+ * GENERAL_QUERY  = On expiry send a general query
+ */
+#define foreach_igmp_config_timer_type  \
+  _(GENERAL_REPORT, "general-report")   \
+  _(GENERAL_QUERY, "general-query")
+
 typedef enum igmp_config_timer_type_t_
 {
-  /**
-   * On expiry send a general report
-   */
-  IGMP_CONFIG_TIMER_GENERAL_REPORT,
-
-  /**
-   * On expiry send a general query
-   */
-  IGMP_CONFIG_TIMER_GENERAL_QUERY,
+#define _(v,s) IGMP_CONFIG_TIMER_##v,
+  foreach_igmp_config_timer_type
+#undef _
 } igmp_config_timer_type_t;
 
 #define IGMP_CONFIG_N_TIMERS (IGMP_CONFIG_TIMER_GENERAL_QUERY + 1)
+
+extern u8 *format_igmp_config_timer_type (u8 * s, va_list * args);
 
 /**
  * @brief IGMP interface configuration
@@ -53,12 +57,12 @@ typedef struct igmp_config_t_
   adj_index_t adj_index;
 
   /**
-   * @param moe - host or router
+   * @param mode - host or router
    */
   igmp_mode_t mode;
 
   /**
-   * Robustness variable (seciotn 5.1)
+   * Robustness variable (section 5.1)
    */
   u8 robustness_var;
 
@@ -68,9 +72,14 @@ typedef struct igmp_config_t_
   uword *igmp_group_by_key;
 
   /**
-   * A vector of scheduled query-respone timers
+   * A vector of scheduled query-response timers
    */
   igmp_timer_id_t timers[IGMP_CONFIG_N_TIMERS];
+
+  /**
+   * ID of a proxy device this configuration is on
+   */
+  u32 proxy_device_id;
 } igmp_config_t;
 
 #define FOR_EACH_GROUP(_group, _config, _body)                          \
@@ -116,6 +125,8 @@ extern igmp_config_t *igmp_config_get (u32 index);
 */
 extern igmp_group_t *igmp_group_lookup (igmp_config_t * config,
 					const igmp_key_t * key);
+
+extern u8 *format_igmp_config (u8 * s, va_list * args);
 
 #endif
 

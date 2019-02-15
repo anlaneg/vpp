@@ -80,7 +80,7 @@ ssvm_master_init_shm (ssvm_private_t * ssvm)
       return SSVM_API_ERROR_SET_SIZE;
     }
 
-  page_size = clib_mem_vm_get_page_size (ssvm_fd);
+  page_size = clib_mem_get_fd_page_size (ssvm_fd);
   if (ssvm->requested_va)
     {
       requested_va = ssvm->requested_va;
@@ -177,7 +177,7 @@ map_it:
   return SSVM_API_ERROR_SLAVE_TIMEOUT;
 
 re_map_it:
-  ssvm->requested_va = (u64) sh->ssvm_va;
+  ssvm->requested_va = sh->ssvm_va;
   ssvm->ssvm_size = sh->ssvm_size;
   munmap (sh, MMAP_PAGESIZE);
 
@@ -248,7 +248,7 @@ ssvm_master_init_memfd (ssvm_private_t * memfd)
   memfd->my_pid = getpid ();
   memfd->i_am_master = 1;
 
-  page_size = 1 << alloc.log2_page_size;
+  page_size = 1ull << alloc.log2_page_size;
   sh = memfd->sh;
   sh->master_pid = memfd->my_pid;
   sh->ssvm_size = memfd->ssvm_size;
@@ -290,7 +290,7 @@ ssvm_slave_init_memfd (ssvm_private_t * memfd)
 
   memfd->i_am_master = 0;
 
-  page_size = clib_mem_vm_get_page_size (memfd->fd);
+  page_size = clib_mem_get_fd_page_size (memfd->fd);
   if (!page_size)
     {
       clib_unix_warning ("page size unknown");
@@ -381,7 +381,7 @@ ssvm_master_init_private (ssvm_private_t * ssvm)
   sh = clib_mem_alloc_aligned (sizeof (*sh), CLIB_CACHE_LINE_BYTES);
   ssvm->sh = sh;
 
-  memset (sh, 0, sizeof (*sh));
+  clib_memset (sh, 0, sizeof (*sh));
   sh->heap = heap;
   sh->type = SSVM_SEGMENT_PRIVATE;
 

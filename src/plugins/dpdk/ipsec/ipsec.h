@@ -35,7 +35,8 @@
   _(IP4_LOOKUP, "ip4-lookup")                   \
   _(IP6_LOOKUP, "ip6-lookup")                   \
   _(INTERFACE_OUTPUT, "interface-output")	\
-  _(DECRYPT_POST, "dpdk-esp-decrypt-post")
+  _(DECRYPT4_POST, "dpdk-esp4-decrypt-post")     \
+  _(DECRYPT6_POST, "dpdk-esp6-decrypt-post")
 
 typedef enum
 {
@@ -73,6 +74,7 @@ typedef struct
 
 typedef struct
 {
+  CLIB_ALIGN_MARK (pad, 8);	/* align up to 8 bytes for 32bit builds */
   char *name;
   enum rte_crypto_sym_xform_type type;
   u32 alg;
@@ -82,7 +84,7 @@ typedef struct
   u8 boundary;
   u8 disabled;
   u8 resources;
-} crypto_alg_t __attribute__ ((aligned (8)));
+} crypto_alg_t;
 
 typedef struct
 {
@@ -112,7 +114,7 @@ typedef struct
   u8 dev_id;
   u8 numa;
   u16 qp_id;
-  u16 inflights[2];
+  u16 inflights;
   u16 n_ops;
   u16 __unused;
   struct rte_crypto_op *ops[VLIB_FRAME_SIZE];
@@ -127,6 +129,7 @@ typedef struct
 
 typedef struct
 {
+  CLIB_ALIGN_MARK (pad, 16);	/* align up to 16 bytes for 32bit builds */
   struct rte_cryptodev_sym_session *session;
   u64 dev_mask;
 } crypto_session_by_drv_t;
@@ -298,7 +301,7 @@ crypto_free_ops (u8 numa, struct rte_crypto_op **ops, u32 n)
 }
 
 static_always_inline void
-crypto_enqueue_ops (vlib_main_t * vm, crypto_worker_main_t * cwm, u8 outbound,
+crypto_enqueue_ops (vlib_main_t * vm, crypto_worker_main_t * cwm,
 		    u32 node_index, u32 error, u8 numa)
 {
   dpdk_crypto_main_t *dcm = &dpdk_crypto_main;
@@ -314,9 +317,9 @@ crypto_enqueue_ops (vlib_main_t * vm, crypto_worker_main_t * cwm, u8 outbound,
       if (!res->n_ops)
 	continue;
 
-      enq = rte_cryptodev_enqueue_burst (res->dev_id, res->qp_id + outbound,
+      enq = rte_cryptodev_enqueue_burst (res->dev_id, res->qp_id,
 					 res->ops, res->n_ops);
-      res->inflights[outbound] += enq;
+      res->inflights += enq;
 
       if (PREDICT_FALSE (enq < res->n_ops))
 	{

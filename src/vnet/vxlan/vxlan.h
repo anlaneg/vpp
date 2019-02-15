@@ -59,6 +59,24 @@ typedef clib_bihash_kv_16_8_t vxlan4_tunnel_key_t;
 */
 typedef clib_bihash_kv_24_8_t vxlan6_tunnel_key_t;
 
+typedef union
+{
+  struct
+  {
+    u32 sw_if_index;		/* unicast - input interface / mcast - stats interface */
+    union
+    {
+      struct			/* unicast action */
+      {
+	u16 next_index;
+	u8 error;
+      };
+      ip4_address_t local_ip;	/* used as dst ip for mcast pkts to assign them to unicast tunnel */
+    };
+  };
+  u64 as_u64;
+} vxlan_decap_info_t;
+
 typedef struct
 {
   /* Required for pool_get_aligned */
@@ -78,7 +96,7 @@ typedef struct
   u32 mcast_sw_if_index;
 
   /* decap next index */
-  u32 decap_next_index;
+  u16 decap_next_index;
 
   /* The FIB index for src/dst addresses */
   u32 encap_fib_index;
@@ -100,7 +118,7 @@ typedef struct
   adj_index_t mcast_adj_index;
 
   /**
-   * The tunnel is a child of the FIB entry for its desintion. This is
+   * The tunnel is a child of the FIB entry for its destination. This is
    * so it receives updates when the forwarding information for that entry
    * changes.
    * The tunnels sibling index on the FIB entry's dependency list.
@@ -154,6 +172,10 @@ typedef struct
   /* Mapping from sw_if_index to tunnel index */
   u32 *tunnel_index_by_sw_if_index;
 
+  /* graph node state */
+  uword *bm_ip4_bypass_enabled_by_sw_if;
+  uword *bm_ip6_bypass_enabled_by_sw_if;
+
   /* convenience */
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
@@ -178,7 +200,7 @@ typedef struct
   u8 is_add;
 
   /* we normally use is_ip4, but since this adds to the
-   * structure, this seems less of abreaking change */
+   * structure, this seems less of a breaking change */
   u8 is_ip6;
   u32 instance;
   ip46_address_t src, dst;

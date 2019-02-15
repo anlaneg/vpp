@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+from __future__ import print_function
+import binascii
 import random
 import socket
 import unittest
@@ -156,6 +158,10 @@ class MethodHolder(VppTestCase):
             super(MethodHolder, cls).tearDownClass()
             raise
 
+    @classmethod
+    def tearDownClass(cls):
+        super(MethodHolder, cls).tearDownClass()
+
     def create_stream(self, src_if=None, dst_if=None, packets=None,
                       size=None, ip_ver='v4'):
         """Create a packet stream to tickle the plugin
@@ -196,8 +202,8 @@ class MethodHolder(VppTestCase):
         if cflow.haslayer(Data):
             data = decoder.decode_data_set(cflow.getlayer(Set))
             for record in data:
-                self.assertEqual(int(record[1].encode('hex'), 16), octets)
-                self.assertEqual(int(record[2].encode('hex'), 16), packets)
+                self.assertEqual(int(binascii.hexlify(record[1]), 16), octets)
+                self.assertEqual(int(binascii.hexlify(record[2]), 16), packets)
 
     def send_packets(self, src_if=None, dst_if=None):
         if src_if is None:
@@ -213,11 +219,11 @@ class MethodHolder(VppTestCase):
                                  data_set={1: 'octets', 2: 'packets'},
                                  ip_ver='v4'):
         if self.debug_print:
-            print capture[0].show()
+            print(capture[0].show())
         if cflow.haslayer(Data):
             data = decoder.decode_data_set(cflow.getlayer(Set))
             if self.debug_print:
-                print data
+                print(data)
             if ip_ver == 'v4':
                 ip_layer = capture[0][IP]
             else:
@@ -225,9 +231,9 @@ class MethodHolder(VppTestCase):
             if data_set is not None:
                 for record in data:
                     # skip flow if in/out gress interface is 0
-                    if int(record[10].encode('hex'), 16) == 0:
+                    if int(binascii.hexlify(record[10]), 16) == 0:
                         continue
-                    if int(record[14].encode('hex'), 16) == 0:
+                    if int(binascii.hexlify(record[14]), 16) == 0:
                         continue
 
                     for field in data_set:
@@ -247,7 +253,7 @@ class MethodHolder(VppTestCase):
                             else:
                                 ip = socket.inet_pton(socket.AF_INET6,
                                                       ip_layer.src)
-                            value = int(ip.encode('hex'), 16)
+                            value = int(binascii.hexlify(ip), 16)
                         elif value == 'dst_ip':
                             if ip_ver == 'v4':
                                 ip = socket.inet_pton(socket.AF_INET,
@@ -255,12 +261,13 @@ class MethodHolder(VppTestCase):
                             else:
                                 ip = socket.inet_pton(socket.AF_INET6,
                                                       ip_layer.dst)
-                            value = int(ip.encode('hex'), 16)
+                            value = int(binascii.hexlify(ip), 16)
                         elif value == 'sport':
                             value = int(capture[0][UDP].sport)
                         elif value == 'dport':
                             value = int(capture[0][UDP].dport)
-                        self.assertEqual(int(record[field].encode('hex'), 16),
+                        self.assertEqual(int(binascii.hexlify(
+                            record[field]), 16),
                                          value)
 
     def verify_cflow_data_notimer(self, decoder, capture, cflows):
@@ -274,8 +281,10 @@ class MethodHolder(VppTestCase):
             for rec in data:
                 p = capture[idx]
                 idx += 1
-                self.assertEqual(p[IP].len, int(rec[1].encode('hex'), 16))
-                self.assertEqual(1, int(rec[2].encode('hex'), 16))
+                self.assertEqual(p[IP].len, int(
+                    binascii.hexlify(rec[1]), 16))
+                self.assertEqual(1, int(
+                    binascii.hexlify(rec[2]), 16))
         self.assertEqual(len(capture), idx)
 
     def wait_for_cflow_packet(self, collector_intf, set_id=2, timeout=1,
@@ -319,6 +328,14 @@ class MethodHolder(VppTestCase):
 
 class Flowprobe(MethodHolder):
     """Template verification, timer tests"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(Flowprobe, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(Flowprobe, cls).tearDownClass()
 
     def test_0001(self):
         """ timer less than template timeout"""
@@ -411,25 +428,25 @@ class Flowprobe(MethodHolder):
         if cflow.haslayer(Data):
             record = ipfix_decoder.decode_data_set(cflow[0].getlayer(Set))[0]
             # ingress interface
-            self.assertEqual(int(record[10].encode('hex'), 16), 8)
+            self.assertEqual(int(binascii.hexlify(record[10]), 16), 8)
             # egress interface
-            self.assertEqual(int(record[14].encode('hex'), 16), 9)
+            self.assertEqual(int(binascii.hexlify(record[14]), 16), 9)
             # packets
-            self.assertEqual(int(record[2].encode('hex'), 16), 1)
+            self.assertEqual(int(binascii.hexlify(record[2]), 16), 1)
             # src mac
             self.assertEqual(':'.join(re.findall('..', record[56].encode(
                 'hex'))), self.pg8.local_mac)
             # dst mac
             self.assertEqual(':'.join(re.findall('..', record[80].encode(
                 'hex'))), self.pg8.remote_mac)
-            flowTimestamp = int(record[156].encode('hex'), 16) >> 32
+            flowTimestamp = int(binascii.hexlify(record[156]), 16) >> 32
             # flow start timestamp
             self.assertAlmostEqual(flowTimestamp, nowUNIX, delta=1)
-            flowTimestamp = int(record[157].encode('hex'), 16) >> 32
+            flowTimestamp = int(binascii.hexlify(record[157]), 16) >> 32
             # flow end timestamp
             self.assertAlmostEqual(flowTimestamp, nowUNIX, delta=1)
             # ethernet type
-            self.assertEqual(int(record[256].encode('hex'), 16), 8)
+            self.assertEqual(int(binascii.hexlify(record[256]), 16), 8)
             # src ip
             self.assertEqual('.'.join(re.findall('..', record[8].encode(
                                       'hex'))),
@@ -441,13 +458,13 @@ class Flowprobe(MethodHolder):
                              '.'.join('{:02x}'.format(int(n)) for n in
                                       "9.0.0.100".split('.')))
             # protocol (TCP)
-            self.assertEqual(int(record[4].encode('hex'), 16), 6)
+            self.assertEqual(int(binascii.hexlify(record[4]), 16), 6)
             # src port
-            self.assertEqual(int(record[7].encode('hex'), 16), 1234)
+            self.assertEqual(int(binascii.hexlify(record[7]), 16), 1234)
             # dst port
-            self.assertEqual(int(record[11].encode('hex'), 16), 4321)
+            self.assertEqual(int(binascii.hexlify(record[11]), 16), 4321)
             # tcp flags
-            self.assertEqual(int(record[6].encode('hex'), 16), 80)
+            self.assertEqual(int(binascii.hexlify(record[6]), 16), 80)
 
         ipfix.remove_vpp_config()
         self.logger.info("FFP_TEST_FINISH_0000")
@@ -455,6 +472,14 @@ class Flowprobe(MethodHolder):
 
 class Datapath(MethodHolder):
     """collect information on Ethernet, IP4 and IP6 datapath (no timers)"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(Datapath, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(Datapath, cls).tearDownClass()
 
     def test_templatesL2(self):
         """ verify template on L2 datapath"""
@@ -819,9 +844,17 @@ class Datapath(MethodHolder):
         self.logger.info("FFP_TEST_FINISH_0002")
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class DisableIPFIX(MethodHolder):
     """Disable IPFIX"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(DisableIPFIX, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(DisableIPFIX, cls).tearDownClass()
 
     def test_0001(self):
         """ disable IPFIX after first packets"""
@@ -860,9 +893,17 @@ class DisableIPFIX(MethodHolder):
         self.logger.info("FFP_TEST_FINISH_0001")
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class ReenableIPFIX(MethodHolder):
     """Re-enable IPFIX"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(ReenableIPFIX, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(ReenableIPFIX, cls).tearDownClass()
 
     def test_0011(self):
         """ disable IPFIX after first packets and re-enable after few packets
@@ -886,7 +927,7 @@ class ReenableIPFIX(MethodHolder):
         self.wait_for_cflow_packet(self.collector, templates[1])
         self.collector.get_capture(4)
 
-        # disble IPFIX
+        # disable IPFIX
         ipfix.disable_exporter()
         self.vapi.cli("ipfix flush")
         self.pg_enable_capture([self.collector])
@@ -921,9 +962,17 @@ class ReenableIPFIX(MethodHolder):
         self.logger.info("FFP_TEST_FINISH_0001")
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class DisableFP(MethodHolder):
     """Disable Flowprobe feature"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(DisableFP, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(DisableFP, cls).tearDownClass()
 
     def test_0001(self):
         """ disable flowprobe feature after first packets"""
@@ -961,9 +1010,17 @@ class DisableFP(MethodHolder):
         self.logger.info("FFP_TEST_FINISH_0001")
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class ReenableFP(MethodHolder):
     """Re-enable Flowprobe feature"""
+
+    @classmethod
+    def setUpClass(cls):
+        super(ReenableFP, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(ReenableFP, cls).tearDownClass()
 
     def test_0001(self):
         """ disable flowprobe feature after first packets and re-enable

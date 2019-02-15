@@ -43,7 +43,7 @@ def generate_jni_impl(model):
                 java_dto_name=msg.java_name_upper
             )
             jni_identifiers = generate_j2c_identifiers(msg, class_ref_name="requestClass", object_ref_name="request")
-            msg_initialization = generate_j2c_swap(msg, struct_ref_name="mp")
+            msg_initialization = generate_j2c_swap(msg, struct_ref_name="mp", is_alias=False)
 
         jni_impl.append(_JNI_IMPL_TEMPLATE.substitute(
             c_name=msg.name,
@@ -111,5 +111,6 @@ def _generate_msg_size(msg):
             _size_components += " + %s*sizeof(%s)" % (field.array_len_field.java_name, field.type.base_type.vpp_name)
             # FIXME(VPP-586): for proper nested structures support, we need generate functions computing type sizes
             # and use it instead of sizeof
-
+        if field.type.name == "string":
+            _size_components += " + jstr_length(env, %s) * sizeof(u8)" % field.name
     return msg_size + "".join(_size_components)

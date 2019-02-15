@@ -22,8 +22,10 @@
 #include <vlib/log.h>
 
 #include <vnet/ethernet/ethernet.h>
+#include <dpdk/buffer.h>
 #include <dpdk/device/dpdk.h>
 #include <vlib/pci/pci.h>
+#include <vlib/vmbus/vmbus.h>
 
 #include <rte_ring.h>
 
@@ -45,15 +47,6 @@ dpdk_config_main_t dpdk_config_main;
 #define LINK_STATE_ELOGS	0
 
 /* Port configuration, mildly modified Intel app values */
-
-static struct rte_eth_conf port_conf_template = {
-  .rxmode = {
-	     .split_hdr_size = 0,
-	     },
-  .txmode = {
-	     .mq_mode = ETH_MQ_TX_NONE,
-	     },
-};
 
 static dpdk_port_type_t
 port_type_from_speed_capa (struct rte_eth_dev_info *dev_info)
@@ -83,6 +76,35 @@ port_type_from_speed_capa (struct rte_eth_dev_info *dev_info)
   return VNET_DPDK_PORT_TYPE_UNKNOWN;
 }
 
+static dpdk_port_type_t
+port_type_from_link_speed (u32 link_speed)
+{
+  switch (link_speed)
+    {
+    case ETH_SPEED_NUM_1G:
+      return VNET_DPDK_PORT_TYPE_ETH_1G;
+    case ETH_SPEED_NUM_2_5G:
+      return VNET_DPDK_PORT_TYPE_ETH_2_5G;
+    case ETH_SPEED_NUM_5G:
+      return VNET_DPDK_PORT_TYPE_ETH_5G;
+    case ETH_SPEED_NUM_10G:
+      return VNET_DPDK_PORT_TYPE_ETH_10G;
+    case ETH_SPEED_NUM_20G:
+      return VNET_DPDK_PORT_TYPE_ETH_20G;
+    case ETH_SPEED_NUM_25G:
+      return VNET_DPDK_PORT_TYPE_ETH_25G;
+    case ETH_SPEED_NUM_40G:
+      return VNET_DPDK_PORT_TYPE_ETH_40G;
+    case ETH_SPEED_NUM_50G:
+      return VNET_DPDK_PORT_TYPE_ETH_50G;
+    case ETH_SPEED_NUM_56G:
+      return VNET_DPDK_PORT_TYPE_ETH_56G;
+    case ETH_SPEED_NUM_100G:
+      return VNET_DPDK_PORT_TYPE_ETH_100G;
+    default:
+      return VNET_DPDK_PORT_TYPE_UNKNOWN;
+    }
+}
 
 static u32
 dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
@@ -125,74 +147,14 @@ dpdk_device_lock_init (dpdk_device_t * xd)
     {
       xd->lockp[q] = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
 					     CLIB_CACHE_LINE_BYTES);
-      memset ((void *) xd->lockp[q], 0, CLIB_CACHE_LINE_BYTES);
+      clib_memset ((void *) xd->lockp[q], 0, CLIB_CACHE_LINE_BYTES);
     }
-}
-
-static struct rte_mempool_ops *
-get_ops_by_name (char *ops_name)
-{
-  u32 i;
-
-  for (i = 0; i < rte_mempool_ops_table.num_ops; i++)
-    {
-      if (!strcmp (ops_name, rte_mempool_ops_table.ops[i].name))
-	return &rte_mempool_ops_table.ops[i];
-    }
-
-  return 0;
-}
-
-static int
-dpdk_ring_alloc (struct rte_mempool *mp)
-{
-  u32 rg_flags = 0, count;
-  i32 ret;
-  char rg_name[RTE_RING_NAMESIZE];
-  struct rte_ring *r;
-
-  ret = snprintf (rg_name, sizeof (rg_name), RTE_MEMPOOL_MZ_FORMAT, mp->name);
-  if (ret < 0 || ret >= (i32) sizeof (rg_name))
-    return -ENAMETOOLONG;
-
-  /* ring flags */
-  if (mp->flags & MEMPOOL_F_SP_PUT)
-    rg_flags |= RING_F_SP_ENQ;
-  if (mp->flags & MEMPOOL_F_SC_GET)
-    rg_flags |= RING_F_SC_DEQ;
-
-  count = rte_align32pow2 (mp->size + 1);
-  /*
-   * Allocate the ring that will be used to store objects.
-   * Ring functions will return appropriate errors if we are
-   * running as a secondary process etc., so no checks made
-   * in this function for that condition.
-   */
-  /* XXX can we get memory from the right socket? */
-  r = clib_mem_alloc_aligned (rte_ring_get_memsize (count),
-			      CLIB_CACHE_LINE_BYTES);
-
-  /* XXX rte_ring_lookup will not work */
-
-  ret = rte_ring_init (r, rg_name, count, rg_flags);
-  if (ret)
-    return ret;
-
-  mp->pool_data = r;
-
-  return 0;
 }
 
 static int
 dpdk_port_crc_strip_enabled (dpdk_device_t * xd)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-  if (xd->port_conf.rxmode.hw_strip_crc)
-#else
-  if (xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_CRC_STRIP)
-#endif
-    return 1;
-  return 0;
+  return !(xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC);
 }
 
 static clib_error_t *
@@ -200,7 +162,6 @@ dpdk_lib_init (dpdk_main_t * dm)
 {
   u32 nports;
   u32 mtu, max_rx_frame;
-  u32 nb_desc = 0;
   int i;
   clib_error_t *error;
   vlib_main_t *vm = vlib_get_main ();
@@ -256,11 +217,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 			CLIB_CACHE_LINE_BYTES);
   for (i = 0; i < tm->n_vlib_mains; i++)
     {
-      vlib_buffer_free_list_t *fl;
       dpdk_per_thread_data_t *ptd = vec_elt_at_index (dm->per_thread_data, i);
-      fl = vlib_buffer_get_free_list (vm,
-				      VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
-      vlib_buffer_init_for_free_list (&ptd->buffer_template, fl);
+      clib_memset (&ptd->buffer_template, 0, sizeof (vlib_buffer_t));
       ptd->buffer_template.flags = dm->buffer_flags_template;
       vnet_buffer (&ptd->buffer_template)->sw_if_index[VLIB_TX] = (u32) ~ 0;
     }
@@ -289,12 +247,13 @@ dpdk_lib_init (dpdk_main_t * dm)
       //跳过无法获取状态的设备
       if (dev_info.device == 0)
 	{
-	  clib_warning ("DPDK bug: missing device info. Skipping  %s device",
+	  clib_warning ("DPDK bug: missing device info. Skipping %s device",
 			dev_info.driver_name);
 	  continue;
 	}
+
       //取设备对应的pci地址，并由pci地址获取设备配置
-      pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+      pci_dev = dpdk_get_pci_device (&dev_info);
 
       if (pci_dev)	/* bonded interface has no pci info */
 	{
@@ -302,16 +261,9 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  pci_addr.bus = pci_dev->addr.bus;
 	  pci_addr.slot = pci_dev->addr.devid;
 	  pci_addr.function = pci_dev->addr.function;
-	  p =
-	    hash_get (dm->conf->device_config_index_by_pci_addr,
-		      pci_addr.as_u32);
+	  p = hash_get (dm->conf->device_config_index_by_pci_addr,
+			pci_addr.as_u32);
 	}
-
-      //获取设备配置
-      if (p)
-	devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
-      else
-	devconf = &dm->conf->default_devconf;
 
       //设置描述符数量
       /* Create vnet interface */
@@ -319,6 +271,14 @@ dpdk_lib_init (dpdk_main_t * dm)
       xd->nb_rx_desc = DPDK_NB_RX_DESC_DEFAULT;
       xd->nb_tx_desc = DPDK_NB_TX_DESC_DEFAULT;
       xd->cpu_socket = (i8) rte_eth_dev_socket_id (i);
+
+      if (p)
+	{
+	  devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
+	  xd->name = devconf->name;
+	}
+      else
+	devconf = &dm->conf->default_devconf;
 
       /* Handle interface naming for devices with multiple ports sharing same PCI ID */
       if (pci_dev)
@@ -352,34 +312,25 @@ dpdk_lib_init (dpdk_main_t * dm)
       clib_memcpy (&xd->tx_conf, &dev_info.default_txconf,
 		   sizeof (struct rte_eth_txconf));
 
+      if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM)
+	{
+	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_IPV4_CKSUM;
+	  xd->flags |= DPDK_DEVICE_FLAG_RX_IP4_CKSUM;
+	}
+
       if (dm->conf->no_multi_seg)
 	{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-	  port_conf_template.rxmode.jumbo_frame = 0;
-	  port_conf_template.rxmode.enable_scatter = 0;
-#else
 	  xd->port_conf.txmode.offloads &= ~DEV_TX_OFFLOAD_MULTI_SEGS;
 	  xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
 	  xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
-#endif
 	}
       else
 	{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->tx_conf.txq_flags &= ~ETH_TXQ_FLAGS_NOMULTSEGS;
-	  port_conf_template.rxmode.jumbo_frame = 1;
-	  port_conf_template.rxmode.enable_scatter = 1;
-#else
 	  xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
 	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
-#endif
 	  xd->flags |= DPDK_DEVICE_FLAG_MAYBE_MULTISEG;
 	}
-
-      clib_memcpy (&xd->port_conf, &port_conf_template,
-		   sizeof (struct rte_eth_conf));
 
       xd->tx_q_used = clib_min (dev_info.max_tx_queues, tm->n_vlib_mains);
 
@@ -396,7 +347,17 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    xd->port_conf.rx_adv_conf.rss_conf.rss_hf =
 	      ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP;//支持ip,udp,tcp rsshash
 	  else
-	    xd->port_conf.rx_adv_conf.rss_conf.rss_hf = devconf->rss_fn;
+	    {
+	      u64 unsupported_bits;
+	      xd->port_conf.rx_adv_conf.rss_conf.rss_hf = devconf->rss_fn;
+	      unsupported_bits = xd->port_conf.rx_adv_conf.rss_conf.rss_hf;
+	      unsupported_bits &= ~dev_info.flow_type_rss_offloads;
+	      if (unsupported_bits)
+		dpdk_log_warn ("Unsupported RSS hash functions: %U",
+			       format_dpdk_rss_hf_name, unsupported_bits);
+	    }
+	  xd->port_conf.rx_adv_conf.rss_conf.rss_hf &=
+	    dev_info.flow_type_rss_offloads;
 	}
       else
 	xd->rx_q_used = 1;
@@ -443,13 +404,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	      if (dm->conf->no_tx_checksum_offload == 0)
 		{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-		  xd->tx_conf.txq_flags &= ~ETH_TXQ_FLAGS_NOXSUMS;
-#else
-	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_SCTP_CKSUM;
 	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
 	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
-#endif
 		  xd->flags |=
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
@@ -469,29 +425,22 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_IXGBEVF:
 	    case VNET_DPDK_PMD_I40EVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
-	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
-#endif
 	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
-	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
-#endif
+
+	      if (dm->conf->no_tx_checksum_offload == 0)
+		{
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
+		  xd->flags |= DPDK_DEVICE_FLAG_TX_OFFLOAD;
+		}
 	      break;
 
 	    case VNET_DPDK_PMD_ENA:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.enable_scatter = 0;
-#else
-	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
-#endif
+	      xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
 	      break;
 
 	    case VNET_DPDK_PMD_DPAA2:
@@ -509,11 +458,6 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* Intel Red Rock Canyon */
 	    case VNET_DPDK_PMD_FM10K:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_SWITCH;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
-	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
-#endif
 	      break;
 
 	      /* virtio */
@@ -526,11 +470,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* vmxnet3 */
 	    case VNET_DPDK_PMD_VMXNET3:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-#else
 	      xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
-#endif
 	      break;
 
 	    case VNET_DPDK_PMD_AF_PACKET:
@@ -558,6 +498,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_FAILSAFE:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_FAILSAFE;
 	      xd->port_conf.intr_conf.lsc = 1;
+	      break;
+
+	    case VNET_DPDK_PMD_NETVSC:
+	      xd->port_type = port_type_from_link_speed (l.link_speed);
 	      break;
 
 	    default:
@@ -628,8 +572,6 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  dq->queue_id = 0;
 	}
 
-      /* count the number of descriptors used for this device */
-      nb_desc += xd->nb_rx_desc + xd->nb_tx_desc * xd->tx_q_used;
 
       //注册以太网接口
       error = ethernet_register_interface
@@ -770,7 +712,7 @@ dpdk_lib_init (dpdk_main_t * dm)
        * For cisco VIC vNIC, set default to VLAN strip enabled, unless
        * specified otherwise in the startup config.
        * For other NICs default to VLAN strip disabled, unless specified
-       * otherwis in the startup config.
+       * otherwise in the startup config.
        */
       if (xd->pmd == VNET_DPDK_PMD_ENIC)
 	{
@@ -788,15 +730,12 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  int vlan_off;
 	  vlan_off = rte_eth_dev_get_vlan_offload (xd->port_id);
 	  vlan_off |= ETH_VLAN_STRIP_OFFLOAD;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->port_conf.rxmode.hw_vlan_strip = vlan_off;
-#else
           if (vlan_off)
 	    xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
 	  else
 	    xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_VLAN_STRIP;
-#endif
-      //设置vlan的硬件offload
+
+          //设置vlan的硬件offload
 	  if (rte_eth_dev_set_vlan_offload (xd->port_id, vlan_off) == 0)
 	    dpdk_log_info ("VLAN strip enabled for interface\n");
 	  else
@@ -816,10 +755,6 @@ dpdk_lib_init (dpdk_main_t * dm)
     }
   /* *INDENT-ON* */
 
-  if (nb_desc > dm->conf->num_mbufs)
-    dpdk_log_err ("%d mbufs allocated but total rx/tx ring size is %d\n",
-		  dm->conf->num_mbufs, nb_desc);
-
   return 0;
 }
 
@@ -827,11 +762,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 static void
 dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 {
+  vlib_main_t *vm = vlib_get_main ();
   clib_error_t *error;
   u8 *pci_addr = 0;
   int num_whitelisted = vec_len (conf->dev_confs);
   vlib_pci_device_info_t *d = 0;
   vlib_pci_addr_t *addr = 0, *addrs;
+  int i;
 
   addrs = vlib_pci_get_all_dev_addrs ();
   /* *INDENT-OFF* */
@@ -845,7 +782,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       vlib_pci_free_device_info (d);
       d = 0;
       }
-    d = vlib_pci_get_device_info (addr, &error);
+    d = vlib_pci_get_device_info (vm, addr, &error);
     if (error)
     {
       clib_error_report (error);
@@ -860,9 +797,39 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	uword * p = hash_get (conf->device_config_index_by_pci_addr, addr->as_u32);
 
 	if (!p)
-	  continue;
+          {
+          skipped:
+            continue;
+          }
 
 	devconf = pool_elt_at_index (conf->dev_confs, p[0]);
+      }
+
+    /* Enforce Device blacklist by vendor and device */
+    for (i = 0; i < vec_len (conf->blacklist_by_pci_vendor_and_device); i++)
+      {
+        u16 vendor, device;
+        vendor = (u16)(conf->blacklist_by_pci_vendor_and_device[i] >> 16);
+        device = (u16)(conf->blacklist_by_pci_vendor_and_device[i] & 0xFFFF);
+        if (d->vendor_id == vendor && d->device_id == device)
+          {
+            /*
+             * Expected case: device isn't whitelisted,
+             * so blacklist it...
+             */
+            if (devconf == 0)
+              {
+                /* Device is blacklisted */
+                pool_get (conf->dev_confs, devconf);
+                hash_set (conf->device_config_index_by_pci_addr, addr->as_u32,
+                          devconf - conf->dev_confs);
+                devconf->pci_addr.as_u32 = addr->as_u32;
+                devconf->is_blacklisted = 1;
+                goto skipped;
+              }
+            else /* explicitly whitelisted, ignore the device blacklist  */
+              break;
+          }
       }
 
     /* virtio */
@@ -872,7 +839,20 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       ;
     /* vmxnet3 */
     else if (d->vendor_id == 0x15ad && d->device_id == 0x07b0)
-      ;
+      {
+	/*
+	 * For vmxnet3 PCI, unless it is explicitly specified in the whitelist,
+	 * the default is to put it in the blacklist.
+	 */
+	if (devconf == 0)
+	  {
+	    pool_get (conf->dev_confs, devconf);
+	    hash_set (conf->device_config_index_by_pci_addr, addr->as_u32,
+		      devconf - conf->dev_confs);
+	    devconf->pci_addr.as_u32 = addr->as_u32;
+	    devconf->is_blacklisted = 1;
+	  }
+      }
     /* all Intel network devices */
     else if (d->vendor_id == 0x8086 && d->device_class == PCI_CLASS_NETWORK_ETHERNET)
       ;
@@ -913,7 +893,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
         continue;
       }
 
-    error = vlib_pci_bind_to_uio (addr, (char *) conf->uio_driver_name);
+    error = vlib_pci_bind_to_uio (vm, addr, (char *) conf->uio_driver_name);
 
     if (error)
       {
@@ -931,6 +911,27 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
   /* *INDENT-ON* */
   vec_free (pci_addr);
   vlib_pci_free_device_info (d);
+}
+
+static void
+dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
+{
+  clib_error_t *error;
+  vlib_vmbus_addr_t *addrs, *addr = 0;
+
+  addrs = vlib_vmbus_get_all_dev_addrs ();
+
+  /* *INDENT-OFF* */
+  vec_foreach (addr, addrs)
+    {
+      error = vlib_vmbus_bind_to_uio (addr);
+
+      if (error)
+	{
+	  clib_error_report (error);
+	}
+    }
+  /* *INDENT-ON* */
 }
 
 static clib_error_t *
@@ -964,7 +965,9 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
 
   devconf->pci_addr.as_u32 = pci_addr.as_u32;
   devconf->hqos_enabled = 0;
+#if 0
   dpdk_device_config_hqos_default (&devconf->hqos);
+#endif
 
   if (!input)
     return 0;
@@ -979,6 +982,8 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
       else if (unformat (input, "num-rx-desc %u", &devconf->num_rx_desc))
 	;
       else if (unformat (input, "num-tx-desc %u", &devconf->num_tx_desc))
+	;
+      else if (unformat (input, "name %s", &devconf->name))
 	;
       else if (unformat (input, "workers %U", unformat_bitmap_list,
 			 &devconf->workers))
@@ -1026,7 +1031,7 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
 	   devconf->num_rx_queues)
     error =
       clib_error_return (0,
-			 "%U: number of worker threadds must be "
+			 "%U: number of worker threads must be "
 			 "equal to number of rx queues", format_vlib_pci_addr,
 			 &pci_addr);
 
@@ -1073,17 +1078,17 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   dpdk_device_config_t *devconf;
   vlib_pci_addr_t pci_addr;
   unformat_input_t sub_input;
-  uword x;
+  uword default_hugepage_sz, x;
   u8 *s, *tmp = 0;
   u32 log_level;
   int ret, i;
   int num_whitelisted = 0;
   u8 no_pci = 0;
-  u8 no_huge = 0;
-  u8 huge_dir = 0;
+  u8 no_vmbus = 0;
   u8 file_prefix = 0;
   u8 *socket_mem = 0;
   u8 *huge_dir_path = 0;
+  u32 vendor, device;
 
   huge_dir_path =
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
@@ -1097,7 +1102,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       if (unformat (input, "no-hugetlb"))
 	{
 	  vec_add1 (conf->eal_init_args, (u8 *) "--no-huge");
-	  no_huge = 1;
 	}
 
       else if (unformat (input, "enable-tcp-udp-checksum"))
@@ -1146,7 +1150,10 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
 	  num_whitelisted++;
 	}
-      else if (unformat (input, "num-mbufs %d", &conf->num_mbufs))
+      else if (unformat (input, "num-mem-channels %d", &conf->nchannels))
+	conf->nchannels_set_manually = 0;
+      else if (unformat (input, "num-crypto-mbufs %d",
+			 &conf->num_crypto_mbufs))
 	;
       else if (unformat (input, "uio-driver %s", &conf->uio_driver_name))
 	;
@@ -1156,6 +1163,23 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	{
 	  no_pci = 1;
 	  tmp = format (0, "--no-pci%c", 0);
+	  vec_add1 (conf->eal_init_args, tmp);
+	}
+      else if (unformat (input, "blacklist %x:%x", &vendor, &device))
+	{
+	  u32 blacklist_entry;
+	  if (vendor > 0xFFFF)
+	    return clib_error_return (0, "blacklist PCI vendor out of range");
+	  if (device > 0xFFFF)
+	    return clib_error_return (0, "blacklist PCI device out of range");
+	  blacklist_entry = (vendor << 16) | (device & 0xffff);
+	  vec_add1 (conf->blacklist_by_pci_vendor_and_device,
+		    blacklist_entry);
+	}
+      else if (unformat (input, "no-vmbus"))
+	{
+	  no_vmbus = 1;
+	  tmp = format (0, "--no-vmbus%c", 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	}
 
@@ -1170,9 +1194,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 #define _(a)                                          \
 	else if (unformat(input, #a " %s", &s))	      \
 	  {					      \
-            if (!strncmp(#a, "huge-dir", 8))          \
-              huge_dir = 1;                           \
-            else if (!strncmp(#a, "file-prefix", 11)) \
+            if (!strncmp(#a, "file-prefix", 11)) \
               file_prefix = 1;                        \
 	    tmp = format (0, "--%s%c", #a, 0);	      \
 	    vec_add1 (conf->eal_init_args, tmp);      \
@@ -1221,104 +1243,29 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   if (!conf->uio_driver_name)
     conf->uio_driver_name = format (0, "auto%c", 0);
 
-  /*
-   * Use 1G huge pages if available.
-   */
-  if (!no_huge && !huge_dir)
+  default_hugepage_sz = clib_mem_get_default_hugepage_size ();
+
+  /* *INDENT-OFF* */
+  clib_bitmap_foreach (x, tm->cpu_socket_bitmap, (
     {
-      u32 x, *mem_by_socket = 0;
-      uword c = 0;
-      int rv;
+      clib_error_t *e;
+      uword n_pages;
+      /* preallocate at least 16MB of hugepages per socket,
+	 if more is needed it is up to consumer to preallocate more */
+      n_pages = round_pow2 ((uword) 16 << 20, default_hugepage_sz);
+      n_pages /= default_hugepage_sz;
 
-      umount ((char *) huge_dir_path);
+      if ((e = clib_sysfs_prealloc_hugepages(x, 0, n_pages)))
+	clib_error_report (e);
+  }));
+  /* *INDENT-ON* */
 
-      /* Process "socket-mem" parameter value */
-      if (vec_len (socket_mem))
-	{
-	  unformat_input_t in;
-	  unformat_init_vector (&in, socket_mem);
-	  while (unformat_check_input (&in) != UNFORMAT_END_OF_INPUT)
-	    {
-	      if (unformat (&in, "%u,", &x))
-		;
-	      else if (unformat (&in, "%u", &x))
-		;
-	      else if (unformat (&in, ","))
-		x = 0;
-	      else
-		break;
-
-	      vec_add1 (mem_by_socket, x);
-	    }
-	  /* Note: unformat_free vec_frees(in.buffer), aka socket_mem... */
-	  unformat_free (&in);
-	  socket_mem = 0;
-	}
-      else
-	{
-	  /* *INDENT-OFF* */
-	  clib_bitmap_foreach (c, tm->cpu_socket_bitmap, (
-	    {
-	      vec_validate(mem_by_socket, c);
-	      mem_by_socket[c] = 64; /* default per-socket mem */
-	    }
-	  ));
-	  /* *INDENT-ON* */
-	}
-
-      /* *INDENT-OFF* */
-      clib_bitmap_foreach (c, tm->cpu_socket_bitmap, (
-        {
-	  clib_error_t *e;
-
-	  vec_validate(mem_by_socket, c);
-
-	  e = clib_sysfs_prealloc_hugepages(c, 2 << 10, mem_by_socket[c] / 2);
-	  if (e)
-	    clib_error_report (e);
-      }));
-      /* *INDENT-ON* */
-
-      if (mem_by_socket == 0)
-	{
-	  error = clib_error_return (0, "mem_by_socket NULL");
-	  goto done;
-	}
-      _vec_len (mem_by_socket) = c + 1;
-
-      /* regenerate socket_mem string */
-      vec_foreach_index (x, mem_by_socket)
-	socket_mem = format (socket_mem, "%s%u",
-			     socket_mem ? "," : "", mem_by_socket[x]);
-      socket_mem = format (socket_mem, "%c", 0);
-
-      vec_free (mem_by_socket);
-
-      error = vlib_unix_recursive_mkdir ((char *) huge_dir_path);
-      if (error)
-	{
-	  goto done;
-	}
-
-      rv = mount ("none", (char *) huge_dir_path, "hugetlbfs", 0, NULL);
-
-      if (rv)
-	{
-	  error = clib_error_return (0, "mount failed %d", errno);
-	  goto done;
-	}
-
-      tmp = format (0, "--huge-dir%c", 0);
+  if (!file_prefix)
+    {
+      tmp = format (0, "--file-prefix%c", 0);
       vec_add1 (conf->eal_init_args, tmp);
-      tmp = format (0, "%s%c", huge_dir_path, 0);
+      tmp = format (0, "vpp%c", 0);
       vec_add1 (conf->eal_init_args, tmp);
-      if (!file_prefix)
-	{
-	  tmp = format (0, "--file-prefix%c", 0);
-	  vec_add1 (conf->eal_init_args, tmp);
-	  tmp = format (0, "vpp%c", 0);
-	  vec_add1 (conf->eal_init_args, tmp);
-	}
     }
 
   if (error)
@@ -1358,6 +1305,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   if (no_pci == 0 && geteuid () == 0)
     dpdk_bind_devices_to_uio (conf);
 
+  if (no_vmbus == 0 && geteuid () == 0)
+    dpdk_bind_vmbus_devices_to_uio (conf);
+
 #define _(x) \
     if (devconf->x == 0 && conf->default_devconf.x > 0) \
       devconf->x = conf->default_devconf.x ;
@@ -1394,14 +1344,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   tmp = format (0, "%u%c", tm->main_lcore, 0);
   vec_add1 (conf->eal_init_args, tmp);
 
-  /* set socket-mem */
-  if (!no_huge)
-    {
-      tmp = format (0, "--socket-mem%c", 0);
-      vec_add1 (conf->eal_init_args, tmp);
-      tmp = format (0, "%s%c", socket_mem, 0);
-      vec_add1 (conf->eal_init_args, tmp);
-    }
+
+  if (socket_mem)
+    clib_warning ("socket-mem argument is deprecated");
 
   /* NULL terminate the "argv" vector, in case of stupidity */
   vec_add1 (conf->eal_init_args, 0);
@@ -1451,35 +1396,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   if (ret < 0)
     return clib_error_return (0, "rte_eal_init returned %d", ret);
 
-  /* set custom ring memory allocator */
-  {
-    struct rte_mempool_ops *ops = NULL;
-
-    ops = get_ops_by_name ("ring_sp_sc");
-    ops->alloc = dpdk_ring_alloc;
-
-    ops = get_ops_by_name ("ring_mp_sc");
-    ops->alloc = dpdk_ring_alloc;
-
-    ops = get_ops_by_name ("ring_sp_mc");
-    ops->alloc = dpdk_ring_alloc;
-
-    ops = get_ops_by_name ("ring_mp_mc");
-    ops->alloc = dpdk_ring_alloc;
-  }
-
   /* main thread 1st */
-  error = dpdk_buffer_pool_create (vm, conf->num_mbufs, rte_socket_id ());
-  if (error)
+  if ((error = dpdk_buffer_pools_create (vm)))
     return error;
-
-  for (i = 0; i < RTE_MAX_LCORE; i++)
-    {
-      error = dpdk_buffer_pool_create (vm, conf->num_mbufs,
-				       rte_lcore_to_socket_id (i));
-      if (error)
-	return error;
-    }
 
 done:
   return error;
@@ -1500,7 +1419,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     return;
 
   xd->time_last_link_update = now ? now : xd->time_last_link_update;
-  memset (&xd->link, 0, sizeof (xd->link));
+  clib_memset (&xd->link, 0, sizeof (xd->link));
   rte_eth_link_get_nowait (xd->port_id, &xd->link);
 
   if (LINK_STATE_ELOGS)
@@ -1550,54 +1469,10 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	  break;
 	}
     }
-  if (hw_flags_chg || (xd->link.link_speed != prev_link.link_speed))
-    {
-      hw_flags_chg = 1;
-      switch (xd->link.link_speed)
-	{
-	case ETH_SPEED_NUM_10M:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_10M;
-	  break;
-	case ETH_SPEED_NUM_100M:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_100M;
-	  break;
-	case ETH_SPEED_NUM_1G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_1G;
-	  break;
-	case ETH_SPEED_NUM_2_5G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_2_5G;
-	  break;
-	case ETH_SPEED_NUM_5G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_5G;
-	  break;
-	case ETH_SPEED_NUM_10G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_10G;
-	  break;
-	case ETH_SPEED_NUM_20G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_20G;
-	  break;
-	case ETH_SPEED_NUM_25G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_25G;
-	  break;
-	case ETH_SPEED_NUM_40G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_40G;
-	  break;
-	case ETH_SPEED_NUM_50G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_50G;
-	  break;
-	case ETH_SPEED_NUM_56G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_56G;
-	  break;
-	case ETH_SPEED_NUM_100G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_100G;
-	  break;
-	case 0:
-	  break;
-	default:
-	  dpdk_log_warn ("unknown link speed %d", xd->link.link_speed);
-	  break;
-	}
-    }
+  if (xd->link.link_speed != prev_link.link_speed)
+    vnet_hw_interface_set_link_speed (vnm, xd->hw_if_index,
+				      xd->link.link_speed * 1000);
+
   if (hw_flags_chg)
     {
       if (LINK_STATE_ELOGS)
@@ -1795,7 +1670,6 @@ dpdk_init (vlib_main_t * vm)
 {
   dpdk_main_t *dm = &dpdk_main;
   clib_error_t *error = 0;
-  vlib_thread_main_t *tm = vlib_get_thread_main ();
 
   /* verify that structs are cacheline aligned */
   STATIC_ASSERT (offsetof (dpdk_device_t, cacheline0) == 0,
@@ -1814,16 +1688,14 @@ dpdk_init (vlib_main_t * vm)
 
   //设置通道数目，mbuf数量
   dm->conf->nchannels = 4;
-  dm->conf->num_mbufs = dm->conf->num_mbufs ? dm->conf->num_mbufs : NB_MBUF;
   vec_add1 (dm->conf->eal_init_args, (u8 *) "vnet");//加入到"vnet"
-
-  vec_validate (dm->recycle, tm->n_thread_stacks - 1);
+  vec_add1 (dm->conf->eal_init_args, (u8 *) "--in-memory");
 
   /* Default vlib_buffer_t flags, DISABLES tcp/udp checksumming... */
-  dm->buffer_flags_template =
-    (VLIB_BUFFER_TOTAL_LENGTH_VALID | VLIB_BUFFER_EXT_HDR_VALID
-     | VNET_BUFFER_F_L4_CHECKSUM_COMPUTED |
-     VNET_BUFFER_F_L4_CHECKSUM_CORRECT | VNET_BUFFER_F_L2_HDR_OFFSET_VALID);
+  dm->buffer_flags_template = (VLIB_BUFFER_TOTAL_LENGTH_VALID |
+			       VLIB_BUFFER_EXT_HDR_VALID |
+			       VNET_BUFFER_F_L4_CHECKSUM_COMPUTED |
+			       VNET_BUFFER_F_L4_CHECKSUM_CORRECT);
 
   dm->stat_poll_interval = DPDK_STATS_POLL_INTERVAL;
   dm->link_state_poll_interval = DPDK_LINK_POLL_INTERVAL;

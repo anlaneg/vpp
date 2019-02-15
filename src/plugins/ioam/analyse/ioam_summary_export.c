@@ -150,7 +150,7 @@ ioam_analyse_add_ipfix_record (flow_report_t * fr,
 			       ip6_address_t * src, ip6_address_t * dst,
 			       u16 src_port, u16 dst_port)
 {
-  while (__sync_lock_test_and_set (record->writer_lock, 1))
+  while (clib_atomic_test_and_set (record->writer_lock))
     ;
 
   int field_index = 0;
@@ -259,7 +259,7 @@ ioam_analyse_add_ipfix_record (flow_report_t * fr,
   *(record->chached_data_list) = *record;
   record->chached_data_list->chached_data_list = NULL;
 
-  *(record->writer_lock) = 0;
+  clib_atomic_release (record->writer_lock);
   return offset;
 }
 
@@ -288,7 +288,7 @@ ioam_send_flows (flow_report_main_t * frm, flow_report_t * fr,
 
   stream = &frm->streams[fr->stream_index];
 
-  memset (&temp, 0, sizeof (ip6_address_t));
+  clib_memset (&temp, 0, sizeof (ip6_address_t));
 
   aggregated_data = ioam_analyser_main.aggregated_data;
   data_len = vec_len (aggregated_data);
@@ -402,7 +402,7 @@ ioam_flow_create (u8 del)
   flow_report_main_t *frm = &flow_report_main;
   u16 template_id;
 
-  memset (&args, 0, sizeof (args));
+  clib_memset (&args, 0, sizeof (args));
   args.rewrite_callback = ioam_template_rewrite;
   args.flow_data_callback = ioam_send_flows;
   del ? (args.is_add = 0) : (args.is_add = 1);

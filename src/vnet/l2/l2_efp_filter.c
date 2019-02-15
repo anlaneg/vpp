@@ -301,7 +301,6 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 				  &main_intf1, &vlan_intf1, &qinq_intf1);
 
 	  matched0 = eth_identify_subint (hi0,
-					  b0,
 					  match_flags0,
 					  main_intf0,
 					  vlan_intf0,
@@ -310,7 +309,6 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 					  &error0, &is_l20);
 
 	  matched1 = eth_identify_subint (hi1,
-					  b1,
 					  match_flags1,
 					  main_intf1,
 					  vlan_intf1,
@@ -340,9 +338,9 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 		  l2_efp_filter_trace_t *t =
 		    vlib_add_trace (vm, node, b0, sizeof (*t));
 		  t->sw_if_index = sw_if_index0;
-		  clib_memcpy (t->src, h0->src_address, 6);
-		  clib_memcpy (t->dst, h0->dst_address, 6);
-		  clib_memcpy (t->raw, &h0->type, sizeof (t->raw));
+		  clib_memcpy_fast (t->src, h0->src_address, 6);
+		  clib_memcpy_fast (t->dst, h0->dst_address, 6);
+		  clib_memcpy_fast (t->raw, &h0->type, sizeof (t->raw));
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -350,9 +348,9 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 		  l2_efp_filter_trace_t *t =
 		    vlib_add_trace (vm, node, b1, sizeof (*t));
 		  t->sw_if_index = sw_if_index1;
-		  clib_memcpy (t->src, h1->src_address, 6);
-		  clib_memcpy (t->dst, h1->dst_address, 6);
-		  clib_memcpy (t->raw, &h1->type, sizeof (t->raw));
+		  clib_memcpy_fast (t->src, h1->src_address, 6);
+		  clib_memcpy_fast (t->dst, h1->dst_address, 6);
+		  clib_memcpy_fast (t->raw, &h1->type, sizeof (t->raw));
 		}
 	    }
 
@@ -419,7 +417,6 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 				  &main_intf0, &vlan_intf0, &qinq_intf0);
 
 	  matched0 = eth_identify_subint (hi0,
-					  b0,
 					  match_flags0,
 					  main_intf0,
 					  vlan_intf0,
@@ -441,9 +438,9 @@ l2_efp_filter_node_fn (vlib_main_t * vm,
 	      l2_efp_filter_trace_t *t =
 		vlib_add_trace (vm, node, b0, sizeof (*t));
 	      t->sw_if_index = sw_if_index0;
-	      clib_memcpy (t->src, h0->src_address, 6);
-	      clib_memcpy (t->dst, h0->dst_address, 6);
-	      clib_memcpy (t->raw, &h0->type, sizeof (t->raw));
+	      clib_memcpy_fast (t->src, h0->src_address, 6);
+	      clib_memcpy_fast (t->dst, h0->dst_address, 6);
+	      clib_memcpy_fast (t->raw, &h0->type, sizeof (t->raw));
 	    }
 
 	  /* verify speculative enqueue, maybe switch current next frame */

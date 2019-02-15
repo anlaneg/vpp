@@ -2,7 +2,7 @@
  *------------------------------------------------------------------
  * api.c - message handler registration
  *
- * Copyright (c) 2010-2016 Cisco and/or its affiliates.
+ * Copyright (c) 2010-2018 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -56,9 +56,10 @@
 #undef BIHASH_TYPE
 #undef __included_bihash_template_h__
 
-#include <vpp/stats/stats.h>
+#include <vnet/ip/format.h>
 
 #include <vpp/api/vpe_msg_enum.h>
+#include <vpp/api/types.h>
 
 #define vl_typedefs		/* define message structures */
 #include <vpp/api/vpe_all_api_h.h>
@@ -80,6 +81,7 @@ _(CLI_INBAND, cli_inband)						\
 _(GET_NODE_INDEX, get_node_index)                                       \
 _(ADD_NODE_NEXT, add_node_next)						\
 _(SHOW_VERSION, show_version)						\
+_(SHOW_THREADS, show_threads)						\
 _(GET_NODE_GRAPH, get_node_graph)                                       \
 _(GET_NEXT_INDEX, get_next_index)                                       \
 
@@ -101,9 +103,6 @@ memclnt_delete_callback (u32 client_index)
   vpe_api_main_t *vam = &vpe_api_main;
   vpe_client_registration_t *rp;
   uword *p;
-  int stats_memclnt_delete_callback (u32 client_index);
-
-  stats_memclnt_delete_callback (client_index);
 
 #define _(a)                                                    \
     p = hash_get (vam->a##_registration_hash, client_index);    \
@@ -216,16 +215,26 @@ vl_api_cli_inband_t_handler (vl_api_cli_inband_t * mp)
   vlib_main_t *vm = vlib_get_main ();
   unformat_input_t input;
   u8 *out_vec = 0;
+  u32 len = 0;
 
-  unformat_init_string (&input, (char *) mp->cmd, ntohl (mp->length));
+  if (vl_msg_api_get_msg_length (mp) <
+      vl_api_string_len (&mp->cmd) + sizeof (*mp))
+    {
+      rv = -1;
+      goto error;
+    }
+
+  unformat_init_string (&input, (char *) vl_api_from_api_string (&mp->cmd),
+			vl_api_string_len (&mp->cmd));
   vlib_cli_input (vm, &input, inband_cli_output, (uword) & out_vec);
 
-  u32 len = vec_len (out_vec);
+  len = vec_len (out_vec);
+
+error:
   /* *INDENT-OFF* */
   REPLY_MACRO3(VL_API_CLI_INBAND_REPLY, len,
   ({
-    rmp->length = htonl (len);
-    clib_memcpy (rmp->reply, out_vec, len);
+    vl_api_to_api_string(len, (const char *)out_vec, &rmp->reply);
   }));
   /* *INDENT-ON* */
   vec_free (out_vec);
@@ -240,18 +249,86 @@ vl_api_show_version_t_handler (vl_api_show_version_t * mp)
   char *vpe_api_get_version (void);
   char *vpe_api_get_build_date (void);
 
+  u32 program_len = strnlen_s ("vpe", 32);
+  u32 version_len = strnlen_s (vpe_api_get_version (), 32);
+  u32 build_date_len = strnlen_s (vpe_api_get_build_date (), 32);
+  u32 build_directory_len = strnlen_s (vpe_api_get_build_directory (), 256);
+
+  u32 n = program_len + version_len + build_date_len + build_directory_len;
+
   /* *INDENT-OFF* */
-  REPLY_MACRO2(VL_API_SHOW_VERSION_REPLY,
+  REPLY_MACRO3(VL_API_SHOW_VERSION_REPLY, n,
   ({
-    strncpy ((char *) rmp->program, "vpe", ARRAY_LEN(rmp->program)-1);
-    strncpy ((char *) rmp->build_directory, vpe_api_get_build_directory(),
-             ARRAY_LEN(rmp->build_directory)-1);
-    strncpy ((char *) rmp->version, vpe_api_get_version(),
-             ARRAY_LEN(rmp->version)-1);
-    strncpy ((char *) rmp->build_date, vpe_api_get_build_date(),
-             ARRAY_LEN(rmp->build_date)-1);
+    char *p = (char *)&rmp->program;
+    p += vl_api_to_api_string(program_len, "vpe", (vl_api_string_t *)p);
+    p += vl_api_to_api_string(version_len, vpe_api_get_version(), (vl_api_string_t *)p);
+    p += vl_api_to_api_string(build_date_len, vpe_api_get_build_date(), (vl_api_string_t *)p);
+    vl_api_to_api_string(build_directory_len, vpe_api_get_build_directory(), (vl_api_string_t *)p);
   }));
   /* *INDENT-ON* */
+}
+
+static void
+get_thread_data (vl_api_thread_data_t * td, int index)
+{
+  vlib_worker_thread_t *w = vlib_worker_threads + index;
+  td->id = htonl (index);
+  if (w->name)
+    strncpy ((char *) td->name, (char *) w->name, ARRAY_LEN (td->name) - 1);
+  if (w->registration)
+    strncpy ((char *) td->type, (char *) w->registration->name,
+	     ARRAY_LEN (td->type) - 1);
+  td->pid = htonl (w->lwp);
+  td->cpu_id = htonl (w->cpu_id);
+  td->core = htonl (w->core_id);
+  td->cpu_socket = htonl (w->socket_id);
+}
+
+static void
+vl_api_show_threads_t_handler (vl_api_show_threads_t * mp)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  int rv = 0, count = 0;
+
+#if !defined(__powerpc64__)
+  vl_api_registration_t *reg;
+  vl_api_show_threads_reply_t *rmp;
+  vl_api_thread_data_t *td;
+  int i, msg_size = 0;
+  count = vec_len (vlib_worker_threads);
+  if (!count)
+    return;
+
+  msg_size = sizeof (*rmp) + sizeof (rmp->thread_data[0]) * count;
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  rmp = vl_msg_api_alloc (msg_size);
+  clib_memset (rmp, 0, msg_size);
+  rmp->_vl_msg_id = htons (VL_API_SHOW_THREADS_REPLY);
+  rmp->context = mp->context;
+  rmp->count = htonl (count);
+  td = rmp->thread_data;
+
+  for (i = 0; i < count; i++)
+    {
+      get_thread_data (&td[i], i);
+    }
+
+  vl_api_send_msg (reg, (u8 *) rmp);
+#else
+
+  /* unimplemented support */
+  rv = -9;
+  clib_warning ("power pc does not support show threads api");
+  /* *INDENT-OFF* */
+  REPLY_MACRO2(VL_API_SHOW_THREADS_REPLY,
+  ({
+    rmp->count = htonl(count);
+  }));
+  /* *INDENT-ON* */
+#endif
 }
 
 static void
@@ -432,7 +509,7 @@ static void setup_message_id_table (api_main_t * am);
 /*
  * vpe_api_hookup
  * Add vpe's API message handlers to the table.
- * vlib has alread mapped shared memory and
+ * vlib has already mapped shared memory and
  * added the client registration handlers.
  * See .../open-repo/vlib/memclnt_vlib.c:memclnt_process()
  */
@@ -622,7 +699,7 @@ format_arp_event (u8 * s, va_list * args)
   vl_api_ip4_arp_event_t *event = va_arg (*args, vl_api_ip4_arp_event_t *);
 
   s = format (s, "pid %d: ", ntohl (event->pid));
-  s = format (s, "resolution for %U", format_ip4_address, &event->address);
+  s = format (s, "resolution for %U", format_vl_api_ip4_address, event->ip);
   return s;
 }
 
@@ -632,7 +709,7 @@ format_nd_event (u8 * s, va_list * args)
   vl_api_ip6_nd_event_t *event = va_arg (*args, vl_api_ip6_nd_event_t *);
 
   s = format (s, "pid %d: ", ntohl (event->pid));
-  s = format (s, "resolution for %U", format_ip6_address, event->address);
+  s = format (s, "resolution for %U", format_vl_api_ip6_address, event->ip);
   return s;
 }
 

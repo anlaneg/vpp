@@ -326,14 +326,15 @@ show_sw_interfaces (vlib_main_t * vm,
       /* intf input features are masked by bridge domain */
       if (l2_input->bridge)
 	fb &= l2input_bd_config (l2_input->bd_index)->feature_bitmap;
-      vlib_cli_output (vm, "\nl2-input:\n%U", format_l2_input_features, fb);
+      vlib_cli_output (vm, "\nl2-input:\n%U", format_l2_input_features, fb,
+		       1);
 
       l2_output_config_t *l2_output = l2output_intf_config (sw_if_index);
       vlib_cli_output (vm, "\nl2-output:");
       if (l2_output->out_vtr_flag)
 	vlib_cli_output (vm, "%10s (%s)", "VTR", "--internal--");
       vlib_cli_output (vm, "%U", format_l2_output_features,
-		       l2_output->feature_bitmap);
+		       l2_output->feature_bitmap, 1);
       return 0;
     }
   if (show_tag)
@@ -687,7 +688,7 @@ create_sub_interfaces (vlib_main_t * vm,
       goto done;
     }
 
-  memset (&template, 0, sizeof (template));
+  clib_memset (&template, 0, sizeof (template));
   template.sub.eth.raw_flags = 0;
 
   if (unformat (input, "%d default", &id_min))
@@ -814,14 +815,14 @@ done:
  * subinterfaces to handle a range of VLAN IDs.
  *
  * - <b>create sub-interfaces <interface> <subId> dot1q|dot1ad <vlanId>|any [exact-match]</b> -
- * Use this command to specify the outer VLAN ID, to either be explicited or to make the
+ * Use this command to specify the outer VLAN ID, to either be explicit or to make the
  * VLAN ID different from the '<em>subId</em>'.
  *
  * - <b>create sub-interfaces <interface> <subId> dot1q|dot1ad <vlanId>|any inner-dot1q
  * <vlanId>|any [exact-match]</b> - Use this command to specify the outer VLAN ID and
- * the innner VLAN ID.
+ * the inner VLAN ID.
  *
- * When '<em>dot1q</em>' or '<em>dot1ad</em>' is explictly entered, subinterfaces
+ * When '<em>dot1q</em>' or '<em>dot1ad</em>' is explicitly entered, subinterfaces
  * can be configured as either exact-match or non-exact match. Non-exact match is the CLI
  * default. If '<em>exact-match</em>' is specified, packets must have the same number of
  * VLAN tags as the configuration. For non-exact-match, packets must at least that number
@@ -964,7 +965,7 @@ set_unnumbered (vlib_main_t * vm,
   if (~0 == unnumbered_sw_if_index)
     return clib_error_return (0, "Specify the unnumbered interface");
   if (enable && ~0 == inherit_from_sw_if_index)
-    return clib_error_return (0, "When enabling unnumberered specify the"
+    return clib_error_return (0, "When enabling unnumbered specify the"
 			      " IP enabled interface that it uses");
 
   vnet_sw_interface_update_unnumbered (unnumbered_sw_if_index,
@@ -1520,7 +1521,7 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
       }));
     if (vec_len (s) > 0)
       {
-        vlib_cli_output(vm, "Thread %u (%v):\n%v", index,
+        vlib_cli_output(vm, "Thread %u (%s):\n%v", index,
 			vlib_worker_threads[index].name, s);
         vec_reset_length (s);
       }
@@ -1565,47 +1566,20 @@ VLIB_CLI_COMMAND (show_interface_rx_placement, static) = {
 };
 /* *INDENT-ON* */
 
-static clib_error_t *
-set_interface_rx_placement (vlib_main_t * vm, unformat_input_t * input,
-			    vlib_cli_command_t * cmd)
+clib_error_t *
+set_hw_interface_rx_placement (u32 hw_if_index, u32 queue_id,
+			       u32 thread_index, u8 is_main)
 {
-  clib_error_t *error = 0;
-  unformat_input_t _line_input, *line_input = &_line_input;
   vnet_main_t *vnm = vnet_get_main ();
   vnet_device_main_t *vdm = &vnet_device_main;
-  vnet_hw_interface_rx_mode mode;
-  u32 hw_if_index = (u32) ~ 0;
-  u32 queue_id = (u32) 0;
-  u32 thread_index = (u32) ~ 0;
+  clib_error_t *error = 0;
+  vnet_hw_interface_rx_mode mode = VNET_HW_INTERFACE_RX_MODE_UNKNOWN;
   int rv;
 
-  if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
-
-  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat
-	  (line_input, "%U", unformat_vnet_hw_interface, vnm, &hw_if_index))
-	;
-      else if (unformat (line_input, "queue %d", &queue_id))
-	;
-      else if (unformat (line_input, "main", &thread_index))
-	thread_index = 0;
-      else if (unformat (line_input, "worker %d", &thread_index))
-	thread_index += vdm->first_worker_thread_index;
-      else
-	{
-	  error = clib_error_return (0, "parse error: '%U'",
-				     format_unformat_error, line_input);
-	  unformat_free (line_input);
-	  return error;
-	}
-    }
-
-  unformat_free (line_input);
-
-  if (hw_if_index == (u32) ~ 0)
-    return clib_error_return (0, "please specify valid interface name");
+  if (is_main)
+    thread_index = 0;
+  else
+    thread_index += vdm->first_worker_thread_index;
 
   if (thread_index > vdm->last_worker_thread_index)
     return clib_error_return (0,
@@ -1625,7 +1599,53 @@ set_interface_rx_placement (vlib_main_t * vm, unformat_input_t * input,
 				      thread_index);
   vnet_hw_interface_set_rx_mode (vnm, hw_if_index, queue_id, mode);
 
-  return 0;
+  return (error);
+}
+
+static clib_error_t *
+set_interface_rx_placement (vlib_main_t * vm, unformat_input_t * input,
+			    vlib_cli_command_t * cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 hw_if_index = (u32) ~ 0;
+  u32 queue_id = (u32) 0;
+  u32 thread_index = (u32) ~ 0;
+  u8 is_main = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat
+	  (line_input, "%U", unformat_vnet_hw_interface, vnm, &hw_if_index))
+	;
+      else if (unformat (line_input, "queue %d", &queue_id))
+	;
+      else if (unformat (line_input, "main", &thread_index))
+	is_main = 1;
+      else if (unformat (line_input, "worker %d", &thread_index))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~ 0)
+    return clib_error_return (0, "please specify valid interface name");
+
+  error = set_hw_interface_rx_placement (hw_if_index, queue_id, thread_index,
+					 is_main);
+
+  return (error);
 }
 
 /*?

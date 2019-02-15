@@ -1,7 +1,11 @@
-from abc import abstractmethod, ABCMeta
+import binascii
 import socket
+from abc import abstractmethod, ABCMeta
+
+from six import moves
 
 from util import Host, mk_ll_addr
+from vpp_papi import mac_ntop
 
 
 class VppInterface(object):
@@ -22,6 +26,22 @@ class VppInterface(object):
     def local_mac(self):
         """MAC-address of the VPP interface."""
         return self._local_mac
+
+    @property
+    def local_addr(self):
+        return self._local_addr
+
+    @property
+    def remote_addr(self):
+        return self._remote_addr
+
+    @property
+    def local_addr_n(self):
+        return self._local_addr_n
+
+    @property
+    def remote_addr_n(self):
+        return self._remote_addr_n
 
     @property
     def local_ip4(self):
@@ -65,7 +85,7 @@ class VppInterface(object):
 
     @property
     def local_ip6_ll(self):
-        """Local IPv6 linnk-local address on VPP interface (string)."""
+        """Local IPv6 link-local address on VPP interface (string)."""
         return self._local_ip6_ll
 
     @property
@@ -170,6 +190,12 @@ class VppInterface(object):
         self._hosts_by_ip4 = {}
         self._hosts_by_ip6 = {}
 
+    def set_mac(self, mac):
+        self._local_mac = str(mac)
+        self._local_ip6_ll = mk_ll_addr(self._local_mac)
+        self.test.vapi.sw_interface_set_mac_address(
+            self.sw_if_index, mac.packed)
+
     def set_sw_if_index(self, sw_if_index):
         self._sw_if_index = sw_if_index
 
@@ -193,20 +219,28 @@ class VppInterface(object):
         self.has_ip6_config = False
         self.ip6_table_id = 0
 
+        self._local_addr = {socket.AF_INET: self.local_ip4,
+                            socket.AF_INET6: self.local_ip6}
+        self._local_addr_n = {socket.AF_INET: self.local_ip4n,
+                              socket.AF_INET6: self.local_ip6n}
+        self._remote_addr = {socket.AF_INET: self.remote_ip4,
+                             socket.AF_INET6: self.remote_ip6}
+        self._remote_addr_n = {socket.AF_INET: self.remote_ip4n,
+                               socket.AF_INET6: self.remote_ip6n}
+
         r = self.test.vapi.sw_interface_dump()
         for intf in r:
             if intf.sw_if_index == self.sw_if_index:
-                self._name = intf.interface_name.split(b'\0', 1)[0]
-                self._local_mac = \
-                    ':'.join(intf.l2_address.encode('hex')[i:i + 2]
-                             for i in range(0, 12, 2))
+                self._name = intf.interface_name.split(b'\0',
+                                                       1)[0].decode('utf8')
+                self._local_mac = mac_ntop(intf.l2_address)
                 self._dump = intf
                 break
         else:
             raise Exception(
                 "Could not find interface with sw_if_index %d "
                 "in interface dump %s" %
-                (self.sw_if_index, repr(r)))
+                (self.sw_if_index, moves.reprlib.repr(r)))
         self._local_ip6_ll = mk_ll_addr(self.local_mac)
         self._local_ip6n_ll = socket.inet_pton(socket.AF_INET6,
                                                self.local_ip6_ll)
@@ -239,10 +273,9 @@ class VppInterface(object):
         :param vrf_id: The FIB table / VRF ID. (Default value = 0)
         """
         for host in self._remote_hosts:
-            macn = host.mac.replace(":", "").decode('hex')
-            ipn = host.ip4n
-            self.test.vapi.ip_neighbor_add_del(
-                self.sw_if_index, macn, ipn)
+            self.test.vapi.ip_neighbor_add_del(self.sw_if_index,
+                                               host.mac,
+                                               host.ip4)
 
     def config_ip6(self):
         """Configure IPv6 address on the VPP interface."""
@@ -270,10 +303,9 @@ class VppInterface(object):
         :param vrf_id: The FIB table / VRF ID. (Default value = 0)
         """
         for host in self._remote_hosts:
-            macn = host.mac.replace(":", "").decode('hex')
-            ipn = host.ip6n
-            self.test.vapi.ip_neighbor_add_del(
-                self.sw_if_index, macn, ipn, is_ipv6=1)
+            self.test.vapi.ip_neighbor_add_del(self.sw_if_index,
+                                               host.mac,
+                                               host.ip6)
 
     def unconfig(self):
         """Unconfigure IPv6 and IPv4 address on the VPP interface."""
@@ -394,10 +426,34 @@ class VppInterface(object):
         dump = self.test.vapi.sw_interface_dump()
         return self.is_interface_config_in_dump(dump)
 
-    def is_interface_config_in_dump(self, dump):
+    def get_interface_config_from_dump(self, dump):
         for i in dump:
             if i.interface_name.rstrip(' \t\r\n\0') == self.name and \
                i.sw_if_index == self.sw_if_index:
-                return True
+                return i
         else:
-            return False
+            return None
+
+    def is_interface_config_in_dump(self, dump):
+        return self.get_interface_config_from_dump(dump) is not None
+
+    def assert_interface_state(self, admin_up_down, link_up_down,
+                               expect_event=False):
+        if expect_event:
+            event = self.test.vapi.wait_for_event(timeout=1,
+                                                  name='sw_interface_event')
+            self.test.assert_equal(event.sw_if_index, self.sw_if_index,
+                                   "sw_if_index")
+            self.test.assert_equal(event.admin_up_down, admin_up_down,
+                                   "admin state")
+            self.test.assert_equal(event.link_up_down, link_up_down,
+                                   "link state")
+        dump = self.test.vapi.sw_interface_dump()
+        if_state = self.get_interface_config_from_dump(dump)
+        self.test.assert_equal(if_state.admin_up_down, admin_up_down,
+                               "admin state")
+        self.test.assert_equal(if_state.link_up_down, link_up_down,
+                               "link state")
+
+    def __str__(self):
+        return self.name

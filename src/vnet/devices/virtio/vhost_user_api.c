@@ -58,7 +58,7 @@ send_sw_interface_event_deleted (vpe_api_main_t * am,
   vl_api_sw_interface_event_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_EVENT);
   mp->sw_if_index = ntohl (sw_if_index);
 
@@ -76,9 +76,19 @@ vl_api_create_vhost_user_if_t_handler (vl_api_create_vhost_user_if_t * mp)
   u32 sw_if_index = (u32) ~ 0;
   vnet_main_t *vnm = vnet_get_main ();
   vlib_main_t *vm = vlib_get_main ();
+  u64 features = (u64) ~ (0ULL);
+  u64 disabled_features = (u64) (0ULL);
+
+  if (mp->disable_mrg_rxbuf)
+    disabled_features = (1ULL << FEAT_VIRTIO_NET_F_MRG_RXBUF);
+
+  if (mp->disable_indirect_desc)
+    disabled_features |= (1ULL << FEAT_VIRTIO_F_INDIRECT_DESC);
+
+  features &= ~disabled_features;
 
   rv = vhost_user_create_if (vnm, vm, (char *) mp->sock_filename,
-			     mp->is_server, &sw_if_index, (u64) ~ 0,
+			     mp->is_server, &sw_if_index, features,
 			     mp->renumber, ntohl (mp->custom_dev_instance),
 			     (mp->use_custom_mac) ? mp->mac_address : NULL);
 
@@ -155,7 +165,7 @@ send_sw_interface_vhost_user_details (vpe_api_main_t * am,
   vl_api_sw_interface_vhost_user_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_VHOST_USER_DETAILS);
   mp->sw_if_index = ntohl (vui->sw_if_index);
   mp->virtio_net_hdr_sz = ntohl (vui->virtio_net_hdr_sz);

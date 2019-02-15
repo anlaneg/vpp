@@ -25,8 +25,9 @@
 typedef struct
 {
   int socket_fd;
-  /* Temporarily disable the connection, so we can keep it around... */
-  int socket_enable;
+  int socket_enable;		/**< Can temporarily disable the connection
+				     but still can keep it around... */
+  u32 client_index;		/**< Client index allocated by VPP */
 
   clib_socket_t client_socket;
 
@@ -39,6 +40,8 @@ typedef struct
   u8 *name;
   clib_time_t clib_time;
   ssvm_private_t memfd_segment;
+
+  int want_shm_pthread;
 } socket_client_main_t;
 
 extern socket_client_main_t socket_client_main;
@@ -52,7 +55,8 @@ int vl_socket_client_read (int wait);
 int vl_socket_client_write (void);
 void vl_socket_client_enable_disable (int enable);
 void *vl_socket_client_msg_alloc (int nbytes);
-int vl_socket_client_init_shm (vl_api_shm_elem_config_t * config);
+int vl_socket_client_init_shm (vl_api_shm_elem_config_t * config,
+			       int want_pthread);
 clib_error_t *vl_socket_client_recv_fd_msg (int fds[], int n_fds, u32 wait);
 
 #endif /* SRC_VLIBMEMORY_SOCKET_CLIENT_H_ */

@@ -366,10 +366,15 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
       n_enqueued = count_trailing_zeros (~bitmap) / 2;
 #else
       u16 x = 0;
-      x |= next_index ^ nexts[1];
-      x |= next_index ^ nexts[2];
-      x |= next_index ^ nexts[3];
-      n_enqueued = (x == 0) ? 4 : 1;
+      if (count + 3 < max)
+	{
+	  x |= next_index ^ nexts[1];
+	  x |= next_index ^ nexts[2];
+	  x |= next_index ^ nexts[3];
+	  n_enqueued = (x == 0) ? 4 : 1;
+	}
+      else
+	n_enqueued = 1;
 #endif
 
       if (PREDICT_FALSE (n_enqueued > max))
@@ -378,7 +383,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 #ifdef CLIB_HAVE_VEC512
       if (n_enqueued >= 32)
 	{
-	  clib_memcpy (to_next, buffers, 32 * sizeof (u32));
+	  vlib_buffer_copy_indices (to_next, buffers, 32);
 	  nexts += 32;
 	  to_next += 32;
 	  buffers += 32;
@@ -392,7 +397,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 #ifdef CLIB_HAVE_VEC256
       if (n_enqueued >= 16)
 	{
-	  clib_memcpy (to_next, buffers, 16 * sizeof (u32));
+	  vlib_buffer_copy_indices (to_next, buffers, 16);
 	  nexts += 16;
 	  to_next += 16;
 	  buffers += 16;
@@ -406,7 +411,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 #ifdef CLIB_HAVE_VEC128
       if (n_enqueued >= 8)
 	{
-	  clib_memcpy (to_next, buffers, 8 * sizeof (u32));
+	  vlib_buffer_copy_indices (to_next, buffers, 8);
 	  nexts += 8;
 	  to_next += 8;
 	  buffers += 8;
@@ -419,7 +424,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       if (n_enqueued >= 4)
 	{
-	  clib_memcpy (to_next, buffers, 4 * sizeof (u32));
+	  vlib_buffer_copy_indices (to_next, buffers, 4);
 	  nexts += 4;
 	  to_next += 4;
 	  buffers += 4;
@@ -439,6 +444,41 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
       n_left_to_next -= 1;
       count -= 1;
       max -= 1;
+    }
+  vlib_put_next_frame (vm, node, next_index, n_left_to_next);
+}
+
+static_always_inline void
+vlib_buffer_enqueue_to_single_next (vlib_main_t * vm,
+				    vlib_node_runtime_t * node, u32 * buffers,
+				    u16 next_index, u32 count)
+{
+  u32 *to_next, n_left_to_next, n_enq;
+
+  vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
+
+  if (PREDICT_TRUE (n_left_to_next >= count))
+    {
+      vlib_buffer_copy_indices (to_next, buffers, count);
+      n_left_to_next -= count;
+      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
+      return;
+    }
+
+  n_enq = n_left_to_next;
+next:
+  vlib_buffer_copy_indices (to_next, buffers, n_enq);
+  n_left_to_next -= n_enq;
+
+  if (PREDICT_FALSE (count > n_enq))
+    {
+      count -= n_enq;
+      buffers += n_enq;
+
+      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
+      vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
+      n_enq = clib_min (n_left_to_next, count);
+      goto next;
     }
   vlib_put_next_frame (vm, node, next_index, n_left_to_next);
 }

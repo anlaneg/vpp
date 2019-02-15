@@ -50,6 +50,7 @@ format_l2_output_features (u8 * s, va_list * args)
 #undef _
   };
   u32 feature_bitmap = va_arg (*args, u32);
+  u32 verbose = va_arg (*args, u32);
 
   if (feature_bitmap == 0)
     {
@@ -59,8 +60,18 @@ format_l2_output_features (u8 * s, va_list * args)
 
   int i;
   for (i = L2OUTPUT_N_FEAT - 1; i >= 0; i--)
-    if (feature_bitmap & (1 << i))
-      s = format (s, "%10s (%s)\n", display_names[i], l2output_feat_names[i]);
+    {
+      if (feature_bitmap & (1 << i))
+	{
+	  if (verbose)
+	    s =
+	      format (s, "%17s (%s)\n", display_names[i],
+		      l2output_feat_names[i]);
+	  else
+	    s = format (s, "%s ", l2output_feat_names[i]);
+	}
+    }
+
   return s;
 }
 
@@ -260,8 +271,12 @@ l2output_process_batch (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   u32 feature_bitmap = config->feature_bitmap & ~L2OUTPUT_FEAT_OUTPUT;
   if (config->shg == 0 && feature_bitmap == 0)
-    l2output_process_batch_inline (vm, node, config, b, cdo, next, n_left,
-				   l2_efp, l2_vtr, l2_pbb, 0, 0);
+    {
+      if ((l2_efp | l2_vtr | l2_pbb) == 0)
+	return;
+      l2output_process_batch_inline (vm, node, config, b, cdo, next, n_left,
+				     l2_efp, l2_vtr, l2_pbb, 0, 0);
+    }
   else if (config->shg == 0)
     l2output_process_batch_inline (vm, node, config, b, cdo, next, n_left,
 				   l2_efp, l2_vtr, l2_pbb, 0, 1);
@@ -411,9 +426,9 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
 		vlib_add_trace (vm, node, b[0], sizeof (*t));
 	      t->sw_if_index = vnet_buffer (b[0])->sw_if_index[VLIB_TX];
 	      h = vlib_buffer_get_current (b[0]);
-	      clib_memcpy (t->src, h->src_address, 6);
-	      clib_memcpy (t->dst, h->dst_address, 6);
-	      clib_memcpy (t->raw, &h->type, sizeof (t->raw));
+	      clib_memcpy_fast (t->src, h->src_address, 6);
+	      clib_memcpy_fast (t->dst, h->dst_address, 6);
+	      clib_memcpy_fast (t->raw, &h->type, sizeof (t->raw));
 	    }
 	  /* next */
 	  n_left--;
@@ -476,7 +491,7 @@ typedef enum
  * this sw_if_index, l2-output will send packets for this sw_if_index to the
  * l2-output-bad-intf node which just setup the proper drop reason before
  * sending packets to the error-drop node to drop the packet. Then, stale L2FIB
- * entries for delted tunnels won't cause possible packet or memory corrpution.
+ * entries for deleted tunnels won't cause possible packet or memory corruption.
  */
 
 VLIB_NODE_FN (l2output_bad_intf_node) (vlib_main_t * vm,
@@ -608,7 +623,8 @@ l2output_intf_config (u32 sw_if_index)
 
 /** Enable (or disable) the feature in the bitmap for the given interface. */
 void
-l2output_intf_bitmap_enable (u32 sw_if_index, u32 feature_bitmap, u32 enable)
+l2output_intf_bitmap_enable (u32 sw_if_index,
+			     l2output_feat_masks_t feature_bitmap, u32 enable)
 {
   l2output_main_t *mp = &l2output_main;
   l2_output_config_t *config;

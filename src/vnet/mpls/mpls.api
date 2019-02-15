@@ -54,6 +54,7 @@ define mpls_tunnel_add_del
   u8 mt_next_hop_preference;
   u8 mt_next_hop[16];
   u8 mt_next_hop_n_out_labels;
+  u32 mt_next_hop_via_label;
   u32 mt_next_hop_sw_if_index;
   u32 mt_next_hop_table_id;
   vl_api_fib_mpls_label_t mt_next_hop_out_label_stack[mt_next_hop_n_out_labels];
@@ -69,17 +70,19 @@ define mpls_tunnel_add_del_reply
   u32 context;
   i32 retval;
   u32 sw_if_index;
+  u32 tunnel_index;
 };
 
 /** \brief Dump mpls eth tunnel table
     @param client_index - opaque cookie to identify the sender
-    @param tunnel_index - eth tunnel identifier or -1 in case of all tunnels
+    @param sw_if_index - sw_if_index of the MPLS tunnel
+                         (as returned from the create)
 */
 define mpls_tunnel_dump
 {
   u32 client_index;
   u32 context;
-  i32 tunnel_index;
+  u32 sw_if_index;
 };
 
 /** \brief mpls tunnel details
@@ -87,8 +90,8 @@ define mpls_tunnel_dump
 manual_endian manual_print define mpls_tunnel_details
 {
   u32 context;
-  u8 mt_sw_if_index;
-  u8 mt_tunnel_index;
+  u32 mt_sw_if_index;
+  u32 mt_tunnel_index;
   u8 mt_l2_only;
   u8 mt_is_multicast;
   u32 mt_count;
@@ -141,7 +144,7 @@ autoreply define mpls_table_add_del
     @param mr_next_hop_out_label_stack - the next-hop output label stack, outer most first
     @param next_hop_via_label - The next-hop is a resolved via a local label
 */
-autoreply define mpls_route_add_del
+define mpls_route_add_del
 {
   u32 client_index;
   u32 context;
@@ -166,6 +169,13 @@ autoreply define mpls_route_add_del
   u32 mr_next_hop_table_id;
   u32 mr_next_hop_via_label;
   vl_api_fib_mpls_label_t mr_next_hop_out_label_stack[mr_next_hop_n_out_labels];
+};
+
+define mpls_route_add_del_reply
+{
+  u32 context;
+  i32 retval;
+  u32 stats_index;
 };
 
 /** \brief Dump MPLS fib table

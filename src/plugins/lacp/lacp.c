@@ -216,7 +216,7 @@ lacp_periodic_init (vlib_main_t * vm)
 
   /* Create the ethernet lacp packet template */
 
-  memset (&h, 0, sizeof (h));
+  clib_memset (&h, 0, sizeof (h));
 
   memcpy (h.ethernet.dst_address, dst, sizeof (h.ethernet.dst_address));
 
@@ -253,7 +253,7 @@ lacp_periodic_init (vlib_main_t * vm)
 
   /* Create the ethernet marker protocol packet template */
 
-  memset (&m, 0, sizeof (m));
+  clib_memset (&m, 0, sizeof (m));
 
   memcpy (m.ethernet.dst_address, dst, sizeof (m.ethernet.dst_address));
 
@@ -363,10 +363,10 @@ lacp_sw_interface_up_down (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
 	{
 	  if (sif->lacp_enabled)
 	    {
-	      lacp_init_state_machines (vm, sif);
 	      lacp_init_neighbor (sif, sif->actor_admin.system,
 				  ntohs (sif->actor_admin.port_number),
 				  ntohs (sif->actor_admin.key));
+	      lacp_init_state_machines (vm, sif);
 	    }
 	}
     }
@@ -392,10 +392,10 @@ lacp_hw_interface_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 	{
 	  if (sif->lacp_enabled)
 	    {
-	      lacp_init_state_machines (vm, sif);
 	      lacp_init_neighbor (sif, sif->actor_admin.system,
 				  ntohs (sif->actor_admin.port_number),
 				  ntohs (sif->actor_admin.key));
+	      lacp_init_state_machines (vm, sif);
 	    }
 	}
     }

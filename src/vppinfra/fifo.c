@@ -112,16 +112,16 @@ _clib_fifo_resize (void *v_old, uword n_new_elts, uword elt_bytes)
       if (head + n_copy_bytes >= end)
 	{
 	  uword n = end - head;
-	  clib_memcpy (v_new, head, n);
-	  clib_memcpy (v_new + n, v_old, n_copy_bytes - n);
+	  clib_memcpy_fast (v_new, head, n);
+	  clib_memcpy_fast (v_new + n, v_old, n_copy_bytes - n);
 	}
       else
-	clib_memcpy (v_new, head, n_copy_bytes);
+	clib_memcpy_fast (v_new, head, n_copy_bytes);
     }
 
   /* Zero empty space. */
   n_zero_bytes = (n_new_elts - n_old_elts) * elt_bytes;
-  memset (v_new + n_copy_bytes, 0, n_zero_bytes);
+  clib_memset (v_new + n_copy_bytes, 0, n_zero_bytes);
 
   clib_fifo_free (v_old);
 

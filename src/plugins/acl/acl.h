@@ -122,6 +122,7 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK(cacheline0);
   fa_5tuple_t mask;
   u32 refcount;
+  u8 from_tm;
 } ace_mask_type_entry_t;
 
 typedef struct {
@@ -141,7 +142,7 @@ typedef struct {
   hash_acl_info_t *hash_acl_infos; /* corresponding hash matching housekeeping info */
   clib_bihash_48_8_t acl_lookup_hash; /* ACL lookup hash table. */
   u32 hash_lookup_hash_buckets;
-  u32 hash_lookup_hash_memory;
+  uword hash_lookup_hash_memory;
 
   /* mheap to hold all the miscellaneous allocations related to hash-based lookups */
   void *hash_lookup_mheap;
@@ -240,7 +241,7 @@ typedef struct {
   int fa_sessions_hash_is_initialized;
   clib_bihash_40_8_t fa_ip6_sessions_hash;
   clib_bihash_16_8_t fa_ip4_sessions_hash;
-  /* The process node which orcherstrates the cleanup */
+  /* The process node which orchestrates the cleanup */
   u32 fa_cleaner_node_index;
   /* FA session timeouts, in seconds */
   u32 session_timeout_sec[ACL_N_TIMEOUTS];
@@ -249,19 +250,6 @@ typedef struct {
   u64 fa_session_total_dels;
   /* how many sessions went into purgatory */
   u64 fa_session_total_deactivations;
-
-  /* L2 datapath glue */
-
-  /* next indices within L2 classifiers for ip4/ip6 fa L2 nodes */
-  u32 l2_input_classify_next_acl_ip4;
-  u32 l2_input_classify_next_acl_ip6;
-  u32 l2_output_classify_next_acl_ip4;
-  u32 l2_output_classify_next_acl_ip6;
-  /* next node indices for L2 dispatch */
-  u32 fa_acl_in_ip4_l2_node_feat_next_node_index[32];
-  u32 fa_acl_in_ip6_l2_node_feat_next_node_index[32];
-  u32 fa_acl_out_ip4_l2_node_feat_next_node_index[32];
-  u32 fa_acl_out_ip6_l2_node_feat_next_node_index[32];
 
   /* EH values that we can skip over */
   uword *fa_ipv6_known_eh_bitmap;
@@ -383,5 +371,13 @@ AH has a special treatment of its length, it is in 32-bit words, not 64-bit word
 extern acl_main_t acl_main;
 
 void *acl_plugin_set_heap();
+
+typedef enum {
+  ACL_FA_REQ_SESS_RESCHEDULE = 0,
+  ACL_FA_N_REQ,
+} acl_fa_sess_req_t;
+
+void aclp_post_session_change_request(acl_main_t *am, u32 target_thread, u32 target_session, acl_fa_sess_req_t request_type);
+void aclp_swap_wip_and_pending_session_change_requests(acl_main_t *am, u32 target_thread);
 
 #endif

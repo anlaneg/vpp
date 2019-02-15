@@ -16,24 +16,24 @@
 #include <vnet/ip/lookup.h>
 #include <vnet/dpo/replicate_dpo.h>
 #include <vnet/dpo/drop_dpo.h>
+#include <vnet/dpo/receive_dpo.h>
 #include <vnet/adj/adj.h>
 #include <vnet/mpls/mpls_types.h>
 
-#undef REP_DEBUG
+/**
+ * the logger
+ */
+vlib_log_class_t replicate_logger;
 
-#ifdef REP_DEBUG
 #define REP_DBG(_rep, _fmt, _args...)                                   \
 {                                                                       \
-    u8* _tmp =NULL;                                                     \
-    clib_warning("rep:[%s]:" _fmt,                                      \
-                 replicate_format(replicate_get_index((_rep)),          \
-                                  0, _tmp),                             \
-                 ##_args);                                              \
-    vec_free(_tmp);                                                     \
+    vlib_log_debug(replicate_logger,                                    \
+                   "rep:[%U]:" _fmt,                                    \
+                   format_replicate,                                    \
+                   replicate_get_index(_rep),                           \
+                   REPLICATE_FORMAT_NONE,                               \
+                   ##_args);                                            \
 }
-#else
-#define REP_DBG(_p, _fmt, _args...)
-#endif
 
 #define foreach_replicate_dpo_error                       \
 _(BUFFER_ALLOCATION_FAILURE, "Buffer Allocation Failure")
@@ -59,7 +59,12 @@ replicate_t *replicate_pool;
 /**
  * The one instance of replicate main
  */
-replicate_main_t replicate_main;
+replicate_main_t replicate_main = {
+    .repm_counters = {
+        .name = "mroutes",
+        .stat_segment_name = "/net/mroute",
+    },
+};
 
 static inline index_t
 replicate_get_index (const replicate_t *rep)
@@ -86,7 +91,7 @@ replicate_alloc_i (void)
     replicate_t *rep;
 
     pool_get_aligned(replicate_pool, rep, CLIB_CACHE_LINE_BYTES);
-    memset(rep, 0, sizeof(*rep));
+    clib_memset(rep, 0, sizeof(*rep));
 
     vlib_validate_combined_counter(&(replicate_main.repm_counters),
                                    replicate_get_index(rep));
@@ -94,6 +99,23 @@ replicate_alloc_i (void)
                                replicate_get_index(rep));
 
     return (rep);
+}
+
+static u8*
+format_replicate_flags (u8 *s, va_list *args)
+{
+    int flags = va_arg (*args, int);
+
+    if (flags == REPLICATE_FLAGS_NONE)
+    {
+        s = format (s, "none");
+    }
+    else if (flags & REPLICATE_FLAGS_HAS_LOCAL)
+    {
+        s = format (s, "has-local ");
+    }
+
+    return (s);
 }
 
 static u8*
@@ -114,6 +136,7 @@ replicate_format (index_t repi,
 
     s = format(s, "%U: ", format_dpo_type, DPO_REPLICATE);
     s = format(s, "[index:%d buckets:%d ", repi, rep->rep_n_buckets);
+    s = format(s, "flags:[%U] ", format_replicate_flags, rep->rep_flags);
     s = format(s, "to:[%Ld:%Ld]]", to.packets, to.bytes);
 
     for (i = 0; i < rep->rep_n_buckets; i++)
@@ -178,6 +201,14 @@ replicate_set_bucket_i (replicate_t *rep,
                         dpo_id_t *buckets,
                         const dpo_id_t *next)
 {
+    if (dpo_is_receive(&buckets[bucket]))
+    {
+        rep->rep_flags &= ~REPLICATE_FLAGS_HAS_LOCAL;
+    }
+    if (dpo_is_receive(next))
+    {
+        rep->rep_flags |= REPLICATE_FLAGS_HAS_LOCAL;
+    }
     dpo_stack(DPO_REPLICATE, rep->rep_proto, &buckets[bucket], next);
 }
 
@@ -488,6 +519,67 @@ replicate_lock (dpo_id_t *dpo)
     rep->rep_locks++;
 }
 
+index_t
+replicate_dup (replicate_flags_t flags,
+               index_t repi)
+{
+    replicate_t *rep, *copy;
+
+    rep = replicate_get(repi);
+
+    if (rep->rep_flags == flags ||
+        flags & REPLICATE_FLAGS_HAS_LOCAL)
+    {
+        /*
+         * we can include all the buckets from the original in the copy
+         */
+        return (repi);
+    }
+    else
+    {
+        /*
+         * caller doesn't want the local paths that the original has
+         */
+        if (rep->rep_n_buckets == 1)
+        {
+            /*
+             * original has only one bucket that is the local, so create
+             * a new one with only the drop
+             */
+            copy = replicate_create_i (1, rep->rep_proto);
+
+            replicate_set_bucket_i(copy, 0,
+                                   replicate_get_buckets(copy),
+                                   drop_dpo_get(rep->rep_proto));
+        }
+        else
+        {
+            dpo_id_t *old_buckets, *copy_buckets;
+            u16 bucket, pos;
+
+            copy = replicate_create_i(rep->rep_n_buckets - 1,
+                                      rep->rep_proto);
+
+            rep = replicate_get(repi);
+            old_buckets = replicate_get_buckets(rep);
+            copy_buckets = replicate_get_buckets(copy);
+            pos = 0;
+
+            for (bucket = 0; bucket < rep->rep_n_buckets; bucket++)
+            {
+                if (!dpo_is_receive(&old_buckets[bucket]))
+                {
+                    replicate_set_bucket_i(copy, pos, copy_buckets,
+                                           (&old_buckets[bucket]));
+                    pos++;
+                }
+            }
+        }
+    }
+
+    return (replicate_get_index(copy));
+}
+
 static void
 replicate_destroy (replicate_t *rep)
 {
@@ -575,6 +667,7 @@ void
 replicate_module_init (void)
 {
     dpo_register(DPO_REPLICATE, &rep_vft, replicate_nodes);
+    replicate_logger = vlib_log_register_class("dpo", "replicate");
 }
 
 static clib_error_t *
@@ -668,7 +761,8 @@ replicate_inline (vlib_main_t * vm,
 	    vec_validate (rm->clones[thread_index], rep0->rep_n_buckets - 1);
 
 	    num_cloned = vlib_buffer_clone (vm, bi0, rm->clones[thread_index],
-                                            rep0->rep_n_buckets, 128);
+                                            rep0->rep_n_buckets,
+					    VLIB_BUFFER_CLONE_HEAD_SIZE);
 
 	    if (num_cloned != rep0->rep_n_buckets)
 	      {
@@ -690,11 +784,15 @@ replicate_inline (vlib_main_t * vm,
                 next0 = dpo0->dpoi_next_node;
                 vnet_buffer (c0)->ip.adj_index[VLIB_TX] = dpo0->dpoi_index;
 
-                if (PREDICT_FALSE(c0->flags & VLIB_BUFFER_IS_TRACED))
+                if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED))
                 {
                     replicate_trace_t *t;
 
-                    vlib_trace_buffer (vm, node, next0, c0, 0);
+                    if (c0 != b0)
+                    {
+                        vlib_buffer_copy_trace_flag (vm, b0, ci0);
+                        VLIB_BUFFER_TRACE_TRAJECTORY_INIT (c0);
+                    }
                     t = vlib_add_trace (vm, node, c0, sizeof (*t));
                     t->rep_index = repi0;
                     t->dpo = *dpo0;

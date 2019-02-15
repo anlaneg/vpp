@@ -4,9 +4,10 @@ import unittest
 import socket
 
 from framework import VppTestCase, VppTestRunner, running_extended_tests
+from vpp_ip import DpoProto
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppMplsRoute, \
     VppMplsTable, VppIpMRoute, VppMRoutePath, VppIpTable, \
-    MRouteEntryFlags, MRouteItfFlags, MPLS_LABEL_INVALID, DpoProto, \
+    MRouteEntryFlags, MRouteItfFlags, MPLS_LABEL_INVALID, \
     VppMplsLabel
 from vpp_bier import *
 from vpp_udp_encap import *
@@ -177,22 +178,22 @@ class TestBier(VppTestCase):
         for nhr in nh_routes:
             nhr.remove_vpp_config()
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_midpoint_1024(self):
         """BIER midpoint BSL:1024"""
         self.bier_midpoint(BIERLength.BIER_LEN_1024, 128, 1024)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_midpoint_512(self):
         """BIER midpoint BSL:512"""
         self.bier_midpoint(BIERLength.BIER_LEN_512, 64, 512)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_midpoint_256(self):
         """BIER midpoint BSL:256"""
         self.bier_midpoint(BIERLength.BIER_LEN_256, 32, 256)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_midpoint_128(self):
         """BIER midpoint BSL:128"""
         self.bier_midpoint(BIERLength.BIER_LEN_128, 16, 128)
@@ -200,6 +201,100 @@ class TestBier(VppTestCase):
     def test_bier_midpoint_64(self):
         """BIER midpoint BSL:64"""
         self.bier_midpoint(BIERLength.BIER_LEN_64, 8, 64)
+
+    def test_bier_load_balance(self):
+        """BIER load-balance"""
+
+        #
+        # Add a BIER table for sub-domain 0, set 0, and BSL 256
+        #
+        bti = VppBierTableID(0, 0, BIERLength.BIER_LEN_64)
+        bt = VppBierTable(self, bti, 77)
+        bt.add_vpp_config()
+
+        #
+        # packets with varying entropy
+        #
+        pkts = []
+        for ii in range(257):
+            pkts.append((Ether(dst=self.pg0.local_mac,
+                               src=self.pg0.remote_mac) /
+                         MPLS(label=77, ttl=255) /
+                         BIER(length=BIERLength.BIER_LEN_64,
+                              entropy=ii,
+                              BitString=chr(255)*16) /
+                         IPv6(src=self.pg0.remote_ip6,
+                              dst=self.pg0.remote_ip6) /
+                         UDP(sport=1234, dport=1234) /
+                         Raw()))
+
+        #
+        # 4 next hops
+        #
+        nhs = [{'ip': "10.0.0.1", 'label': 201},
+               {'ip': "10.0.0.2", 'label': 202},
+               {'ip': "10.0.0.3", 'label': 203},
+               {'ip': "10.0.0.4", 'label': 204}]
+
+        for nh in nhs:
+            ipr = VppIpRoute(
+                self, nh['ip'], 32,
+                [VppRoutePath(self.pg1.remote_ip4,
+                              self.pg1.sw_if_index,
+                              labels=[VppMplsLabel(nh['label'])])])
+            ipr.add_vpp_config()
+
+        bier_route = VppBierRoute(
+            self, bti, 1,
+            [VppRoutePath(nhs[0]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)]),
+             VppRoutePath(nhs[1]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)])])
+        bier_route.add_vpp_config()
+
+        rx = self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # we should have recieved a packet from each neighbor
+        #
+        for nh in nhs[:2]:
+            self.assertTrue(sum(p[MPLS].label == nh['label'] for p in rx))
+
+        #
+        # add the other paths
+        #
+        bier_route.update_paths(
+            [VppRoutePath(nhs[0]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)]),
+             VppRoutePath(nhs[1]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)]),
+             VppRoutePath(nhs[2]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)]),
+             VppRoutePath(nhs[3]['ip'], 0xffffffff,
+                          labels=[VppMplsLabel(101)])])
+
+        rx = self.send_and_expect(self.pg0, pkts, self.pg1)
+        for nh in nhs:
+            self.assertTrue(sum(p[MPLS].label == nh['label'] for p in rx))
+
+        #
+        # remove first two paths
+        #
+        bier_route.remove_path(VppRoutePath(nhs[0]['ip'], 0xffffffff,
+                                            labels=[VppMplsLabel(101)]))
+        bier_route.remove_path(VppRoutePath(nhs[1]['ip'], 0xffffffff,
+                                            labels=[VppMplsLabel(101)]))
+
+        rx = self.send_and_expect(self.pg0, pkts, self.pg1)
+        for nh in nhs[2:]:
+            self.assertTrue(sum(p[MPLS].label == nh['label'] for p in rx))
+
+        #
+        # remove the last of the paths, deleteing the entry
+        #
+        bier_route.remove_all_paths()
+
+        self.send_and_assert_no_replies(self.pg0, pkts)
 
     def test_bier_head(self):
         """BIER head"""
@@ -387,6 +482,37 @@ class TestBier(VppTestCase):
         #
         self.send_and_expect(self.pg0, [p], self.pg1)
 
+        #
+        # A multicast route to forward post BIER disposition that needs
+        # a check against sending back into the BIER core
+        #
+        bi = VppBierImp(self, bti, 333, chr(0x3) * 32)
+        bi.add_vpp_config()
+
+        route_eg_232_1_1_2 = VppIpMRoute(
+            self,
+            "0.0.0.0",
+            "232.1.1.2", 32,
+            MRouteEntryFlags.MFIB_ENTRY_FLAG_NONE,
+            paths=[VppMRoutePath(0xffffffff,
+                                 MRouteItfFlags.MFIB_ITF_FLAG_FORWARD,
+                                 proto=DpoProto.DPO_PROTO_BIER,
+                                 bier_imp=bi.bi_index),
+                   VppMRoutePath(self.pg1.sw_if_index,
+                                 MRouteItfFlags.MFIB_ITF_FLAG_FORWARD)])
+        route_eg_232_1_1_2.add_vpp_config()
+        route_eg_232_1_1_2.update_rpf_id(8192)
+
+        p = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+             MPLS(label=77, ttl=255) /
+             BIER(length=BIERLength.BIER_LEN_256,
+                  BitString=chr(255)*32,
+                  BFRID=77) /
+             IP(src="1.1.1.1", dst="232.1.1.2") /
+             UDP(sport=1234, dport=1234) /
+             Raw())
+        self.send_and_expect(self.pg0, [p], self.pg1)
+
     def bier_e2e(self, hdr_len_id, n_bytes, max_bp):
         """ BIER end-to-end"""
 
@@ -527,22 +653,22 @@ class TestBier(VppTestCase):
         self.assertEqual(rx[0][IP].src, "1.1.1.1")
         self.assertEqual(rx[0][IP].dst, "232.1.1.2")
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_e2e_1024(self):
         """ BIER end-to-end BSL:1024"""
         self.bier_e2e(BIERLength.BIER_LEN_1024, 128, 1024)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_e2e_512(self):
         """ BIER end-to-end BSL:512"""
         self.bier_e2e(BIERLength.BIER_LEN_512, 64, 512)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_e2e_256(self):
         """ BIER end-to-end BSL:256"""
         self.bier_e2e(BIERLength.BIER_LEN_256, 32, 256)
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
+    @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_bier_e2e_128(self):
         """ BIER end-to-end BSL:128"""
         self.bier_e2e(BIERLength.BIER_LEN_128, 16, 128)
@@ -571,7 +697,7 @@ class TestBier(VppTestCase):
                                             labels=[VppMplsLabel(2001)])])
         ip_route.add_vpp_config()
 
-        udp_encap = VppUdpEncap(self, 4,
+        udp_encap = VppUdpEncap(self,
                                 self.pg0.local_ip4,
                                 nh1,
                                 330, 8138)
@@ -582,7 +708,7 @@ class TestBier(VppTestCase):
             [VppRoutePath("0.0.0.0",
                           0xFFFFFFFF,
                           is_udp_encap=1,
-                          next_hop_id=4)])
+                          next_hop_id=udp_encap.id)])
         bier_route.add_vpp_config()
 
         #
@@ -632,7 +758,7 @@ class TestBier(VppTestCase):
         self.assertEqual(rx[0][IP].dst, nh1)
         self.assertEqual(rx[0][UDP].sport, 330)
         self.assertEqual(rx[0][UDP].dport, 8138)
-        self.assertEqual(rx[0][BIFT].bsl, 2)
+        self.assertEqual(rx[0][BIFT].bsl, BIERLength.BIER_LEN_256)
         self.assertEqual(rx[0][BIFT].sd, 1)
         self.assertEqual(rx[0][BIFT].set, 0)
         self.assertEqual(rx[0][BIFT].ttl, 64)

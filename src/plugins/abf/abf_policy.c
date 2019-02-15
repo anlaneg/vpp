@@ -121,7 +121,7 @@ abf_policy_update (u32 policy_id,
     {
       /*
        * update an existing policy.
-       * - add the path to the path-list and swap our ancestory
+       * - add the path to the path-list and swap our ancestry
        * - backwalk to poke all attachments to update
        */
       fib_node_index_t old_pl;
@@ -190,7 +190,7 @@ abf_policy_delete (u32 policy_id, const fib_route_path_t * rpaths)
     {
       /*
        * update an existing policy.
-       * - add the path to the path-list and swap our ancestory
+       * - add the path to the path-list and swap our ancestry
        * - backwalk to poke all attachments to update
        */
       fib_node_index_t old_pl;
@@ -198,6 +198,7 @@ abf_policy_delete (u32 policy_id, const fib_route_path_t * rpaths)
       ap = abf_policy_get (api);
       old_pl = ap->ap_pl;
 
+      fib_path_list_lock (old_pl);
       ap->ap_pl =
 	fib_path_list_copy_and_path_remove (ap->ap_pl,
 					    (FIB_PATH_LIST_FLAG_SHARED |
@@ -227,6 +228,7 @@ abf_policy_delete (u32 policy_id, const fib_route_path_t * rpaths)
 
 	  fib_walk_sync (abf_policy_fib_node_type, api, &ctx);
 	}
+      fib_path_list_unlock (old_pl);
     }
 
   return (0);

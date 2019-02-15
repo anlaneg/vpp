@@ -653,7 +653,13 @@ icmp4_pg_edit_function (pg_main_t * pg,
       ASSERT (p0->current_data == 0);
       ip0 = (void *) (p0->data + ip_offset);
       icmp0 = (void *) (p0->data + icmp_offset);
-      len0 = clib_net_to_host_u16 (ip0->length) - ip4_header_bytes (ip0);
+
+      /* if IP length has been specified, then calculate the length based on buffer */
+      if (ip0->length == 0)
+	len0 = vlib_buffer_length_in_chain (vm, p0) - icmp_offset;
+      else
+	len0 = clib_net_to_host_u16 (ip0->length) - icmp_offset;
+
       icmp0->checksum =
 	~ip_csum_fold (ip_incremental_checksum (0, icmp0, len0));
     }
@@ -766,8 +772,9 @@ icmp4_init (vlib_main_t * vm)
   foreach_icmp4_code;
 #undef _
 
-  memset (cm->ip4_input_next_index_by_type,
-	  ICMP_INPUT_NEXT_ERROR, sizeof (cm->ip4_input_next_index_by_type));
+  clib_memset (cm->ip4_input_next_index_by_type,
+	       ICMP_INPUT_NEXT_ERROR,
+	       sizeof (cm->ip4_input_next_index_by_type));
 
   ip4_icmp_register_type (vm, ICMP4_echo_request,
 			  ip4_icmp_echo_request_node.index);

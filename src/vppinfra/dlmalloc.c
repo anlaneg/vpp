@@ -342,7 +342,7 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
     #define CALL_MREMAP(addr, osz, nsz, mv)     MFAIL
 #endif /* HAVE_MMAP && HAVE_MREMAP */
 
-/* mstate bit set if continguous morecore disabled or failed */
+/* mstate bit set if contiguous morecore disabled or failed */
 #define USE_NONCONTIGUOUS_BIT (4U)
 
 /* mstate bit set if no expansion allowed */
@@ -1585,7 +1585,7 @@ static size_t traverse_and_check(mstate m);
   http://www.usenix.org/events/lisa03/tech/robertson.html The footer
   of an inuse chunk holds the xor of its mstate and a random seed,
   that is checked upon calls to free() and realloc().  This is
-  (probabalistically) unguessable from outside the program, but can be
+  (probabilistically) unguessable from outside the program, but can be
   computed by any code successfully malloc'ing any chunk, so does not
   itself provide protection against code that has already broken
   security through some other means.  Unlike Robertson et al, we
@@ -2078,8 +2078,8 @@ static void do_check_malloc_state(mstate m) {
 /* ----------------------------- statistics ------------------------------ */
 
 #if !NO_MALLINFO
-static struct mallinfo internal_mallinfo(mstate m) {
-  struct mallinfo nm = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static struct dlmallinfo internal_mallinfo(mstate m) {
+  struct dlmallinfo nm = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
   ensure_initialization();
   if (!PREACTION(m)) {
     check_malloc_state(m);
@@ -3278,7 +3278,7 @@ void* dlmalloc(size_t bytes) {
 
 void dlfree(void* mem) {
   /*
-     Consolidate freed chunks with preceeding or succeeding bordering
+     Consolidate freed chunks with preceding or succeeding bordering
      free chunks, if they exist, and then place in a bin.  Intermixed
      with special cases for top, dv, mmapped chunks, and usage errors.
   */
@@ -3963,7 +3963,7 @@ size_t dlmalloc_set_footprint_limit(size_t bytes) {
 }
 
 #if !NO_MALLINFO
-struct mallinfo dlmallinfo(void) {
+struct dlmallinfo dlmallinfo(void) {
   return internal_mallinfo(gm);
 }
 #endif /* NO_MALLINFO */
@@ -4089,8 +4089,7 @@ size_t destroy_mspace(mspace msp) {
   return freed;
 }
 
-void mspace_get_address_and_size (mspace msp, unsigned long long *addrp,
-                                  unsigned long long *sizep)
+void mspace_get_address_and_size (mspace msp, char **addrp, size_t *sizep)
 {
   mstate ms;
   msegment *this_seg;
@@ -4098,7 +4097,7 @@ void mspace_get_address_and_size (mspace msp, unsigned long long *addrp,
   ms = (mstate)msp;
   this_seg = &ms->seg;
 
-  *addrp = (unsigned long long) this_seg->base;
+  *addrp = this_seg->base;
   *sizep = this_seg->size;
 }
 
@@ -4120,6 +4119,10 @@ int mspace_is_heap_object (mspace msp, void *p)
         return 1;
       this_seg = this_seg->next;
     }
+
+  if (pp > ms->least_addr && pp <= ms->least_addr + ms->footprint)
+    return 1;
+
   return 0;
 }
 
@@ -4153,11 +4156,11 @@ int mspace_enable_disable_trace (mspace msp, int enable)
 }
 
 void* mspace_get_aligned (mspace msp, 
-                          unsigned long long n_user_data_bytes,
-                          unsigned long long align, 
-                          unsigned long long align_offset) {
+                          unsigned long n_user_data_bytes,
+                          unsigned long align, 
+                          unsigned long align_offset) {
   char *rv;
-  unsigned long long searchp;
+  unsigned long searchp;
   unsigned *wwp;                /* "where's Waldo" pointer */
   mstate ms = (mstate)msp;
 
@@ -4179,7 +4182,7 @@ void* mspace_get_aligned (mspace msp,
       mchunkptr p  = mem2chunk(rv);
       size_t psize = chunksize(p);
       
-      mheap_get_trace ((u64)rv + sizeof (unsigned), psize);
+      mheap_get_trace ((unsigned long)rv + sizeof (unsigned), psize);
     }
 
     wwp = (unsigned *)rv;
@@ -4197,7 +4200,7 @@ void* mspace_get_aligned (mspace msp,
    * Waldo is the address of the chunk of memory returned by mspace_malloc, 
    * which we need later to call mspace_free...
    */
-  if (align > 4<<10 || align_offset == ~0ULL) {
+  if (align > 4<<10 || align_offset == ~0UL) {
     n_user_data_bytes -= sizeof(unsigned);
     assert(align_offset == 0);
     rv = internal_memalign(ms, (size_t)align, n_user_data_bytes);
@@ -4206,7 +4209,7 @@ void* mspace_get_aligned (mspace msp,
     if (rv && use_trace(ms)) {
       mchunkptr p  = mem2chunk(rv);
       size_t psize = chunksize(p);
-      mheap_get_trace ((u64)rv, psize);
+      mheap_get_trace ((unsigned long)rv, psize);
     }
     return rv;
   }
@@ -4224,7 +4227,7 @@ void* mspace_get_aligned (mspace msp,
       return rv;
 
   /* Honor the alignment request */
-  searchp = (unsigned long long)(rv + sizeof (unsigned));
+  searchp = (unsigned long)(rv + sizeof (unsigned));
 
 #if 0  /* this is the idea... */
   while ((searchp + align_offset) % align)
@@ -4232,7 +4235,7 @@ void* mspace_get_aligned (mspace msp,
 #endif
 
   {
-    unsigned long long where_now, delta;
+    unsigned long where_now, delta;
 
     where_now = (searchp + align_offset) % align;
     delta = align - where_now;
@@ -4241,13 +4244,13 @@ void* mspace_get_aligned (mspace msp,
   }
 
   wwp = (unsigned *)(searchp - sizeof(unsigned));
-  *wwp = (searchp - (((unsigned long long) rv) + sizeof (*wwp)));
+  *wwp = (searchp - (((unsigned long) rv) + sizeof (*wwp)));
   assert (*wwp < align);
 
   if (use_trace(ms)) {
     mchunkptr p  = mem2chunk(rv);
     size_t psize = chunksize(p);
-    mheap_get_trace ((u64)rv, psize);
+    mheap_get_trace ((unsigned long)rv, psize);
   }
   return (void *) searchp;
 }
@@ -4272,7 +4275,7 @@ void mspace_put (mspace msp, void *p_arg)
       mchunkptr p  = mem2chunk(object_header);
       size_t psize = chunksize(p);
 
-      mheap_put_trace ((u64)p_arg, psize);
+      mheap_put_trace ((unsigned long)p_arg, psize);
     }
 
 #if CLIB_DEBUG > 0
@@ -4296,7 +4299,7 @@ void mspace_put_no_offset (mspace msp, void *p_arg)
       mchunkptr p  = mem2chunk(p_arg);
       size_t psize = chunksize(p);
 
-      mheap_put_trace ((u64)p_arg, psize);
+      mheap_put_trace ((unsigned long)p_arg, psize);
     }
   mspace_free (msp, p_arg);
 }
@@ -4777,7 +4780,7 @@ size_t mspace_set_footprint_limit(mspace msp, size_t bytes) {
 }
 
 #if !NO_MALLINFO
-struct mallinfo mspace_mallinfo(mspace msp) {
+struct dlmallinfo mspace_mallinfo(mspace msp) {
   mstate ms = (mstate)msp;
   if (!ok_magic(ms)) {
     USAGE_ERROR_ACTION(ms,ms);
@@ -5044,10 +5047,10 @@ History:
         Wolfram Gloger (Gloger@lrz.uni-muenchen.de).
       * Use last_remainder in more cases.
       * Pack bins using idea from  colin@nyx10.cs.du.edu
-      * Use ordered bins instead of best-fit threshhold
+      * Use ordered bins instead of best-fit threshold
       * Eliminate block-local decls to simplify tracing and debugging.
       * Support another case of realloc via move into top
-      * Fix error occuring when initial sbrk_base not word-aligned.
+      * Fix error occurring when initial sbrk_base not word-aligned.
       * Rely on page size for units instead of SBRK_UNIT to
         avoid surprises about sbrk alignment conventions.
       * Add mallinfo, mallopt. Thanks to Raymond Nijssen

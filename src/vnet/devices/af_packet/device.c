@@ -81,7 +81,7 @@ af_packet_interface_tx (vlib_main_t * vm,
 			vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
   af_packet_main_t *apm = &af_packet_main;
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   u32 n_left = frame->n_vectors;
   u32 n_sent = 0;
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
@@ -119,9 +119,9 @@ af_packet_interface_tx (vlib_main_t * vm,
 	{
 	  b0 = vlib_get_buffer (vm, bi);
 	  len = b0->current_length;
-	  clib_memcpy ((u8 *) tph +
-		       TPACKET_ALIGN (sizeof (struct tpacket2_hdr)) + offset,
-		       vlib_buffer_get_current (b0), len);
+	  clib_memcpy_fast ((u8 *) tph +
+			    TPACKET_ALIGN (sizeof (struct tpacket2_hdr)) +
+			    offset, vlib_buffer_get_current (b0), len);
 	  offset += len;
 	}
       while ((bi =
@@ -168,7 +168,7 @@ af_packet_interface_tx (vlib_main_t * vm,
     vlib_error_count (vm, node->node_index, AF_PACKET_TX_ERROR_TXRING_OVERRUN,
 		      n_left);
 
-  vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+  vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
   return frame->n_vectors;
 }
 
@@ -278,7 +278,7 @@ af_packet_subif_add_del_function (vnet_main_t * vnm,
 }
 
 static clib_error_t *af_packet_set_mac_address_function
-  (struct vnet_hw_interface_t *hi, char *address)
+  (struct vnet_hw_interface_t *hi, const u8 * old_address, const u8 * address)
 {
   af_packet_main_t *apm = &af_packet_main;
   af_packet_if_t *apif =

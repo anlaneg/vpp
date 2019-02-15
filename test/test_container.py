@@ -21,21 +21,25 @@ class Conn(L4_Conn):
     pass
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class ContainerIntegrationTestCase(VppTestCase):
     """ Container integration extended testcases """
 
     @classmethod
-    def setUpClass(self):
-        super(ContainerIntegrationTestCase, self).setUpClass()
+    def setUpClass(cls):
+        super(ContainerIntegrationTestCase, cls).setUpClass()
         # create pg0 and pg1
-        self.create_pg_interfaces(range(2))
-        for i in self.pg_interfaces:
+        cls.create_pg_interfaces(range(2))
+        for i in cls.pg_interfaces:
             i.admin_up()
             i.config_ip4()
             i.config_ip6()
             i.resolve_arp()
             i.resolve_ndp()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(ContainerIntegrationTestCase, cls).tearDownClass()
 
     def tearDown(self):
         """Run standard test teardown and log various show commands

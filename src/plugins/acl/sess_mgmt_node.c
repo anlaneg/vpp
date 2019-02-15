@@ -30,63 +30,55 @@
 #include <plugins/acl/public_inlines.h>
 #include <plugins/acl/session_inlines.h>
 
-// #include <vppinfra/bihash_40_8.h>
 
 
-static u64
-fa_session_get_shortest_timeout (acl_main_t * am)
+static_always_inline u8 *
+format_ip46_session_bihash_kv (u8 * s, va_list * args, int is_ip6)
 {
-  int timeout_type;
-  u64 timeout = ~0LL;
-  for (timeout_type = ACL_TIMEOUT_UDP_IDLE;
-       timeout_type < ACL_N_USER_TIMEOUTS; timeout_type++)
+  fa_5tuple_t a5t;
+  void *paddr0;
+  void *paddr1;
+  void *format_addr_func;
+
+  if (is_ip6)
     {
-      if (timeout > am->session_timeout_sec[timeout_type])
-	{
-	  timeout = am->session_timeout_sec[timeout_type];
-	}
+      clib_bihash_kv_40_8_t *kv_40_8 =
+	va_arg (*args, clib_bihash_kv_40_8_t *);
+      a5t.kv_40_8 = *kv_40_8;
+      paddr0 = &a5t.ip6_addr[0];
+      paddr1 = &a5t.ip6_addr[1];
+      format_addr_func = format_ip6_address;
     }
-  return timeout;
+  else
+    {
+      clib_bihash_kv_16_8_t *kv_16_8 =
+	va_arg (*args, clib_bihash_kv_16_8_t *);
+      a5t.kv_16_8 = *kv_16_8;
+      paddr0 = &a5t.ip4_addr[0];
+      paddr1 = &a5t.ip4_addr[1];
+      format_addr_func = format_ip4_address;
+    }
+
+  fa_full_session_id_t *sess = (fa_full_session_id_t *) & a5t.pkt;
+
+  return (format (s, "l3 %U -> %U %U | sess id %d thread id %d epoch %04x",
+		  format_addr_func, paddr0,
+		  format_addr_func, paddr1,
+		  format_fa_session_l4_key, &a5t.l4,
+		  sess->session_index, sess->thread_index,
+		  sess->intf_policy_epoch));
 }
 
 static u8 *
 format_ip6_session_bihash_kv (u8 * s, va_list * args)
 {
-  clib_bihash_kv_40_8_t *kv_40_8 = va_arg (*args, clib_bihash_kv_40_8_t *);
-  fa_5tuple_t a5t;
-
-  a5t.kv_40_8 = *kv_40_8;
-  fa_full_session_id_t *sess = (fa_full_session_id_t *) & a5t.pkt;
-
-  return (format (s, "l3 %U -> %U"
-		  " l4 lsb_of_sw_if_index %d proto %d l4_is_input %d l4_slow_path %d l4_reserved0 %d port %d -> %d | sess id %d thread id %d epoch %04x",
-		  format_ip6_address, &a5t.ip6_addr[0],
-		  format_ip6_address, &a5t.ip6_addr[1],
-		  a5t.l4.lsb_of_sw_if_index,
-		  a5t.l4.proto, a5t.l4.is_input, a5t.l4.is_slowpath,
-		  a5t.l4.reserved0, a5t.l4.port[0], a5t.l4.port[1],
-		  sess->session_index, sess->thread_index,
-		  sess->intf_policy_epoch));
+  return format_ip46_session_bihash_kv (s, args, 1);
 }
 
 static u8 *
 format_ip4_session_bihash_kv (u8 * s, va_list * args)
 {
-  clib_bihash_kv_16_8_t *kv_16_8 = va_arg (*args, clib_bihash_kv_16_8_t *);
-  fa_5tuple_t a5t;
-
-  a5t.kv_16_8 = *kv_16_8;
-  fa_full_session_id_t *sess = (fa_full_session_id_t *) & a5t.pkt;
-
-  return (format (s, "l3 %U -> %U"
-		  " l4 lsb_of_sw_if_index %d proto %d l4_is_input %d l4_slow_path %d l4_reserved0 %d port %d -> %d | sess id %d thread id %d epoch %04x",
-		  format_ip4_address, &a5t.ip4_addr[0],
-		  format_ip4_address, &a5t.ip4_addr[1],
-		  a5t.l4.lsb_of_sw_if_index,
-		  a5t.l4.proto, a5t.l4.is_input, a5t.l4.is_slowpath,
-		  a5t.l4.reserved0, a5t.l4.port[0], a5t.l4.port[1],
-		  sess->session_index, sess->thread_index,
-		  sess->intf_policy_epoch));
+  return format_ip46_session_bihash_kv (s, args, 0);
 }
 
 
@@ -138,14 +130,9 @@ static u64
 fa_session_get_list_timeout (acl_main_t * am, fa_session_t * sess)
 {
   u64 timeout = am->vlib_main->clib_time.clocks_per_second / 1000;
-  /*
-   * we have the shortest possible timeout type in all the lists
-   * (see README-multicore for the rationale)
-   */
-  if (sess->link_list_id == ACL_TIMEOUT_PURGATORY)
-    timeout = fa_session_get_timeout (am, sess);
-  else
-    timeout *= fa_session_get_shortest_timeout (am);
+  timeout = fa_session_get_timeout (am, sess);
+  /* for all user lists, check them twice per timeout */
+  timeout >>= (sess->link_list_id != ACL_TIMEOUT_PURGATORY);
   return timeout;
 }
 
@@ -182,6 +169,28 @@ acl_fa_check_idle_sessions (acl_main_t * am, u16 thread_index, u64 now)
   fa_full_session_id_t fsid;
   fsid.thread_index = thread_index;
   int total_expired = 0;
+
+  /* let the other threads enqueue more requests while we process, if they like */
+  aclp_swap_wip_and_pending_session_change_requests (am, thread_index);
+  u64 *psr = NULL;
+
+  vec_foreach (psr, pw->wip_session_change_requests)
+  {
+    acl_fa_sess_req_t op = *psr >> 32;
+    fsid.session_index = *psr & 0xffffffff;
+    switch (op)
+      {
+      case ACL_FA_REQ_SESS_RESCHEDULE:
+	acl_fa_restart_timer_for_session (am, now, fsid);
+	break;
+      default:
+	/* do nothing */
+	break;
+      }
+  }
+  if (pw->wip_session_change_requests)
+    _vec_len (pw->wip_session_change_requests) = 0;
+
 
   {
     u8 tt = 0;
@@ -240,6 +249,9 @@ acl_fa_check_idle_sessions (acl_main_t * am, u16 thread_index, u64 now)
 	  clib_bitmap_get (pw->pending_clear_sw_if_index_bitmap, sw_if_index);
 	if (am->trace_sessions > 3)
 	  {
+	    elog_acl_maybe_trace_X2 (am,
+				     "acl_fa_check_idle_sessions: now %lu sess_timeout_time %lu",
+				     "i8i8", now, sess_timeout_time);
 	    elog_acl_maybe_trace_X4 (am,
 				     "acl_fa_check_idle_sessions: session %d sw_if_index %d timeout_passed %d clearing_interface %d",
 				     "i4i4i4i4", (u32) fsid.session_index,
@@ -360,6 +372,44 @@ send_one_worker_interrupt (vlib_main_t * vm, acl_main_t * am,
       CLIB_MEMORY_BARRIER ();
     }
 }
+
+void
+aclp_post_session_change_request (acl_main_t * am, u32 target_thread,
+				  u32 target_session, u32 request_type)
+{
+  acl_fa_per_worker_data_t *pw_me =
+    &am->per_worker_data[os_get_thread_index ()];
+  acl_fa_per_worker_data_t *pw = &am->per_worker_data[target_thread];
+  clib_spinlock_lock_if_init (&pw->pending_session_change_request_lock);
+  /* vec_add1 might cause a reallocation, change the heap just in case */
+  void *oldheap = clib_mem_set_heap (am->acl_mheap);
+  vec_add1 (pw->pending_session_change_requests,
+	    (((u64) request_type) << 32) | target_session);
+  clib_mem_set_heap (oldheap);
+
+  pw->rcvd_session_change_requests++;
+  pw_me->sent_session_change_requests++;
+  if (vec_len (pw->pending_session_change_requests) == 1)
+    {
+      /* ensure the requests get processed */
+      send_one_worker_interrupt (am->vlib_main, am, target_thread);
+    }
+  clib_spinlock_unlock_if_init (&pw->pending_session_change_request_lock);
+}
+
+void
+aclp_swap_wip_and_pending_session_change_requests (acl_main_t * am,
+						   u32 target_thread)
+{
+  acl_fa_per_worker_data_t *pw = &am->per_worker_data[target_thread];
+  u64 *tmp;
+  clib_spinlock_lock_if_init (&pw->pending_session_change_request_lock);
+  tmp = pw->pending_session_change_requests;
+  pw->pending_session_change_requests = pw->wip_session_change_requests;
+  pw->wip_session_change_requests = tmp;
+  clib_spinlock_unlock_if_init (&pw->pending_session_change_request_lock);
+}
+
 
 static int
 purgatory_has_connections (vlib_main_t * vm, acl_main_t * am,
@@ -650,7 +700,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		    }
 		}
 	    }
-	    acl_log_err
+	    acl_log_info
 	      ("ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX bitmap: %U, clear_all: %u",
 	       format_bitmap_hex, clear_sw_if_index_bitmap, clear_all);
 	    vec_foreach (pw0, am->per_worker_data)
@@ -688,7 +738,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		      pw0->pending_clear_sw_if_index_bitmap =
 			clib_bitmap_dup (clear_sw_if_index_bitmap);
 		    }
-		  acl_log_err
+		  acl_log_info
 		    ("ACL_FA_CLEANER: thread %u, pending clear bitmap: %U",
 		     (am->per_worker_data - pw0), format_bitmap_hex,
 		     pw0->pending_clear_sw_if_index_bitmap);
@@ -699,8 +749,9 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 	    send_interrupts_to_workers (vm, am);
 
 	    /* now wait till they all complete */
-	    acl_log_err ("CLEANER mains len: %u per-worker len: %d",
-			 vec_len (vlib_mains), vec_len (am->per_worker_data));
+	    acl_log_info ("CLEANER mains len: %u per-worker len: %d",
+			  vec_len (vlib_mains),
+			  vec_len (am->per_worker_data));
 	    vec_foreach (pw0, am->per_worker_data)
 	    {
 	      CLIB_MEMORY_BARRIER ();
@@ -719,7 +770,7 @@ acl_fa_session_cleaner_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		    }
 		}
 	    }
-	    acl_log_err ("ACL_FA_NODE_CLEAN: cleaning done");
+	    acl_log_info ("ACL_FA_NODE_CLEAN: cleaning done");
 	    clib_bitmap_free (clear_sw_if_index_bitmap);
 	  }
 	  am->fa_cleaner_cnt_delete_by_sw_index_ok++;

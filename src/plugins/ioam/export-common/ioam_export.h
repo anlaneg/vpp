@@ -117,7 +117,7 @@ ioam_export_get_my_buffer (ioam_export_main_t * em, u32 thread_id)
 inline static int
 ioam_export_buffer_add_header (ioam_export_main_t * em, vlib_buffer_t * b0)
 {
-  clib_memcpy (b0->data, em->record_header, vec_len (em->record_header));
+  clib_memcpy_fast (b0->data, em->record_header, vec_len (em->record_header));
   b0->current_data = 0;
   b0->current_length = vec_len (em->record_header);
   b0->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
@@ -187,7 +187,7 @@ ioam_export_thread_buffer_init (ioam_export_main_t * em, vlib_main_t * vm)
     {
       eb = 0;
       pool_get_aligned (em->buffer_pool, eb, CLIB_CACHE_LINE_BYTES);
-      memset (eb, 0, sizeof (*eb));
+      clib_memset (eb, 0, sizeof (*eb));
       em->buffer_per_thread[i] = eb - em->buffer_pool;
       if (ioam_export_init_buffer (em, vm, eb) != 1)
 	{
@@ -196,7 +196,7 @@ ioam_export_thread_buffer_init (ioam_export_main_t * em, vlib_main_t * vm)
 	}
       em->lockp[i] = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
 					     CLIB_CACHE_LINE_BYTES);
-      memset ((void *) em->lockp[i], 0, CLIB_CACHE_LINE_BYTES);
+      clib_memset ((void *) em->lockp[i], 0, CLIB_CACHE_LINE_BYTES);
     }
   return (1);
 }
@@ -412,7 +412,7 @@ ioam_export_process_common (ioam_export_main_t * em, vlib_main_t * vm,
 	    {
 	      pool_get_aligned (em->buffer_pool, new_eb,
 				CLIB_CACHE_LINE_BYTES);
-	      memset (new_eb, 0, sizeof (*new_eb));
+	      clib_memset (new_eb, 0, sizeof (*new_eb));
 	      if (ioam_export_init_buffer (em, vm, new_eb) == 1)
 		{
 		  new_pool_index = new_eb - em->buffer_pool;
@@ -436,11 +436,11 @@ ioam_export_process_common (ioam_export_main_t * em, vlib_main_t * vm,
 	   */
 	  for (i = 0; i < vec_len (thread_index); i++)
 	    {
-	      while (__sync_lock_test_and_set (em->lockp[thread_index[i]], 1))
+	      while (clib_atomic_test_and_set (em->lockp[thread_index[i]]))
 		;
 	      em->buffer_per_thread[thread_index[i]] =
 		vec_pop (vec_buffer_indices);
-	      *em->lockp[thread_index[i]] = 0;
+	      clib_atomic_release (em->lockp[thread_index[i]]);
 	    }
 
 	  /* Send the buffers */
@@ -479,7 +479,7 @@ do {                                                                           \
   from = vlib_frame_vector_args (F);                                           \
   n_left_from = (F)->n_vectors;                                                \
   next_index = (N)->cached_next_index;                                         \
-  while (__sync_lock_test_and_set ((EM)->lockp[(VM)->thread_index], 1));       \
+  while (clib_atomic_test_and_set ((EM)->lockp[(VM)->thread_index]));	       \
   my_buf = ioam_export_get_my_buffer (EM, (VM)->thread_index);                 \
   my_buf->touched_at = vlib_time_now (VM);                                     \
   while (n_left_from > 0)                                                      \

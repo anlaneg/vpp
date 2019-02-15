@@ -28,6 +28,7 @@
 #include <igmp/igmp_timer.h>
 #include <igmp/igmp_group.h>
 #include <igmp/igmp_config.h>
+#include <igmp/igmp_proxy.h>
 
 /**
  * RFC 3376 Section 8.1
@@ -52,7 +53,7 @@
 #define IGMP_SSM_DEFAULT        	(0x000000E8)
 #endif
 
-/** helper macro to get igmp mebership group from pointer plus offset */
+/** helper macro to get igmp membership group from pointer plus offset */
 #define group_ptr(p, l) ((igmp_membership_group_v3_t *)((u8*)(p) + (l)))
 #define group_cptr(p, l) ((const igmp_membership_group_v3_t *)((u8*)(p) + (l)))
 
@@ -101,6 +102,16 @@ typedef struct igmp_main_t_
    * pool of sources
    */
   igmp_src_t *srcs;
+
+  /**
+   * per-vrf DB of proxy devices
+   */
+  u32 *igmp_proxy_device_by_vrf_id;
+
+  /**
+   * pool of proxy devices
+   */
+  igmp_proxy_device_t *proxy_devices;
 } igmp_main_t;
 
 extern igmp_main_t igmp_main;

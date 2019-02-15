@@ -8,17 +8,25 @@ from framework import VppTestCase, running_extended_tests, \
     VppTestRunner, Worker
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class VOMTestCase(VppTestCase):
     """ VPP Object Model Test """
 
+    @classmethod
+    def setUpClass(cls):
+        super(VOMTestCase, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(VOMTestCase, cls).tearDownClass()
+
     def test_vom_cpp(self):
         """ run C++ VOM tests """
-        var = "BR"
+        var = "TEST_DIR"
         built_root = os.getenv(var, None)
         self.assertIsNotNone(built_root,
                              "Environment variable `%s' not set" % var)
-        executable = "%s/vom_test/vom_test" % built_root
+        executable = "%s/build/vom_test/vom_test" % built_root
         worker = Worker(
             [executable, "vpp object model", self.shm_prefix], self.logger)
         worker.start()

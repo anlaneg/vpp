@@ -180,7 +180,7 @@ void CV (clib_cuckoo_init) (CVT (clib_cuckoo) * h, const char *name,
   CVT (clib_cuckoo_bucket) * bucket;
   /* *INDENT-OFF* */
   clib_cuckoo_foreach_bucket (
-      bucket, h, { memset (bucket->elts, 0xff, sizeof (bucket->elts)); });
+      bucket, h, { clib_memset (bucket->elts, 0xff, sizeof (bucket->elts)); });
   /* *INDENT-ON* */
   h->name = name;
   h->garbage_callback = garbage_callback;
@@ -189,7 +189,7 @@ void CV (clib_cuckoo_init) (CVT (clib_cuckoo) * h, const char *name,
 
 void CV (clib_cuckoo_free) (CVT (clib_cuckoo) * h)
 {
-  memset (h, 0, sizeof (*h));
+  clib_memset (h, 0, sizeof (*h));
 }
 
 static clib_cuckoo_bucket_aux_t
@@ -227,7 +227,7 @@ static clib_cuckoo_path_t *CV (clib_cuckoo_path_get) (CVT (clib_cuckoo) * h)
 {
   clib_cuckoo_path_t *path;
   pool_get (h->paths, path);
-  memset (path, 0, sizeof (*path));
+  clib_memset (path, 0, sizeof (*path));
 #if CLIB_CUCKOO_DEBUG_PATH_DETAIL
   CLIB_CUCKOO_DBG ("Get path @%lu", (long unsigned) (path - h->paths));
 #endif
@@ -531,10 +531,10 @@ static void CV (clib_cuckoo_bucket_tidy) (CVT (clib_cuckoo_bucket) * b)
 static void CV (clib_cuckoo_free_locked_elt) (CVT (clib_cuckoo_kv) * elt)
 {
   /*
-   * FIXME - improve performance by getting rid of this memset - make all
+   * FIXME - improve performance by getting rid of this clib_memset - make all
    * functions in this file not rely on clib_cuckoo_kv_is_free but instead
    * take use_count into account */
-  memset (elt, 0xff, sizeof (*elt));
+  clib_memset (elt, 0xff, sizeof (*elt));
 }
 
 static void CV (clib_cuckoo_free_elt_in_bucket) (CVT (clib_cuckoo_bucket) * b,
@@ -736,7 +736,7 @@ static void CV (clib_cuckoo_rehash) (CVT (clib_cuckoo) * h)
   CVT (clib_cuckoo_bucket) * bucket;
   for (bucket = new + old_nbuckets; bucket < vec_end (new); ++bucket)
     {
-      memset (bucket->elts, 0xff, sizeof (bucket->elts));
+      clib_memset (bucket->elts, 0xff, sizeof (bucket->elts));
     }
   /*
    * this for loop manipulates the new (unseen) memory, so no locks
@@ -908,6 +908,7 @@ u8 *CV (format_cuckoo) (u8 * s, va_list * args)
   uword free = 0;
   uword used = 0;
   uword use_count_total = 0;
+  float load_factor;
   CVT (clib_cuckoo_bucket) * b;
   /* *INDENT-OFF* */
   clib_cuckoo_foreach_bucket (b, h, {
@@ -935,8 +936,11 @@ u8 *CV (format_cuckoo) (u8 * s, va_list * args)
   s = format (s, "Used slots: %wu\n", used);
   s = format (s, "Use count total: %wu\n", use_count_total);
   s = format (s, "Free slots: %wu\n", free);
-  s =
-    format (s, "Load factor: %.2f\n", (float) (used) / (float) (free + used));
+  if (free + used != 0)
+    load_factor = ((float) used) / ((float) (free + used));
+  else
+    load_factor = 0.0;
+  s = format (s, "Load factor: %.2f\n", load_factor);
 #if CLIB_CUCKOO_DEBUG_COUNTERS
   s = format (s, "BFS attempts limited by max steps: %lld\n",
 	      h->steps_exceeded);
@@ -968,7 +972,10 @@ float CV (clib_cuckoo_calculate_load_factor) (CVT (clib_cuckoo) * h)
     }
   });
   /* *INDENT-ON* */
-  return (float) nonfree / (float) all;
+  if (all)
+    return (float) nonfree / (float) all;
+  else
+    return 0.0;
 }
 
 /** @endcond */

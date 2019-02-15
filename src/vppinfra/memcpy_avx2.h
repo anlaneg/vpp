@@ -109,7 +109,7 @@ clib_mov128blocks (u8 * dst, const u8 * src, size_t n)
 }
 
 static inline void *
-clib_memcpy (void *dst, const void *src, size_t n)
+clib_memcpy_fast (void *dst, const void *src, size_t n)
 {
   uword dstu = (uword) dst;
   uword srcu = (uword) src;
@@ -229,7 +229,7 @@ clib_memcpy (void *dst, const void *src, size_t n)
 }
 
 
-#endif /* included_clib_mamcpy_avx2_h */
+#endif /* included_clib_memcpy_avx2_h */
 
 
 /*

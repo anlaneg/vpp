@@ -70,16 +70,18 @@
    Typically, the header is not present.  Headers allow for other
    data structures to be built atop CLIB vectors.
 
-   Users may specify the alignment for data elements via the
-   vec_*_aligned macros.
+   Users may specify the alignment for first data element of a vector
+   via the vec_*_aligned macros.
 
-   Vectors elements can be any C type e.g. (int, double, struct bar).
+   Vector elements can be any C type e.g. (int, double, struct bar).
    This is also true for data types built atop vectors (e.g. heap,
    pool, etc.).
 
-   Many macros have _a variants supporting alignment of vector data
-   and _h variants supporting non zero length vector headers.
-   The _ha variants support both.
+   Many macros have \_a variants supporting alignment of vector elements
+   and \_h variants supporting non-zero-length vector headers. The \_ha
+   variants support both.  Additionally cacheline alignment within a
+   vector element structure can be specified using the
+   CLIB_CACHE_LINE_ALIGN_MARK() macro.
 
    Standard programming error: memorize a pointer to the ith element
    of a vector then expand it. Vectors expand by 3/2, so such code
@@ -360,7 +362,7 @@ do {						\
   if (_v(l) > 0)					\
     {							\
       vec_resize_ha (_v(v), _v(l), (H), (A));		\
-      clib_memcpy (_v(v), (V), _v(l) * sizeof ((V)[0]));\
+      clib_memcpy_fast (_v(v), (V), _v(l) * sizeof ((V)[0]));\
     }							\
   _v(v);						\
 })
@@ -387,7 +389,7 @@ do {						\
     @param DST destination
     @param SRC source
 */
-#define vec_copy(DST,SRC) clib_memcpy (DST, SRC, vec_len (DST) * \
+#define vec_copy(DST,SRC) clib_memcpy_fast (DST, SRC, vec_len (DST) * \
 				       sizeof ((DST)[0]))
 
 /** \brief Clone a vector. Make a new vector with the
@@ -423,7 +425,7 @@ do {									\
       vec_resize_ha ((V), 1 + (_v(i) - _v(l)), (H), (A));		\
       /* Must zero new space since user may have previously		\
 	 used e.g. _vec_len (v) -= 10 */				\
-      memset ((V) + _v(l), 0, (1 + (_v(i) - _v(l))) * sizeof ((V)[0]));	\
+      clib_memset ((V) + _v(l), 0, (1 + (_v(i) - _v(l))) * sizeof ((V)[0]));	\
     }									\
 } while (0)
 
@@ -590,7 +592,7 @@ do {										\
   /*取出vecotr的长度*/\
   word _v(l) = vec_len (V);							\
   V = _vec_resize ((V), _v(n), (_v(l) + _v(n)) * sizeof ((V)[0]), (H), (A));	\
-  clib_memcpy ((V) + _v(l), (E), _v(n) * sizeof ((V)[0]));			\
+  clib_memcpy_fast ((V) + _v(l), (E), _v(n) * sizeof ((V)[0]));			\
 } while (0)
 
 /** \brief Add N elements to end of vector V (no header, unspecified alignment)
@@ -664,7 +666,7 @@ do {							\
   memmove ((V) + _v(m) + _v(n),				\
 	   (V) + _v(m),					\
 	   (_v(l) - _v(m)) * sizeof ((V)[0]));		\
-  memset  ((V) + _v(m), INIT, _v(n) * sizeof ((V)[0]));	\
+  clib_memset  ((V) + _v(m), INIT, _v(n) * sizeof ((V)[0]));	\
 } while (0)
 
 /** \brief Insert N vector elements starting at element M,
@@ -752,7 +754,7 @@ do {							\
   memmove ((V) + _v(m) + _v(n),				\
 	   (V) + _v(m),					\
 	   (_v(l) - _v(m)) * sizeof ((V)[0]));		\
-  clib_memcpy ((V) + _v(m), (E),			\
+  clib_memcpy_fast ((V) + _v(m), (E),			\
 	       _v(n) * sizeof ((V)[0]));		\
 } while (0)
 
@@ -797,7 +799,7 @@ do {								\
 	     (_v(l) - _v(n) - _v(m)) * sizeof ((V)[0]));	\
   /* Zero empty space at end (for future re-allocation). */	\
   if (_v(n) > 0)						\
-    memset ((V) + _v(l) - _v(n), 0, _v(n) * sizeof ((V)[0]));	\
+    clib_memset ((V) + _v(l) - _v(n), 0, _v(n) * sizeof ((V)[0]));	\
   _vec_len (V) -= _v(n);					\
 } while (0)
 
@@ -827,7 +829,7 @@ do {									\
 									\
   v1 = _vec_resize ((v1), _v(l2),					\
 		    (_v(l1) + _v(l2)) * sizeof ((v1)[0]), 0, 0);	\
-  clib_memcpy ((v1) + _v(l1), (v2), _v(l2) * sizeof ((v2)[0]));		\
+  clib_memcpy_fast ((v1) + _v(l1), (v2), _v(l2) * sizeof ((v2)[0]));		\
 } while (0)
 
 /** \brief Append v2 after v1. Result in v1. Specified alignment.
@@ -843,7 +845,7 @@ do {									\
 									\
   v1 = _vec_resize ((v1), _v(l2),					\
 		    (_v(l1) + _v(l2)) * sizeof ((v1)[0]), 0, align);	\
-  clib_memcpy ((v1) + _v(l1), (v2), _v(l2) * sizeof ((v2)[0]));		\
+  clib_memcpy_fast ((v1) + _v(l1), (v2), _v(l2) * sizeof ((v2)[0]));		\
 } while (0)
 
 /** \brief Prepend v2 before v1. Result in v1.
@@ -859,7 +861,7 @@ do {                                                                    \
   v1 = _vec_resize ((v1), _v(l2),                                       \
 		    (_v(l1) + _v(l2)) * sizeof ((v1)[0]), 0, 0);	\
   memmove ((v1) + _v(l2), (v1), _v(l1) * sizeof ((v1)[0]));             \
-  clib_memcpy ((v1), (v2), _v(l2) * sizeof ((v2)[0]));                  \
+  clib_memcpy_fast ((v1), (v2), _v(l2) * sizeof ((v2)[0]));                  \
 } while (0)
 
 /** \brief Prepend v2 before v1. Result in v1. Specified alignment
@@ -876,7 +878,7 @@ do {                                                                    \
   v1 = _vec_resize ((v1), _v(l2),                                       \
 		    (_v(l1) + _v(l2)) * sizeof ((v1)[0]), 0, align);	\
   memmove ((v1) + _v(l2), (v1), _v(l1) * sizeof ((v1)[0]));             \
-  clib_memcpy ((v1), (v2), _v(l2) * sizeof ((v2)[0]));                  \
+  clib_memcpy_fast ((v1), (v2), _v(l2) * sizeof ((v2)[0]));                  \
 } while (0)
 
 
@@ -886,7 +888,7 @@ do {                                                                    \
 #define vec_zero(var)						\
 do {								\
   if (var)							\
-    memset ((var), 0, vec_len (var) * sizeof ((var)[0]));	\
+    clib_memset ((var), 0, vec_len (var) * sizeof ((var)[0]));	\
 } while (0)
 
 /** \brief Set all vector elements to given value. Null-pointer tolerant.
@@ -998,7 +1000,7 @@ do {								\
     vec_reset_length (V);                       \
     vec_validate ((V), (L));                    \
     if ((S) && (L))                             \
-        clib_memcpy ((V), (S), (L));            \
+        clib_memcpy_fast ((V), (S), (L));            \
     (V)[(L)] = 0;                               \
   } while (0)
 

@@ -86,6 +86,8 @@
 #define MAX_MEMIF_BUFS  256
 #define MAX_CONNS       50
 
+#define ICMPR_HEADROOM	64
+
 int epfd;
 int out_fd;
 uint8_t enable_log;
@@ -210,7 +212,10 @@ print_memif_details ()
       if (md.link_up_down)
 	printf ("up\n");
       else
-	printf ("down\n");
+	{
+	  printf ("down\n");
+	  printf ("\treason: %s\n", md.error);
+	}
     }
   free (buf);
 }
@@ -282,7 +287,7 @@ int
 on_connect (memif_conn_handle_t conn, void *private_ctx)
 {
   INFO ("memif connected!");
-  memif_refill_queue (conn, 0, -1, 0);
+  memif_refill_queue (conn, 0, -1, ICMPR_HEADROOM);
   enable_log = 1;
   return 0;
 }
@@ -406,13 +411,12 @@ on_interrupt (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
 	  tx--;
 	}
 
-      err = memif_refill_queue (c->conn, qid, rx, 0);
+      err = memif_refill_queue (c->conn, qid, rx, ICMPR_HEADROOM);
       if (err != MEMIF_ERR_SUCCESS)
 	INFO ("memif_buffer_free: %s", memif_strerror (err));
       rx -= rx;
 
-      DBG ("freed %d buffers. %u/%u alloc/free buffers",
-	   rx, rx, MAX_MEMIF_BUFS - rx);
+      DBG ("%u/%u alloc/free buffers", rx, MAX_MEMIF_BUFS - rx);
 
       err = memif_tx_burst (c->conn, qid, c->tx_bufs, j, &tx);
       if (err != MEMIF_ERR_SUCCESS)
@@ -428,7 +432,7 @@ on_interrupt (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
   return 0;
 
 error:
-  err = memif_refill_queue (c->conn, qid, rx, 0);
+  err = memif_refill_queue (c->conn, qid, rx, ICMPR_HEADROOM);
   if (err != MEMIF_ERR_SUCCESS)
     INFO ("memif_buffer_free: %s", memif_strerror (err));
   c->rx_buf_num -= rx;
@@ -514,7 +518,7 @@ on_interrupt0 (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
 	    }
 	  /* mark memif buffers and shared memory buffers as free */
 	  /* free processed buffers */
-	  err = memif_refill_queue (c->conn, qid, j, 0);
+	  err = memif_refill_queue (c->conn, qid, j, ICMPR_HEADROOM);
 	  if (err != MEMIF_ERR_SUCCESS)
 	    INFO ("memif_buffer_free: %s", memif_strerror (err));
 	  rx -= j;
@@ -540,7 +544,7 @@ on_interrupt0 (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
   return 0;
 
 error:
-  err = memif_refill_queue (c->conn, qid, rx, 0);
+  err = memif_refill_queue (c->conn, qid, rx, ICMPR_HEADROOM);
   if (err != MEMIF_ERR_SUCCESS)
     INFO ("memif_buffer_free: %s", memif_strerror (err));
   c->rx_buf_num -= rx;
@@ -597,7 +601,7 @@ on_interrupt1 (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
 	    }
 	}
 
-      err = memif_refill_queue (c->conn, qid, rx, 0);
+      err = memif_refill_queue (c->conn, qid, rx, ICMPR_HEADROOM);
       if (err != MEMIF_ERR_SUCCESS)
 	INFO ("memif_buffer_free: %s", memif_strerror (err));
       c->rx_buf_num -= rx;
@@ -609,7 +613,7 @@ on_interrupt1 (memif_conn_handle_t conn, void *private_ctx, uint16_t qid)
   return 0;
 
 error:
-  err = memif_refill_queue (c->conn, qid, rx, 0);
+  err = memif_refill_queue (c->conn, qid, rx, ICMPR_HEADROOM);
   if (err != MEMIF_ERR_SUCCESS)
     INFO ("memif_buffer_free: %s", memif_strerror (err));
   c->rx_buf_num -= rx;
@@ -992,6 +996,7 @@ icmpr_send_proc (void *data)
       count -= tx;
     }
   timespec_get (&end, TIME_UTC);
+  printf ("\n\n");
   INFO ("Pakcet sequence finished!");
   INFO ("Seq len: %u", seq);
   uint64_t t1 = end.tv_sec - start.tv_sec;
@@ -1297,7 +1302,7 @@ main ()
   /* if valid callback is passed as argument, fd event polling will be done by user
      all file descriptors and events will be passed to user in this callback */
   /* if callback is set to NULL libmemif will handle fd event polling */
-  err = memif_init (control_fd_update, APP_NAME, NULL, NULL);
+  err = memif_init (control_fd_update, APP_NAME, NULL, NULL, NULL);
   if (err != MEMIF_ERR_SUCCESS)
     {
       INFO ("memif_init: %s", memif_strerror (err));

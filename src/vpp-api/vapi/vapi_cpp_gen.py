@@ -4,8 +4,8 @@ import argparse
 import os
 import sys
 import logging
-from vapi_c_gen import CField, CStruct, CSimpleType, CStructType, CMessage, \
-    json_to_c_header_name
+from vapi_c_gen import CField, CEnum, CStruct, CSimpleType, CStructType,\
+    CMessage, json_to_c_header_name, CAlias
 from vapi_json_parser import JsonParser
 
 
@@ -14,6 +14,14 @@ class CppField(CField):
 
 
 class CppStruct(CStruct):
+    pass
+
+
+class CppEnum(CEnum):
+    pass
+
+
+class CppAlias(CAlias):
     pass
 
 
@@ -69,7 +77,7 @@ class CppMessage (CMessage):
         return "%s%s" % (self.name[0].upper(), self.name[1:])
 
     def get_req_template_name(self):
-        if self.is_dump():
+        if self.reply_is_stream:
             template = "Dump"
         else:
             template = "Request"
@@ -129,13 +137,14 @@ def gen_json_header(parser, logger, j, io, gen_h_prefix, add_debug_comments):
     logger.info("Generating header `%s'" % io.name)
     orig_stdout = sys.stdout
     sys.stdout = io
+    d, f = os.path.split(j)
     include_guard = "__included_hpp_%s" % (
-        j.replace(".", "_").replace("/", "_").replace("-", "_"))
+        f.replace(".", "_").replace("/", "_").replace("-", "_"))
     print("#ifndef %s" % include_guard)
     print("#define %s" % include_guard)
     print("")
     print("#include <vapi/vapi.hpp>")
-    print("#include <%s%s>" % (gen_h_prefix, json_to_c_header_name(j)))
+    print("#include <%s%s>" % (gen_h_prefix, json_to_c_header_name(f)))
     print("")
     print("namespace vapi {")
     print("")
@@ -158,7 +167,7 @@ def gen_json_header(parser, logger, j, io, gen_h_prefix, add_debug_comments):
             print("/* m.get_cpp_constructor() */")
         print("%s" % m.get_cpp_constructor())
         print("")
-        if not m.is_reply():
+        if not m.is_reply and not m.is_event:
             if add_debug_comments:
                 print("/* m.get_alloc_template_instantiation() */")
             print("%s" % m.get_alloc_template_instantiation())
@@ -167,7 +176,7 @@ def gen_json_header(parser, logger, j, io, gen_h_prefix, add_debug_comments):
             print("/* m.get_msg_class_instantiation() */")
         print("%s" % m.get_msg_class_instantiation())
         print("")
-        if m.is_reply():
+        if m.is_reply or m.is_event:
             if add_debug_comments:
                 print("/* m.get_reply_type_alias() */")
             print("%s" % m.get_reply_type_alias())
@@ -192,7 +201,7 @@ def json_to_cpp_header_name(json_name):
     raise Exception("Unexpected json name `%s'!" % json_name)
 
 
-def gen_cpp_headers(parser, logger, prefix, gen_h_prefix,
+def gen_cpp_headers(parser, logger, prefix, gen_h_prefix, remove_path,
                     add_debug_comments=False):
     if prefix == "" or prefix is None:
         prefix = ""
@@ -203,7 +212,11 @@ def gen_cpp_headers(parser, logger, prefix, gen_h_prefix,
     else:
         gen_h_prefix = "%s/" % gen_h_prefix
     for j in parser.json_files:
-        with open('%s%s' % (prefix, json_to_cpp_header_name(j)), "w") as io:
+        if remove_path:
+            d, f = os.path.split(j)
+        else:
+            f = j
+        with open('%s%s' % (prefix, json_to_cpp_header_name(f)), "w") as io:
             gen_json_header(parser, logger, j, io,
                             gen_h_prefix, add_debug_comments)
 
@@ -233,15 +246,20 @@ if __name__ == '__main__':
                            help='path prefix')
     argparser.add_argument('--gen-h-prefix', action='store', default=None,
                            help='generated C header prefix')
+    argparser.add_argument('--remove-path', action='store_true',
+                           help='remove path from filename')
     args = argparser.parse_args()
 
     jsonparser = JsonParser(logger, args.files,
                             simple_type_class=CppSimpleType,
                             struct_type_class=CppStructType,
                             field_class=CppField,
-                            message_class=CppMessage)
+                            enum_class=CppEnum,
+                            message_class=CppMessage,
+                            alias_class=CppAlias)
 
-    gen_cpp_headers(jsonparser, logger, args.prefix, args.gen_h_prefix)
+    gen_cpp_headers(jsonparser, logger, args.prefix, args.gen_h_prefix,
+                    args.remove_path)
 
     for e in jsonparser.exceptions:
-        logger.error(e)
+        logger.warning(e)

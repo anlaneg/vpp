@@ -44,7 +44,7 @@ cj_log (u32 type, void *data0, void *data1)
   if (cjm->enable == 0)
     return;
 
-  new_tail = __sync_add_and_fetch (&cjm->tail, 1);
+  new_tail = clib_atomic_add_fetch (&cjm->tail, 1);
 
   r = (cj_record_t *) & (cjm->records[new_tail & (cjm->num_records - 1)]);
   r->time = vlib_time_now (cjm->vlib_main);
@@ -97,7 +97,7 @@ cj_config (vlib_main_t * vm, unformat_input_t * input)
 
   cjm->num_records = max_pow2 (cjm->num_records);
   vec_validate (cjm->records, cjm->num_records - 1);
-  memset (cjm->records, 0xff, cjm->num_records * sizeof (cj_record_t));
+  clib_memset (cjm->records, 0xff, cjm->num_records * sizeof (cj_record_t));
   cjm->tail = ~0;
   cjm->enable = enable;
 
@@ -178,7 +178,7 @@ cj_dump_internal (u8 filter0_enable, u64 filter0,
     }
   /* dump from the beginning through the final tail */
   r = cjm->records;
-  for (i = 0; i <= cjm->tail; i++)
+  for (i = 0; i < index; i++)
     {
       if (filter0_enable && (r->data[0] != filter0))
 	goto skip2;

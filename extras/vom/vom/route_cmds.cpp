@@ -15,70 +15,29 @@
 
 #include <sstream>
 
-#include "vom/route_cmds.hpp"
+#include <vom/route_api_types.hpp>
+#include <vom/route_cmds.hpp>
 
 namespace VOM {
 namespace route {
 namespace ip_route_cmds {
 
-static void
-to_vpp(const route::path& p, vapi_payload_ip_add_del_route& payload)
-{
-  payload.is_drop = 0;
-  payload.is_unreach = 0;
-  payload.is_prohibit = 0;
-  payload.is_local = 0;
-  payload.is_classify = 0;
-  payload.is_multipath = 0;
-  payload.is_resolve_host = 0;
-  payload.is_resolve_attached = 0;
-
-  if (route::path::flags_t::DVR & p.flags()) {
-    payload.is_dvr = 1;
-  }
-
-  if (route::path::special_t::STANDARD == p.type()) {
-    uint8_t path_v6;
-    to_bytes(p.nh(), &path_v6, payload.next_hop_address);
-
-    if (p.rd()) {
-      payload.next_hop_table_id = p.rd()->table_id();
-    }
-    if (p.itf()) {
-      payload.next_hop_sw_if_index = p.itf()->handle().value();
-    }
-  } else if (route::path::special_t::DROP == p.type()) {
-    payload.is_drop = 1;
-  } else if (route::path::special_t::UNREACH == p.type()) {
-    payload.is_unreach = 1;
-  } else if (route::path::special_t::PROHIBIT == p.type()) {
-    payload.is_prohibit = 1;
-  } else if (route::path::special_t::LOCAL == p.type()) {
-    payload.is_local = 1;
-  }
-  payload.next_hop_weight = p.weight();
-  payload.next_hop_preference = p.preference();
-  payload.next_hop_via_label = 0;
-  payload.classify_table_index = 0;
-}
-
 update_cmd::update_cmd(HW::item<bool>& item,
                        table_id_t id,
                        const prefix_t& prefix,
-                       const path_list_t& paths)
+                       const path& path)
   : rpc_cmd(item)
   , m_id(id)
   , m_prefix(prefix)
-  , m_paths(paths)
+  , m_path(path)
 {
-  // no multipath yet.
-  assert(paths.size() == 1);
 }
 
 bool
 update_cmd::operator==(const update_cmd& other) const
 {
-  return ((m_prefix == other.m_prefix) && (m_id == other.m_id));
+  return ((m_prefix == other.m_prefix) && (m_id == other.m_id) &&
+          (m_path == other.m_path));
 }
 
 rc_t
@@ -94,9 +53,7 @@ update_cmd::issue(connection& con)
 
   m_prefix.to_vpp(&payload.is_ipv6, payload.dst_address,
                   &payload.dst_address_length);
-
-  for (auto& p : m_paths)
-    to_vpp(p, payload);
+  to_vpp(m_path, payload);
 
   VAPI_CALL(req.execute());
 
@@ -108,24 +65,27 @@ update_cmd::to_string() const
 {
   std::ostringstream s;
   s << "ip-route-create: " << m_hw_item.to_string() << " table-id:" << m_id
-    << " prefix:" << m_prefix.to_string() << " paths:" << m_paths;
+    << " prefix:" << m_prefix.to_string() << " paths:" << m_path.to_string();
 
   return (s.str());
 }
 
 delete_cmd::delete_cmd(HW::item<bool>& item,
                        table_id_t id,
-                       const prefix_t& prefix)
+                       const prefix_t& prefix,
+                       const path& path)
   : rpc_cmd(item)
   , m_id(id)
   , m_prefix(prefix)
+  , m_path(path)
 {
 }
 
 bool
 delete_cmd::operator==(const delete_cmd& other) const
 {
-  return ((m_prefix == other.m_prefix) && (m_id == other.m_id));
+  return ((m_prefix == other.m_prefix) && (m_id == other.m_id) &&
+          (m_path == other.m_path));
 }
 
 rc_t
@@ -139,6 +99,7 @@ delete_cmd::issue(connection& con)
 
   m_prefix.to_vpp(&payload.is_ipv6, payload.dst_address,
                   &payload.dst_address_length);
+  to_vpp(m_path, payload);
 
   VAPI_CALL(req.execute());
 
@@ -153,7 +114,7 @@ delete_cmd::to_string() const
 {
   std::ostringstream s;
   s << "ip-route-delete: " << m_hw_item.to_string() << " id:" << m_id
-    << " prefix:" << m_prefix.to_string();
+    << " prefix:" << m_prefix.to_string() << " paths:" << m_path.to_string();
 
   return (s.str());
 }

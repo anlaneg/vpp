@@ -46,6 +46,8 @@
 #include <vppinfra/pool.h>
 #include <vppinfra/random_buffer.h>
 #include <vppinfra/time.h>
+#include <vppinfra/pmc.h>
+#include <vppinfra/pcap.h>
 
 #include <pthread.h>
 
@@ -81,6 +83,10 @@ typedef struct vlib_main_t
   u32 vector_counts_per_main_loop[2];
   u32 node_counts_per_main_loop[2];
 
+  /* Main loop hw / sw performance counters */
+  void (*vlib_node_runtime_perf_counter_cb) (struct vlib_main_t *,
+					     u64 *, u64 *);
+
   /* Every so often we switch to the next counter. */
 #define VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE 7
 
@@ -109,29 +115,11 @@ typedef struct vlib_main_t
   /* Size of the heap */
   uword heap_size;
 
-  /* Pool of buffer free lists. */
-  vlib_buffer_free_list_t *buffer_free_list_pool;
+  /* buffer main structure. */
+  vlib_buffer_main_t *buffer_main;
 
-  /* List of free-lists needing Blue Light Special announcements */
-  vlib_buffer_free_list_t **buffer_announce_list;
-
-  /* Allocate/free buffer memory for DMA transfers, descriptor rings, etc.
-     buffer memory is guaranteed to be cache-aligned. */
-
-  clib_error_t *(*os_physmem_region_alloc) (struct vlib_main_t * vm,
-					    char *name, u32 size,
-					    u8 numa_node, u32 flags,
-					    vlib_physmem_region_index_t *
-					    idx);
-
-  void (*os_physmem_region_free) (struct vlib_main_t * vm,
-				  vlib_physmem_region_index_t idx);
-
-  void *(*os_physmem_alloc_aligned) (struct vlib_main_t * vm,
-				     vlib_physmem_region_index_t idx,
-				     uword n_bytes, uword alignment);
-  void (*os_physmem_free) (struct vlib_main_t * vm,
-			   vlib_physmem_region_index_t idx, void *x);
+  /* physical memory main structure. */
+  vlib_physmem_main_t physmem_main;
 
   /* Node graph main structure. */
   vlib_node_main_t node_main;//node相关的结构
@@ -142,6 +130,11 @@ typedef struct vlib_main_t
   /* Packet trace buffer. */
   vlib_trace_main_t trace_main;
 
+  /* Pcap dispatch trace main */
+  pcap_main_t dispatch_pcap_main;
+  uword dispatch_pcap_enable;
+  u8 *pcap_buffer;
+
   /* Error handling. */
   vlib_error_main_t error_main;
 
@@ -151,9 +144,6 @@ typedef struct vlib_main_t
 			 struct vlib_node_runtime_t * node,
 			 vlib_frame_t * frame);
 
-  /* Multicast distribution.  Set to zero for MC disabled. */
-  mc_main_t *mc_main;
-
   /* Stream index to use for distribution when MC is enabled. */
   u32 mc_stream_index;
 
@@ -161,6 +151,13 @@ typedef struct vlib_main_t
 
   /* Event logger. */
   elog_main_t elog_main;
+
+  /* Event logger trace flags */
+  int elog_trace_api_messages;
+  int elog_trace_cli_commands;
+  int elog_trace_graph_dispatch;
+  int elog_trace_graph_circuit;
+  u32 elog_trace_graph_circuit_node_index;
 
   /* Node call and return event types. */
   elog_event_type_t *node_call_elog_event_types;
@@ -177,8 +174,10 @@ typedef struct vlib_main_t
   /* Hash table to record which init functions have been called. */
   uword *init_functions_called;//设置初始化函数的指针
 
-  /* to compare with node runtime */
+  /* thread, cpu and numa_node indices */
   u32 thread_index;
+  u32 cpu_id;
+  u32 numa_node;
 
   /* List of init functions to call, setup by constructors */
   _vlib_init_function_list_elt_t *init_function_registrations;
@@ -187,13 +186,15 @@ typedef struct vlib_main_t
   _vlib_init_function_list_elt_t *main_loop_exit_function_registrations;
   _vlib_init_function_list_elt_t *api_init_function_registrations;
   vlib_config_function_runtime_t *config_function_registrations;
-  mc_serialize_msg_t *mc_msg_registrations;	/* mc_main is a pointer... */
 
   /* control-plane API queue signal pending, length indication */
   volatile u32 queue_signal_pending;
   volatile u32 api_queue_nonempty;
   void (*queue_signal_callback) (struct vlib_main_t *);
   u8 **argv;//命令行参数
+
+  /* Top of (worker) dispatch loop callback */
+  volatile void (*worker_thread_main_loop_callback) (struct vlib_main_t *);
 
   /* debugging */
   volatile int parked_at_barrier;
@@ -216,8 +217,10 @@ typedef struct vlib_main_t
   /* Earliest barrier can be closed again */
   f64 barrier_no_close_before;
 
-  /* Vector of pending RPC requests */
+  /* RPC requests, main thread only */
   uword *pending_rpc_requests;
+  uword *processing_rpc_requests;
+  clib_spinlock_t pending_rpc_lock;
 
 } vlib_main_t;
 
@@ -372,6 +375,9 @@ extern u8 **vlib_thread_stacks;
 u32 vlib_app_num_thread_stacks_needed (void) __attribute__ ((weak));
 
 extern void vlib_node_sync_stats (vlib_main_t * vm, vlib_node_t * n);
+
+#define VLIB_PCAP_MAJOR_VERSION 1
+#define VLIB_PCAP_MINOR_VERSION 0
 
 #endif /* included_vlib_main_h */
 

@@ -14,6 +14,7 @@
  */
 #include <nat/dslite.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat_syslog.h>
 
 vlib_node_registration_t dslite_in2out_node;
 vlib_node_registration_t dslite_in2out_slowpath_node;
@@ -45,7 +46,7 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
   u32 oldest_index;
   dslite_session_t *s;
   snat_session_key_t out2in_key;
-  u32 address_index;
+  u32 b4_index;
 
   out2in_key.protocol = in2out_key->proto;
   out2in_key.fib_index = 0;
@@ -57,7 +58,7 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
       (&dm->per_thread_data[thread_index].b4_hash, &b4_kv, &b4_value))
     {
       pool_get (dm->per_thread_data[thread_index].b4s, b4);
-      memset (b4, 0, sizeof (*b4));
+      clib_memset (b4, 0, sizeof (*b4));
       b4->addr.as_u64[0] = in2out_key->softwire_id.as_u64[0];
       b4->addr.as_u64[1] = in2out_key->softwire_id.as_u64[1];
 
@@ -67,12 +68,17 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
       clib_dlist_init (dm->per_thread_data[thread_index].list_pool,
 		       b4->sessions_per_b4_list_head_index);
 
-      b4_kv.value = b4 - dm->per_thread_data[thread_index].b4s;
+      b4_index = b4_kv.value = b4 - dm->per_thread_data[thread_index].b4s;
       clib_bihash_add_del_16_8 (&dm->per_thread_data[thread_index].b4_hash,
 				&b4_kv, 1);
+
+      vlib_set_simple_counter (&dm->total_b4s, thread_index, 0,
+			       pool_elts (dm->
+					  per_thread_data[thread_index].b4s));
     }
   else
     {
+      b4_index = b4_value.value;
       b4 =
 	pool_elt_at_index (dm->per_thread_data[thread_index].b4s,
 			   b4_value.value);
@@ -103,27 +109,29 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
       clib_bihash_add_del_8_8 (&dm->per_thread_data[thread_index].out2in,
 			       &out2in_kv, 0);
       snat_free_outside_address_and_port (dm->addr_pool, thread_index,
-					  &s->out2in,
-					  s->outside_address_index);
-      s->outside_address_index = ~0;
+					  &s->out2in);
+
+      nat_syslog_dslite_apmdel (b4_index, &s->in2out.softwire_id,
+				&s->in2out.addr, s->in2out.port,
+				&s->out2in.addr, s->out2in.port,
+				s->in2out.proto);
 
       if (snat_alloc_outside_address_and_port
 	  (dm->addr_pool, 0, thread_index, &out2in_key,
-	   &s->outside_address_index, dm->port_per_thread, thread_index))
+	   dm->port_per_thread, thread_index))
 	ASSERT (0);
     }
   else
     {
       if (snat_alloc_outside_address_and_port
-	  (dm->addr_pool, 0, thread_index, &out2in_key, &address_index,
+	  (dm->addr_pool, 0, thread_index, &out2in_key,
 	   dm->port_per_thread, thread_index))
 	{
 	  *error = DSLITE_ERROR_OUT_OF_PORTS;
 	  return DSLITE_IN2OUT_NEXT_DROP;
 	}
       pool_get (dm->per_thread_data[thread_index].sessions, s);
-      memset (s, 0, sizeof (*s));
-      s->outside_address_index = address_index;
+      clib_memset (s, 0, sizeof (*s));
       b4->nsessions++;
 
       pool_get (dm->per_thread_data[thread_index].list_pool, elt);
@@ -135,6 +143,10 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
       clib_dlist_addtail (dm->per_thread_data[thread_index].list_pool,
 			  s->per_b4_list_head_index,
 			  elt - dm->per_thread_data[thread_index].list_pool);
+
+      vlib_set_simple_counter (&dm->total_sessions, thread_index, 0,
+			       pool_elts (dm->per_thread_data
+					  [thread_index].sessions));
     }
 
   s->in2out = *in2out_key;
@@ -150,6 +162,10 @@ slow_path (dslite_main_t * dm, dslite_session_key_t * in2out_key,
   out2in_kv.value = s - dm->per_thread_data[thread_index].sessions;
   clib_bihash_add_del_8_8 (&dm->per_thread_data[thread_index].out2in,
 			   &out2in_kv, 1);
+
+  nat_syslog_dslite_apmadd (b4_index, &s->in2out.softwire_id, &s->in2out.addr,
+			    s->in2out.port, &s->out2in.addr, s->out2in.port,
+			    s->in2out.proto);
 
   return next;
 }
@@ -378,6 +394,7 @@ dslite_in2out_node_fn_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      sum0 =
 		ip_csum_update (sum0, old_port0, new_port0, ip4_header_t,
 				length);
+	      mss_clamping (&snat_main, tcp0, &sum0);
 	      tcp0->checksum = ip_csum_fold (sum0);
 	    }
 	  else

@@ -74,6 +74,14 @@ igmp_group_clear (igmp_group_t * group)
 
   config = igmp_config_get (group->config);
 
+  /* If interface is in ROUTER mode and IGMP proxy is enabled
+   * remove mfib path.
+   */
+  if (config->mode == IGMP_MODE_ROUTER)
+    {
+      igmp_proxy_device_mfib_path_add_del (group, /* add */ 0);
+    }
+
   IGMP_DBG ("clear-group: %U %U",
 	    format_igmp_key, group->key,
 	    format_vnet_sw_if_index_name,
@@ -101,7 +109,7 @@ igmp_group_alloc (igmp_config_t * config,
 
   IGMP_DBG ("new-group: %U", format_igmp_key, gkey);
   pool_get (im->groups, group);
-  memset (group, 0, sizeof (igmp_group_t));
+  clib_memset (group, 0, sizeof (igmp_group_t));
   group->key = clib_mem_alloc (sizeof (igmp_key_t));
   clib_memcpy (group->key, gkey, sizeof (igmp_key_t));
   group->igmp_src_by_key[IGMP_FILTER_MODE_INCLUDE] =
@@ -116,6 +124,15 @@ igmp_group_alloc (igmp_config_t * config,
     group->timers[ii] = IGMP_TIMER_ID_INVALID;
 
   hash_set_mem (config->igmp_group_by_key, group->key, group - im->groups);
+
+  /* If interface is in ROUTER mode and IGMP proxy is enabled
+   * add mfib path.
+   */
+  if (config->mode == IGMP_MODE_ROUTER)
+    {
+      igmp_proxy_device_mfib_path_add_del (group, /* add */ 1);
+    }
+
   return (group);
 }
 
@@ -261,6 +278,46 @@ igmp_group_t *
 igmp_group_get (u32 index)
 {
   return (pool_elt_at_index (igmp_main.groups, index));
+}
+
+u8 *
+format_igmp_group_timer_type (u8 * s, va_list * args)
+{
+  igmp_group_timer_type_t type = va_arg (*args, igmp_group_timer_type_t);
+
+  switch (type)
+    {
+#define _(v,t) case IGMP_GROUP_TIMER_##v: return (format (s, "%s", t));
+      foreach_igmp_group_timer
+#undef _
+    }
+  return (s);
+}
+
+u8 *
+format_igmp_group (u8 * s, va_list * args)
+{
+  igmp_group_t *group = va_arg (*args, igmp_group_t *);
+  u32 indent = va_arg (*args, u32);
+  igmp_src_t *src;
+  u32 ii;
+
+  s = format (s, "%U%U",
+	      format_white_space, indent, format_igmp_key, group->key);
+
+  for (ii = 0; ii < IGMP_GROUP_N_TIMERS; ii++)
+    s = format (s, "\n%U  %U:%U", format_white_space, indent,
+		format_igmp_group_timer_type, ii,
+		format_igmp_timer_id, group->timers[ii]);
+
+  /* *INDENT-OFF* */
+  FOR_EACH_SRC (src, group, IGMP_FILTER_MODE_INCLUDE,
+  ({
+    s = format (s, "\n%U", format_igmp_src, src, indent+4);
+  }));
+  /* *INDENT-ON* */
+
+  return (s);
 }
 
 /*

@@ -45,6 +45,7 @@
 #include <vnet/buffer.h>
 #include <vnet/feature/feature.h>
 #include <vnet/ip/icmp46_packet.h>
+#include <vnet/util/throttle.h>
 
 typedef struct ip4_mfib_t
 {
@@ -156,9 +157,7 @@ typedef struct ip4_main_t
   void *mtrie_mheap;
 
   /** ARP throttling */
-  uword **arp_throttle_bitmaps;
-  u32 *arp_throttle_seeds;
-  f64 *arp_throttle_last_seed_change_time;
+  throttle_t arp_throttle;
 
 } ip4_main_t;
 
@@ -309,7 +308,6 @@ ip4_compute_flow_hash (const ip4_header_t * ip,
 
   a = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t2 : t1;
   b = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t1 : t2;
-  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? ip->protocol : 0;
 
   t1 = is_tcp_udp ? tcp->src : 0;
   t2 = is_tcp_udp ? tcp->dst : 0;
@@ -317,6 +315,23 @@ ip4_compute_flow_hash (const ip4_header_t * ip,
   t1 = (flow_hash_config & IP_FLOW_HASH_SRC_PORT) ? t1 : 0;
   t2 = (flow_hash_config & IP_FLOW_HASH_DST_PORT) ? t2 : 0;
 
+  if (flow_hash_config & IP_FLOW_HASH_SYMMETRIC)
+    {
+      if (b < a)
+	{
+	  c = a;
+	  a = b;
+	  b = c;
+	}
+      if (t2 < t1)
+	{
+	  t2 += t1;
+	  t1 = t2 - t1;
+	  t2 = t2 - t1;
+	}
+    }
+
+  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? ip->protocol : 0;
   c = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ?
     (t1 << 16) | t2 : (t2 << 16) | t1;
 

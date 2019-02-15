@@ -137,7 +137,7 @@ igmp_listen_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	  clib_error_return (0, "This igmp configuration already exists");
       else
 	error =
-	  clib_error_return (0, "This igmp configuration does not nexist");
+	  clib_error_return (0, "This igmp configuration does not exist");
     }
   else if (rv == -2)
     error =
@@ -160,30 +160,205 @@ VLIB_CLI_COMMAND (igmp_listen_command, static) = {
 /* *INDENT-ON* */
 
 static clib_error_t *
+igmp_enable_cli (vlib_main_t * vm,
+		 unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  igmp_mode_t mode = IGMP_MODE_ROUTER;
+  vnet_main_t *vnm = vnet_get_main ();
+  clib_error_t *error = NULL;
+  u32 sw_if_index = ~0;
+  u8 enable = 1;
+  int rv;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return error;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable"))
+	enable = 1;
+      else if (unformat (line_input, "disable"))
+	enable = 0;
+      if (unformat (line_input, "host"))
+	mode = IGMP_MODE_HOST;
+      else if (unformat (line_input, "router"))
+	mode = IGMP_MODE_ROUTER;
+      else if (unformat (line_input, "%U",
+			 unformat_vnet_sw_interface, vnm, &sw_if_index));
+      else
+	{
+	  error =
+	    clib_error_return (0, "unknown input '%U'", format_unformat_error,
+			       line_input);
+	  goto done;
+	}
+    }
+
+  if (~0 == sw_if_index)
+    {
+      error = clib_error_return (0, "interface must be specified");
+      goto done;
+    }
+
+  rv = igmp_enable_disable (sw_if_index, enable, mode);
+
+  if (0 != rv)
+    error = clib_error_return (0, "result: %d", rv);
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (igmp_enable_command, static) = {
+  .path = "igmp",
+  .short_help = "igmp <enable|disable> <host|router> <interface>",
+  .function = igmp_enable_cli,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+igmp_proxy_device_add_del_command_fn (vlib_main_t * vm,
+				      unformat_input_t * input,
+				      vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  clib_error_t *error = NULL;
+  u32 sw_if_index = ~0;
+  u32 vrf_id = ~0;
+  u8 add = 1;
+  int rv;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return error;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "add"))
+	add = 1;
+      else if (unformat (line_input, "del"))
+	add = 0;
+      else if (unformat (line_input, "vrf-id %u", &vrf_id))
+	;
+      else if (unformat (line_input, "%U",
+			 unformat_vnet_sw_interface, vnm, &sw_if_index));
+      else
+	{
+	  error =
+	    clib_error_return (0, "unknown input '%U'", format_unformat_error,
+			       line_input);
+	  goto done;
+	}
+    }
+
+  if (~0 == sw_if_index)
+    {
+      error = clib_error_return (0, "interface must be specified");
+      goto done;
+    }
+
+  if (~0 == vrf_id)
+    {
+      error = clib_error_return (0, "VRF must be specified");
+      goto done;
+    }
+
+  rv = igmp_proxy_device_add_del (vrf_id, sw_if_index, add);
+
+  if (0 != rv)
+    error = clib_error_return (0, "result: %d", rv);
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (igmp_proxy_device_add_del_command, static) = {
+  .path = "igmp proxy-dev",
+  .short_help = "igmp proxy-dev <add|del> vrf-id <table-id> <interface>",
+  .function = igmp_proxy_device_add_del_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+igmp_proxy_device_add_del_interface_command_fn (vlib_main_t * vm,
+						unformat_input_t * input,
+						vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  clib_error_t *error = NULL;
+  u32 sw_if_index = ~0;
+  u32 vrf_id = ~0;
+  u8 add = 1;
+  int rv;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return error;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "add"))
+	add = 1;
+      else if (unformat (line_input, "del"))
+	add = 0;
+      else if (unformat (line_input, "vrf-id %u", &vrf_id))
+	;
+      else if (unformat (line_input, "%U",
+			 unformat_vnet_sw_interface, vnm, &sw_if_index));
+      else
+	{
+	  error =
+	    clib_error_return (0, "unknown input '%U'", format_unformat_error,
+			       line_input);
+	  goto done;
+	}
+    }
+
+  if (~0 == sw_if_index)
+    {
+      error = clib_error_return (0, "interface must be specified");
+      goto done;
+    }
+
+  if (~0 == vrf_id)
+    {
+      error = clib_error_return (0, "VRF must be specified");
+      goto done;
+    }
+
+  rv = igmp_proxy_device_add_del_interface (vrf_id, sw_if_index, add);
+
+  if (0 != rv)
+    error = clib_error_return (0, "result: %d", rv);
+
+done:
+  unformat_free (line_input);
+  return error;
+}
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (igmp_proxy_device_add_del_interface_command, static) = {
+  .path = "igmp proxy-dev itf",
+  .short_help = "igmp proxy-dev itf <add|del> vrf-id <table-id> <interface>",
+  .function = igmp_proxy_device_add_del_interface_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
 igmp_show_command_fn (vlib_main_t * vm, unformat_input_t * input,
 		      vlib_cli_command_t * cmd)
 {
   clib_error_t *error = NULL;
   igmp_main_t *im = &igmp_main;
-  vnet_main_t *vnm = vnet_get_main ();
   igmp_config_t *config;
-  igmp_group_t *group;
-  igmp_src_t *src;
 
   /* *INDENT-OFF* */
   pool_foreach (config, im->configs,
     ({
-      vlib_cli_output (vm, "interface: %U", format_vnet_sw_if_index_name,
-                     vnm, config->sw_if_index);
-
-      FOR_EACH_GROUP (group, config,
-        ({
-          vlib_cli_output (vm, "\t%U", format_igmp_key, group->key);
-          FOR_EACH_SRC (src, group, IGMP_FILTER_MODE_INCLUDE,
-          ({
-              vlib_cli_output (vm, "\t\t%U", format_igmp_key, src->key);
-            }));
-        }));
+      vlib_cli_output (vm, "%U", format_igmp_config, config);
     }));
   /* *INDENT-ON* */
 

@@ -91,7 +91,8 @@ bond_dump_ifs (bond_interface_details_t ** out_bondifs)
   /* *INDENT-OFF* */
   pool_foreach (bif, bm->interfaces,
     vec_add2(r_bondifs, bondif, 1);
-    memset (bondif, 0, sizeof (*bondif));
+    clib_memset (bondif, 0, sizeof (*bondif));
+    bondif->id = bif->id;
     bondif->sw_if_index = bif->sw_if_index;
     hi = vnet_get_hw_interface (vnm, bif->hw_if_index);
     clib_memcpy(bondif->interface_name, hi->name,
@@ -129,7 +130,7 @@ bond_dump_slave_ifs (slave_interface_details_t ** out_slaveifs,
   vec_foreach (sw_if_index, bif->slaves)
   {
     vec_add2 (r_slaveifs, slaveif, 1);
-    memset (slaveif, 0, sizeof (*slaveif));
+    clib_memset (slaveif, 0, sizeof (*slaveif));
     sif = bond_get_slave_by_sw_if_index (*sw_if_index);
     if (sif)
       {
@@ -176,14 +177,17 @@ bond_delete_neighbor (vlib_main_t * vm, bond_if_t * bif, slave_if_t * sif)
 
   bond_disable_collecting_distributing (vm, sif);
 
+  vnet_feature_enable_disable ("device-input", "bond-input",
+			       sif_hw->hw_if_index, 0, 0, 0);
+
   /* Put back the old mac */
   vnet_hw_interface_change_mac_address (vnm, sif_hw->hw_if_index,
 					sif->persistent_hw_address);
 
-  pool_put (bm->neighbors, sif);
-
   if ((bif->mode == BOND_MODE_LACP) && bm->lacp_enable_disable)
     (*bm->lacp_enable_disable) (vm, bif, sif, 0);
+
+  pool_put (bm->neighbors, sif);
 }
 
 int
@@ -195,7 +199,6 @@ bond_delete_if (vlib_main_t * vm, u32 sw_if_index)
   slave_if_t *sif;
   vnet_hw_interface_t *hw;
   u32 *sif_sw_if_index;
-  u32 thread_index;
   u32 **s_list = 0;
   u32 i;
 
@@ -229,13 +232,8 @@ bond_delete_if (vlib_main_t * vm, u32 sw_if_index)
 
   clib_bitmap_free (bif->port_number_bitmap);
   hash_unset (bm->bond_by_sw_if_index, bif->sw_if_index);
-  for (thread_index = 0; thread_index < vlib_get_thread_main ()->n_vlib_mains;
-       thread_index++)
-    {
-      vec_free (bif->per_thread_info[thread_index].frame);
-    }
-  vec_free (bif->per_thread_info);
-  memset (bif, 0, sizeof (*bif));
+  hash_unset (bm->id_used, bif->id);
+  clib_memset (bif, 0, sizeof (*bif));
   pool_put (bm->interfaces, bif);
 
   return 0;
@@ -268,16 +266,30 @@ bond_create_if (vlib_main_t * vm, bond_create_if_args_t * args)
       return;
     }
   pool_get (bm->interfaces, bif);
-  memset (bif, 0, sizeof (*bif));
+  clib_memset (bif, 0, sizeof (*bif));
   bif->dev_instance = bif - bm->interfaces;
+  bif->id = args->id;
   bif->lb = args->lb;
   bif->mode = args->mode;
+
+  // Adjust requested interface id
+  if (bif->id == ~0)
+    bif->id = bif->dev_instance;
+  if (hash_get (bm->id_used, bif->id))
+    {
+      args->rv = VNET_API_ERROR_INSTANCE_IN_USE;
+      pool_put (bm->interfaces, bif);
+      return;
+    }
+  hash_set (bm->id_used, bif->id, 1);
 
   // Special load-balance mode used for rr and bc
   if (bif->mode == BOND_MODE_ROUND_ROBIN)
     bif->lb = BOND_LB_RR;
   else if (bif->mode == BOND_MODE_BROADCAST)
     bif->lb = BOND_LB_BC;
+  else if (bif->mode == BOND_MODE_ACTIVE_BACKUP)
+    bif->lb = BOND_LB_AB;
 
   bif->use_custom_mac = args->hw_addr_set;
   if (!args->hw_addr_set)
@@ -293,13 +305,14 @@ bond_create_if (vlib_main_t * vm, bond_create_if_args_t * args)
     }
   memcpy (bif->hw_address, args->hw_addr, 6);
   args->error = ethernet_register_interface
-    (vnm, bond_dev_class.index, bif - bm->interfaces /* device instance */ ,
+    (vnm, bond_dev_class.index, bif->dev_instance /* device instance */ ,
      bif->hw_address /* ethernet address */ ,
      &bif->hw_if_index, 0 /* flag change */ );
 
   if (args->error)
     {
       args->rv = VNET_API_ERROR_INVALID_REGISTRATION;
+      hash_unset (bm->id_used, bif->id);
       pool_put (bm->interfaces, bif);
       return;
     }
@@ -307,9 +320,6 @@ bond_create_if (vlib_main_t * vm, bond_create_if_args_t * args)
   sw = vnet_get_hw_sw_interface (vnm, bif->hw_if_index);
   bif->sw_if_index = sw->sw_if_index;
   bif->group = bif->sw_if_index;
-  vec_validate_aligned (bif->per_thread_info,
-			vlib_get_thread_main ()->n_vlib_mains - 1,
-			CLIB_CACHE_LINE_BYTES);
   if (vlib_get_thread_main ()->n_vlib_mains > 1)
     clib_spinlock_init (&bif->lockp);
 
@@ -334,6 +344,7 @@ bond_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (!unformat_user (input, unformat_line_input, line_input))
     return clib_error_return (0, "Missing required arguments.");
 
+  args.id = ~0;
   args.mode = -1;
   args.lb = BOND_LB_L2;
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
@@ -347,6 +358,8 @@ bond_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
       else if (unformat (line_input, "hw-addr %U",
 			 unformat_ethernet_address, args.hw_addr))
 	args.hw_addr_set = 1;
+      else if (unformat (line_input, "id %u", &args.id))
+	;
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);
@@ -365,7 +378,8 @@ bond_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
 VLIB_CLI_COMMAND (bond_create_command, static) = {
   .path = "create bond",
   .short_help = "create bond mode {round-robin | active-backup | broadcast | "
-    "{lacp | xor} [load-balance { l2 | l23 | l34 }]} [hw-addr <mac-address>]",
+    "{lacp | xor} [load-balance { l2 | l23 | l34 }]} [hw-addr <mac-address>] "
+    "[id <if-id>]",
   .function = bond_create_command_fn,
 };
 /* *INDENT-ON* */
@@ -428,6 +442,8 @@ bond_enslave (vlib_main_t * vm, bond_enslave_args_t * args)
   vnet_interface_main_t *im = &vnm->interface_main;
   vnet_hw_interface_t *bif_hw, *sif_hw;
   vnet_sw_interface_t *sw;
+  u32 thread_index;
+  u32 sif_if_index;
 
   bif = bond_get_master_by_sw_if_index (args->group);
   if (!bif)
@@ -452,8 +468,7 @@ bond_enslave (vlib_main_t * vm, bond_enslave_args_t * args)
       return;
     }
   pool_get (bm->neighbors, sif);
-  memset (sif, 0, sizeof (*sif));
-  clib_spinlock_init (&sif->lockp);
+  clib_memset (sif, 0, sizeof (*sif));
   sw = pool_elt_at_index (im->sw_interfaces, args->slave);
   sif->port_enabled = sw->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP;
   sif->sw_if_index = sw->sw_if_index;
@@ -516,14 +531,30 @@ bond_enslave (vlib_main_t * vm, bond_enslave_args_t * args)
       ethernet_set_rx_redirect (vnm, sif_hw, 1);
     }
 
-  if ((bif->mode == BOND_MODE_LACP) && bm->lacp_enable_disable)
+  if (bif->mode == BOND_MODE_LACP)
     {
-      (*bm->lacp_enable_disable) (vm, bif, sif, 1);
+      if (bm->lacp_enable_disable)
+	(*bm->lacp_enable_disable) (vm, bif, sif, 1);
     }
-  else
+  else if (sif->port_enabled &&
+	   (sif_hw->flags & VNET_HW_INTERFACE_FLAG_LINK_UP))
     {
       bond_enable_collecting_distributing (vm, sif);
     }
+
+  vec_foreach_index (thread_index, bm->per_thread_data)
+  {
+    bond_per_thread_data_t *ptd = vec_elt_at_index (bm->per_thread_data,
+						    thread_index);
+
+    vec_validate_aligned (ptd->per_port_queue, vec_len (bif->slaves) - 1,
+			  CLIB_CACHE_LINE_BYTES);
+
+    vec_foreach_index (sif_if_index, ptd->per_port_queue)
+    {
+      ptd->per_port_queue[sif_if_index].n_buffers = 0;
+    }
+  }
 
   args->rv = vnet_feature_enable_disable ("device-input", "bond-input",
 					  sif_hw->hw_if_index, 1, 0, 0);
@@ -658,14 +689,14 @@ show_bond (vlib_main_t * vm)
   bond_main_t *bm = &bond_main;
   bond_if_t *bif;
 
-  vlib_cli_output (vm, "%-16s %-12s %-12s %-13s %-14s %s",
+  vlib_cli_output (vm, "%-16s %-12s %-13s %-13s %-14s %s",
 		   "interface name", "sw_if_index", "mode",
 		   "load balance", "active slaves", "slaves");
 
   /* *INDENT-OFF* */
   pool_foreach (bif, bm->interfaces,
   ({
-    vlib_cli_output (vm, "%-16U %-12d %-12U %-13U %-14u %u",
+    vlib_cli_output (vm, "%-16U %-12d %-13U %-13U %-14u %u",
 		     format_bond_interface_name, bif->dev_instance,
 		     bif->sw_if_index, format_bond_mode, bif->mode,
 		     format_bond_load_balance, bif->lb,
@@ -706,6 +737,7 @@ show_bond_details (vlib_main_t * vm)
 			 vnet_get_main (), *sw_if_index);
       }
     vlib_cli_output (vm, "  device instance: %d", bif->dev_instance);
+    vlib_cli_output (vm, "  interface id: %d", bif->id);
     vlib_cli_output (vm, "  sw_if_index: %d", bif->sw_if_index);
     vlib_cli_output (vm, "  hw_if_index: %d", bif->hw_if_index);
   }));
@@ -753,6 +785,9 @@ bond_cli_init (vlib_main_t * vm)
   bm->vlib_main = vm;
   bm->vnet_main = vnet_get_main ();
   vec_validate_aligned (bm->slave_by_sw_if_index, 1, CLIB_CACHE_LINE_BYTES);
+  vec_validate_aligned (bm->per_thread_data,
+			vlib_get_thread_main ()->n_vlib_mains - 1,
+			CLIB_CACHE_LINE_BYTES);
 
   return 0;
 }

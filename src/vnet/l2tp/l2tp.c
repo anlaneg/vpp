@@ -334,7 +334,7 @@ create_l2tpv3_ipv6_tunnel (l2t_main_t * lm,
     return VNET_API_ERROR_INVALID_VALUE;
 
   pool_get (lm->sessions, s);
-  memset (s, 0, sizeof (*s));
+  clib_memset (s, 0, sizeof (*s));
   clib_memcpy (&s->our_address, our_address, sizeof (s->our_address));
   clib_memcpy (&s->client_address, client_address,
 	       sizeof (s->client_address));
@@ -626,7 +626,7 @@ l2tpv3_interface_enable_disable (vnet_main_t * vnm,
   return 0;
 }
 
-/* Enable/disable L2TPv3 intercept on IP6 fowarding path */
+/* Enable/disable L2TPv3 intercept on IP6 forwarding path */
 static clib_error_t *
 set_ip6_l2tpv3 (vlib_main_t * vm,
 		unformat_input_t * input, vlib_cli_command_t * cmd)

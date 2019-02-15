@@ -46,7 +46,7 @@ static inline void
 elog_lock (elog_main_t * em)
 {
   if (PREDICT_FALSE (em->lock != 0))
-    while (__sync_lock_test_and_set (em->lock, 1))
+    while (clib_atomic_test_and_set (em->lock))
       ;
 }
 
@@ -396,12 +396,35 @@ format_elog_event (u8 * s, va_list * va)
 }
 
 u8 *
-format_elog_track (u8 * s, va_list * va)
+format_elog_track_name (u8 * s, va_list * va)
 {
   elog_main_t *em = va_arg (*va, elog_main_t *);
   elog_event_t *e = va_arg (*va, elog_event_t *);
   elog_track_t *t = vec_elt_at_index (em->tracks, e->track);
   return format (s, "%s", t->name);
+}
+
+u8 *
+format_elog_track (u8 * s, va_list * args)
+{
+  elog_main_t *em = va_arg (*args, elog_main_t *);
+  f64 dt = va_arg (*args, f64);
+  int track_index = va_arg (*args, int);
+  elog_event_t *e, *es;
+  u8 indent;
+
+  indent = format_get_indent (s) + 1;
+
+  es = elog_peek_events (em);
+  vec_foreach (e, es)
+  {
+    if (e->track != track_index)
+      continue;
+    s = format (s, "%U%18.9f: %U\n", format_white_space, indent, e->time + dt,
+		format_elog_event, em, e);
+  }
+  vec_free (es);
+  return s;
 }
 
 void
@@ -413,7 +436,11 @@ elog_time_now (elog_time_stamp_t * et)
 #ifdef CLIB_UNIX
   {
 #include <sys/syscall.h>
+#ifdef __APPLE__
+    clock_gettime (CLOCK_REALTIME, &ts);
+#else
     syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
+#endif
     cpu_time_now = clib_cpu_time_now ();
     /* Subtract 3/30/2017's worth of seconds to retain precision */
     os_time_now_nsec = 1e9 * (ts.tv_sec - 1490885108) + ts.tv_nsec;
@@ -465,7 +492,7 @@ elog_alloc (elog_main_t * em, u32 n_events)
 void
 elog_init (elog_main_t * em, u32 n_events)
 {
-  memset (em, 0, sizeof (em[0]));
+  clib_memset (em, 0, sizeof (em[0]));
 
   em->lock = 0;
 
@@ -632,7 +659,7 @@ elog_merge (elog_main_t * dst, u8 * dst_tag, elog_main_t * src, u8 * src_tag,
   elog_track_t newt;
   int i;
 
-  memset (&newt, 0, sizeof (newt));
+  clib_memset (&newt, 0, sizeof (newt));
 
   /* Acquire src and dst events */
   elog_get_events (src);
@@ -732,7 +759,7 @@ elog_merge (elog_main_t * dst, u8 * dst_tag, elog_main_t * src, u8 * src_tag,
 
     /*
      * Move the earlier set of events later, to avoid creating
-     * events which preceed the Big Bang (aka have negative timestamps).
+     * events which precede the Big Bang (aka have negative timestamps).
      *
      * Not to any scale, we have something like the following picture:
      *

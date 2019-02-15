@@ -62,6 +62,11 @@ typedef struct
   int default_syslog_log_level;
   int unthrottle_time;
   u32 indent;
+
+  /* time zero */
+  struct timeval time_zero_timeval;
+  f64 time_zero;
+
 } vlib_log_main_t;
 
 vlib_log_main_t log_main = {
@@ -199,8 +204,9 @@ syslog:
       if (use_formatted_log_entry)
 	{
 	  syslog (vlib_log_level_to_syslog_priority (level), "%.*s: %.*s",
-		  vec_len (tmp), tmp,
-		  vec_len (s) - (vec_c_string_is_terminated (s) ? 1 : 0), s);
+		  (int) vec_len (tmp), tmp,
+		  (int) (vec_len (s) -
+			 (vec_c_string_is_terminated (s) ? 1 : 0)), s);
 	}
       else
 	{
@@ -209,8 +215,8 @@ syslog:
 	  tmp = va_format (tmp, fmt, &va);
 	  va_end (va);
 	  syslog (vlib_log_level_to_syslog_priority (level), "%.*s",
-		  vec_len (tmp) - (vec_c_string_is_terminated (tmp) ? 1 : 0),
-		  tmp);
+		  (int) (vec_len (tmp) -
+			 (vec_c_string_is_terminated (tmp) ? 1 : 0)), tmp);
 	}
       vec_free (tmp);
     }
@@ -226,6 +232,8 @@ vlib_log_register_class (char *class, char *subclass)
   vlib_log_class_data_t *tmp;
   vec_foreach (tmp, lm->classes)
   {
+    if (vec_len (tmp->name) != strlen (class))
+      continue;
     if (!memcmp (class, tmp->name, vec_len (tmp->name)))
       {
 	c = tmp;
@@ -275,6 +283,10 @@ static clib_error_t *
 vlib_log_init (vlib_main_t * vm)
 {
   vlib_log_main_t *lm = &log_main;
+
+  gettimeofday (&lm->time_zero_timeval, 0);
+  lm->time_zero = vlib_time_now (vm);
+
   vec_validate (lm->entries, lm->size);
   lm->log_class = vlib_log_register_class ("log", 0);
   u8 *tmp = format (NULL, "%U %-10U %-10U ", format_time_float, 0, (f64) 0,
@@ -296,12 +308,16 @@ show_log (vlib_main_t * vm,
   vlib_log_entry_t *e;
   int i = last_log_entry ();
   int count = lm->count;
+  f64 time_offset;
+
+  time_offset = (f64) lm->time_zero_timeval.tv_sec
+    + (((f64) lm->time_zero_timeval.tv_usec) * 1e-6) - lm->time_zero;
 
   while (count--)
     {
       e = vec_elt_at_index (lm->entries, i);
       vlib_cli_output (vm, "%U %-10U %-10U %v",
-		       format_time_float, 0, e->timestamp,
+		       format_time_float, 0, e->timestamp + time_offset,
 		       format_vlib_log_level, e->level,
 		       format_vlib_log_class, e->class, e->string);
       i = (i + 1) % lm->size;
@@ -339,18 +355,21 @@ show_log_config (vlib_main_t * vm,
   vlib_cli_output (vm, "%-22s %-14s %-14s %s",
 		   "Class/Subclass", "Level", "Syslog Level", "Rate Limit");
 
+
+  u8 *defstr = format (0, "default");
   vec_foreach (c, lm->classes)
   {
-    vlib_cli_output (vm, "%s", c->name);
+    vlib_cli_output (vm, "%v", c->name);
     vec_foreach (sc, c->subclasses)
     {
-      vlib_cli_output (vm, "  %-20s %-14U %-14U %d",
-		       sc->name ? (char *) sc->name : "default",
+      vlib_cli_output (vm, "  %-20v %-14U %-14U %d",
+		       sc->name ? sc->name : defstr,
 		       format_vlib_log_level, sc->level,
 		       format_vlib_log_level, sc->syslog_level,
 		       sc->rate_limit);
     }
   }
+  vec_free (defstr);
 
   return error;
 }
@@ -672,7 +691,7 @@ test_log_class_subclass (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (cli_test_log, static) = {
   .path = "test log",
-  .short_help = "test log <class> <subclass> <level> <message",
+  .short_help = "test log <level> <class> <subclass> <message>",
   .function = test_log_class_subclass,
 };
 /* *INDENT-ON* */

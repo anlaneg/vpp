@@ -37,15 +37,15 @@ svm_queue_init (void *base, int nels, int elsize)
   pthread_condattr_t cattr;
 
   q = (svm_queue_t *) base;
-  memset (q, 0, sizeof (*q));
+  clib_memset (q, 0, sizeof (*q));
 
   q->elsize = elsize;
   q->maxsize = nels;
   q->producer_evtfd = -1;
   q->consumer_evtfd = -1;
 
-  memset (&attr, 0, sizeof (attr));
-  memset (&cattr, 0, sizeof (cattr));
+  clib_memset (&attr, 0, sizeof (attr));
+  clib_memset (&cattr, 0, sizeof (cattr));
 
   if (pthread_mutexattr_init (&attr))
     clib_unix_warning ("mutexattr_init");
@@ -75,7 +75,7 @@ svm_queue_alloc_and_init (int nels, int elsize, int consumer_pid)
 
   q = clib_mem_alloc_aligned (sizeof (svm_queue_t)
 			      + nels * elsize, CLIB_CACHE_LINE_BYTES);
-  memset (q, 0, sizeof (*q));
+  clib_memset (q, 0, sizeof (*q));
   q = svm_queue_init (q, nels, elsize);
   q->consumer_pid = consumer_pid;
 
@@ -122,7 +122,7 @@ svm_queue_send_signal (svm_queue_t * q, u8 is_prod)
     {
       int __clib_unused rv, fd;
       u64 data = 1;
-      ASSERT (q->consumer_evtfd != -1);
+      ASSERT (q->consumer_evtfd > 0 && q->producer_evtfd > 0);
       fd = is_prod ? q->producer_evtfd : q->consumer_evtfd;
       rv = write (fd, &data, sizeof (data));
     }
@@ -201,7 +201,7 @@ svm_queue_add_nolock (svm_queue_t * q, u8 * elem)
     }
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
-  clib_memcpy (tailp, elem, q->elsize);
+  clib_memcpy_fast (tailp, elem, q->elsize);
 
   q->tail++;
   q->cursize++;
@@ -222,7 +222,7 @@ svm_queue_add_raw (svm_queue_t * q, u8 * elem)
   i8 *tailp;
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
-  clib_memcpy (tailp, elem, q->elsize);
+  clib_memcpy_fast (tailp, elem, q->elsize);
 
   q->tail = (q->tail + 1) % q->maxsize;
   q->cursize++;
@@ -264,7 +264,7 @@ svm_queue_add (svm_queue_t * q, u8 * elem, int nowait)
     }
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
-  clib_memcpy (tailp, elem, q->elsize);
+  clib_memcpy_fast (tailp, elem, q->elsize);
 
   q->tail++;
   q->cursize++;
@@ -314,7 +314,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
     }
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
-  clib_memcpy (tailp, elem, q->elsize);
+  clib_memcpy_fast (tailp, elem, q->elsize);
 
   q->tail++;
   q->cursize++;
@@ -325,7 +325,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
   need_broadcast = (q->cursize == 1);
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
-  clib_memcpy (tailp, elem2, q->elsize);
+  clib_memcpy_fast (tailp, elem2, q->elsize);
 
   q->tail++;
   q->cursize++;
@@ -389,7 +389,7 @@ svm_queue_sub (svm_queue_t * q, u8 * elem, svm_q_conditional_wait_t cond,
     }
 
   headp = (i8 *) (&q->data[0] + q->elsize * q->head);
-  clib_memcpy (elem, headp, q->elsize);
+  clib_memcpy_fast (elem, headp, q->elsize);
 
   q->head++;
   /* $$$$ JFC shouldn't this be == 0? */
@@ -423,7 +423,7 @@ svm_queue_sub2 (svm_queue_t * q, u8 * elem)
     }
 
   headp = (i8 *) (&q->data[0] + q->elsize * q->head);
-  clib_memcpy (elem, headp, q->elsize);
+  clib_memcpy_fast (elem, headp, q->elsize);
 
   q->head++;
   need_broadcast = (q->cursize == q->maxsize / 2);
@@ -451,7 +451,7 @@ svm_queue_sub_raw (svm_queue_t * q, u8 * elem)
     }
 
   headp = (i8 *) (&q->data[0] + q->elsize * q->head);
-  clib_memcpy (elem, headp, q->elsize);
+  clib_memcpy_fast (elem, headp, q->elsize);
 
   q->head = (q->head + 1) % q->maxsize;
   q->cursize--;

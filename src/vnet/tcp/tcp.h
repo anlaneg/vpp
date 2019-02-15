@@ -30,9 +30,10 @@
 #define TCP_PAWS_IDLE 24 * 24 * 60 * 60 * THZ /**< 24 days */
 #define TCP_FIB_RECHECK_PERIOD	1 * THZ	/**< Recheck every 1s */
 #define TCP_MAX_OPTION_SPACE 40
+#define TCP_CC_DATA_SZ 24
 
 #define TCP_DUPACK_THRESHOLD 	3
-#define TCP_MAX_RX_FIFO_SIZE 	4 << 20
+#define TCP_MAX_RX_FIFO_SIZE 	32 << 20
 #define TCP_MIN_RX_FIFO_SIZE	4 << 10
 #define TCP_IW_N_SEGMENTS 	10
 #define TCP_ALWAYS_ACK		1	/**< On/off delayed acks */
@@ -73,7 +74,8 @@ format_function_t format_tcp_rcv_sacks;
   _(KEEP, "KEEP")                       \
   _(WAITCLOSE, "WAIT CLOSE")            \
   _(RETRANSMIT_SYN, "RETRANSMIT SYN")   \
-  _(ESTABLISH, "ESTABLISH")
+  _(ESTABLISH, "ESTABLISH")		\
+  _(ESTABLISH_AO, "ESTABLISH_AO")	\
 
 typedef enum _tcp_timers
 {
@@ -101,7 +103,8 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 #define TCP_2MSL_TIME           300	/* 30s */
 #define TCP_CLOSEWAIT_TIME	20	/* 2s */
 #define TCP_TIMEWAIT_TIME	100	/* 10s */
-#define TCP_CLEANUP_TIME	10	/* 1s Time to wait before cleanup */
+#define TCP_FINWAIT1_TIME	600	/* 60s */
+#define TCP_CLEANUP_TIME	1	/* 0.1s */
 #define TCP_TIMER_PERSIST_MIN	2	/* 0.2s */
 
 #define TCP_RTO_MAX 60 * THZ	/* Min max RTO (60s) as per RFC6298 */
@@ -117,9 +120,13 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
   _(SENT_RCV_WND0, "Sent 0 rcv_wnd")     	\
   _(RECOVERY, "Recovery")                    	\
   _(FAST_RECOVERY, "Fast Recovery")		\
-  _(FR_1_SMSS, "Sent 1 SMSS")			\
+  _(DCNT_PENDING, "Disconnect pending")		\
   _(HALF_OPEN_DONE, "Half-open completed")	\
   _(FINPNDG, "FIN pending")			\
+  _(FRXT_PENDING, "Fast-retransmit pending")	\
+  _(FRXT_FIRST, "Fast-retransmit first again")	\
+  _(DEQ_PENDING, "Pending dequeue acked")	\
+  _(PSH_PENDING, "PSH pending")			\
 
 typedef enum _tcp_connection_flag_bits
 {
@@ -158,7 +165,7 @@ enum
 };
 
 #define TCP_SCOREBOARD_TRACE (0)
-#define TCP_MAX_SACK_BLOCKS 15	/**< Max number of SACK blocks stored */
+#define TCP_MAX_SACK_BLOCKS 256	/**< Max number of SACK blocks stored */
 #define TCP_INVALID_SACK_HOLE_INDEX ((u32)~0)
 
 typedef struct _scoreboard_trace_elt
@@ -246,6 +253,7 @@ u8 *format_tcp_scoreboard (u8 * s, va_list * args);
 typedef enum _tcp_cc_algorithm_type
 {
   TCP_CC_NEWRENO,
+  TCP_CC_CUBIC,
 } tcp_cc_algorithm_type_e;
 
 typedef struct _tcp_cc_algorithm tcp_cc_algorithm_t;
@@ -259,6 +267,7 @@ typedef enum _tcp_cc_ack_t
 
 typedef struct _tcp_connection
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   transport_connection_t connection;  /**< Common transport data. First! */
 
   u8 state;			/**< TCP state as per tcp_state_t */
@@ -297,7 +306,7 @@ typedef struct _tcp_connection
   sack_scoreboard_t sack_sb;	/**< SACK "scoreboard" that tracks holes */
 
   u16 rcv_dupacks;	/**< Number of DUPACKs received */
-  u8 snt_dupacks;	/**< Number of DUPACKs sent in a burst */
+  u8 pending_dupacks;	/**< Number of DUPACKs to be sent */
 
   /* Congestion control */
   u32 cwnd;		/**< Congestion window */
@@ -306,34 +315,44 @@ typedef struct _tcp_connection
   u32 prev_ssthresh;	/**< ssthresh before congestion */
   u32 prev_cwnd;	/**< ssthresh before congestion */
   u32 bytes_acked;	/**< Bytes acknowledged by current segment */
+  u32 burst_acked;	/**< Bytes acknowledged in current burst */
   u32 snd_rxt_bytes;	/**< Retransmitted bytes */
   u32 snd_rxt_ts;	/**< Timestamp when first packet is retransmitted */
   u32 tsecr_last_ack;	/**< Timestamp echoed to us in last healthy ACK */
   u32 snd_congestion;	/**< snd_una_max when congestion is detected */
   tcp_cc_algorithm_t *cc_algo;	/**< Congestion control algorithm */
+  u8 cc_data[TCP_CC_DATA_SZ];	/**< Congestion control algo private data */
 
   /* RTT and RTO */
   u32 rto;		/**< Retransmission timeout */
   u32 rto_boff;		/**< Index for RTO backoff */
   u32 srtt;		/**< Smoothed RTT */
   u32 rttvar;		/**< Smoothed mean RTT difference. Approximates variance */
-  u32 rtt_ts;		/**< Timestamp for tracked ACK */
   u32 rtt_seq;		/**< Sequence number for tracked ACK */
+  f64 rtt_ts;		/**< Timestamp for tracked ACK */
+  f64 mrtt_us;		/**< High precision mrtt from tracked acks */
 
   u16 mss;		/**< Our max seg size that includes options */
   u32 limited_transmit;	/**< snd_nxt when limited transmit starts */
   u32 last_fib_check;	/**< Last time we checked fib route for peer */
   u32 sw_if_index;	/**< Interface for the connection */
+  u32 tx_fifo_size;	/**< Tx fifo size. Used to constrain cwnd */
+
+  u32 psh_seq;		/**< Add psh header for seg that includes this */
 } tcp_connection_t;
 
+/* *INDENT-OFF* */
 struct _tcp_cc_algorithm
 {
+  const char *name;
+  uword (*unformat_cfg) (unformat_input_t * input);
   void (*rcv_ack) (tcp_connection_t * tc);
   void (*rcv_cong_ack) (tcp_connection_t * tc, tcp_cc_ack_t ack);
   void (*congestion) (tcp_connection_t * tc);
   void (*recovered) (tcp_connection_t * tc);
   void (*init) (tcp_connection_t * tc);
 };
+/* *INDENT-ON* */
 
 #define tcp_fastrecovery_on(tc) (tc)->flags |= TCP_CONN_FAST_RECOVERY
 #define tcp_fastrecovery_off(tc) (tc)->flags &= ~TCP_CONN_FAST_RECOVERY
@@ -342,9 +361,12 @@ struct _tcp_cc_algorithm
 #define tcp_in_fastrecovery(tc) ((tc)->flags & TCP_CONN_FAST_RECOVERY)
 #define tcp_in_recovery(tc) ((tc)->flags & (TCP_CONN_RECOVERY))
 #define tcp_in_slowstart(tc) (tc->cwnd < tc->ssthresh)
-#define tcp_fastrecovery_sent_1_smss(tc) ((tc)->flags & TCP_CONN_FR_1_SMSS)
-#define tcp_fastrecovery_1_smss_on(tc) ((tc)->flags |= TCP_CONN_FR_1_SMSS)
-#define tcp_fastrecovery_1_smss_off(tc) ((tc)->flags &= ~TCP_CONN_FR_1_SMSS)
+#define tcp_disconnect_pending(tc) ((tc)->flags & TCP_CONN_DCNT_PENDING)
+#define tcp_disconnect_pending_on(tc) ((tc)->flags |= TCP_CONN_DCNT_PENDING)
+#define tcp_disconnect_pending_off(tc) ((tc)->flags &= ~TCP_CONN_DCNT_PENDING)
+#define tcp_fastrecovery_first(tc) ((tc)->flags & TCP_CONN_FRXT_FIRST)
+#define tcp_fastrecovery_first_on(tc) ((tc)->flags |= TCP_CONN_FRXT_FIRST)
+#define tcp_fastrecovery_first_off(tc) ((tc)->flags &= ~TCP_CONN_FRXT_FIRST)
 
 #define tcp_in_cong_recovery(tc) ((tc)->flags & 		\
 	  (TCP_CONN_FAST_RECOVERY | TCP_CONN_RECOVERY))
@@ -353,7 +375,7 @@ always_inline void
 tcp_cong_recovery_off (tcp_connection_t * tc)
 {
   tc->flags &= ~(TCP_CONN_FAST_RECOVERY | TCP_CONN_RECOVERY);
-  tcp_fastrecovery_1_smss_off (tc);
+  tcp_fastrecovery_first_off (tc);
 }
 
 typedef enum _tcp_error
@@ -372,17 +394,54 @@ typedef struct _tcp_lookup_dispatch
 typedef struct tcp_worker_ctx_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  u32 time_now;					/**< worker time */
-  tw_timer_wheel_16t_2w_512sl_t timer_wheel;	/**< worker timer wheel */
-  u32 *tx_buffers;				/**< tx buffer free list */
-  vlib_frame_t *tx_frames[2];			/**< tx frames for tcp 4/6
-						     output nodes */
-  vlib_frame_t *ip_lookup_tx_frames[2];		/**< tx frames for ip 4/6
-						     lookup nodes */
+  /** worker time */
+  u32 time_now;
+
+  /** worker timer wheel */
+  tw_timer_wheel_16t_2w_512sl_t timer_wheel;
+
+  /** tx buffer free list */
+  u32 *tx_buffers;
+
+  /** tx frames for tcp 4/6 output nodes */
+  vlib_frame_t *tx_frames[2];
+
+  /** tx frames for ip 4/6 lookup nodes */
+  vlib_frame_t *ip_lookup_tx_frames[2];
+
+  /** vector of connections needing fast rxt */
+  u32 *pending_fast_rxt;
+
+  /** vector of connections now doing fast rxt */
+  u32 *ongoing_fast_rxt;
+
+  /** vector of connections that will do fast rxt */
+  u32 *postponed_fast_rxt;
+
+  /** vector of pending ack dequeues */
+  u32 *pending_deq_acked;
+
+  /** vector of pending acks */
+  u32 *pending_acks;
+
+  /** vector of pending disconnect notifications */
+  u32 *pending_disconnects;
+
+  /** convenience pointer to this thread's vlib main */
+  vlib_main_t *vm;
+
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
-  u8 cached_opts[40];				/**< cached 'on the wire'
-						     options for bursts */
+
+  /** cached 'on the wire' options for bursts */
+  u8 cached_opts[40];
+
 } tcp_worker_ctx_t;
+
+typedef struct tcp_iss_seed_
+{
+  u64 first;
+  u64 second;
+} tcp_iss_seed_t;
 
 typedef struct _tcp_main
 {
@@ -408,8 +467,22 @@ typedef struct _tcp_main
   /* Congestion control algorithms registered */
   tcp_cc_algorithm_t *cc_algos;
 
+  /** vlib buffer size */
+  u32 bytes_per_buffer;
+
+  /* Seed used to generate random iss */
+  tcp_iss_seed_t iss_seed;
+
+  /*
+   * Configuration
+   */
+
   /* Flag that indicates if stack is on or off */
   u8 is_enabled;
+
+  /** Max rx fifo size for a session. It is used in to compute the
+   *  rfc 7323 window scaling factor */
+  u32 max_rx_fifo;
 
   /** Number of preallocated connections */
   u32 preallocated_connections;
@@ -421,14 +494,18 @@ typedef struct _tcp_main
   u32 last_v6_address_rotor;
   ip6_address_t *ip6_src_addresses;
 
-  /** vlib buffer size */
-  u32 bytes_per_buffer;
+  /** Enable tx pacing for new connections */
+  u8 tx_pacing;
 
   u8 punt_unknown4;
   u8 punt_unknown6;
 
   /** fault-injection */
   f64 buffer_fail_fraction;
+
+  /** Default congestion control algorithm type */
+  tcp_cc_algorithm_type_e cc_algo;
+
 } tcp_main_t;
 
 extern tcp_main_t tcp_main;
@@ -441,6 +518,12 @@ always_inline tcp_main_t *
 vnet_get_tcp_main ()
 {
   return &tcp_main;
+}
+
+always_inline tcp_worker_ctx_t *
+tcp_get_worker (u32 thread_index)
+{
+  return &tcp_main.wrk_ctx[thread_index];
 }
 
 always_inline tcp_header_t *
@@ -489,11 +572,19 @@ tcp_get_connection_from_transport (transport_connection_t * tconn)
   return (tcp_connection_t *) tconn;
 }
 
+always_inline void
+tcp_connection_set_state (tcp_connection_t * tc, tcp_state_t state)
+{
+  tc->state = state;
+  TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
+}
+
 void tcp_connection_close (tcp_connection_t * tc);
 void tcp_connection_cleanup (tcp_connection_t * tc);
 void tcp_connection_del (tcp_connection_t * tc);
 int tcp_half_open_connection_cleanup (tcp_connection_t * tc);
-tcp_connection_t *tcp_connection_new (u8 thread_index);
+tcp_connection_t *tcp_connection_alloc (u8 thread_index);
+void tcp_connection_free (tcp_connection_t * tc);
 void tcp_connection_reset (tcp_connection_t * tc);
 int tcp_configure_v4_source_address_range (vlib_main_t * vm,
 					   ip4_address_t * start,
@@ -521,19 +612,26 @@ tcp_half_open_connection_get (u32 conn_index)
   return tc;
 }
 
-void tcp_make_ack (tcp_connection_t * ts, vlib_buffer_t * b);
 void tcp_make_fin (tcp_connection_t * tc, vlib_buffer_t * b);
 void tcp_make_synack (tcp_connection_t * ts, vlib_buffer_t * b);
 void tcp_send_reset_w_pkt (tcp_connection_t * tc, vlib_buffer_t * pkt,
-			   u8 is_ip4);
+			   u32 thread_index, u8 is_ip4);
 void tcp_send_reset (tcp_connection_t * tc);
 void tcp_send_syn (tcp_connection_t * tc);
+void tcp_send_synack (tcp_connection_t * tc);
 void tcp_send_fin (tcp_connection_t * tc);
 void tcp_init_mss (tcp_connection_t * tc);
 void tcp_update_burst_snd_vars (tcp_connection_t * tc);
 void tcp_update_rto (tcp_connection_t * tc);
-void tcp_flush_frame_to_output (vlib_main_t * vm, u8 thread_index, u8 is_ip4);
-void tcp_flush_frames_to_output (u8 thread_index);
+void tcp_flush_frame_to_output (tcp_worker_ctx_t * wrk, u8 is_ip4);
+void tcp_flush_frames_to_output (tcp_worker_ctx_t * wrk);
+void tcp_program_fastretransmit (tcp_worker_ctx_t * wrk,
+				 tcp_connection_t * tc);
+void tcp_do_fastretransmits (tcp_worker_ctx_t * wrk);
+
+void tcp_program_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc);
+void tcp_program_dupack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc);
+void tcp_send_acks (tcp_worker_ctx_t * wrk);
 
 always_inline u32
 tcp_end_seq (tcp_header_t * th, u32 len)
@@ -603,6 +701,25 @@ tcp_initial_cwnd (const tcp_connection_t * tc)
     return 4 * tc->snd_mss;
 }
 
+/*
+ * Accumulate acked bytes for cwnd increase
+ *
+ * Once threshold bytes are accumulated, snd_mss bytes are added
+ * to the cwnd.
+ */
+always_inline void
+tcp_cwnd_accumulate (tcp_connection_t * tc, u32 thresh, u32 bytes)
+{
+  tc->cwnd_acc_bytes += bytes;
+  if (tc->cwnd_acc_bytes >= thresh)
+    {
+      u32 inc = tc->cwnd_acc_bytes / thresh;
+      tc->cwnd_acc_bytes -= inc * thresh;
+      tc->cwnd += inc * tc->snd_mss;
+      tc->cwnd = clib_min (tc->cwnd, tc->tx_fifo_size);
+    }
+}
+
 always_inline u32
 tcp_loss_wnd (const tcp_connection_t * tc)
 {
@@ -650,10 +767,15 @@ tcp_is_lost_fin (tcp_connection_t * tc)
   return 0;
 }
 
-void tcp_retransmit_first_unacked (tcp_connection_t * tc);
-void tcp_fast_retransmit_no_sack (tcp_connection_t * tc);
-void tcp_fast_retransmit_sack (tcp_connection_t * tc);
-void tcp_fast_retransmit (tcp_connection_t * tc);
+u32 tcp_snd_space (tcp_connection_t * tc);
+int tcp_retransmit_first_unacked (tcp_worker_ctx_t * wrk,
+				  tcp_connection_t * tc);
+int tcp_fast_retransmit_no_sack (tcp_worker_ctx_t * wrk,
+				 tcp_connection_t * tc, u32 burst_size);
+int tcp_fast_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
+			      u32 burst_size);
+int tcp_fast_retransmit (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
+			 u32 burst_size);
 void tcp_cc_init_congestion (tcp_connection_t * tc);
 void tcp_cc_fastrecovery_exit (tcp_connection_t * tc);
 
@@ -670,11 +792,22 @@ tcp_time_now (void)
 }
 
 always_inline u32
-tcp_set_time_now (u32 thread_index)
+tcp_time_now_w_thread (u32 thread_index)
 {
-  tcp_main.wrk_ctx[thread_index].time_now = clib_cpu_time_now ()
-    * tcp_main.tstamp_ticks_per_clock;
   return tcp_main.wrk_ctx[thread_index].time_now;
+}
+
+always_inline f64
+tcp_time_now_us (u32 thread_index)
+{
+  return transport_time_now (thread_index);
+}
+
+always_inline u32
+tcp_set_time_now (tcp_worker_ctx_t * wrk)
+{
+  wrk->time_now = clib_cpu_time_now () * tcp_main.tstamp_ticks_per_clock;
+  return wrk->time_now;
 }
 
 u32 tcp_push_header (tcp_connection_t * tconn, vlib_buffer_t * b);
@@ -683,13 +816,15 @@ void tcp_connection_timers_init (tcp_connection_t * tc);
 void tcp_connection_timers_reset (tcp_connection_t * tc);
 void tcp_init_snd_vars (tcp_connection_t * tc);
 void tcp_connection_init_vars (tcp_connection_t * tc);
+void tcp_connection_tx_pacer_update (tcp_connection_t * tc);
+void tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
+				    u32 start_bucket);
 
 always_inline void
-tcp_connection_force_ack (tcp_connection_t * tc, vlib_buffer_t * b)
+tcp_cc_rcv_ack (tcp_connection_t * tc)
 {
-  /* Reset flags, make sure ack is sent */
-  tc->flags = TCP_CONN_SNDACK;
-  vnet_buffer (b)->tcp.flags &= ~TCP_BUF_FLAG_DUPACK;
+  tc->cc_algo->rcv_ack (tc);
+  tc->tsecr_last_ack = tc->rcv_opts.tsecr;
 }
 
 always_inline void
@@ -806,6 +941,14 @@ void tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
 			   const tcp_cc_algorithm_t * vft);
 
 tcp_cc_algorithm_t *tcp_cc_algo_get (tcp_cc_algorithm_type_e type);
+
+static inline void *
+tcp_cc_data (tcp_connection_t * tc)
+{
+  return (void *) tc->cc_data;
+}
+
+void newreno_rcv_cong_ack (tcp_connection_t * tc, tcp_cc_ack_t ack_type);
 
 /**
  * Push TCP header to buffer

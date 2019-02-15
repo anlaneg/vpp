@@ -54,7 +54,7 @@ bier_fmask_bits_init (bier_fmask_bits_t *bits,
 {
     bits->bfmb_refs = clib_mem_alloc(sizeof(bits->bfmb_refs[0]) *
                                      bier_hdr_len_id_to_num_bits(hlid));
-    memset(bits->bfmb_refs,
+    clib_memset(bits->bfmb_refs,
            0,
            (sizeof(bits->bfmb_refs[0]) *
             bier_hdr_len_id_to_num_bits(hlid)));
@@ -70,7 +70,7 @@ bier_fmask_bits_init (bier_fmask_bits_t *bits,
             sizeof(bits->bfmb_input_reset_string.bbs_buckets[0]) *
             bier_hdr_len_id_to_num_buckets(hlid),
             CLIB_CACHE_LINE_BYTES);
-    memset(bits->bfmb_input_reset_string.bbs_buckets,
+    clib_memset(bits->bfmb_input_reset_string.bbs_buckets,
            0,
            sizeof(bits->bfmb_input_reset_string.bbs_buckets[0]) *
            bier_hdr_len_id_to_num_buckets(hlid));
@@ -165,14 +165,14 @@ bier_fmask_child_remove (fib_node_index_t bfmi,
 static void
 bier_fmask_init (bier_fmask_t *bfm,
                  const bier_fmask_id_t *fmid,
-                 const fib_route_path_t *rpaths)
+                 const fib_route_path_t *rpath)
 {
     const bier_table_id_t *btid;
+    fib_route_path_t *rpaths;
     mpls_label_t olabel;
 
-    ASSERT(1 == vec_len(rpaths));
-    memset(bfm, 0, sizeof(*bfm));
-
+    clib_memset(bfm, 0, sizeof(*bfm));
+    
     bfm->bfm_id = clib_mem_alloc(sizeof(*bfm->bfm_id));
 
     fib_node_init(&bfm->bfm_node, FIB_NODE_TYPE_BIER_FMASK);
@@ -181,16 +181,20 @@ bier_fmask_init (bier_fmask_t *bfm,
     btid = bier_table_get_id(bfm->bfm_id->bfmi_bti);
     bier_fmask_bits_init(&bfm->bfm_bits, btid->bti_hdr_len);
 
-    if (ip46_address_is_zero(&(bfm->bfm_id->bfmi_nh)))
+    if (rpath->frp_flags & FIB_ROUTE_PATH_UDP_ENCAP)
+    {
+        bfm->bfm_id->bfmi_nh_type = BIER_NH_UDP;
+    }
+    else if (ip46_address_is_zero(&(bfm->bfm_id->bfmi_nh)))
     {
         bfm->bfm_flags |= BIER_FMASK_FLAG_DISP;
     }
 
     if (!(bfm->bfm_flags & BIER_FMASK_FLAG_DISP))
     {
-        if (NULL != rpaths->frp_label_stack)
+        if (NULL != rpath->frp_label_stack)
         {
-            olabel = rpaths->frp_label_stack[0].fml_value;
+            olabel = rpath->frp_label_stack[0].fml_value;
             vnet_mpls_uc_set_label(&bfm->bfm_label, olabel);
             vnet_mpls_uc_set_exp(&bfm->bfm_label, 0);
             vnet_mpls_uc_set_s(&bfm->bfm_label, 1);
@@ -220,13 +224,15 @@ bier_fmask_init (bier_fmask_t *bfm,
         bfm->bfm_label = clib_host_to_net_u32(bfm->bfm_label);
     }
 
+    rpaths = NULL;
+    vec_add1(rpaths, *rpath);
     bfm->bfm_pl = fib_path_list_create((FIB_PATH_LIST_FLAG_SHARED |
                                         FIB_PATH_LIST_FLAG_NO_URPF),
                                        rpaths);
     bfm->bfm_sibling = fib_path_list_child_add(bfm->bfm_pl,
                                                FIB_NODE_TYPE_BIER_FMASK,
                                                bier_fmask_get_index(bfm));
-
+    vec_free(rpaths);
     bier_fmask_stack(bfm);
 }
 
@@ -276,7 +282,7 @@ bier_fmask_lock (index_t bfmi)
 
 index_t
 bier_fmask_create_and_lock (const bier_fmask_id_t *fmid,
-                            const fib_route_path_t *rpaths)
+                            const fib_route_path_t *rpath)
 {
     bier_fmask_t *bfm;
     index_t bfmi;
@@ -287,7 +293,7 @@ bier_fmask_create_and_lock (const bier_fmask_id_t *fmid,
     vlib_validate_combined_counter (&(bier_fmask_counters), bfmi);
     vlib_zero_combined_counter (&(bier_fmask_counters), bfmi);
 
-    bier_fmask_init(bfm, fmid, rpaths);
+    bier_fmask_init(bfm, fmid, rpath);
 
     bier_fmask_lock(bfmi);
 
@@ -405,7 +411,7 @@ bier_fmask_encode (index_t bfmi,
     bfm = bier_fmask_get(bfmi);
     *btid = *bier_table_get_id(bfm->bfm_id->bfmi_bti);
 
-    memset(rpath, 0, sizeof(*rpath));
+    clib_memset(rpath, 0, sizeof(*rpath));
 
     rpath->rpath.frp_sw_if_index = ~0;
 

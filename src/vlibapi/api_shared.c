@@ -104,7 +104,7 @@ vl_msg_api_trace (api_main_t * am, vl_api_trace_t * tp, void *msg)
   length = clib_net_to_host_u32 (header->data_len);
 
   vec_validate (msg_copy, length - 1);
-  clib_memcpy (msg_copy, msg, length);
+  clib_memcpy_fast (msg_copy, msg, length);
   *this_trace = msg_copy;
 }
 
@@ -360,7 +360,7 @@ vl_msg_api_trace_configure (api_main_t * am, vl_api_trace_which_t which,
       vl_msg_api_trace_free (am, which);
     }
 
-  memset (tp, 0, sizeof (*tp));
+  clib_memset (tp, 0, sizeof (*tp));
 
   if (clib_arch_is_big_endian)
     {
@@ -436,12 +436,8 @@ msg_handler_internal (api_main_t * am,
     vl_msg_api_free (the_msg);
 }
 
-/* set to 1 if you want before/after message handler event logging */
-#define ELOG_API_MESSAGE_HANDLERS 0
-
-#if ELOG_API_MESSAGE_HANDLERS > 0
 static u32
-elog_id_for_msg_name (vlib_main_t * vm, char *msg_name)
+elog_id_for_msg_name (vlib_main_t * vm, const char *msg_name)
 {
   uword *p, r;
   static uword *h;
@@ -461,7 +457,6 @@ elog_id_for_msg_name (vlib_main_t * vm, char *msg_name)
 
   return r;
 }
-#endif
 
 /* This is only to be called from a vlib/vnet app */
 void
@@ -472,26 +467,25 @@ vl_msg_api_handler_with_vm_node (api_main_t * am,
   u16 id = ntohs (*((u16 *) the_msg));
   u8 *(*handler) (void *, void *, void *);
 
-#if ELOG_API_MESSAGE_HANDLERS > 0
-  {
-    /* *INDENT-OFF* */
-    ELOG_TYPE_DECLARE (e) =
-      {
-        .format = "api-msg: %s",
-        .format_args = "T4",
-      };
-    /* *INDENT-ON* */
-    struct
+  if (PREDICT_FALSE (vm->elog_trace_api_messages))
     {
-      u32 c;
-    } *ed;
-    ed = ELOG_DATA (&vm->elog_main, e);
-    if (id < vec_len (am->msg_names))
-      ed->c = elog_id_for_msg_name (vm, am->msg_names[id]);
-    else
-      ed->c = elog_id_for_msg_name (vm, "BOGUS");
-  }
-#endif
+      /* *INDENT-OFF* */
+      ELOG_TYPE_DECLARE (e) =
+        {
+          .format = "api-msg: %s",
+          .format_args = "T4",
+        };
+      /* *INDENT-ON* */
+      struct
+      {
+	u32 c;
+      } *ed;
+      ed = ELOG_DATA (&vm->elog_main, e);
+      if (id < vec_len (am->msg_names))
+	ed->c = elog_id_for_msg_name (vm, (const char *) am->msg_names[id]);
+      else
+	ed->c = elog_id_for_msg_name (vm, "BOGUS");
+    }
 
   if (id < vec_len (am->msg_handlers) && am->msg_handlers[id])
     {
@@ -521,26 +515,25 @@ vl_msg_api_handler_with_vm_node (api_main_t * am,
   if (!(am->message_bounce[id]))
     vl_msg_api_free (the_msg);
 
-#if ELOG_API_MESSAGE_HANDLERS > 0
-  {
-  /* *INDENT-OFF* */
-  ELOG_TYPE_DECLARE (e) = {
-    .format = "api-msg-done: %s",
-    .format_args = "T4",
-  };
-  /* *INDENT-ON* */
-
-    struct
+  if (PREDICT_FALSE (vm->elog_trace_api_messages))
     {
-      u32 c;
-    } *ed;
-    ed = ELOG_DATA (&vm->elog_main, e);
-    if (id < vec_len (am->msg_names))
-      ed->c = elog_id_for_msg_name (vm, am->msg_names[id]);
-    else
-      ed->c = elog_id_for_msg_name (vm, "BOGUS");
-  }
-#endif
+      /* *INDENT-OFF* */
+      ELOG_TYPE_DECLARE (e) = {
+        .format = "api-msg-done: %s",
+        .format_args = "T4",
+      };
+      /* *INDENT-ON* */
+
+      struct
+      {
+	u32 c;
+      } *ed;
+      ed = ELOG_DATA (&vm->elog_main, e);
+      if (id < vec_len (am->msg_names))
+	ed->c = elog_id_for_msg_name (vm, (const char *) am->msg_names[id]);
+      else
+	ed->c = elog_id_for_msg_name (vm, "BOGUS");
+    }
 }
 
 void
@@ -716,7 +709,7 @@ vl_msg_api_set_handlers (int id, char *name, void *handler, void *cleanup,
   vl_msg_api_msg_config_t cfg;
   vl_msg_api_msg_config_t *c = &cfg;
 
-  memset (c, 0, sizeof (*c));
+  clib_memset (c, 0, sizeof (*c));
 
   c->id = id;
   c->name = name;
@@ -737,7 +730,7 @@ vl_msg_api_clean_handlers (int msg_id)
   vl_msg_api_msg_config_t cfg;
   vl_msg_api_msg_config_t *c = &cfg;
 
-  memset (c, 0, sizeof (*c));
+  clib_memset (c, 0, sizeof (*c));
 
   c->id = msg_id;
   vl_msg_api_config (c);

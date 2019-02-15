@@ -223,12 +223,13 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 				      em->epoll_events,
 				      vec_len (em->epoll_events), timeout_ms);
 	  }
+
       }
     else
       {
 	if (timeout_ms)
 	  usleep (timeout_ms * 1000);
-	return 0;
+	goto done;
       }
   }
 
@@ -238,7 +239,7 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	vlib_panic_with_error (vm, clib_error_return_unix (0, "epoll_wait"));
 
       /* non fatal error (e.g. EINTR). */
-      return 0;
+      goto done;
     }
 
   em->epoll_waits += 1;
@@ -247,11 +248,40 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   for (e = em->epoll_events; e < em->epoll_events + n_fds_ready; e++)
     {
       u32 i = e->data.u32;
-      clib_file_t *f = pool_elt_at_index (fm->file_pool, i);
+      clib_file_t *f = fm->file_pool + i;
       clib_error_t *errors[4];
       int n_errors = 0;
 
-      if (PREDICT_TRUE (!(e->events & EPOLLERR)))
+      if (PREDICT_FALSE (pool_is_free (fm->file_pool, f)))
+	{
+	  /*
+	   * Under rare scenerop, epoll may still post us events for the
+	   * deleted file descriptor. We just deal with it and throw away the
+	   * events for the corresponding file descriptor.
+	   */
+	  if (e->events & EPOLLIN)
+	    {
+	      errors[n_errors] =
+		clib_error_return (0, "epoll event EPOLLIN dropped due "
+				   "to free index %u", i);
+	      n_errors++;
+	    }
+	  if (e->events & EPOLLOUT)
+	    {
+	      errors[n_errors] =
+		clib_error_return (0, "epoll event EPOLLOUT dropped due "
+				   "to free index %u", i);
+	      n_errors++;
+	    }
+	  if (e->events & EPOLLERR)
+	    {
+	      errors[n_errors] =
+		clib_error_return (0, "epoll event EPOLLERR dropped due "
+				   "to free index %u", i);
+	      n_errors++;
+	    }
+	}
+      else if (PREDICT_TRUE (!(e->events & EPOLLERR)))
 	{
 	  if (e->events & EPOLLIN)
 	    {
@@ -283,6 +313,13 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	{
 	  unix_save_error (um, errors[i]);
 	}
+    }
+
+done:
+  if (PREDICT_FALSE (vm->cpu_id != clib_get_current_cpu_id ()))
+    {
+      vm->cpu_id = clib_get_current_cpu_id ();
+      vm->numa_node = clib_get_current_numa_node ();
     }
 
   return 0;

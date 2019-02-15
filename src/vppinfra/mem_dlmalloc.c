@@ -73,7 +73,7 @@ mheap_get_trace (uword offset, uword size)
     return;
 
   /* Spurious Coverity warnings be gone. */
-  memset (&trace, 0, sizeof (trace));
+  clib_memset (&trace, 0, sizeof (trace));
 
   /* Skip our frame and mspace_get_aligned's frame */
   n_callers = clib_backtrace (trace.callers, ARRAY_LEN (trace.callers), 2);
@@ -185,7 +185,7 @@ mheap_put_trace (uword offset, uword size)
     {
       hash_unset_mem (tm->trace_by_callers, t->callers);
       vec_add1 (tm->trace_free_list, trace_index);
-      memset (t, 0, sizeof (t[0]));
+      clib_memset (t, 0, sizeof (t[0]));
     }
   tm->enabled = save_enabled;
   clib_spinlock_unlock (&tm->lock);
@@ -228,33 +228,6 @@ clib_mem_init_thread_safe (void *memory, uword memory_size)
 {
   return clib_mem_init (memory, memory_size);
 }
-
-#ifdef CLIB_LINUX_KERNEL
-#include <asm/page.h>
-
-uword
-clib_mem_get_page_size (void)
-{
-  return PAGE_SIZE;
-}
-#endif
-
-#ifdef CLIB_UNIX
-uword
-clib_mem_get_page_size (void)
-{
-  return getpagesize ();
-}
-#endif
-
-/* Make a guess for standalone. */
-#ifdef CLIB_STANDALONE
-uword
-clib_mem_get_page_size (void)
-{
-  return 4096;
-}
-#endif
 
 u8 *
 format_clib_mem_usage (u8 * s, va_list * va)
@@ -354,7 +327,7 @@ format_mheap_trace (u8 * s, va_list * va)
 	  {
 	    if (i > 0)
 	      s = format (s, "%U", format_white_space, indent);
-#ifdef CLIB_UNIX
+#if defined(CLIB_UNIX) && !defined(__APPLE__)
 	    /* $$$$ does this actually work? */
 	    s =
 	      format (s, " %U\n", format_clib_elf_symbol_with_address,
@@ -382,7 +355,7 @@ format_mheap (u8 * s, va_list * va)
 {
   void *heap = va_arg (*va, u8 *);
   int verbose = va_arg (*va, int);
-  struct mallinfo mi;
+  struct dlmallinfo mi;
   mheap_trace_main_t *tm = &mheap_trace_main;
 
   mi = mspace_mallinfo (heap);

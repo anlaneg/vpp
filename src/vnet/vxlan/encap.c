@@ -116,8 +116,8 @@ vxlan_encap_inline (vlib_main_t * vm,
 	    vlib_prefetch_buffer_header (p2, LOAD);
 	    vlib_prefetch_buffer_header (p3, LOAD);
 
-	    CLIB_PREFETCH (p2->data, 2*CLIB_CACHE_LINE_BYTES, LOAD);
-	    CLIB_PREFETCH (p3->data, 2*CLIB_CACHE_LINE_BYTES, LOAD);
+	    CLIB_PREFETCH (p2->data - CLIB_CACHE_LINE_BYTES, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+	    CLIB_PREFETCH (p3->data - CLIB_CACHE_LINE_BYTES, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
 	  }
 
 	  u32 bi0 = to_next[0] = from[0];
@@ -186,8 +186,8 @@ vxlan_encap_inline (vlib_main_t * vm,
 	  /* vnet_rewrite_two_header writes only in (uword) 8 bytes chunks
            * and discards the first 4 bytes of the (36 bytes ip4 underlay)  rewrite
            * use memcpy as a workaround */
-          clib_memcpy(underlay0, t0->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
-          clib_memcpy(underlay1, t1->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
+          clib_memcpy_fast(underlay0, t0->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
+          clib_memcpy_fast(underlay1, t1->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
 
           ip4_header_t * ip4_0, * ip4_1;
 	  qos_bits_t ip4_0_tos = 0, ip4_1_tos = 0;
@@ -292,10 +292,18 @@ vxlan_encap_inline (vlib_main_t * vm,
                 udp1->checksum = 0xffff;
             }
 
+	if (sw_if_index0 == sw_if_index1)
+	{
+          vlib_increment_combined_counter (tx_counter, thread_index,
+              sw_if_index0, 2, len0 + len1);
+	}
+	else
+	{
           vlib_increment_combined_counter (tx_counter, thread_index,
               sw_if_index0, 1, len0);
           vlib_increment_combined_counter (tx_counter, thread_index,
               sw_if_index1, 1, len1);
+	}
           pkts_encapsulated += 2;
 
 	  if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED)) 
@@ -351,7 +359,7 @@ vxlan_encap_inline (vlib_main_t * vm,
 	  /* vnet_rewrite_one_header writes only in (uword) 8 bytes chunks
            * and discards the first 4 bytes of the (36 bytes ip4 underlay)  rewrite
            * use memcpy as a workaround */
-          clib_memcpy(underlay0, t0->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
+          clib_memcpy_fast(underlay0, t0->rewrite_header.data + rw_hdr_offset, underlay_hdr_len);
 
  	  u32 len0 = vlib_buffer_length_in_chain (vm, b0);
           u16 payload_l0 = clib_host_to_net_u16 (len0 - l3_len);

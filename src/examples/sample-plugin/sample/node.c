@@ -15,6 +15,7 @@
 #include <vlib/vlib.h>
 #include <vnet/vnet.h>
 #include <vnet/pg/pg.h>
+#include <vnet/ethernet/ethernet.h>
 #include <vppinfra/error.h>
 #include <sample/sample.h>
 
@@ -26,13 +27,6 @@ typedef struct
   u8 new_dst_mac[6];
 } sample_trace_t;
 
-static u8 *
-format_mac_address (u8 * s, va_list * args)
-{
-  u8 *a = va_arg (*args, u8 *);
-  return format (s, "%02x:%02x:%02x:%02x:%02x:%02x",
-		 a[0], a[1], a[2], a[3], a[4], a[5]);
-}
 
 /* packet trace format function */
 static u8 *
@@ -51,7 +45,7 @@ format_sample_trace (u8 * s, va_list * args)
   return s;
 }
 
-vlib_node_registration_t sample_node;
+extern vlib_node_registration_t sample_node;
 
 #define foreach_sample_error \
 _(SWAPPED, "Mac swap packets processed")
@@ -93,9 +87,8 @@ _(3)                                            \
 _(4)                                            \
 _(5)
 
-static uword
-sample_node_fn (vlib_main_t * vm,
-		vlib_node_runtime_t * node, vlib_frame_t * frame)
+VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+			    vlib_frame_t * frame)
 {
   u32 n_left_from, *from, *to_next;
   sample_next_t next_index;
@@ -190,10 +183,10 @@ sample_node_fn (vlib_main_t * vm,
 		    vlib_add_trace (vm, node, b0, sizeof (*t));
 		  t->sw_if_index = sw_if_index0;
 		  t->next_index = next0;
-		  clib_memcpy (t->new_src_mac, en0->src_address,
-			       sizeof (t->new_src_mac));
-		  clib_memcpy (t->new_dst_mac, en0->dst_address,
-			       sizeof (t->new_dst_mac));
+		  clib_memcpy_fast (t->new_src_mac, en0->src_address,
+				    sizeof (t->new_src_mac));
+		  clib_memcpy_fast (t->new_dst_mac, en0->dst_address,
+				    sizeof (t->new_dst_mac));
 
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
@@ -202,10 +195,10 @@ sample_node_fn (vlib_main_t * vm,
 		    vlib_add_trace (vm, node, b1, sizeof (*t));
 		  t->sw_if_index = sw_if_index1;
 		  t->next_index = next1;
-		  clib_memcpy (t->new_src_mac, en1->src_address,
-			       sizeof (t->new_src_mac));
-		  clib_memcpy (t->new_dst_mac, en1->dst_address,
-			       sizeof (t->new_dst_mac));
+		  clib_memcpy_fast (t->new_src_mac, en1->src_address,
+				    sizeof (t->new_src_mac));
+		  clib_memcpy_fast (t->new_dst_mac, en1->dst_address,
+				    sizeof (t->new_dst_mac));
 		}
 	    }
 
@@ -263,10 +256,10 @@ sample_node_fn (vlib_main_t * vm,
 	      sample_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
 	      t->sw_if_index = sw_if_index0;
 	      t->next_index = next0;
-	      clib_memcpy (t->new_src_mac, en0->src_address,
-			   sizeof (t->new_src_mac));
-	      clib_memcpy (t->new_dst_mac, en0->dst_address,
-			   sizeof (t->new_dst_mac));
+	      clib_memcpy_fast (t->new_src_mac, en0->src_address,
+				sizeof (t->new_src_mac));
+	      clib_memcpy_fast (t->new_dst_mac, en0->dst_address,
+				sizeof (t->new_dst_mac));
 	    }
 
 	  pkts_swapped += 1;
@@ -291,9 +284,8 @@ sample_node_fn (vlib_main_t * vm,
  * Node costs about 17 clocks/pkt at a vector size of 26
  */
 #ifdef VERSION_2
-static uword
-sample_node_fn (vlib_main_t * vm,
-		vlib_node_runtime_t * node, vlib_frame_t * frame)
+VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+			    vlib_frame_t * frame)
 {
   u32 n_left_from, *from, *to_next;
   sample_next_t next_index;
@@ -375,10 +367,10 @@ sample_node_fn (vlib_main_t * vm,
 		    vlib_add_trace (vm, node, b0, sizeof (*t));
 		  t->sw_if_index = sw_if_index0;
 		  t->next_index = next0;
-		  clib_memcpy (t->new_src_mac, en0->src_address,
-			       sizeof (t->new_src_mac));
-		  clib_memcpy (t->new_dst_mac, en0->dst_address,
-			       sizeof (t->new_dst_mac));
+		  clib_memcpy_fast (t->new_src_mac, en0->src_address,
+				    sizeof (t->new_src_mac));
+		  clib_memcpy_fast (t->new_dst_mac, en0->dst_address,
+				    sizeof (t->new_dst_mac));
 
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
@@ -387,10 +379,10 @@ sample_node_fn (vlib_main_t * vm,
 		    vlib_add_trace (vm, node, b1, sizeof (*t));
 		  t->sw_if_index = sw_if_index1;
 		  t->next_index = next1;
-		  clib_memcpy (t->new_src_mac, en1->src_address,
-			       sizeof (t->new_src_mac));
-		  clib_memcpy (t->new_dst_mac, en1->dst_address,
-			       sizeof (t->new_dst_mac));
+		  clib_memcpy_fast (t->new_src_mac, en1->src_address,
+				    sizeof (t->new_src_mac));
+		  clib_memcpy_fast (t->new_dst_mac, en1->dst_address,
+				    sizeof (t->new_dst_mac));
 		}
 	    }
 
@@ -440,10 +432,10 @@ sample_node_fn (vlib_main_t * vm,
 	      sample_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
 	      t->sw_if_index = sw_if_index0;
 	      t->next_index = next0;
-	      clib_memcpy (t->new_src_mac, en0->src_address,
-			   sizeof (t->new_src_mac));
-	      clib_memcpy (t->new_dst_mac, en0->dst_address,
-			   sizeof (t->new_dst_mac));
+	      clib_memcpy_fast (t->new_src_mac, en0->src_address,
+				sizeof (t->new_src_mac));
+	      clib_memcpy_fast (t->new_dst_mac, en0->dst_address,
+				sizeof (t->new_dst_mac));
 	    }
 
 	  pkts_swapped += 1;
@@ -481,9 +473,8 @@ sample_node_fn (vlib_main_t * vm,
 /* This would normally be a stack local, but since it's a constant... */
 static const u16 nexts[VLIB_FRAME_SIZE] = { 0 };
 
-static uword
-sample_node_fn (vlib_main_t * vm,
-		vlib_node_runtime_t * node, vlib_frame_t * frame)
+VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+			    vlib_frame_t * frame)
 {
   u32 n_left_from, *from;
   u32 pkts_swapped = 0;
@@ -594,10 +585,10 @@ sample_node_fn (vlib_main_t * vm,
 	      t->sw_if_index = vnet_buffer (b[0])->sw_if_index[VLIB_TX];
 	      t->next_index = SAMPLE_NEXT_INTERFACE_OUTPUT;
 	      en = vlib_buffer_get_current (b[0]);
-	      clib_memcpy (t->new_src_mac, en->src_address,
-			   sizeof (t->new_src_mac));
-	      clib_memcpy (t->new_dst_mac, en->dst_address,
-			   sizeof (t->new_dst_mac));
+	      clib_memcpy_fast (t->new_src_mac, en->src_address,
+				sizeof (t->new_src_mac));
+	      clib_memcpy_fast (t->new_dst_mac, en->dst_address,
+				sizeof (t->new_dst_mac));
 	      b++;
 	    }
 	  else
@@ -611,7 +602,6 @@ sample_node_fn (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (sample_node) =
 {
-  .function = sample_node_fn,
   .name = "sample",
   .vector_size = sizeof (u32),
   .format_trace = format_sample_trace,
@@ -628,8 +618,6 @@ VLIB_REGISTER_NODE (sample_node) =
   },
 };
 /* *INDENT-ON* */
-
-VLIB_NODE_FUNCTION_MULTIARCH (sample_node, sample_node_fn);
 
 /*
  * fd.io coding-style-patch-verification: ON

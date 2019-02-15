@@ -27,7 +27,6 @@ vlib_buffer_append (vlib_buffer_t * b, uword l)
 static vlib_buffer_t *
 igmp_pkt_get_buffer (igmp_pkt_build_t * bk)
 {
-  vlib_buffer_free_list_t *fl;
   vlib_main_t *vm;
   vlib_buffer_t *b;
   u32 bi;
@@ -38,8 +37,6 @@ igmp_pkt_get_buffer (igmp_pkt_build_t * bk)
     return (NULL);
 
   b = vlib_get_buffer (vm, bi);
-  fl = vlib_buffer_get_free_list (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
-  vlib_buffer_init_for_free_list (b, fl);
   VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
 
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
@@ -73,7 +70,7 @@ igmp_pkt_build_ip_header (igmp_pkt_build_t * bk,
     return (NULL);
 
   ip4 = vlib_buffer_get_current (b);
-  memset (ip4, 0, sizeof (ip4_header_t));
+  clib_memset (ip4, 0, sizeof (ip4_header_t));
   ip4->ip_version_and_header_length = 0x46;
   ip4->ttl = 1;
   ip4->protocol = IP_PROTOCOL_IGMP;
@@ -92,14 +89,14 @@ igmp_pkt_build_ip_header (igmp_pkt_build_t * bk,
       break;
     case IGMP_MSG_QUERY:
       if (group != NULL)
-	clib_memcpy (&ip4->dst_address, &group->key->ip4,
-		     sizeof (ip4_address_t));
+	clib_memcpy_fast (&ip4->dst_address, &group->key->ip4,
+			  sizeof (ip4_address_t));
       else
 	ip4->dst_address.as_u32 = IGMP_GENERAL_QUERY_ADDRESS;
       break;
     }
 
-  /* add the router alert optnios */
+  /* add the router alert options */
   option = vlib_buffer_get_current (b);
   option[0] = 0x80 | 20;	// IP4_ROUTER_ALERT_OPTION;
   option[1] = 4;		// length
@@ -402,7 +399,7 @@ igmp_pkt_report_v3_add_group (igmp_pkt_build_report_t * br,
 void
 igmp_pkt_build_report_init (igmp_pkt_build_report_t * br, u32 sw_if_index)
 {
-  memset (br, 0, sizeof (*br));
+  clib_memset (br, 0, sizeof (*br));
   br->base.sw_if_index = sw_if_index;
 }
 
@@ -525,7 +522,7 @@ igmp_pkt_query_v3_send (igmp_pkt_build_query_t * bq)
 void
 igmp_pkt_build_query_init (igmp_pkt_build_query_t * bq, u32 sw_if_index)
 {
-  memset (bq, 0, sizeof (*bq));
+  clib_memset (bq, 0, sizeof (*bq));
   bq->base.sw_if_index = sw_if_index;
 }
 

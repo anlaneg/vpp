@@ -15,7 +15,6 @@
 /*
  * Defines used for testing various optimisation schemes
  */
-#define MAP_ENCAP_DUAL 0
 
 #include "map.h"
 #include <vnet/ip/ip_frag.h>
@@ -167,7 +166,8 @@ ip4_map_fragment (vlib_buffer_t * b, u16 mtu, bool df, u8 * error)
 
   if (mm->frag_inner)
     {
-      ip_frag_set_vnet_buffer (b, sizeof (ip6_header_t), mtu,
+      // TODO: Fix inner fragmentation after removed inner support from ip-frag.
+      ip_frag_set_vnet_buffer (b, /*sizeof (ip6_header_t), */ mtu,
 			       IP4_FRAG_NEXT_IP6_LOOKUP,
 			       IP_FRAG_FLAG_IP6_HEADER);
       return (IP4_MAP_NEXT_IP4_FRAGMENT);
@@ -183,7 +183,7 @@ ip4_map_fragment (vlib_buffer_t * b, u16 mtu, bool df, u8 * error)
 	  *error = MAP_ERROR_DF_SET;
 	  return (IP4_MAP_NEXT_ICMP_ERROR);
 	}
-      ip_frag_set_vnet_buffer (b, 0, mtu, IP6_FRAG_NEXT_IP6_LOOKUP,
+      ip_frag_set_vnet_buffer (b, mtu, IP6_FRAG_NEXT_IP6_LOOKUP,
 			       IP_FRAG_FLAG_IP6_HEADER);
       return (IP4_MAP_NEXT_IP6_FRAGMENT);
     }
@@ -248,12 +248,12 @@ ip4_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  p1 = vlib_get_buffer (vm, pi1);
 	  ip40 = vlib_buffer_get_current (p0);
 	  ip41 = vlib_buffer_get_current (p1);
-	  map_domain_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-	  d0 = ip4_map_get_domain (map_domain_index0);
-	  map_domain_index1 = vnet_buffer (p1)->ip.adj_index[VLIB_TX];
-	  d1 = ip4_map_get_domain (map_domain_index1);
-	  ASSERT (d0);
-	  ASSERT (d1);
+	  d0 =
+	    ip4_map_get_domain (&ip40->dst_address, &map_domain_index0,
+				&error0);
+	  d1 =
+	    ip4_map_get_domain (&ip41->dst_address, &map_domain_index1,
+				&error1);
 
 	  /*
 	   * Shared IPv4 address
@@ -417,9 +417,15 @@ ip4_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 
 	  p0 = vlib_get_buffer (vm, pi0);
 	  ip40 = vlib_buffer_get_current (p0);
-	  map_domain_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-	  d0 = ip4_map_get_domain (map_domain_index0);
-	  ASSERT (d0);
+
+	  d0 =
+	    ip4_map_get_domain (&ip40->dst_address, &map_domain_index0,
+				&error0);
+	  if (!d0)
+	    {			/* Guess it wasn't for us */
+	      vnet_feature_next (&next0, p0);
+	      goto exit;
+	    }
 
 	  /*
 	   * Shared IPv4 address
@@ -495,6 +501,7 @@ ip4_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	    }
 
 	  p0->error = error_node->errors[error0];
+	exit:
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, pi0, next0);
 	}
@@ -537,7 +544,7 @@ ip4_map_reass (vlib_main_t * vm,
 	  i32 port0 = 0;
 	  ip6_header_t *ip60;
 	  u32 next0 = IP4_MAP_REASS_NEXT_IP6_LOOKUP;
-	  u32 map_domain_index0;
+	  u32 map_domain_index0 = ~0;
 	  u8 cached = 0;
 
 	  pi0 = to_next[0] = from[0];
@@ -549,8 +556,9 @@ ip4_map_reass (vlib_main_t * vm,
 	  p0 = vlib_get_buffer (vm, pi0);
 	  ip60 = vlib_buffer_get_current (p0);
 	  ip40 = (ip4_header_t *) (ip60 + 1);
-	  map_domain_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-	  d0 = ip4_map_get_domain (map_domain_index0);
+	  d0 =
+	    ip4_map_get_domain (&ip40->dst_address, &map_domain_index0,
+				&error0);
 
 	  map_ip4_reass_lock ();
 	  map_ip4_reass_t *r = map_ip4_reass_get (ip40->src_address.as_u32,
@@ -621,7 +629,7 @@ ip4_map_reass (vlib_main_t * vm,
 	       && (clib_net_to_host_u16 (ip60->payload_length) +
 		   sizeof (*ip60) > d0->mtu)))
 	    {
-	      vnet_buffer (p0)->ip_frag.header_offset = sizeof (*ip60);
+	      // TODO: vnet_buffer (p0)->ip_frag.header_offset = sizeof (*ip60);
 	      vnet_buffer (p0)->ip_frag.next_index = IP4_FRAG_NEXT_IP6_LOOKUP;
 	      vnet_buffer (p0)->ip_frag.mtu = d0->mtu;
 	      vnet_buffer (p0)->ip_frag.flags = IP_FRAG_FLAG_IP6_HEADER;
@@ -665,17 +673,16 @@ ip4_map_reass (vlib_main_t * vm,
 	      u32 len = vec_len (fragments_to_loopback);
 	      if (len <= VLIB_FRAME_SIZE)
 		{
-		  clib_memcpy (from, fragments_to_loopback,
-			       sizeof (u32) * len);
+		  clib_memcpy_fast (from, fragments_to_loopback,
+				    sizeof (u32) * len);
 		  n_left_from = len;
 		  vec_reset_length (fragments_to_loopback);
 		}
 	      else
 		{
-		  clib_memcpy (from,
-			       fragments_to_loopback + (len -
-							VLIB_FRAME_SIZE),
-			       sizeof (u32) * VLIB_FRAME_SIZE);
+		  clib_memcpy_fast (from, fragments_to_loopback +
+				    (len - VLIB_FRAME_SIZE),
+				    sizeof (u32) * VLIB_FRAME_SIZE);
 		  n_left_from = VLIB_FRAME_SIZE;
 		  _vec_len (fragments_to_loopback) = len - VLIB_FRAME_SIZE;
 		}
@@ -699,7 +706,16 @@ static char *map_error_strings[] = {
 #undef _
 };
 
+
 /* *INDENT-OFF* */
+VNET_FEATURE_INIT (ip4_map_feature, static) =
+{
+  .arc_name = "ip4-unicast",
+  .node_name = "ip4-map",
+  .runs_before =
+  VNET_FEATURES ("ip4-flow-classify"),
+};
+
 VLIB_REGISTER_NODE(ip4_map_node) = {
   .function = ip4_map,
   .name = "ip4-map",

@@ -17,6 +17,9 @@
 #include <vnet/fib/fib_table.h>
 #include <vnet/dpo/ip6_ll_dpo.h>
 
+#include <vppinfra/bihash_24_8.h>
+#include <vppinfra/bihash_template.c>
+
 static void
 vnet_ip6_fib_init (u32 fib_index)
 {
@@ -63,8 +66,8 @@ create_fib_with_table_id (u32 table_id,
     pool_get(ip6_main.fibs, fib_table);
     pool_get_aligned(ip6_main.v6_fibs, v6_fib, CLIB_CACHE_LINE_BYTES);
 
-    memset(fib_table, 0, sizeof(*fib_table));
-    memset(v6_fib, 0, sizeof(*v6_fib));
+    clib_memset(fib_table, 0, sizeof(*fib_table));
+    clib_memset(v6_fib, 0, sizeof(*v6_fib));
 
     ASSERT((fib_table - ip6_main.fibs) ==
            (v6_fib - ip6_main.v6_fibs));
@@ -171,7 +174,7 @@ ip6_fib_table_lookup (u32 fib_index,
 		      u32 len)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv, value;
+    clib_bihash_kv_24_8_t kv, value;
     int i, n_p, rv;
     u64 fib;
 
@@ -203,7 +206,7 @@ ip6_fib_table_lookup (u32 fib_index,
 	kv.key[1] &= mask->as_u64[1];
 	kv.key[2] = fib | dst_address_length;
       
-	rv = BV(clib_bihash_search_inline_2)(&table->ip6_hash, &kv, &value);
+	rv = clib_bihash_search_inline_2_24_8(&table->ip6_hash, &kv, &value);
 	if (rv == 0)
 	    return value.value;
     }
@@ -217,7 +220,7 @@ ip6_fib_table_lookup_exact_match (u32 fib_index,
 				  u32 len)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv, value;
+    clib_bihash_kv_24_8_t kv, value;
     ip6_address_t *mask;
     u64 fib;
     int rv;
@@ -230,7 +233,7 @@ ip6_fib_table_lookup_exact_match (u32 fib_index,
     kv.key[1] = addr->as_u64[1] & mask->as_u64[1];
     kv.key[2] = fib | len;
       
-    rv = BV(clib_bihash_search_inline_2)(&table->ip6_hash, &kv, &value);
+    rv = clib_bihash_search_inline_2_24_8(&table->ip6_hash, &kv, &value);
     if (rv == 0)
 	return value.value;
 
@@ -256,7 +259,7 @@ ip6_fib_table_entry_remove (u32 fib_index,
 			    u32 len)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv;
+    clib_bihash_kv_24_8_t kv;
     ip6_address_t *mask;
     u64 fib;
 
@@ -268,7 +271,7 @@ ip6_fib_table_entry_remove (u32 fib_index,
     kv.key[1] = addr->as_u64[1] & mask->as_u64[1];
     kv.key[2] = fib | len;
 
-    BV(clib_bihash_add_del)(&table->ip6_hash, &kv, 0);
+    clib_bihash_add_del_24_8(&table->ip6_hash, &kv, 0);
 
     /* refcount accounting */
     ASSERT (table->dst_address_length_refcounts[len] > 0);
@@ -288,7 +291,7 @@ ip6_fib_table_entry_insert (u32 fib_index,
 			    fib_node_index_t fib_entry_index)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv;
+    clib_bihash_kv_24_8_t kv;
     ip6_address_t *mask;
     u64 fib;
 
@@ -301,7 +304,7 @@ ip6_fib_table_entry_insert (u32 fib_index,
     kv.key[2] = fib | len;
     kv.value = fib_entry_index;
 
-    BV(clib_bihash_add_del)(&table->ip6_hash, &kv, 1);
+    clib_bihash_add_del_24_8(&table->ip6_hash, &kv, 1);
 
     table->dst_address_length_refcounts[len]++;
 
@@ -340,7 +343,7 @@ ip6_fib_table_fwding_dpo_update (u32 fib_index,
 				 const dpo_id_t *dpo)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv;
+    clib_bihash_kv_24_8_t kv;
     ip6_address_t *mask;
     u64 fib;
 
@@ -353,7 +356,7 @@ ip6_fib_table_fwding_dpo_update (u32 fib_index,
     kv.key[2] = fib | len;
     kv.value = dpo->dpoi_index;
 
-    BV(clib_bihash_add_del)(&table->ip6_hash, &kv, 1);
+    clib_bihash_add_del_24_8(&table->ip6_hash, &kv, 1);
 
     table->dst_address_length_refcounts[len]++;
 
@@ -370,7 +373,7 @@ ip6_fib_table_fwding_dpo_remove (u32 fib_index,
 				 const dpo_id_t *dpo)
 {
     ip6_fib_table_instance_t *table;
-    BVT(clib_bihash_kv) kv;
+    clib_bihash_kv_24_8_t kv;
     ip6_address_t *mask;
     u64 fib;
 
@@ -383,7 +386,7 @@ ip6_fib_table_fwding_dpo_remove (u32 fib_index,
     kv.key[2] = fib | len;
     kv.value = dpo->dpoi_index;
 
-    BV(clib_bihash_add_del)(&table->ip6_hash, &kv, 0);
+    clib_bihash_add_del_24_8(&table->ip6_hash, &kv, 0);
 
     /* refcount accounting */
     ASSERT (table->dst_address_length_refcounts[len] > 0);
@@ -485,7 +488,7 @@ ip6_fib_table_walk (u32 fib_index,
         .i6w_sub_trees = NULL,
     };
 
-    BV(clib_bihash_foreach_key_value_pair)(
+    clib_bihash_foreach_key_value_pair_24_8(
         &ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash,
         ip6_fib_walk_cb,
         &ctx);
@@ -506,7 +509,7 @@ ip6_fib_table_sub_tree_walk (u32 fib_index,
         .i6w_root = *root,
     };
 
-    BV(clib_bihash_foreach_key_value_pair)(
+    clib_bihash_foreach_key_value_pair_24_8(
         &ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash,
         ip6_fib_walk_cb,
         &ctx);
@@ -571,12 +574,13 @@ format_ip6_fib_table_memory (u8 * s, va_list * args)
     uword bytes_inuse;
 
     bytes_inuse = 
-        ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash.alloc_arena_next
-        - ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash.alloc_arena;
+        alloc_arena_next 
+        (&(ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash))
+        - alloc_arena (&(ip6_main.ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash));
 
     bytes_inuse += 
-        ip6_main.ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash.alloc_arena_next
-        - ip6_main.ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash.alloc_arena;
+        alloc_arena_next(&(ip6_main.ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash))
+        - alloc_arena(&(ip6_main.ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash));
 
     s = format(s, "%=30s %=6d %=8ld\n",
                "IPv6 unicast",
@@ -591,7 +595,7 @@ typedef struct {
 } count_routes_in_fib_at_prefix_length_arg_t;
 
 static void
-count_routes_in_fib_at_prefix_length (BVT(clib_bihash_kv) * kvp,
+count_routes_in_fib_at_prefix_length (clib_bihash_kv_24_8_t * kvp,
                                       void *arg)
 {
   count_routes_in_fib_at_prefix_length_arg_t * ap = arg;
@@ -684,15 +688,15 @@ ip6_show_fib (vlib_main_t * vm,
 	/* Show summary? */
 	if (! verbose)
 	{
-	    BVT(clib_bihash) * h = &im6->ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash;
+	    clib_bihash_24_8_t * h = &im6->ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash;
 	    int len;
 
 	    vlib_cli_output (vm, "%=20s%=16s", "Prefix length", "Count");
 
-	    memset (ca, 0, sizeof(*ca));
+	    clib_memset (ca, 0, sizeof(*ca));
 	    ca->fib_index = fib->index;
 
-	    BV(clib_bihash_foreach_key_value_pair)
+	    clib_bihash_foreach_key_value_pair_24_8
 		(h, count_routes_in_fib_at_prefix_length, ca);
 
 	    for (len = 128; len >= 0; len--)

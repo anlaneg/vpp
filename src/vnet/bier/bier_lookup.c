@@ -223,7 +223,7 @@ bier_lookup (vlib_main_t * vm,
                 num_cloned = vlib_buffer_clone(vm, bi0,
                                                blm->blm_clones[thread_index],
                                                n_clones,
-                                               n_bytes + 8);
+					       VLIB_BUFFER_CLONE_HEAD_SIZE);
 
                 if (num_cloned != vec_len(blm->blm_fmasks[thread_index]))
                 {
@@ -250,12 +250,12 @@ bier_lookup (vlib_main_t * vm,
                     {
                         bier_lookup_trace_t *tr;
 
-                        vlib_trace_buffer (vm, node, next0, c0, 0);
+                        if (c0 != b0)
+                            vlib_buffer_copy_trace_flag (vm, b0, ci0);
+
                         tr = vlib_add_trace (vm, node, c0, sizeof (*tr));
                         tr->bt_index = bti0;
                         tr->bfm_index = blm->blm_fmasks[thread_index][clone];
-
-                        c0->flags |= VLIB_BUFFER_IS_TRACED;
                     }
 
                     vlib_validate_buffer_enqueue_x1(vm, node, next_index,

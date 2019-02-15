@@ -188,6 +188,11 @@ extern fib_forward_chain_type_t fib_forw_chain_type_from_link_type(vnet_link_t l
 extern fib_forward_chain_type_t fib_forw_chain_type_from_dpo_proto(dpo_proto_t proto);
 
 /**
+ * @brief Convert from a fib-protocol to a chain type.
+ */
+extern fib_forward_chain_type_t fib_forw_chain_type_from_fib_proto(fib_protocol_t proto);
+
+/**
  * @brief Convert from a chain type to the DPO proto it will install
  */
 extern dpo_proto_t fib_forw_chain_type_to_dpo_proto(fib_forward_chain_type_t fct);
@@ -518,6 +523,15 @@ typedef struct fib_route_path_t_ {
              * The outgoing MPLS label Stack. NULL implies no label.
              */
             fib_mpls_label_t *frp_label_stack;
+
+            /**
+	     * Exclusive DPO
+	     */
+	    dpo_id_t dpo;
+            /**
+             * MFIB interface flags
+             */
+            u32 frp_mitf_flags;
         };
         /**
          * A path that resolves via a BIER Table.

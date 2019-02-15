@@ -25,8 +25,8 @@ namespace VOM {
 namespace gbp_contract_cmds {
 
 /**
-* A command class that creates or updates the GBP contract
-*/
+ * A command class that creates or updates the GBP contract
+ */
 class create_cmd : public rpc_cmd<HW::item<bool>, vapi::Gbp_contract_add_del>
 {
 public:
@@ -36,7 +36,9 @@ public:
   create_cmd(HW::item<bool>& item,
              epg_id_t src_epg_id,
              epg_id_t dst_epg_id,
-             const handle_t& acl);
+             const handle_t& acl,
+             const gbp_contract::gbp_rules_t& gbp_rules,
+             const gbp_contract::ethertype_set_t& allowed_ethertypes);
 
   /**
    * Issue the command to VPP/HW
@@ -57,6 +59,8 @@ private:
   const epg_id_t m_src_epg_id;
   const epg_id_t m_dst_epg_id;
   const handle_t m_acl;
+  const gbp_contract::gbp_rules_t& m_gbp_rules;
+  const gbp_contract::ethertype_set_t& m_allowed_ethertypes;
 };
 
 /**
@@ -91,7 +95,7 @@ private:
 };
 
 /**
- * A cmd class that Dumps all the GBP endpoints
+ * A cmd class that Dumps all the GBP contracts
  */
 class dump_cmd : public VOM::dump_cmd<vapi::Gbp_contract_dump>
 {

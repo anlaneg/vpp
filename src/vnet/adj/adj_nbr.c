@@ -18,6 +18,8 @@
 #include <vnet/ethernet/arp_packet.h>
 #include <vnet/fib/fib_walk.h>
 
+#include <vppinfra/bihash_24_8.h>
+
 /*
  * Vector Hash tables of neighbour (traditional) adjacencies
  *  Key: interface(for the vector index), address (and its proto),
@@ -59,7 +61,7 @@ adj_nbr_insert (fib_protocol_t nh_proto,
 	adj_nbr_tables[nh_proto][sw_if_index] =
 	    clib_mem_alloc_aligned(sizeof(BVT(clib_bihash)),
 				   CLIB_CACHE_LINE_BYTES);
-	memset(adj_nbr_tables[nh_proto][sw_if_index],
+	clib_memset(adj_nbr_tables[nh_proto][sw_if_index],
 	       0,
 	       sizeof(BVT(clib_bihash)));
 
@@ -195,6 +197,8 @@ adj_nbr_alloc (fib_protocol_t nh_proto,
     adj->ia_link = link_type;
     adj->ia_nh_proto = nh_proto;
     adj->rewrite_header.sw_if_index = sw_if_index;
+    vnet_rewrite_update_mtu(vnet_get_main(), adj->ia_link,
+                            &adj->rewrite_header);
 
     adj_nbr_evaluate_feature (adj_get_index(adj));
     return (adj);
@@ -263,26 +267,24 @@ adj_nbr_add_or_lock_w_rewrite (fib_protocol_t nh_proto,
 			       u8 *rewrite)
 {
     adj_index_t adj_index;
-    ip_adjacency_t *adj;
 
     adj_index = adj_nbr_find(nh_proto, link_type, nh_addr, sw_if_index);
 
     if (ADJ_INDEX_INVALID == adj_index)
     {
-	adj = adj_nbr_alloc(nh_proto, link_type, nh_addr, sw_if_index);
+        ip_adjacency_t *adj;
+
+        adj = adj_nbr_alloc(nh_proto, link_type, nh_addr, sw_if_index);
 	adj->rewrite_header.sw_if_index = sw_if_index;
-    }
-    else
-    {
-        adj = adj_get(adj_index);
+        adj_index = adj_get_index(adj);
     }
 
-    adj_lock(adj_get_index(adj));
-    adj_nbr_update_rewrite(adj_get_index(adj),
+    adj_lock(adj_index);
+    adj_nbr_update_rewrite(adj_index,
 			   ADJ_NBR_REWRITE_FLAG_COMPLETE,
 			   rewrite);
 
-    return (adj_get_index(adj));
+    return (adj_index);
 }
 
 /**
@@ -699,7 +701,6 @@ adj_nbr_interface_state_change_one (adj_index_t ai,
      * since this is the walk that provides convergence
      */
     adj_nbr_interface_state_change_ctx_t *ctx = arg;
-
     fib_node_back_walk_ctx_t bw_ctx = {
 	.fnbw_reason = ((ctx->flags & ADJ_NBR_INTERFACE_UP) ?
                         FIB_NODE_BW_REASON_FLAG_INTERFACE_UP :
@@ -711,10 +712,15 @@ adj_nbr_interface_state_change_one (adj_index_t ai,
          */
         .fnbw_flags = (!(ctx->flags & ADJ_NBR_INTERFACE_UP) ?
                        FIB_NODE_BW_FLAG_FORCE_SYNC :
-                       0),
+                       FIB_NODE_BW_FLAG_NONE),
     };
+    ip_adjacency_t *adj;
 
+    adj = adj_get(ai);
+
+    adj->ia_flags |= ADJ_FLAG_SYNC_WALK_ACTIVE;
     fib_walk_sync(FIB_NODE_TYPE_ADJ, ai, &bw_ctx);
+    adj->ia_flags &= ~ADJ_FLAG_SYNC_WALK_ACTIVE;
 
     return (ADJ_WALK_RC_CONTINUE);
 }
@@ -815,8 +821,13 @@ adj_nbr_interface_delete_one (adj_index_t ai,
     fib_node_back_walk_ctx_t bw_ctx = {
 	.fnbw_reason = FIB_NODE_BW_REASON_FLAG_INTERFACE_DELETE,
     };
+    ip_adjacency_t *adj;
 
+    adj = adj_get(ai);
+
+    adj->ia_flags |= ADJ_FLAG_SYNC_WALK_ACTIVE;
     fib_walk_sync(FIB_NODE_TYPE_ADJ, ai, &bw_ctx);
+    adj->ia_flags &= ~ADJ_FLAG_SYNC_WALK_ACTIVE;
 
     return (ADJ_WALK_RC_CONTINUE);
 }

@@ -12,7 +12,7 @@ from scapy.layers.vxlan import VXLAN
 from scapy.utils import atol
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class TestVxlanGpe(BridgeDomain, VppTestCase):
     """ VXLAN-GPE Test Case """
 
@@ -220,6 +220,10 @@ class TestVxlanGpe(BridgeDomain, VppTestCase):
         except Exception:
             super(TestVxlanGpe, cls).tearDownClass()
             raise
+
+    @classmethod
+    def tearDownClass(cls):
+        super(TestVxlanGpe, cls).tearDownClass()
 
     @unittest.skip("test disabled for vxlan-gpe")
     def test_mcast_flood(self):

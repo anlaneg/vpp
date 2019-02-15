@@ -58,7 +58,7 @@ vl_api_tap_create_v2_t_handler (vl_api_tap_create_v2_t * mp)
   vl_api_registration_t *reg;
   tap_create_if_args_t _a, *ap = &_a;
 
-  memset (ap, 0, sizeof (*ap));
+  clib_memset (ap, 0, sizeof (*ap));
 
   ap->id = ntohl (mp->id);
   if (!mp->use_random_mac)
@@ -109,6 +109,8 @@ vl_api_tap_create_v2_t_handler (vl_api_tap_create_v2_t * mp)
       ap->host_ip6_gw_set = 1;
     }
 
+  ap->tap_flags = ntohl (mp->tap_flags);
+
   tap_create_if (vm, ap);
 
   reg = vl_api_client_index_to_registration (mp->client_index);
@@ -142,7 +144,7 @@ tap_send_sw_interface_event_deleted (vpe_api_main_t * am,
   vl_api_sw_interface_event_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_EVENT);
   mp->sw_if_index = ntohl (sw_if_index);
 
@@ -190,10 +192,11 @@ tap_send_sw_interface_details (vpe_api_main_t * am,
 {
   vl_api_sw_interface_tap_v2_details_t *mp;
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = htons (VL_API_SW_INTERFACE_TAP_V2_DETAILS);
   mp->id = htonl (tap_if->id);
   mp->sw_if_index = htonl (tap_if->sw_if_index);
+  mp->tap_flags = htonl (tap_if->tap_flags);
   clib_memcpy (mp->dev_name, tap_if->dev_name,
 	       MIN (ARRAY_LEN (mp->dev_name) - 1,
 		    strlen ((const char *) tap_if->dev_name)));

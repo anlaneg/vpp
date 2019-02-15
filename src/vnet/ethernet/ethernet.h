@@ -42,30 +42,23 @@
 
 #include <vnet/vnet.h>
 #include <vnet/ethernet/packet.h>
+#include <vnet/ethernet/mac_address.h>
 #include <vnet/pg/pg.h>
 #include <vnet/feature/feature.h>
 
-always_inline u64
-ethernet_mac_address_u64 (u8 * a)
-{
-  return (((u64) a[0] << (u64) (5 * 8))
-	  | ((u64) a[1] << (u64) (4 * 8))
-	  | ((u64) a[2] << (u64) (3 * 8))
-	  | ((u64) a[3] << (u64) (2 * 8))
-	  | ((u64) a[4] << (u64) (1 * 8)) | ((u64) a[5] << (u64) (0 * 8)));
-}
+/* ethernet-input frame flags and scalar data */
 
-static inline int
-ethernet_mac_address_is_multicast_u64 (u64 a)
-{
-  return (a & (1ULL << (5 * 8))) != 0;
-}
+/* all packets in frame share same sw_if_index */
+#define ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX (1 << 0)
 
-static inline int
-ethernet_mac_address_is_zero (u8 * mac)
+/* all ip4 packets in frame have correct ip4 checksum */
+#define ETH_INPUT_FRAME_F_IP4_CKSUM_OK (1 << 1)
+
+typedef struct
 {
-  return ((*((u32 *) mac) == 0) && (*((u16 *) (mac + 4)) == 0));
-}
+  u32 sw_if_index;
+  u32 hw_if_index;
+} ethernet_input_frame_t;
 
 #ifdef CLIB_HAVE_VEC128
 static const u16x8 tagged_ethertypes = {
@@ -142,6 +135,7 @@ typedef u32 (ethernet_flag_change_function_t)
 /* Ethernet interface instance. */
 typedef struct ethernet_interface
 {
+  u32 flags;
 
   /* Accept all packets (promiscuous mode). */
 #define ETHERNET_INTERFACE_FLAG_ACCEPT_ALL (1 << 0)
@@ -339,6 +333,7 @@ void ethernet_register_l2_input (vlib_main_t * vm, u32 node_index);
 void ethernet_register_l3_redirect (vlib_main_t * vm, u32 node_index);
 
 /* Formats ethernet address X:X:X:X:X:X */
+u8 *format_mac_address (u8 * s, va_list * args);
 u8 *format_ethernet_address (u8 * s, va_list * args);
 u8 *format_ethernet_type (u8 * s, va_list * args);
 u8 *format_ethernet_vlan_tci (u8 * s, va_list * va);
@@ -347,6 +342,7 @@ u8 *format_ethernet_header_with_length (u8 * s, va_list * args);
 
 /* Parse ethernet address in either X:X:X:X:X:X unix or X.X.X cisco format. */
 uword unformat_ethernet_address (unformat_input_t * input, va_list * args);
+uword unformat_mac_address (unformat_input_t * input, va_list * args);
 
 /* Parse ethernet type as 0xXXXX or type name from ethernet/types.def.
    In either host or network byte order. */
@@ -488,7 +484,6 @@ eth_vlan_table_lookups (ethernet_main_t * em,
 // Returns 1 if a matching subinterface was found, otherwise returns 0.
 always_inline u32
 eth_identify_subint (vnet_hw_interface_t * hi,
-		     vlib_buffer_t * b0,
 		     u32 match_flags,
 		     main_intf_t * main_intf,
 		     vlan_intf_t * vlan_intf,
@@ -515,13 +510,13 @@ eth_identify_subint (vnet_hw_interface_t * hi,
   if ((subint->flags & match_flags) == match_flags)
     goto matched;
 
-  // check for untagged interface
-  subint = &main_intf->untagged_subint;
+  // check for default interface
+  subint = &main_intf->default_subint;
   if ((subint->flags & match_flags) == match_flags)
     goto matched;
 
-  // check for default interface
-  subint = &main_intf->default_subint;
+  // check for untagged interface
+  subint = &main_intf->untagged_subint;
   if ((subint->flags & match_flags) == match_flags)
     goto matched;
 
@@ -537,41 +532,11 @@ matched:
   return 1;
 }
 
-// Compare two ethernet macs. Return 1 if they are the same, 0 if different
-always_inline u32
-eth_mac_equal (u8 * mac1, u8 * mac2)
-{
-  return (*((u32 *) (mac1 + 0)) == *((u32 *) (mac2 + 0)) &&
-	  *((u32 *) (mac1 + 2)) == *((u32 *) (mac2 + 2)));
-}
-
-
 always_inline ethernet_main_t *
 vnet_get_ethernet_main (void)
 {
   return &ethernet_main;
 }
-
-void vnet_register_ip4_arp_resolution_event (vnet_main_t * vnm,
-					     void *address_arg,
-					     uword node_index,
-					     uword type_opaque, uword data);
-
-
-int vnet_add_del_ip4_arp_change_event (vnet_main_t * vnm,
-				       void *data_callback,
-				       u32 pid,
-				       void *address_arg,
-				       uword node_index,
-				       uword type_opaque,
-				       uword data, int is_add);
-
-void wc_arp_set_publisher_node (uword inode_index, uword event_type);
-
-void ethernet_arp_change_mac (u32 sw_if_index);
-void ethernet_ndp_change_mac (u32 sw_if_index);
-
-void arp_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai);
 
 void ethernet_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai);
 u8 *ethernet_build_rewrite (vnet_main_t * vnm,
@@ -581,13 +546,6 @@ const u8 *ethernet_ip4_mcast_dst_addr (void);
 const u8 *ethernet_ip6_mcast_dst_addr (void);
 
 extern vlib_node_registration_t ethernet_input_node;
-
-typedef struct
-{
-  u32 sw_if_index;
-  u32 ip4;
-  u8 mac[6];
-} wc_arp_report_t;
 
 #endif /* included_ethernet_h */
 

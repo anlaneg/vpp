@@ -87,7 +87,7 @@ gtpu_input (vlib_main_t * vm,
   if (is_ip4)
     last_key4.as_u64 = ~0;
   else
-    memset (&last_key6, 0xff, sizeof (last_key6));
+    clib_memset (&last_key6, 0xff, sizeof (last_key6));
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -213,7 +213,7 @@ gtpu_input (vlib_main_t * vm,
               tunnel_index0 = last_tunnel_index;
 	    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
@@ -256,14 +256,14 @@ gtpu_input (vlib_main_t * vm,
                     next0 = GTPU_INPUT_NEXT_DROP;
                     goto trace0;
                   }
-                clib_memcpy (&last_key6, &key6_0, sizeof(key6_0));
+                clib_memcpy_fast (&last_key6, &key6_0, sizeof(key6_0));
                 tunnel_index0 = last_tunnel_index = p0[0];
               }
             else
               tunnel_index0 = last_tunnel_index;
 	    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
@@ -387,7 +387,7 @@ gtpu_input (vlib_main_t * vm,
               tunnel_index1 = last_tunnel_index;
  	    t1 = pool_elt_at_index (gtm->tunnels, tunnel_index1);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b1, t1, is_ip4) == 0))
 	      {
 		error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
@@ -432,14 +432,14 @@ gtpu_input (vlib_main_t * vm,
                     goto trace1;
                   }
 
-                clib_memcpy (&last_key6, &key6_1, sizeof(key6_1));
+                clib_memcpy_fast (&last_key6, &key6_1, sizeof(key6_1));
                 tunnel_index1 = last_tunnel_index = p1[0];
               }
             else
               tunnel_index1 = last_tunnel_index;
  	    t1 = pool_elt_at_index (gtm->tunnels, tunnel_index1);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b1, t1, is_ip4) == 0))
 	      {
 		error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
@@ -616,7 +616,7 @@ gtpu_input (vlib_main_t * vm,
               tunnel_index0 = last_tunnel_index;
 	    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
@@ -659,14 +659,14 @@ gtpu_input (vlib_main_t * vm,
                     next0 = GTPU_INPUT_NEXT_DROP;
                     goto trace00;
                   }
-                clib_memcpy (&last_key6, &key6_0, sizeof(key6_0));
+                clib_memcpy_fast (&last_key6, &key6_0, sizeof(key6_0));
                 tunnel_index0 = last_tunnel_index = p0[0];
               }
             else
               tunnel_index0 = last_tunnel_index;
 	    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
-	    /* Validate GTPU tunnel encap-fib index agaist packet */
+	    /* Validate GTPU tunnel encap-fib index against packet */
 	    if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;

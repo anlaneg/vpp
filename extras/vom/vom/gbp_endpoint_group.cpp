@@ -26,11 +26,51 @@ gbp_endpoint_group::event_handler gbp_endpoint_group::m_evh;
 
 gbp_endpoint_group::gbp_endpoint_group(epg_id_t epg_id,
                                        const interface& itf,
-                                       const route_domain& rd,
-                                       const bridge_domain& bd)
+                                       const gbp_route_domain& rd,
+                                       const gbp_bridge_domain& bd)
   : m_hw(false)
   , m_epg_id(epg_id)
+  , m_sclass(0xffff)
   , m_itf(itf.singular())
+  , m_rd(rd.singular())
+  , m_bd(bd.singular())
+{
+}
+
+gbp_endpoint_group::gbp_endpoint_group(epg_id_t epg_id,
+                                       const gbp_route_domain& rd,
+                                       const gbp_bridge_domain& bd)
+  : m_hw(false)
+  , m_epg_id(epg_id)
+  , m_sclass(0xffff)
+  , m_itf()
+  , m_rd(rd.singular())
+  , m_bd(bd.singular())
+{
+}
+
+gbp_endpoint_group::gbp_endpoint_group(epg_id_t epg_id,
+                                       uint16_t sclass,
+                                       const interface& itf,
+                                       const gbp_route_domain& rd,
+                                       const gbp_bridge_domain& bd)
+  : m_hw(false)
+  , m_epg_id(epg_id)
+  , m_sclass(sclass)
+  , m_itf(itf.singular())
+  , m_rd(rd.singular())
+  , m_bd(bd.singular())
+{
+}
+
+gbp_endpoint_group::gbp_endpoint_group(epg_id_t epg_id,
+                                       uint16_t sclass,
+                                       const gbp_route_domain& rd,
+                                       const gbp_bridge_domain& bd)
+  : m_hw(false)
+  , m_epg_id(epg_id)
+  , m_sclass(sclass)
+  , m_itf()
   , m_rd(rd.singular())
   , m_bd(bd.singular())
 {
@@ -39,6 +79,7 @@ gbp_endpoint_group::gbp_endpoint_group(epg_id_t epg_id,
 gbp_endpoint_group::gbp_endpoint_group(const gbp_endpoint_group& epg)
   : m_hw(epg.m_hw)
   , m_epg_id(epg.m_epg_id)
+  , m_sclass(epg.m_sclass)
   , m_itf(epg.m_itf)
   , m_rd(epg.m_rd)
   , m_bd(epg.m_bd)
@@ -64,10 +105,10 @@ gbp_endpoint_group::id() const
 }
 
 bool
-gbp_endpoint_group::operator==(const gbp_endpoint_group& gbpe) const
+gbp_endpoint_group::operator==(const gbp_endpoint_group& gg) const
 {
-  return (key() == gbpe.key() && (m_itf == gbpe.m_itf) && (m_rd == gbpe.m_rd) &&
-          (m_bd == gbpe.m_bd));
+  return (key() == gg.key() && (m_sclass == gg.m_sclass) &&
+          (m_itf == gg.m_itf) && (m_rd == gg.m_rd) && (m_bd == gg.m_bd));
 }
 
 void
@@ -84,7 +125,8 @@ gbp_endpoint_group::replay()
 {
   if (m_hw) {
     HW::enqueue(new gbp_endpoint_group_cmds::create_cmd(
-      m_hw, m_epg_id, m_bd->id(), m_rd->table_id(), m_itf->handle()));
+      m_hw, m_epg_id, m_sclass, m_bd->id(), m_rd->id(),
+      (m_itf ? m_itf->handle() : handle_t::INVALID)));
   }
 }
 
@@ -93,8 +135,9 @@ gbp_endpoint_group::to_string() const
 {
   std::ostringstream s;
   s << "gbp-endpoint-group:["
-    << "epg:" << m_epg_id << ", " << m_itf->to_string() << ", "
-    << m_bd->to_string() << ", " << m_rd->to_string() << "]";
+    << "epg:" << m_epg_id << ", sclass:" << m_sclass << ", "
+    << (m_itf ? m_itf->to_string() : "NULL") << ", " << m_bd->to_string()
+    << ", " << m_rd->to_string() << "]";
 
   return (s.str());
 }
@@ -104,7 +147,8 @@ gbp_endpoint_group::update(const gbp_endpoint_group& r)
 {
   if (rc_t::OK != m_hw.rc()) {
     HW::enqueue(new gbp_endpoint_group_cmds::create_cmd(
-      m_hw, m_epg_id, m_bd->id(), m_rd->table_id(), m_itf->handle()));
+      m_hw, m_epg_id, m_sclass, m_bd->id(), m_rd->id(),
+      (m_itf ? m_itf->handle() : handle_t::INVALID)));
   }
 }
 
@@ -130,6 +174,18 @@ void
 gbp_endpoint_group::dump(std::ostream& os)
 {
   db_dump(m_db, os);
+}
+
+const std::shared_ptr<gbp_route_domain>
+gbp_endpoint_group::get_route_domain() const
+{
+  return m_rd;
+}
+
+const std::shared_ptr<gbp_bridge_domain>
+gbp_endpoint_group::get_bridge_domain() const
+{
+  return m_bd;
 }
 
 gbp_endpoint_group::event_handler::event_handler()
@@ -159,19 +215,30 @@ gbp_endpoint_group::event_handler::handle_populate(const client_db::key_t& key)
 
     std::shared_ptr<interface> itf =
       interface::find(payload.epg.uplink_sw_if_index);
-    std::shared_ptr<route_domain> rd =
-      route_domain::find(payload.epg.ip4_table_id);
-    std::shared_ptr<bridge_domain> bd = bridge_domain::find(payload.epg.bd_id);
+    std::shared_ptr<gbp_route_domain> rd =
+      gbp_route_domain::find(payload.epg.rd_id);
+    std::shared_ptr<gbp_bridge_domain> bd =
+      gbp_bridge_domain::find(payload.epg.bd_id);
 
     VOM_LOG(log_level_t::DEBUG) << "data: [" << payload.epg.uplink_sw_if_index
-                                << ", " << payload.epg.ip4_table_id << ", "
+                                << ", " << payload.epg.rd_id << ", "
                                 << payload.epg.bd_id << "]";
 
     if (itf && bd && rd) {
-      gbp_endpoint_group gbpe(payload.epg.epg_id, *itf, *rd, *bd);
+      gbp_endpoint_group gbpe(payload.epg.epg_id, payload.epg.sclass, *itf, *rd,
+                              *bd);
       OM::commit(key, gbpe);
 
       VOM_LOG(log_level_t::DEBUG) << "read: " << gbpe.to_string();
+    } else if (bd && rd) {
+      gbp_endpoint_group gbpe(payload.epg.epg_id, payload.epg.sclass, *rd, *bd);
+      OM::commit(key, gbpe);
+
+      VOM_LOG(log_level_t::DEBUG) << "read: " << gbpe.to_string();
+    } else {
+      VOM_LOG(log_level_t::ERROR) << "no itf:" << payload.epg.uplink_sw_if_index
+                                  << " or BD:" << payload.epg.bd_id
+                                  << " or RD:" << payload.epg.rd_id;
     }
   }
 }

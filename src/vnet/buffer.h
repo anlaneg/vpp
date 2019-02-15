@@ -44,44 +44,68 @@
 
 /**
  * Flags that are set in the high order bits of ((vlib_buffer*)b)->flags
+ *
  */
-#define foreach_vnet_buffer_flag \
-  _( 1, L4_CHECKSUM_COMPUTED, "l4-cksum-computed")	\
-  _( 2, L4_CHECKSUM_CORRECT, "l4-cksum-correct")	\
-  _( 3, VLAN_2_DEEP, "vlan-2-deep")			\
-  _( 4, VLAN_1_DEEP, "vlan-1-deep")			\
-  _( 5, SPAN_CLONE, "span-clone")			\
-  _( 6, LOOP_COUNTER_VALID, 0)                          \
-  _( 7, LOCALLY_ORIGINATED, "local")			\
-  _( 8, IS_IP4, "ip4")					\
-  _( 9, IS_IP6, "ip6")					\
-  _(10, OFFLOAD_IP_CKSUM, "offload-ip-cksum")		\
-  _(11, OFFLOAD_TCP_CKSUM, "offload-tcp-cksum")		\
-  _(12, OFFLOAD_UDP_CKSUM, "offload-udp-cksum")		\
-  _(13, IS_NATED, "nated")				\
-  _(14, L2_HDR_OFFSET_VALID, 0)				\
-  _(15, L3_HDR_OFFSET_VALID, 0)				\
-  _(16, L4_HDR_OFFSET_VALID, 0)				\
-  _(17, FLOW_REPORT, "flow-report")			\
-  _(18, IS_DVR, "dvr")                                  \
-  _(19, QOS_DATA_VALID, 0)
+#define foreach_vnet_buffer_flag                        \
+  _( 1, L4_CHECKSUM_COMPUTED, "l4-cksum-computed", 1)	\
+  _( 2, L4_CHECKSUM_CORRECT, "l4-cksum-correct", 1)	\
+  _( 3, VLAN_2_DEEP, "vlan-2-deep", 1)			\
+  _( 4, VLAN_1_DEEP, "vlan-1-deep", 1)			\
+  _( 5, SPAN_CLONE, "span-clone", 1)                    \
+  _( 6, LOOP_COUNTER_VALID, "loop-counter-valid", 0)    \
+  _( 7, LOCALLY_ORIGINATED, "local", 1)                 \
+  _( 8, IS_IP4, "ip4", 1)                               \
+  _( 9, IS_IP6, "ip6", 1)                               \
+  _(10, OFFLOAD_IP_CKSUM, "offload-ip-cksum", 1)        \
+  _(11, OFFLOAD_TCP_CKSUM, "offload-tcp-cksum", 1)      \
+  _(12, OFFLOAD_UDP_CKSUM, "offload-udp-cksum", 1)      \
+  _(13, IS_NATED, "natted", 1)                          \
+  _(14, L2_HDR_OFFSET_VALID, "l2_hdr_offset_valid", 0)  \
+  _(15, L3_HDR_OFFSET_VALID, "l3_hdr_offset_valid", 0)  \
+  _(16, L4_HDR_OFFSET_VALID, "l4_hdr_offset_valid", 0)  \
+  _(17, FLOW_REPORT, "flow-report", 1)                  \
+  _(18, IS_DVR, "dvr", 1)                               \
+  _(19, QOS_DATA_VALID, "qos-data-valid", 0)            \
+  _(20, AVAIL1, "avail1", 1)                            \
+  _(21, AVAIL2, "avail2", 1)                            \
+  _(22, AVAIL3, "avail3", 1)                            \
+  _(23, AVAIL4, "avail4", 1)                            \
+  _(24, AVAIL5, "avail5", 1)                            \
+  _(25, AVAIL6, "avail6", 1)                            \
+  _(26, AVAIL7, "avail7", 1)                            \
+  _(27, AVAIL8, "avail8", 1)
+
+/*
+ * Please allocate the FIRST available bit, redefine
+ * AVAIL 1 ... AVAILn-1, and remove AVAILn. Please maintain the
+ * VNET_BUFFER_FLAGS_ALL_AVAIL definition.
+ */
+
+#define VNET_BUFFER_FLAGS_ALL_AVAIL                                     \
+  (VNET_BUFFER_F_AVAIL1 | VNET_BUFFER_F_AVAIL2 | VNET_BUFFER_F_AVAIL3 | \
+   VNET_BUFFER_F_AVAIL4 | VNET_BUFFER_F_AVAIL5 | VNET_BUFFER_F_AVAIL6 | \
+   VNET_BUFFER_F_AVAIL7)
 
 #define VNET_BUFFER_FLAGS_VLAN_BITS \
   (VNET_BUFFER_F_VLAN_1_DEEP | VNET_BUFFER_F_VLAN_2_DEEP)
 
 enum
 {
-#define _(bit, name, v) VNET_BUFFER_F_##name  = (1 << LOG2_VLIB_BUFFER_FLAG_USER(bit)),
+#define _(bit, name, s, v) VNET_BUFFER_F_##name  = (1 << LOG2_VLIB_BUFFER_FLAG_USER(bit)),
   foreach_vnet_buffer_flag
 #undef _
 };
 
 enum
 {
-#define _(bit, name, v) VNET_BUFFER_F_LOG2_##name  = LOG2_VLIB_BUFFER_FLAG_USER(bit),
+#define _(bit, name, s, v) VNET_BUFFER_F_LOG2_##name  = LOG2_VLIB_BUFFER_FLAG_USER(bit),
   foreach_vnet_buffer_flag
 #undef _
 };
+
+/* Make sure that the vnet and vlib bits are disjoint */
+STATIC_ASSERT (((VNET_BUFFER_FLAGS_ALL_AVAIL & VLIB_BUFFER_FLAGS_ALL) == 0),
+	       "VLIB / VNET buffer flags overlap");
 
 #define foreach_buffer_opaque_union_subtype     \
 _(ip)                                           \
@@ -197,8 +221,8 @@ typedef struct
       /* Rewrite length */
       u32 save_rewrite_length;
       /*
-       * BIER - the nubmer of bytes in the header.
-       *  the len field inthe header is not authoritative. It's the
+       * BIER - the number of bytes in the header.
+       *  the len field in the header is not authoritative. It's the
        * value in the table that counts.
        */
       struct
@@ -277,7 +301,6 @@ typedef struct
     struct
     {
       u32 pad[2];		/* do not overlay w/ ip.adj_index[0,1] */
-      u16 header_offset;
       u16 mtu;
       u8 next_index;
       u8 flags;			//See ip_frag.h
@@ -335,7 +358,7 @@ typedef struct
 } vnet_buffer_opaque_t;
 
 /*
- * The opaque field of the vlib_buffer_t is intepreted as a
+ * The opaque field of the vlib_buffer_t is interpreted as a
  * vnet_buffer_opaque_t. Hence it should be big enough to accommodate one.
  */
 STATIC_ASSERT (sizeof (vnet_buffer_opaque_t) <=
@@ -364,7 +387,13 @@ typedef struct
   /* Group Based Policy */
   struct
   {
-    u32 src_epg;
+    u8 __unused;
+    u8 flags;
+    union
+    {
+      u16 src_epg;
+      u16 sclass;
+    };
   } gbp;
 
   union
@@ -388,7 +417,7 @@ typedef struct
 #define vnet_buffer2(b) ((vnet_buffer_opaque2_t *) (b)->opaque2)
 
 /*
- * The opaque2 field of the vlib_buffer_t is intepreted as a
+ * The opaque2 field of the vlib_buffer_t is interpreted as a
  * vnet_buffer_opaque2_t. Hence it should be big enough to accommodate one.
  */
 STATIC_ASSERT (sizeof (vnet_buffer_opaque2_t) <=

@@ -109,11 +109,19 @@ vl_api_lb_add_del_vip_t_handler
   int rv = 0;
   lb_vip_add_args_t args;
 
+  if((mp->protocol != IP_PROTOCOL_TCP)
+     && (mp->protocol != IP_PROTOCOL_UDP))
+    {
+      mp->protocol = ~0;
+      mp->port = 0;
+    }
+
   memcpy (&(args.prefix.ip6), mp->ip_prefix, sizeof(args.prefix.ip6));
 
   if (mp->is_del) {
     u32 vip_index;
-    if (!(rv = lb_vip_find_index(&(args.prefix), mp->prefix_length, &vip_index)))
+    if (!(rv = lb_vip_find_index(&(args.prefix), mp->prefix_length,
+                                 mp->protocol, mp->port, &vip_index)))
       rv = lb_vip_del(vip_index);
   } else {
     u32 vip_index;
@@ -147,9 +155,7 @@ vl_api_lb_add_del_vip_t_handler
     else if ((mp->encap == LB_ENCAP_TYPE_NAT4)
             ||(mp->encap == LB_ENCAP_TYPE_NAT6)) {
         args.encap_args.srv_type = mp->type;
-        args.encap_args.port = ntohs(mp->port);
         args.encap_args.target_port = ntohs(mp->target_port);
-        args.encap_args.node_port = ntohs(mp->node_port);
       }
 
     rv = lb_vip_add(args, &vip_index);
@@ -182,7 +188,6 @@ static void *vl_api_lb_add_del_vip_t_print
       s = format (s, "type %u ", mp->type);
       s = format (s, "port %u ", mp->port);
       s = format (s, "target_port %u ", mp->target_port);
-      s = format (s, "node_port %u ", mp->node_port);
     }
 
   s = format (s, "%u ", mp->new_flows_table_length);
@@ -208,11 +213,12 @@ vl_api_lb_add_del_as_t_handler
   memcpy(&as_address.ip6, mp->as_address,
          sizeof(as_address.ip6));
 
-  if ((rv = lb_vip_find_index(&vip_ip_prefix, mp->vip_prefix_length, &vip_index)))
+  if ((rv = lb_vip_find_index(&vip_ip_prefix, mp->vip_prefix_length,
+                              mp->protocol, mp->port, &vip_index)))
     goto done;
 
   if (mp->is_del)
-    rv = lb_vip_del_ass(vip_index, &as_address, 1);
+    rv = lb_vip_del_ass(vip_index, &as_address, 1, mp->is_flush);
   else
     rv = lb_vip_add_ass(vip_index, &as_address, 1);
 
@@ -233,11 +239,54 @@ static void *vl_api_lb_add_del_as_t_print
   FINISH;
 }
 
+static void
+vl_api_lb_flush_vip_t_handler
+(vl_api_lb_flush_vip_t * mp)
+{
+  lb_main_t *lbm = &lb_main;
+  int rv = 0;
+  ip46_address_t vip_prefix;
+  u8 vip_plen;
+  u32 vip_index;
+  vl_api_lb_flush_vip_reply_t * rmp;
+
+  if (mp->port == 0)
+    {
+      mp->protocol = ~0;
+    }
+
+  memcpy (&(vip_prefix.ip6), mp->ip_prefix, sizeof(vip_prefix.ip6));
+
+  vip_plen = mp->prefix_length;
+
+  rv = lb_vip_find_index(&vip_prefix, vip_plen, mp->protocol,
+                         (u16)mp->port, &vip_index);
+
+  rv = lb_flush_vip_as(vip_index, ~0);
+
+ REPLY_MACRO (VL_API_LB_FLUSH_VIP_REPLY);
+}
+
+static void *vl_api_lb_flush_vip_t_print
+(vl_api_lb_flush_vip_t *mp, void * handle)
+{
+  u8 * s;
+  s = format (0, "SCRIPT: lb_add_del_vip ");
+  s = format (s, "%U ", format_ip46_prefix,
+              (ip46_address_t *)mp->ip_prefix, mp->prefix_length, IP46_TYPE_ANY);
+
+  s = format (s, "protocol %u ", mp->protocol);
+  s = format (s, "port %u ", mp->port);
+
+  FINISH;
+}
+
 /* List of message types that this plugin understands */
 #define foreach_lb_plugin_api_msg            \
 _(LB_CONF, lb_conf)                          \
 _(LB_ADD_DEL_VIP, lb_add_del_vip)            \
-_(LB_ADD_DEL_AS, lb_add_del_as)
+_(LB_ADD_DEL_AS, lb_add_del_as)              \
+_(LB_FLUSH_VIP, lb_flush_vip)
 
 static clib_error_t * lb_api_init (vlib_main_t * vm)
 {

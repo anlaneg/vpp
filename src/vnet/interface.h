@@ -40,7 +40,8 @@
 #ifndef included_vnet_interface_h
 #define included_vnet_interface_h
 
-#include <vnet/unix/pcap.h>
+#include <vlib/vlib.h>
+#include <vppinfra/pcap.h>
 #include <vnet/l3_types.h>
 
 struct vnet_main_t;
@@ -69,7 +70,8 @@ typedef clib_error_t *(vnet_subif_add_del_function_t)
 
 /* Interface set mac address callback. */
 typedef clib_error_t *(vnet_interface_set_mac_address_function_t)
-  (struct vnet_hw_interface_t * hi, char *address);
+  (struct vnet_hw_interface_t * hi,
+   const u8 * old_address, const u8 * new_address);
 
 /* Interface set rx mode callback. */
 typedef clib_error_t *(vnet_interface_set_rx_mode_function_t)
@@ -89,7 +91,7 @@ typedef enum
   VNET_FLOW_DEV_OP_RESET_COUNTER,
 } vnet_flow_dev_op_t;
 
-/* Interface flow opeations callback. */
+/* Interface flow operations callback. */
 typedef int (vnet_flow_dev_ops_function_t) (struct vnet_main_t * vnm,
 					    vnet_flow_dev_op_t op,
 					    u32 hw_if_index, u32 index,
@@ -304,30 +306,8 @@ CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
 }									\
 uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (devclass##_tx_fn)
 
-#define VLIB_DEVICE_TX_FUNCTION_CLONE_TEMPLATE(arch, fn, tgt)		\
-  uword									\
-  __attribute__ ((flatten))						\
-  __attribute__ ((target (tgt)))					\
-  CLIB_CPU_OPTIMIZED							\
-  fn ## _ ## arch ( vlib_main_t * vm,					\
-                   vlib_node_runtime_t * node,				\
-                   vlib_frame_t * frame)				\
-  { return fn (vm, node, frame); }
-
-#define VLIB_DEVICE_TX_FUNCTION_MULTIARCH_CLONE(fn)			\
-  foreach_march_variant(VLIB_DEVICE_TX_FUNCTION_CLONE_TEMPLATE, fn)
-
-#if CLIB_DEBUG > 0
-#define VLIB_MULTIARCH_CLONE_AND_SELECT_FN(fn,...)
+/* FIXME to be removed */
 #define VLIB_DEVICE_TX_FUNCTION_MULTIARCH(dev, fn)
-#else
-#define VLIB_DEVICE_TX_FUNCTION_MULTIARCH(dev, fn)			\
-  VLIB_DEVICE_TX_FUNCTION_MULTIARCH_CLONE(fn)				\
-  CLIB_MULTIARCH_SELECT_FN(fn, static inline)				\
-  static void __attribute__((__constructor__))				\
-  __vlib_device_tx_function_multiarch_select_##dev (void)		\
-  { dev.tx_function = fn ## _multiarch_select(); }
-#endif
 
 /**
  * Link Type: A description of the protocol of packets on the link.
@@ -432,7 +412,7 @@ typedef struct _vnet_hw_interface_class
 			u32 sw_if_index,
 			vnet_link_t link_type, const void *dst_hw_address);
 
-  /* Update an adjacecny added by FIB (as opposed to via the
+  /* Update an adjacency added by FIB (as opposed to via the
    * neighbour resolution protocol). */
   void (*update_adjacency) (struct vnet_main_t * vnm,
 			    u32 sw_if_index, u32 adj_index);
@@ -485,6 +465,28 @@ static void __vnet_rm_hw_interface_class_registration_##x (void)        \
 }                                                                       \
 __VA_ARGS__ vnet_hw_interface_class_t x
 
+typedef enum vnet_hw_interface_flags_t_
+{
+  VNET_HW_INTERFACE_FLAG_NONE,
+  /* Hardware link state is up. */
+  VNET_HW_INTERFACE_FLAG_LINK_UP = (1 << 0),
+  /* Hardware duplex state */
+  VNET_HW_INTERFACE_FLAG_HALF_DUPLEX = (1 << 1),
+  VNET_HW_INTERFACE_FLAG_FULL_DUPLEX = (1 << 2),
+
+  /* rx mode flags */
+  VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE = (1 << 16),
+
+  /* tx checksum offload */
+  VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD = (1 << 17),
+} vnet_hw_interface_flags_t;
+
+#define VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT 1
+#define VNET_HW_INTERFACE_FLAG_SPEED_SHIFT  3
+#define VNET_HW_INTERFACE_FLAG_DUPLEX_MASK	\
+  (VNET_HW_INTERFACE_FLAG_HALF_DUPLEX |		\
+   VNET_HW_INTERFACE_FLAG_FULL_DUPLEX)
+
 /* Hardware-interface.  This corresponds to a physical wire
    that packets flow over. */
 typedef struct vnet_hw_interface_t
@@ -492,50 +494,12 @@ typedef struct vnet_hw_interface_t
   /* Interface name. */
   u8 *name;
 
-  u32 flags;
-  /* Hardware link state is up. */
-#define VNET_HW_INTERFACE_FLAG_LINK_UP		(1 << 0)
-  /* Hardware duplex state */
-#define VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT	1
-#define VNET_HW_INTERFACE_FLAG_HALF_DUPLEX	(1 << 1)
-#define VNET_HW_INTERFACE_FLAG_FULL_DUPLEX	(1 << 2)
-#define VNET_HW_INTERFACE_FLAG_DUPLEX_MASK	\
-  (VNET_HW_INTERFACE_FLAG_HALF_DUPLEX |		\
-   VNET_HW_INTERFACE_FLAG_FULL_DUPLEX)
+  /* flags */
+  vnet_hw_interface_flags_t flags;
 
-  /* Hardware link speed */
-#define VNET_HW_INTERFACE_FLAG_SPEED_SHIFT	3
-#define VNET_HW_INTERFACE_FLAG_SPEED_10M	(1 << 3)
-#define VNET_HW_INTERFACE_FLAG_SPEED_100M	(1 << 4)
-#define VNET_HW_INTERFACE_FLAG_SPEED_1G		(1 << 5)
-#define VNET_HW_INTERFACE_FLAG_SPEED_2_5G	(1 << 6)
-#define VNET_HW_INTERFACE_FLAG_SPEED_5G		(1 << 7)
-#define VNET_HW_INTERFACE_FLAG_SPEED_10G	(1 << 8)
-#define VNET_HW_INTERFACE_FLAG_SPEED_20G	(1 << 9)
-#define VNET_HW_INTERFACE_FLAG_SPEED_25G	(1 << 10)
-#define VNET_HW_INTERFACE_FLAG_SPEED_40G	(1 << 11)
-#define VNET_HW_INTERFACE_FLAG_SPEED_50G	(1 << 12)
-#define VNET_HW_INTERFACE_FLAG_SPEED_56G	(1 << 13)
-#define VNET_HW_INTERFACE_FLAG_SPEED_100G	(1 << 14)
-#define VNET_HW_INTERFACE_FLAG_SPEED_MASK	\
-  (VNET_HW_INTERFACE_FLAG_SPEED_10M |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_100M |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_1G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_2_5G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_5G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_10G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_20G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_25G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_40G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_50G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_56G |		\
-   VNET_HW_INTERFACE_FLAG_SPEED_100G)
 
-  /* rx mode flags */
-#define VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE (1 << 16)
-
-  /* tx checksum offload */
-#define VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD (1 << 17)
+  /* link speed in kbps */
+  u32 link_speed;
 
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
@@ -689,7 +653,8 @@ extern vnet_mtu_t vnet_link_to_mtu (vnet_link_t link);
 
 typedef enum vnet_sw_interface_flags_t_
 {
-  /* Interface is "up" meaning adminstratively up.
+  VNET_SW_INTERFACE_FLAG_NONE = 0,
+  /* Interface is "up" meaning administratively up.
      Up in the sense of link state being up is maintained by hardware interface. */
   VNET_SW_INTERFACE_FLAG_ADMIN_UP = (1 << 0),
 
@@ -732,8 +697,6 @@ typedef struct
 
   /* this swif is unnumbered, use addresses on unnumbered_sw_if_index... */
   u32 unnumbered_sw_if_index;
-
-  u32 link_speed;
 
   /* VNET_SW_INTERFACE_TYPE_HARDWARE. */
   u32 hw_if_index;
@@ -793,7 +756,8 @@ typedef enum
   _(RX_NO_BUF, rx-no-buf, if)			\
   _(RX_MISS, rx-miss, if)			\
   _(RX_ERROR, rx-error, if)			\
-  _(TX_ERROR, tx-error, if)
+  _(TX_ERROR, tx-error, if)         \
+  _(MPLS, mpls, if)
 
 #define foreach_combined_interface_counter_name	\
   _(RX, rx, if)					\
@@ -875,7 +839,7 @@ static inline void
 vnet_interface_counter_lock (vnet_interface_main_t * im)
 {
   if (im->sw_if_counter_lock)
-    while (__sync_lock_test_and_set (im->sw_if_counter_lock, 1))
+    while (clib_atomic_test_and_set (im->sw_if_counter_lock))
       /* zzzz */ ;
 }
 
@@ -883,12 +847,16 @@ static inline void
 vnet_interface_counter_unlock (vnet_interface_main_t * im)
 {
   if (im->sw_if_counter_lock)
-    *im->sw_if_counter_lock = 0;
+    clib_atomic_release (im->sw_if_counter_lock);
 }
 
 void vnet_pcap_drop_trace_filter_add_del (u32 error_index, int is_add);
 
 int vnet_interface_name_renumber (u32 sw_if_index, u32 new_show_dev_instance);
+
+uword vnet_interface_output_node (vlib_main_t * vm,
+				  vlib_node_runtime_t * node,
+				  vlib_frame_t * frame);
 
 #endif /* included_vnet_interface_h */
 

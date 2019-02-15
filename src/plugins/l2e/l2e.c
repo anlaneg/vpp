@@ -18,6 +18,7 @@
 
 #include <plugins/l2e/l2e.h>
 #include <vnet/l2/l2_input.h>
+#include <vnet/l2/feat_bitmap.h>
 
 /**
  * Grouping of global data for the L2 emulation feature
@@ -81,7 +82,7 @@ l2_emulation_disable (u32 sw_if_index)
   if (vec_len (l2_emulations) >= sw_if_index)
     {
       l2_emulation_t *l23e = &l2_emulations[sw_if_index];
-      memset (l23e, 0, sizeof (*l23e));
+      clib_memset (l23e, 0, sizeof (*l23e));
 
       l2input_intf_bitmap_enable (sw_if_index, L2INPUT_FEAT_L2_EMULATION, 0);
       ip4_sw_interface_enable_disable (sw_if_index, 0);

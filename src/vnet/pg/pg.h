@@ -43,7 +43,7 @@
 #include <vlib/vlib.h>		/* for VLIB_N_RX_TX */
 #include <vnet/pg/edit.h>
 #include <vppinfra/fifo.h>	/* for buffer_fifo */
-#include <vnet/unix/pcap.h>
+#include <vppinfra/pcap.h>
 #include <vnet/interface.h>
 
 extern vnet_device_class_t pg_dev_class;
@@ -89,8 +89,6 @@ typedef struct
   /* Buffers pre-initialized with fixed buffer data for this stream. */
   u32 *buffer_fifo;
 
-  /* Buffer free list for this buffer index in stream. */
-  vlib_buffer_free_list_index_t free_list_index;
 } pg_buffer_index_t;
 
 typedef struct pg_stream_t
@@ -287,7 +285,7 @@ pg_free_edit_group (pg_stream_t * s)
   pg_edit_group_t *g = pg_stream_get_group (s, i);
 
   pg_edit_group_free (g);
-  memset (g, 0, sizeof (g[0]));
+  clib_memset (g, 0, sizeof (g[0]));
   _vec_len (s->edit_groups) = i;
 }
 
@@ -328,6 +326,9 @@ typedef struct pg_main_t
   pg_interface_t *interfaces;
   uword *if_index_by_if_id;
 
+  /* Vector of buffer indices for use in pg_stream_fill_replay, per thread */
+  u32 **replay_buffers_by_thread;
+
   /* Per VLIB node information. */
   pg_node_t *nodes;
 } pg_main_t;
@@ -344,6 +345,7 @@ vlib_node_function_t pg_input, pg_output;
 /* Stream add/delete. */
 void pg_stream_del (pg_main_t * pg, uword index);
 void pg_stream_add (pg_main_t * pg, pg_stream_t * s_init);
+void pg_stream_change (pg_main_t * pg, pg_stream_t * s);
 
 /* Enable/disable stream. */
 void pg_stream_enable_disable (pg_main_t * pg, pg_stream_t * s,

@@ -25,6 +25,7 @@
  */
 
 #include <vppinfra/clib_error.h>
+#include <vlibapi/api_types.h>
 #include <svm/svm_common.h>
 #include <svm/queue.h>
 
@@ -64,7 +65,7 @@ typedef struct vl_api_registration_
   u32 clib_file_index;		/**< Socket only: file index */
   i8 *unprocessed_input;	/**< Socket only: pending input */
   u32 unprocessed_msg_length;	/**< Socket only: unprocssed length */
-  u8 *output_vector;		/**< Socket only: output vecto  */
+  u8 *output_vector;		/**< Socket only: output vector */
   int *additional_fds_to_close;
 
   /* socket client only */

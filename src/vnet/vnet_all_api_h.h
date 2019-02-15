@@ -42,7 +42,6 @@
 #include <vnet/span/span.api.h>
 #include <vnet/ip/ip.api.h>
 #include <vnet/ip/rd_cp.api.h>
-#include <vnet/unix/tap.api.h>
 #include <vnet/vxlan/vxlan.api.h>
 #include <vnet/geneve/geneve.api.h>
 #include <vnet/lldp/lldp.api.h>
@@ -75,6 +74,9 @@
 #include <vnet/dhcp/dhcp6_pd_client_cp.api.h>
 #include <vnet/dhcp/dhcp6_ia_na_client_cp.api.h>
 #include <vnet/devices/pipe/pipe.api.h>
+#include <vnet/vxlan-gbp/vxlan_gbp.api.h>
+#include <vnet/syslog/syslog.api.h>
+#include <vnet/devices/virtio/virtio.api.h>
 
 /*
  * fd.io coding-style-patch-verification: ON

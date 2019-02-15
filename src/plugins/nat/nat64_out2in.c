@@ -72,13 +72,20 @@ vlib_node_registration_t nat64_out2in_reass_node;
 vlib_node_registration_t nat64_out2in_handoff_node;
 
 #define foreach_nat64_out2in_error                       \
-_(UNSUPPORTED_PROTOCOL, "Unsupported protocol")          \
-_(OUT2IN_PACKETS, "Good out2in packets processed")       \
-_(NO_TRANSLATION, "No translation")                      \
+_(UNSUPPORTED_PROTOCOL, "unsupported protocol")          \
+_(OUT2IN_PACKETS, "good out2in packets processed")       \
+_(NO_TRANSLATION, "no translation")                      \
 _(UNKNOWN, "unknown")                                    \
-_(DROP_FRAGMENT, "Drop fragment")                        \
-_(MAX_REASS, "Maximum reassemblies exceeded")            \
-_(MAX_FRAG, "Maximum fragments per reassembly exceeded")
+_(DROP_FRAGMENT, "drop fragment")                        \
+_(MAX_REASS, "maximum reassemblies exceeded")            \
+_(MAX_FRAG, "maximum fragments per reassembly exceeded") \
+_(TCP_PACKETS, "TCP packets")                            \
+_(UDP_PACKETS, "UDP packets")                            \
+_(ICMP_PACKETS, "ICMP packets")                          \
+_(OTHER_PACKETS, "other protocol packets")               \
+_(FRAGMENTS, "fragments")                                \
+_(CACHED_FRAGMENTS, "cached fragments")                  \
+_(PROCESSED_FRAGMENTS, "processed fragments")
 
 
 typedef enum
@@ -134,9 +141,9 @@ nat64_out2in_tcp_udp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
   sw_if_index = vnet_buffer (ctx->b)->sw_if_index[VLIB_RX];
   fib_index = ip4_fib_table_get_index_for_sw_if_index (sw_if_index);
 
-  memset (&saddr, 0, sizeof (saddr));
+  clib_memset (&saddr, 0, sizeof (saddr));
   saddr.ip4.as_u32 = ip4->src_address.as_u32;
-  memset (&daddr, 0, sizeof (daddr));
+  clib_memset (&daddr, 0, sizeof (daddr));
   daddr.ip4.as_u32 = ip4->dst_address.as_u32;
 
   ste =
@@ -157,10 +164,15 @@ nat64_out2in_tcp_udp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
 
       nat64_compose_ip6 (&ip6_saddr, &ip4->src_address, bibe->fib_index);
       ste =
-	nat64_db_st_entry_create (db, bibe, &ip6_saddr, &saddr.ip4, sport);
-    }
+	nat64_db_st_entry_create (ctx->thread_index, db, bibe, &ip6_saddr,
+				  &saddr.ip4, sport);
 
-  nat64_session_reset_timeout (ste, ctx->vm);
+      if (!ste)
+	return -1;
+
+      vlib_set_simple_counter (&nm->total_sessions, ctx->thread_index, 0,
+			       db->st.st_entries_num);
+    }
 
   ip6->src_address.as_u64[0] = ste->in_r_addr.as_u64[0];
   ip6->src_address.as_u64[1] = ste->in_r_addr.as_u64[1];
@@ -172,12 +184,18 @@ nat64_out2in_tcp_udp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
   if (proto == IP_PROTOCOL_UDP)
     checksum = &udp->checksum;
   else
-    checksum = &tcp->checksum;
+    {
+      checksum = &tcp->checksum;
+      nat64_tcp_session_set_state (ste, tcp, 0);
+    }
+
   csum = ip_csum_sub_even (*checksum, dport);
   csum = ip_csum_add_even (csum, udp->dst_port);
   *checksum = ip_csum_fold (csum);
 
   vnet_buffer (ctx->b)->sw_if_index[VLIB_TX] = bibe->fib_index;
+
+  nat64_session_reset_timeout (ste, ctx->vm);
 
   return 0;
 }
@@ -198,9 +216,9 @@ nat64_out2in_icmp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6, void *arg)
   sw_if_index = vnet_buffer (ctx->b)->sw_if_index[VLIB_RX];
   fib_index = ip4_fib_table_get_index_for_sw_if_index (sw_if_index);
 
-  memset (&saddr, 0, sizeof (saddr));
+  clib_memset (&saddr, 0, sizeof (saddr));
   saddr.ip4.as_u32 = ip4->src_address.as_u32;
-  memset (&daddr, 0, sizeof (daddr));
+  clib_memset (&daddr, 0, sizeof (daddr));
   daddr.ip4.as_u32 = ip4->dst_address.as_u32;
 
   if (icmp->type == ICMP6_echo_request || icmp->type == ICMP6_echo_reply)
@@ -228,7 +246,14 @@ nat64_out2in_icmp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6, void *arg)
 
 	  nat64_compose_ip6 (&ip6_saddr, &ip4->src_address, bibe->fib_index);
 	  ste =
-	    nat64_db_st_entry_create (db, bibe, &ip6_saddr, &saddr.ip4, 0);
+	    nat64_db_st_entry_create (ctx->thread_index, db,
+				      bibe, &ip6_saddr, &saddr.ip4, 0);
+
+	  if (!ste)
+	    return -1;
+
+	  vlib_set_simple_counter (&nm->total_sessions, ctx->thread_index, 0,
+				   db->st.st_entries_num);
 	}
 
       nat64_session_reset_timeout (ste, ctx->vm);
@@ -272,9 +297,9 @@ nat64_out2in_inner_icmp_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
   fib_index =
     fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP6, sw_if_index);
 
-  memset (&saddr, 0, sizeof (saddr));
+  clib_memset (&saddr, 0, sizeof (saddr));
   saddr.ip4.as_u32 = ip4->src_address.as_u32;
-  memset (&daddr, 0, sizeof (daddr));
+  clib_memset (&daddr, 0, sizeof (daddr));
   daddr.ip4.as_u32 = ip4->dst_address.as_u32;
 
   if (proto == IP_PROTOCOL_ICMP6)
@@ -364,9 +389,9 @@ nat64_out2in_unk_proto_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
   sw_if_index = vnet_buffer (ctx->b)->sw_if_index[VLIB_RX];
   fib_index = ip4_fib_table_get_index_for_sw_if_index (sw_if_index);
 
-  memset (&saddr, 0, sizeof (saddr));
+  clib_memset (&saddr, 0, sizeof (saddr));
   saddr.ip4.as_u32 = ip4->src_address.as_u32;
-  memset (&daddr, 0, sizeof (daddr));
+  clib_memset (&daddr, 0, sizeof (daddr));
   daddr.ip4.as_u32 = ip4->dst_address.as_u32;
 
   ste =
@@ -385,7 +410,14 @@ nat64_out2in_unk_proto_set_cb (ip4_header_t * ip4, ip6_header_t * ip6,
 	return -1;
 
       nat64_compose_ip6 (&ip6_saddr, &ip4->src_address, bibe->fib_index);
-      ste = nat64_db_st_entry_create (db, bibe, &ip6_saddr, &saddr.ip4, 0);
+      ste = nat64_db_st_entry_create (ctx->thread_index, db,
+				      bibe, &ip6_saddr, &saddr.ip4, 0);
+
+      if (!ste)
+	return -1;
+
+      vlib_set_simple_counter (&nm->total_sessions, ctx->thread_index, 0,
+			       db->st.st_entries_num);
     }
 
   nat64_session_reset_timeout (ste, ctx->vm);
@@ -409,6 +441,8 @@ nat64_out2in_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   nat64_out2in_next_t next_index;
   u32 pkts_processed = 0;
   u32 thread_index = vm->thread_index;
+  u32 tcp_packets = 0, udp_packets = 0, icmp_packets = 0, other_packets =
+    0, fragments = 0;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -455,17 +489,20 @@ nat64_out2in_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  next0 = NAT64_OUT2IN_NEXT_DROP;
 		  b0->error = node->errors[NAT64_OUT2IN_ERROR_NO_TRANSLATION];
 		}
+	      other_packets++;
 	      goto trace0;
 	    }
 
 	  if (PREDICT_FALSE (ip4_is_fragment (ip40)))
 	    {
 	      next0 = NAT64_OUT2IN_NEXT_REASS;
+	      fragments++;
 	      goto trace0;
 	    }
 
 	  if (proto0 == SNAT_PROTOCOL_ICMP)
 	    {
+	      icmp_packets++;
 	      if (icmp_to_icmp6
 		  (b0, nat64_out2in_icmp_set_cb, &ctx0,
 		   nat64_out2in_inner_icmp_set_cb, &ctx0))
@@ -477,6 +514,11 @@ nat64_out2in_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    }
 	  else
 	    {
+	      if (proto0 == SNAT_PROTOCOL_TCP)
+		tcp_packets++;
+	      else
+		udp_packets++;
+
 	      if (ip4_to_ip6_tcp_udp (b0, nat64_out2in_tcp_udp_set_cb, &ctx0))
 		{
 		  udp0 = ip4_next_header (ip40);
@@ -507,7 +549,7 @@ nat64_out2in_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      t->next_index = next0;
 	    }
 
-	  pkts_processed += next0 != NAT64_OUT2IN_NEXT_DROP;
+	  pkts_processed += next0 == NAT64_OUT2IN_NEXT_IP6_LOOKUP;
 
 	  /* verify speculative enqueue, maybe switch current next frame */
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
@@ -518,6 +560,18 @@ nat64_out2in_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_node_increment_counter (vm, nat64_out2in_node.index,
 			       NAT64_OUT2IN_ERROR_OUT2IN_PACKETS,
 			       pkts_processed);
+  vlib_node_increment_counter (vm, nat64_out2in_node.index,
+			       NAT64_OUT2IN_ERROR_TCP_PACKETS, tcp_packets);
+  vlib_node_increment_counter (vm, nat64_out2in_node.index,
+			       NAT64_OUT2IN_ERROR_UDP_PACKETS, tcp_packets);
+  vlib_node_increment_counter (vm, nat64_out2in_node.index,
+			       NAT64_OUT2IN_ERROR_ICMP_PACKETS, icmp_packets);
+  vlib_node_increment_counter (vm, nat64_out2in_node.index,
+			       NAT64_OUT2IN_ERROR_OTHER_PACKETS,
+			       other_packets);
+  vlib_node_increment_counter (vm, nat64_out2in_node.index,
+			       NAT64_OUT2IN_ERROR_FRAGMENTS, fragments);
+
   return frame->n_vectors;
 }
 
@@ -573,8 +627,6 @@ nat64_out2in_frag_set_cb (ip4_header_t * ip4, ip6_header_t * ip6, void *arg)
   if (!bibe)
     return -1;
 
-  nat64_session_reset_timeout (ste, ctx->vm);
-
   if (ctx->first_frag)
     {
       udp->dst_port = bibe->in_port;
@@ -615,6 +667,7 @@ nat64_out2in_frag_set_cb (ip4_header_t * ip4, ip6_header_t * ip6, void *arg)
       else
 	{
 	  tcp_header_t *tcp = ip4_next_header (ip4);
+	  nat64_tcp_session_set_state (ste, tcp, 0);
 	  checksum = &tcp->checksum;
 	  csum = ip_csum_sub_even (*checksum, bibe->out_addr.as_u32);
 	  csum = ip_csum_sub_even (csum, ste->out_r_addr.as_u32);
@@ -637,6 +690,8 @@ nat64_out2in_frag_set_cb (ip4_header_t * ip4, ip6_header_t * ip6, void *arg)
 
   vnet_buffer (ctx->b)->sw_if_index[VLIB_TX] = bibe->fib_index;
 
+  nat64_session_reset_timeout (ste, ctx->vm);
+
   return 0;
 }
 
@@ -646,7 +701,7 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   u32 n_left_from, *from, *to_next;
   nat64_out2in_next_t next_index;
-  u32 pkts_processed = 0;
+  u32 pkts_processed = 0, cached_fragments = 0;
   u32 *fragments_to_drop = 0;
   u32 *fragments_to_loopback = 0;
   nat64_main_t *nm = &nat64_main;
@@ -733,9 +788,9 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      ctx0.first_frag = 1;
 
-	      memset (&saddr0, 0, sizeof (saddr0));
+	      clib_memset (&saddr0, 0, sizeof (saddr0));
 	      saddr0.ip4.as_u32 = ip40->src_address.as_u32;
-	      memset (&daddr0, 0, sizeof (daddr0));
+	      clib_memset (&daddr0, 0, sizeof (daddr0));
 	      daddr0.ip4.as_u32 = ip40->dst_address.as_u32;
 
 	      ste0 =
@@ -758,7 +813,8 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  nat64_compose_ip6 (&ip6_saddr0, &ip40->src_address,
 				     bibe0->fib_index);
 		  ste0 =
-		    nat64_db_st_entry_create (db, bibe0, &ip6_saddr0,
+		    nat64_db_st_entry_create (thread_index,
+					      db, bibe0, &ip6_saddr0,
 					      &saddr0.ip4, udp0->src_port);
 
 		  if (!ste0)
@@ -768,6 +824,9 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 			node->errors[NAT64_OUT2IN_ERROR_NO_TRANSLATION];
 		      goto trace0;
 		    }
+
+		  vlib_set_simple_counter (&nm->total_sessions, thread_index,
+					   0, db->st.st_entries_num);
 		}
 	      reass0->sess_index = nat64_db_st_entry_get_index (db, ste0);
 	      reass0->thread_index = thread_index;
@@ -780,7 +839,8 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      if (PREDICT_FALSE (reass0->sess_index == (u32) ~ 0))
 		{
-		  if (nat_ip4_reass_add_fragment (reass0, bi0))
+		  if (nat_ip4_reass_add_fragment
+		      (thread_index, reass0, bi0, &fragments_to_drop))
 		    {
 		      b0->error = node->errors[NAT64_OUT2IN_ERROR_MAX_FRAG];
 		      next0 = NAT64_OUT2IN_NEXT_DROP;
@@ -819,6 +879,7 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      n_left_to_next++;
 	      to_next--;
+	      cached_fragments++;
 	    }
 	  else
 	    {
@@ -836,17 +897,16 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      u32 len = vec_len (fragments_to_loopback);
 	      if (len <= VLIB_FRAME_SIZE)
 		{
-		  clib_memcpy (from, fragments_to_loopback,
-			       sizeof (u32) * len);
+		  clib_memcpy_fast (from, fragments_to_loopback,
+				    sizeof (u32) * len);
 		  n_left_from = len;
 		  vec_reset_length (fragments_to_loopback);
 		}
 	      else
 		{
-		  clib_memcpy (from,
-			       fragments_to_loopback + (len -
-							VLIB_FRAME_SIZE),
-			       sizeof (u32) * VLIB_FRAME_SIZE);
+		  clib_memcpy_fast (from, fragments_to_loopback +
+				    (len - VLIB_FRAME_SIZE),
+				    sizeof (u32) * VLIB_FRAME_SIZE);
 		  n_left_from = VLIB_FRAME_SIZE;
 		  _vec_len (fragments_to_loopback) = len - VLIB_FRAME_SIZE;
 		}
@@ -857,8 +917,11 @@ nat64_out2in_reass_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
     }
 
   vlib_node_increment_counter (vm, nat64_out2in_reass_node.index,
-			       NAT64_OUT2IN_ERROR_OUT2IN_PACKETS,
+			       NAT64_OUT2IN_ERROR_PROCESSED_FRAGMENTS,
 			       pkts_processed);
+  vlib_node_increment_counter (vm, nat64_out2in_reass_node.index,
+			       NAT64_OUT2IN_ERROR_CACHED_FRAGMENTS,
+			       cached_fragments);
 
   nat_send_all_to_node (vm, fragments_to_drop, node,
 			&node->errors[NAT64_OUT2IN_ERROR_DROP_FRAGMENT],
@@ -892,10 +955,28 @@ VLIB_REGISTER_NODE (nat64_out2in_reass_node) = {
 VLIB_NODE_FUNCTION_MULTIARCH (nat64_out2in_reass_node,
 			      nat64_out2in_reass_node_fn);
 
+#define foreach_nat64_out2in_handoff_error                       \
+_(CONGESTION_DROP, "congestion drop")                            \
+_(SAME_WORKER, "same worker")                                    \
+_(DO_HANDOFF, "do handoff")
+
+typedef enum
+{
+#define _(sym,str) NAT64_OUT2IN_HANDOFF_ERROR_##sym,
+  foreach_nat64_out2in_handoff_error
+#undef _
+    NAT64_OUT2IN_HANDOFF_N_ERROR,
+} nat64_out2in_handoff_error_t;
+
+static char *nat64_out2in_handoff_error_strings[] = {
+#define _(sym,string) string,
+  foreach_nat64_out2in_handoff_error
+#undef _
+};
+
 typedef struct
 {
   u32 next_worker_index;
-  u8 do_handoff;
 } nat64_out2in_handoff_trace_t;
 
 static u8 *
@@ -905,10 +986,9 @@ format_nat64_out2in_handoff_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   nat64_out2in_handoff_trace_t *t =
     va_arg (*args, nat64_out2in_handoff_trace_t *);
-  char *m;
 
-  m = t->do_handoff ? "next worker" : "same worker";
-  s = format (s, "NAT64-OUT2IN-HANDOFF: %s %d", m, t->next_worker_index);
+  s =
+    format (s, "NAT64-OUT2IN-HANDOFF: next-worker %d", t->next_worker_index);
 
   return s;
 }
@@ -918,167 +998,63 @@ nat64_out2in_handoff_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 			      vlib_frame_t * frame)
 {
   nat64_main_t *nm = &nat64_main;
-  vlib_thread_main_t *tm = vlib_get_thread_main ();
-  u32 n_left_from, *from, *to_next = 0, *to_next_drop = 0;
-  static __thread vlib_frame_queue_elt_t **handoff_queue_elt_by_worker_index;
-  static __thread vlib_frame_queue_t **congested_handoff_queue_by_worker_index
-    = 0;
-  vlib_frame_queue_elt_t *hf = 0;
-  vlib_frame_queue_t *fq;
-  vlib_frame_t *f = 0, *d = 0;
-  int i;
-  u32 n_left_to_next_worker = 0, *to_next_worker = 0;
-  u32 next_worker_index = 0;
-  u32 current_worker_index = ~0;
-  u32 thread_index = vm->thread_index;
+  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
+  u32 n_enq, n_left_from, *from;
+  u16 thread_indices[VLIB_FRAME_SIZE], *ti;
   u32 fq_index;
-  u32 to_node_index;
-
-  fq_index = nm->fq_out2in_index;
-  to_node_index = nat64_out2in_node.index;
-
-  if (PREDICT_FALSE (handoff_queue_elt_by_worker_index == 0))
-    {
-      vec_validate (handoff_queue_elt_by_worker_index, tm->n_vlib_mains - 1);
-
-      vec_validate_init_empty (congested_handoff_queue_by_worker_index,
-			       tm->n_vlib_mains - 1,
-			       (vlib_frame_queue_t *) (~0));
-    }
+  u32 thread_index = vm->thread_index;
+  u32 do_handoff = 0, same_worker = 0;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
+  vlib_get_buffers (vm, from, bufs, n_left_from);
+
+  b = bufs;
+  ti = thread_indices;
+
+  fq_index = nm->fq_out2in_index;
 
   while (n_left_from > 0)
     {
-      u32 bi0;
-      vlib_buffer_t *b0;
       ip4_header_t *ip0;
-      u8 do_handoff;
 
-      bi0 = from[0];
-      from += 1;
-      n_left_from -= 1;
+      ip0 = vlib_buffer_get_current (b[0]);
+      ti[0] = nat64_get_worker_out2in (ip0);
 
-      b0 = vlib_get_buffer (vm, bi0);
-
-      ip0 = vlib_buffer_get_current (b0);
-
-      next_worker_index = nat64_get_worker_out2in (ip0);
-
-      if (PREDICT_FALSE (next_worker_index != thread_index))
-	{
-	  do_handoff = 1;
-
-	  if (next_worker_index != current_worker_index)
-	    {
-	      fq =
-		is_vlib_frame_queue_congested (fq_index, next_worker_index,
-					       30,
-					       congested_handoff_queue_by_worker_index);
-
-	      if (fq)
-		{
-		  /* if this is 1st frame */
-		  if (!d)
-		    {
-		      d = vlib_get_frame_to_node (vm, nm->error_node_index);
-		      to_next_drop = vlib_frame_vector_args (d);
-		    }
-
-		  to_next_drop[0] = bi0;
-		  to_next_drop += 1;
-		  d->n_vectors++;
-		  goto trace0;
-		}
-
-	      if (hf)
-		hf->n_vectors = VLIB_FRAME_SIZE - n_left_to_next_worker;
-
-	      hf =
-		vlib_get_worker_handoff_queue_elt (fq_index,
-						   next_worker_index,
-						   handoff_queue_elt_by_worker_index);
-	      n_left_to_next_worker = VLIB_FRAME_SIZE - hf->n_vectors;
-	      to_next_worker = &hf->buffer_index[hf->n_vectors];
-	      current_worker_index = next_worker_index;
-	    }
-
-	  ASSERT (to_next_worker != 0);
-
-	  /* enqueue to correct worker thread */
-	  to_next_worker[0] = bi0;
-	  to_next_worker++;
-	  n_left_to_next_worker--;
-
-	  if (n_left_to_next_worker == 0)
-	    {
-	      hf->n_vectors = VLIB_FRAME_SIZE;
-	      vlib_put_frame_queue_elt (hf);
-	      current_worker_index = ~0;
-	      handoff_queue_elt_by_worker_index[next_worker_index] = 0;
-	      hf = 0;
-	    }
-	}
+      if (ti[0] != thread_index)
+	do_handoff++;
       else
-	{
-	  do_handoff = 0;
-	  /* if this is 1st frame */
-	  if (!f)
-	    {
-	      f = vlib_get_frame_to_node (vm, to_node_index);
-	      to_next = vlib_frame_vector_args (f);
-	    }
+	same_worker++;
 
-	  to_next[0] = bi0;
-	  to_next += 1;
-	  f->n_vectors++;
-	}
-
-    trace0:
       if (PREDICT_FALSE
 	  ((node->flags & VLIB_NODE_FLAG_TRACE)
-	   && (b0->flags & VLIB_BUFFER_IS_TRACED)))
+	   && (b[0]->flags & VLIB_BUFFER_IS_TRACED)))
 	{
 	  nat64_out2in_handoff_trace_t *t =
-	    vlib_add_trace (vm, node, b0, sizeof (*t));
-	  t->next_worker_index = next_worker_index;
-	  t->do_handoff = do_handoff;
+	    vlib_add_trace (vm, node, b[0], sizeof (*t));
+	  t->next_worker_index = ti[0];
 	}
+
+      n_left_from -= 1;
+      ti += 1;
+      b += 1;
     }
 
-  if (f)
-    vlib_put_frame_to_node (vm, to_node_index, f);
+  n_enq =
+    vlib_buffer_enqueue_to_thread (vm, fq_index, from, thread_indices,
+				   frame->n_vectors, 1);
 
-  if (d)
-    vlib_put_frame_to_node (vm, nm->error_node_index, d);
+  if (n_enq < frame->n_vectors)
+    vlib_node_increment_counter (vm, node->node_index,
+				 NAT64_OUT2IN_HANDOFF_ERROR_CONGESTION_DROP,
+				 frame->n_vectors - n_enq);
+  vlib_node_increment_counter (vm, node->node_index,
+			       NAT64_OUT2IN_HANDOFF_ERROR_SAME_WORKER,
+			       same_worker);
+  vlib_node_increment_counter (vm, node->node_index,
+			       NAT64_OUT2IN_HANDOFF_ERROR_DO_HANDOFF,
+			       do_handoff);
 
-  if (hf)
-    hf->n_vectors = VLIB_FRAME_SIZE - n_left_to_next_worker;
-
-  /* Ship frames to the worker nodes */
-  for (i = 0; i < vec_len (handoff_queue_elt_by_worker_index); i++)
-    {
-      if (handoff_queue_elt_by_worker_index[i])
-	{
-	  hf = handoff_queue_elt_by_worker_index[i];
-	  /*
-	   * It works better to let the handoff node
-	   * rate-adapt, always ship the handoff queue element.
-	   */
-	  if (1 || hf->n_vectors == hf->last_n_vectors)
-	    {
-	      vlib_put_frame_queue_elt (hf);
-	      handoff_queue_elt_by_worker_index[i] = 0;
-	    }
-	  else
-	    hf->last_n_vectors = hf->n_vectors;
-	}
-      congested_handoff_queue_by_worker_index[i] =
-	(vlib_frame_queue_t *) (~0);
-    }
-  hf = 0;
-  current_worker_index = ~0;
   return frame->n_vectors;
 }
 
@@ -1089,6 +1065,8 @@ VLIB_REGISTER_NODE (nat64_out2in_handoff_node) = {
   .vector_size = sizeof (u32),
   .format_trace = format_nat64_out2in_handoff_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
+  .n_errors = ARRAY_LEN(nat64_out2in_handoff_error_strings),
+  .error_strings = nat64_out2in_handoff_error_strings,
 
   .n_next_nodes = 1,
 

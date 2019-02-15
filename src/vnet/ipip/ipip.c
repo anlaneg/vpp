@@ -138,6 +138,10 @@ ipip6_fixup (vlib_main_t * vm, ip_adjacency_t * adj, vlib_buffer_t * b,
   ip6_header_t *ip6;
   const ipip_tunnel_t *t = data;
 
+  /* Must set locally originated otherwise we're not allowed to
+     fragment the packet later */
+  b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
+
   ip6 = vlib_buffer_get_current (b);
   ip6->payload_length =
     clib_host_to_net_u16 (vlib_buffer_length_in_chain (vm, b) -
@@ -182,46 +186,15 @@ ipip_tunnel_stack (adj_index_t ai)
        VNET_HW_INTERFACE_FLAG_LINK_UP) == 0)
     {
       adj_nbr_midchain_unstack (ai);
-      return;
     }
-
-  dpo_id_t tmp = DPO_INVALID;
-  fib_forward_chain_type_t fib_fwd =
-    t->transport ==
-    IPIP_TRANSPORT_IP6 ? FIB_FORW_CHAIN_TYPE_UNICAST_IP6 :
-    FIB_FORW_CHAIN_TYPE_UNICAST_IP4;
-
-  fib_entry_contribute_forwarding (t->p2p.fib_entry_index, fib_fwd, &tmp);
-  if (DPO_LOAD_BALANCE == tmp.dpoi_type)
+  else
     {
-      /*
-       * post IPIP rewrite we will load-balance. However, the IPIP encap
-       * is always the same for this adjacency/tunnel and hence the IP/IPIP
-       * src,dst hash is always the same result too. So we do that hash now and
-       * stack on the choice.
-       * If the choice is an incomplete adj then we will need a poke when
-       * it becomes complete. This happens since the adj update walk propagates
-       * as far a recursive paths.
-       */
-      const dpo_id_t *choice;
-      load_balance_t *lb;
-      int hash;
-
-      lb = load_balance_get (tmp.dpoi_index);
-
-      if (fib_fwd == FIB_FORW_CHAIN_TYPE_UNICAST_IP4)
-	hash = ip4_compute_flow_hash ((ip4_header_t *) adj_get_rewrite (ai),
-				      lb->lb_hash_config);
-      else
-	hash = ip6_compute_flow_hash ((ip6_header_t *) adj_get_rewrite (ai),
-				      lb->lb_hash_config);
-      choice =
-	load_balance_get_bucket_i (lb, hash & lb->lb_n_buckets_minus_1);
-      dpo_copy (&tmp, choice);
+      adj_nbr_midchain_stack_on_fib_entry
+	(ai,
+	 t->p2p.fib_entry_index,
+	 (t->transport == IPIP_TRANSPORT_IP6) ?
+	 FIB_FORW_CHAIN_TYPE_UNICAST_IP6 : FIB_FORW_CHAIN_TYPE_UNICAST_IP4);
     }
-
-  adj_nbr_midchain_stack (ai, &tmp);
-  dpo_reset (&tmp);
 }
 
 static adj_walk_rc_t
@@ -249,24 +222,24 @@ ipip_tunnel_restack (ipip_tunnel_t * gt)
 void
 ipip_update_adj (vnet_main_t * vnm, u32 sw_if_index, adj_index_t ai)
 {
-  ipip_tunnel_t *t;
   adj_midchain_fixup_t f;
+  ipip_tunnel_t *t;
+  adj_flags_t af;
 
   t = ipip_tunnel_db_find_by_sw_if_index (sw_if_index);
   if (!t)
     return;
 
   f = t->transport == IPIP_TRANSPORT_IP6 ? ipip6_fixup : ipip4_fixup;
+  af = ADJ_FLAG_MIDCHAIN_IP_STACK;
+  if (VNET_LINK_ETHERNET == adj_get_link_type (ai))
+    af |= ADJ_FLAG_MIDCHAIN_NO_COUNT;
 
-  adj_nbr_midchain_update_rewrite (ai, f, t,
-				   (VNET_LINK_ETHERNET ==
-				    adj_get_link_type (ai) ?
-				    ADJ_FLAG_MIDCHAIN_NO_COUNT :
-				    ADJ_FLAG_NONE), ipip_build_rewrite (vnm,
-									sw_if_index,
-									adj_get_link_type
-									(ai),
-									NULL));
+  adj_nbr_midchain_update_rewrite (ai, f, t, af,
+				   ipip_build_rewrite (vnm,
+						       sw_if_index,
+						       adj_get_link_type
+						       (ai), NULL));
   ipip_tunnel_stack (ai);
 }
 
@@ -481,7 +454,7 @@ ipip_add_tunnel (ipip_transport_t transport,
     return VNET_API_ERROR_IF_ALREADY_EXISTS;
 
   pool_get_aligned (gm->tunnels, t, CLIB_CACHE_LINE_BYTES);
-  memset (t, 0, sizeof (*t));
+  clib_memset (t, 0, sizeof (*t));
 
   /* Reconcile the real dev_instance and a possible requested instance */
   u32 t_idx = t - gm->tunnels;	/* tunnel index (or instance) */
@@ -586,7 +559,7 @@ ipip_init (vlib_main_t * vm)
 {
   ipip_main_t *gm = &ipip_main;
 
-  memset (gm, 0, sizeof (gm[0]));
+  clib_memset (gm, 0, sizeof (gm[0]));
   gm->vlib_main = vm;
   gm->vnet_main = vnet_get_main ();
   gm->tunnel_by_key =

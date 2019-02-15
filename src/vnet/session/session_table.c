@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Cisco and/or its affiliates.
+ * Copyright (c) 2017-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -32,7 +32,7 @@ session_table_alloc (void)
 {
   session_table_t *slt;
   pool_get_aligned (lookup_tables, slt, CLIB_CACHE_LINE_BYTES);
-  memset (slt, 0, sizeof (*slt));
+  clib_memset (slt, 0, sizeof (*slt));
   return slt;
 }
 

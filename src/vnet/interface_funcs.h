@@ -271,6 +271,13 @@ vnet_sw_interface_is_api_valid (vnet_main_t * vnm, u32 sw_if_index)
     && vnet_sw_interface_is_api_visible (vnm, sw_if_index);
 }
 
+always_inline const u8 *
+vnet_sw_interface_get_hw_address (vnet_main_t * vnm, u32 sw_if_index)
+{
+  vnet_hw_interface_t *hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
+  return hw->hw_address;
+}
+
 always_inline uword
 vnet_hw_interface_get_flags (vnet_main_t * vnm, u32 hw_if_index)
 {
@@ -318,13 +325,21 @@ vnet_put_frame_to_sw_interface (vnet_main_t * vnm, u32 sw_if_index,
   return vlib_put_frame_to_node (vlib_get_main (), hw->output_node_index, f);
 }
 
+always_inline void
+vnet_hw_interface_set_link_speed (vnet_main_t * vnm, u32 hw_if_index,
+				  u32 link_speed)
+{
+  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
+  hw->link_speed = link_speed;
+}
+
 /* Change interface flags (e.g. up, down, enable, disable). */
 clib_error_t *vnet_hw_interface_set_flags (vnet_main_t * vnm, u32 hw_if_index,
-					   u32 flags);
+					   vnet_hw_interface_flags_t flags);
 
 /* Change interface flags (e.g. up, down, enable, disable). */
 clib_error_t *vnet_sw_interface_set_flags (vnet_main_t * vnm, u32 sw_if_index,
-					   u32 flags);
+					   vnet_sw_interface_flags_t flags);
 
 /* Change interface class. */
 clib_error_t *vnet_hw_interface_set_class (vnet_main_t * vnm, u32 hw_if_index,
@@ -344,7 +359,7 @@ clib_error_t *vnet_rename_interface (vnet_main_t * vnm, u32 hw_if_index,
 /* Change interface mac address*/
 clib_error_t *vnet_hw_interface_change_mac_address (vnet_main_t * vnm,
 						    u32 hw_if_index,
-						    u8 * mac_address);
+						    const u8 * mac_address);
 
 /* Change rx-mode */
 clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
@@ -353,6 +368,10 @@ clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
 					       u32 queue_id,
 					       vnet_hw_interface_rx_mode
 					       mode);
+
+/* Set rx-placement on the interface */
+clib_error_t *set_hw_interface_rx_placement (u32 hw_if_index, u32 queue_id,
+					     u32 thread_index, u8 is_main);
 
 /* Set the MTU on the HW interface */
 void vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu);
@@ -399,8 +418,6 @@ typedef struct
 } vnet_interface_output_runtime_t;
 
 /* Interface output function. */
-void *vnet_interface_output_node_multiarch_select (void);
-
 word vnet_sw_interface_compare (vnet_main_t * vnm, uword sw_if_index0,
 				uword sw_if_index1);
 word vnet_hw_interface_compare (vnet_main_t * vnm, uword hw_if_index0,

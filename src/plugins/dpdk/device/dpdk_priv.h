@@ -13,9 +13,6 @@
  * limitations under the License.
  */
 
-#define rte_mbuf_from_vlib_buffer(x) (((struct rte_mbuf *)x) - 1)
-#define vlib_buffer_from_rte_mbuf(x) ((vlib_buffer_t *)(x+1))
-
 #define DPDK_NB_RX_DESC_DEFAULT   1024
 #define DPDK_NB_TX_DESC_DEFAULT   1024
 #define DPDK_NB_RX_DESC_VIRTIO    256
@@ -44,20 +41,13 @@ _(blacklist, b)                                 \
 _(mem-alloc-request, m)                         \
 _(force-ranks, r)
 
-/* These args are preceeded by "--" and followed by a single string */
+/* These args are preceded by "--" and followed by a single string */
 #define foreach_eal_double_hyphen_arg           \
 _(huge-dir)                                     \
 _(proc-type)                                    \
 _(file-prefix)                                  \
-_(vdev)
-
-typedef struct
-{
-  /* must be first */
-  struct rte_pktmbuf_pool_private mbp_priv;
-  u8 buffer_pool_index;
-} dpdk_mempool_private_t;
-
+_(vdev)                                         \
+_(log-level)
 
 static inline void
 dpdk_get_xstats (dpdk_device_t * xd)
@@ -96,7 +86,7 @@ dpdk_update_counters (dpdk_device_t * xd, f64 now)
     return;
 
   xd->time_last_stats_update = now ? now : xd->time_last_stats_update;
-  clib_memcpy (&xd->last_stats, &xd->stats, sizeof (xd->last_stats));
+  clib_memcpy_fast (&xd->last_stats, &xd->stats, sizeof (xd->last_stats));
   rte_eth_stats_get (xd->port_id, &xd->stats);
 
   /* maybe bump interface rx no buffer counter */

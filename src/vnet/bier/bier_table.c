@@ -329,6 +329,70 @@ bier_table_mk_ecmp (index_t bti)
     return (bt);
 }
 
+
+static index_t
+bier_table_create (const bier_table_id_t *btid,
+                   mpls_label_t local_label)
+{
+    /*
+     * add a new table
+     */
+    bier_table_t *bt;
+    index_t bti;
+    u32 key;
+
+    key = bier_table_mk_key(btid);
+
+    pool_get_aligned(bier_table_pool, bt, CLIB_CACHE_LINE_BYTES);
+    bier_table_init(bt, btid, local_label);
+
+    hash_set(bier_tables_by_key, key, bier_table_get_index(bt));
+    bti = bier_table_get_index(bt);
+
+    if (bier_table_is_main(bt))
+    {
+        bt = bier_table_mk_ecmp(bti);
+
+        /*
+         * add whichever mpls-fib or bift we need
+         */
+        if (local_label != MPLS_LABEL_INVALID)
+        {
+            bt->bt_ll = local_label;
+            bier_table_mk_lfib(bt);
+        }
+        else
+        {
+            bier_table_mk_bift(bt);
+        }
+    }
+
+    return (bti);
+}
+
+index_t
+bier_table_lock (const bier_table_id_t *btid)
+{
+    bier_table_t *bt;
+    index_t bti;
+
+    bt = bier_table_find(btid);
+
+    if (NULL == bt)
+    {
+        bti = bier_table_create(btid, MPLS_LABEL_INVALID);
+        bt = bier_table_get(bti);
+    }
+    else
+    {
+        bti = bier_table_get_index(bt);
+    }
+
+    bier_table_lock_i(bt);
+
+    return (bti);
+}
+
 index_t
 bier_table_add_or_lock (const bier_table_id_t *btid,
                         mpls_label_t local_label)
@@ -379,36 +443,8 @@ bier_table_add_or_lock (const bier_table_id_t *btid,
     }
     else
     {
-        /*
-         * add a new table
-         */
-        u32 key;
-
-        key = bier_table_mk_key(btid);
-
-        pool_get_aligned(bier_table_pool, bt, CLIB_CACHE_LINE_BYTES);
-        bier_table_init(bt, btid, local_label);
-
-        hash_set(bier_tables_by_key, key, bier_table_get_index(bt));
-        bti = bier_table_get_index(bt);
-
-        if (bier_table_is_main(bt))
-        {
-            bt = bier_table_mk_ecmp(bti);
-
-            /*
-             * add whichever mpls-fib or bift we need
-             */
-            if (local_label != MPLS_LABEL_INVALID)
-            {
-                bt->bt_ll = local_label;
-                bier_table_mk_lfib(bt);
-            }
-            else
-            {
-                bier_table_mk_bift(bt);
-            }
-        }
+        bti = bier_table_create(btid, local_label);
+        bt = bier_table_get(bti);
     }
 
     bier_table_lock_i(bt);
@@ -510,9 +546,10 @@ bier_table_remove (bier_table_t *bt,
 }
 
 void
-bier_table_route_add (const bier_table_id_t *btid,
-                      bier_bp_t bp,
-                      fib_route_path_t *brps)
+bier_table_route_path_update_i (const bier_table_id_t *btid,
+                                bier_bp_t bp,
+                                fib_route_path_t *brps,
+                                u8 is_replace)
 {
     index_t bfmi, bti, bei, *bfmip, *bfmis = NULL;
     fib_route_path_t *brp;
@@ -552,7 +589,23 @@ bier_table_route_add (const bier_table_id_t *btid,
         bei = bier_entry_create(bti, bp);
         bier_table_insert(bt, bp, bei);
     }
-    bier_entry_path_add(bei, brps);
+
+    if (is_replace)
+    {
+        bier_entry_path_update(bei, brps);
+    }
+    else
+    {
+        fib_route_path_t *t_paths = NULL;
+
+        vec_foreach(brp, brps)
+        {
+            vec_add1(t_paths, *brp);
+            bier_entry_path_add(bei, t_paths);
+            vec_reset_length(t_paths);
+        }
+        vec_free(t_paths);
+    }
 
     vec_foreach(bfmip, bfmis)
     {
@@ -562,11 +615,51 @@ bier_table_route_add (const bier_table_id_t *btid,
 }
 
 void
-bier_table_route_remove (const bier_table_id_t *btid,
-                         bier_bp_t bp,
-                         fib_route_path_t *brps)
+bier_table_route_path_update (const bier_table_id_t *btid,
+                              bier_bp_t bp,
+                              fib_route_path_t *brps)
 {
-    fib_route_path_t *brp = NULL;
+    bier_table_route_path_update_i(btid, bp, brps, 1);
+}
+void
+bier_table_route_path_add (const bier_table_id_t *btid,
+                           bier_bp_t bp,
+                           fib_route_path_t *brps)
+{
+    bier_table_route_path_update_i(btid, bp, brps, 0);
+}
+
+void
+bier_table_route_delete (const bier_table_id_t *btid,
+                         bier_bp_t bp)
+{
+    bier_table_t *bt;
+    index_t bei;
+
+    bt = bier_table_find(btid);
+
+    if (NULL == bt) {
+        return;
+    }
+
+    bei = bier_table_lookup(bt, bp);
+
+    if (INDEX_INVALID == bei)
+    {
+        /* no such entry */
+        return;
+    }
+
+    bier_table_remove(bt, bp);
+    bier_entry_delete(bei);
+}
+
+void
+bier_table_route_path_remove (const bier_table_id_t *btid,
+                              bier_bp_t bp,
+                              fib_route_path_t *brps)
+{
+    fib_route_path_t *brp = NULL, *t_paths = NULL;
     index_t bfmi, bti, bei;
     bier_table_t *bt;
     u32 ii;
@@ -616,12 +709,19 @@ bier_table_route_remove (const bier_table_id_t *btid,
         return;
     }
 
-    if (0 == bier_entry_path_remove(bei, brps))
+    vec_foreach(brp, brps)
     {
-        /* 0 remaining paths */
-        bier_table_remove(bt, bp);
-        bier_entry_delete(bei);
+        vec_add1(t_paths, *brp);
+        if (0 == bier_entry_path_remove(bei, t_paths))
+        {
+            /* 0 remaining paths */
+            bier_table_remove(bt, bp);
+            bier_entry_delete(bei);
+            break;
+        }
+        vec_reset_length(t_paths);
     }
+    vec_free(t_paths);
 }
 
 void

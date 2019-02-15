@@ -197,7 +197,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 
   t = pool_elt_at_index (vcm->tables, table->classify_table_index);
 
-  while (__sync_lock_test_and_set (t->writer_lock, 1))
+  while (clib_atomic_test_and_set (t->writer_lock))
     ;
 
   for (i = 0; i < t->nbuckets; i++)
@@ -226,7 +226,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 
 		  u32 copy_len = sizeof (ip4_header_t) +
 		    sizeof (udp_header_t) + sizeof (ipfix_message_header_t);
-		  clib_memcpy (b0->data, fr->rewrite, copy_len);
+		  clib_memcpy_fast (b0->data, fr->rewrite, copy_len);
 		  b0->current_data = 0;
 		  b0->current_length = copy_len;
 		  b0->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
@@ -261,7 +261,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 #define _(field,mask,item,length)                                       \
               if (clib_bitmap_get (fr->fields_to_send, field_index))    \
                 {                                                       \
-                  clib_memcpy (b0->data + next_offset, &field,          \
+                  clib_memcpy_fast (b0->data + next_offset, &field,          \
                           length);                                      \
                   next_offset += length;                                \
                 }                                                       \
@@ -272,8 +272,8 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 	      /* Add packetTotalCount manually */
 	      {
 		u64 packets = clib_host_to_net_u64 (v->hits);
-		clib_memcpy (b0->data + next_offset, &packets,
-			     sizeof (packets));
+		clib_memcpy_fast (b0->data + next_offset, &packets,
+				  sizeof (packets));
 		next_offset += sizeof (packets);
 	      }
 	      records_this_buffer++;
@@ -385,7 +385,7 @@ flush:
       bi0 = ~0;
     }
 
-  *(t->writer_lock) = 0;
+  clib_atomic_release (t->writer_lock);
   return f;
 }
 
@@ -408,7 +408,7 @@ ipfix_classify_table_add_del_command_fn (vlib_main_t * vm,
   if (fcm->src_port == 0)
     clib_error_return (0, "call 'set ipfix classify stream' first");
 
-  memset (&args, 0, sizeof (args));
+  clib_memset (&args, 0, sizeof (args));
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {

@@ -19,15 +19,14 @@
 #include <assert.h>
 
 #include <vnet/ethernet/ethernet.h>
+#include <dpdk/buffer.h>
 #include <dpdk/device/dpdk.h>
-
 #include <dpdk/device/dpdk_priv.h>
 #include <vppinfra/error.h>
 
 #define foreach_dpdk_tx_func_error			\
   _(BAD_RETVAL, "DPDK tx function returned an error")	\
-  _(PKT_DROP, "Tx packet drops (dpdk tx failure)")	\
-  _(REPL_FAIL, "Tx packet drops (replication failure)")
+  _(PKT_DROP, "Tx packet drops (dpdk tx failure)")
 
 typedef enum
 {
@@ -44,7 +43,8 @@ static char *dpdk_tx_func_error_strings[] = {
 };
 
 static clib_error_t *
-dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address)
+dpdk_set_mac_address (vnet_hw_interface_t * hi,
+		      const u8 * old_address, const u8 * address)
 {
   int error;
   dpdk_main_t *dm = &dpdk_main;
@@ -65,48 +65,6 @@ dpdk_set_mac_address (vnet_hw_interface_t * hi, char *address)
     }
 }
 
-static struct rte_mbuf *
-dpdk_replicate_packet_mb (vlib_buffer_t * b)
-{
-  dpdk_main_t *dm = &dpdk_main;
-  struct rte_mbuf **mbufs = 0, *s, *d;
-  u8 nb_segs;
-  unsigned socket_id = rte_socket_id ();
-  int i;
-
-  ASSERT (dm->pktmbuf_pools[socket_id]);
-  s = rte_mbuf_from_vlib_buffer (b);
-  nb_segs = s->nb_segs;
-  vec_validate (mbufs, nb_segs - 1);
-
-  if (rte_pktmbuf_alloc_bulk (dm->pktmbuf_pools[socket_id], mbufs, nb_segs))
-    {
-      vec_free (mbufs);
-      return 0;
-    }
-
-  d = mbufs[0];
-  d->nb_segs = s->nb_segs;
-  d->data_len = s->data_len;
-  d->pkt_len = s->pkt_len;
-  d->data_off = s->data_off;
-  clib_memcpy (d->buf_addr, s->buf_addr, RTE_PKTMBUF_HEADROOM + s->data_len);
-
-  for (i = 1; i < nb_segs; i++)
-    {
-      d->next = mbufs[i];
-      d = mbufs[i];
-      s = s->next;
-      d->data_len = s->data_len;
-      clib_memcpy (d->buf_addr, s->buf_addr,
-		   RTE_PKTMBUF_HEADROOM + s->data_len);
-    }
-
-  d = mbufs[0];
-  vec_free (mbufs);
-  return d;
-}
-
 static void
 dpdk_tx_trace_buffer (dpdk_main_t * dm, vlib_node_runtime_t * node,
 		      dpdk_device_t * xd, u16 queue_id,
@@ -122,12 +80,13 @@ dpdk_tx_trace_buffer (dpdk_main_t * dm, vlib_node_runtime_t * node,
   t0->queue_index = queue_id;
   t0->device_index = xd->device_index;
   t0->buffer_index = vlib_get_buffer_index (vm, buffer);
-  clib_memcpy (&t0->mb, mb, sizeof (t0->mb));
-  clib_memcpy (&t0->buffer, buffer,
-	       sizeof (buffer[0]) - sizeof (buffer->pre_data));
-  clib_memcpy (t0->buffer.pre_data, buffer->data + buffer->current_data,
-	       sizeof (t0->buffer.pre_data));
-  clib_memcpy (&t0->data, mb->buf_addr + mb->data_off, sizeof (t0->data));
+  clib_memcpy_fast (&t0->mb, mb, sizeof (t0->mb));
+  clib_memcpy_fast (&t0->buffer, buffer,
+		    sizeof (buffer[0]) - sizeof (buffer->pre_data));
+  clib_memcpy_fast (t0->buffer.pre_data, buffer->data + buffer->current_data,
+		    sizeof (t0->buffer.pre_data));
+  clib_memcpy_fast (&t0->data, mb->buf_addr + mb->data_off,
+		    sizeof (t0->data));
 }
 
 static_always_inline void
@@ -168,11 +127,9 @@ dpdk_validate_rte_mbuf (vlib_main_t * vm, vlib_buffer_t * b,
       mb->pkt_len = b->current_length;
       mb->data_off = VLIB_BUFFER_PRE_DATA_SIZE + b->current_data;
       first_mb->nb_segs++;
-      if (PREDICT_FALSE (b->n_add_refs))
-	{
-	  rte_mbuf_refcnt_update (mb, b->n_add_refs);
-	  b->n_add_refs = 0;
-	}
+      if (PREDICT_FALSE (b->ref_count > 1))
+	mb->pool =
+	  dpdk_no_cache_mempool_by_buffer_pool_index[b->buffer_pool_index];
     }
 }
 
@@ -204,11 +161,12 @@ static_always_inline
       if (PREDICT_FALSE (xd->lockp != 0))
 	{
 	  queue_id = queue_id % xd->tx_q_used;
-	  while (__sync_lock_test_and_set (xd->lockp[queue_id], 1))
+	  while (clib_atomic_test_and_set (xd->lockp[queue_id]))
 	    /* zzzz */
 	    queue_id = (queue_id + 1) % xd->tx_q_used;
 	}
 
+#if 0
       if (PREDICT_FALSE (xd->flags & DPDK_DEVICE_FLAG_HQOS))	/* HQoS ON */
 	{
 	  /* no wrap, transmit in one burst */
@@ -221,7 +179,9 @@ static_always_inline
 	  n_sent = rte_ring_sp_enqueue_burst (hqos->swq, (void **) mb,
 					      n_left, 0);
 	}
-      else if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
+      else
+#endif
+      if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
 	{
 	  /* no wrap, transmit in one burst */
 	  n_sent = rte_eth_tx_burst (xd->port_id, queue_id, mb, n_left);
@@ -233,7 +193,7 @@ static_always_inline
 	}
 
       if (PREDICT_FALSE (xd->lockp != 0))
-	*xd->lockp[queue_id] = 0;
+	clib_atomic_release (xd->lockp[queue_id]);
 
       if (PREDICT_FALSE (n_sent < 0))
 	{
@@ -264,29 +224,6 @@ dpdk_prefetch_buffer (vlib_main_t * vm, struct rte_mbuf *mb)
   vlib_buffer_t *b = vlib_buffer_from_rte_mbuf (mb);
   CLIB_PREFETCH (mb, 2 * CLIB_CACHE_LINE_BYTES, STORE);
   CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
-}
-
-static_always_inline void
-dpdk_buffer_recycle (vlib_main_t * vm, vlib_node_runtime_t * node,
-		     vlib_buffer_t * b, u32 bi, struct rte_mbuf **mbp)
-{
-  dpdk_main_t *dm = &dpdk_main;
-  struct rte_mbuf *mb_new;
-
-  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_RECYCLE) == 0)
-    return;
-
-  mb_new = dpdk_replicate_packet_mb (b);
-  if (PREDICT_FALSE (mb_new == 0))
-    {
-      vlib_error_count (vm, node->node_index,
-			DPDK_TX_FUNC_ERROR_REPL_FAIL, 1);
-      b->flags |= VLIB_BUFFER_REPL_FAIL;
-    }
-  else
-    *mbp = mb_new;
-
-  vec_add1 (dm->recycle[vm->thread_index], bi);
 }
 
 static_always_inline void
@@ -454,29 +391,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       n_left--;
     }
 
-  /* run inly if we have buffers to recycle */
-  if (PREDICT_FALSE (all_or_flags & VLIB_BUFFER_RECYCLE))
-    {
-      struct rte_mbuf **mb_old;
-      from = vlib_frame_vector_args (f);
-      n_left = n_packets;
-      mb_old = mb = ptd->mbufs;
-      while (n_left > 0)
-	{
-	  b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
-	  dpdk_buffer_recycle (vm, node, b[0], from[0], &mb_old[0]);
-
-	  /* in case of REPL_FAIL we need to shift data */
-	  mb[0] = mb_old[0];
-
-	  if (PREDICT_TRUE ((b[0]->flags & VLIB_BUFFER_REPL_FAIL) == 0))
-	    mb++;
-	  mb_old++;
-	  from++;
-	  n_left--;
-	}
-    }
-
   /* transmit as many packets as possible */
   tx_pkts = n_packets = mb - ptd->mbufs;
   n_left = tx_burst_vector_internal (vm, xd, ptd->mbufs, n_packets);
@@ -503,14 +417,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       }
   }
 
-  /* Recycle replicated buffers */
-  if (PREDICT_FALSE (vec_len (dm->recycle[thread_index])))
-    {
-      vlib_buffer_free (vm, dm->recycle[thread_index],
-			vec_len (dm->recycle[thread_index]));
-      _vec_len (dm->recycle[thread_index]) = 0;
-    }
-
   return tx_pkts;
 }
 
@@ -526,10 +432,10 @@ dpdk_clear_hw_interface_counters (u32 instance)
    */
   dpdk_update_counters (xd, vlib_time_now (dm->vlib_main));
 
-  clib_memcpy (&xd->last_cleared_stats, &xd->stats, sizeof (xd->stats));
-  clib_memcpy (xd->last_cleared_xstats, xd->xstats,
-	       vec_len (xd->last_cleared_xstats) *
-	       sizeof (xd->last_cleared_xstats[0]));
+  clib_memcpy_fast (&xd->last_cleared_stats, &xd->stats, sizeof (xd->stats));
+  clib_memcpy_fast (xd->last_cleared_xstats, xd->xstats,
+		    vec_len (xd->last_cleared_xstats) *
+		    sizeof (xd->last_cleared_xstats[0]));
 
 }
 
@@ -546,8 +452,6 @@ dpdk_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 
   if (is_up)
     {
-      vnet_hw_interface_set_flags (vnm, xd->hw_if_index,
-				   VNET_HW_INTERFACE_FLAG_LINK_UP);
       if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) == 0)
 	dpdk_device_start (xd);
       xd->flags |= DPDK_DEVICE_FLAG_ADMIN_UP;

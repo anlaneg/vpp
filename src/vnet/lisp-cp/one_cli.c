@@ -144,8 +144,8 @@ lisp_add_del_local_eid_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u8 *key = 0;
   u32 key_id = 0;
 
-  memset (&eid, 0, sizeof (eid));
-  memset (a, 0, sizeof (*a));
+  clib_memset (&eid, 0, sizeof (eid));
+  clib_memset (a, 0, sizeof (*a));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -178,6 +178,8 @@ lisp_add_del_local_eid_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	    }
 	  locator_set_index = p[0];
 	}
+      else if (unformat (line_input, "authoritative"))
+	a->authoritative = 1;
       else
 	{
 	  error = unformat_parse_error (line_input);
@@ -290,9 +292,9 @@ lisp_add_del_ndp_entry_command_fn (vlib_main_t * vm,
   u32 hw_addr_set = 0, ip_set = 0, is_add = 1;
   gid_address_t _g, *g = &_g;
 
-  memset (&ip6, 0, sizeof (ip6));
-  memset (hw_addr, 0, sizeof (hw_addr));
-  memset (g, 0, sizeof (*g));
+  clib_memset (&ip6, 0, sizeof (ip6));
+  clib_memset (hw_addr, 0, sizeof (hw_addr));
+  clib_memset (g, 0, sizeof (*g));
 
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -354,9 +356,9 @@ lisp_add_del_l2_arp_entry_command_fn (vlib_main_t * vm,
   u32 hw_addr_set = 0, ip_set = 0, is_add = 1;
   gid_address_t _arp, *arp = &_arp;
 
-  memset (&ip4, 0, sizeof (ip4));
-  memset (hw_addr, 0, sizeof (hw_addr));
-  memset (arp, 0, sizeof (*arp));
+  clib_memset (&ip4, 0, sizeof (ip4));
+  clib_memset (hw_addr, 0, sizeof (hw_addr));
+  clib_memset (arp, 0, sizeof (*arp));
 
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -503,8 +505,8 @@ lisp_add_del_remote_mapping_command_fn (vlib_main_t * vm,
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 
-  memset (&eid, 0, sizeof (eid));
-  memset (&rloc, 0, sizeof (rloc));
+  clib_memset (&eid, 0, sizeof (eid));
+  clib_memset (&rloc, 0, sizeof (rloc));
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -577,7 +579,7 @@ lisp_add_del_remote_mapping_command_fn (vlib_main_t * vm,
   if (!is_add)
     {
       vnet_lisp_add_del_adjacency_args_t _a, *a = &_a;
-      memset (a, 0, sizeof (a[0]));
+      clib_memset (a, 0, sizeof (a[0]));
       gid_address_copy (&a->reid, &eid);
       if (vnet_lisp_add_del_adjacency (a))
 	{
@@ -591,7 +593,7 @@ lisp_add_del_remote_mapping_command_fn (vlib_main_t * vm,
   if (is_add)
     {
       vnet_lisp_add_del_mapping_args_t _map_args, *map_args = &_map_args;
-      memset (map_args, 0, sizeof (map_args[0]));
+      clib_memset (map_args, 0, sizeof (map_args[0]));
       gid_address_copy (&map_args->eid, &eid);
       map_args->action = action;
       map_args->is_static = 1;
@@ -645,8 +647,8 @@ lisp_add_del_adjacency_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 
-  memset (&reid, 0, sizeof (reid));
-  memset (&leid, 0, sizeof (leid));
+  clib_memset (&reid, 0, sizeof (reid));
+  clib_memset (&leid, 0, sizeof (leid));
 
   leid_ippref = &gid_address_ippref (&leid);
   reid_ippref = &gid_address_ippref (&reid);
@@ -706,7 +708,7 @@ lisp_add_del_adjacency_command_fn (vlib_main_t * vm, unformat_input_t * input,
       goto done;
     }
 
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (a, 0, sizeof (a[0]));
   gid_address_copy (&a->leid, &leid);
   gid_address_copy (&a->reid, &reid);
   a->is_add = is_add;
@@ -898,7 +900,7 @@ lisp_map_register_fallback_threshold_show_command_fn (vlib_main_t * vm,
 						      cmd)
 {
   u32 val = vnet_lisp_map_register_fallback_threshold_get ();
-  vlib_cli_output (vm, "map register fallback treshold value: %d", val);
+  vlib_cli_output (vm, "map register fallback threshold value: %d", val);
   return 0;
 }
 
@@ -1127,7 +1129,7 @@ lisp_show_eid_table_command_fn (vlib_main_t * vm,
   u8 filter = 0;
   clib_error_t *error = NULL;
 
-  memset (&eid, 0, sizeof (eid));
+  clib_memset (&eid, 0, sizeof (eid));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1150,7 +1152,7 @@ lisp_show_eid_table_command_fn (vlib_main_t * vm,
     }
 
   vlib_cli_output (vm, "%-35s%-20s%-30s%-20s%-s",
-		   "EID", "type", "locators", "ttl", "autoritative");
+		   "EID", "type", "locators", "ttl", "authoritative");
 
   if (print_all)
     {
@@ -1700,8 +1702,8 @@ lisp_add_del_locator_set_command_fn (vlib_main_t * vm,
   u32 ls_index = 0;
   int rv = 0;
 
-  memset (&locator, 0, sizeof (locator));
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (&locator, 0, sizeof (locator));
+  clib_memset (a, 0, sizeof (a[0]));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1719,6 +1721,7 @@ lisp_add_del_locator_set_command_fn (vlib_main_t * vm,
 			 &locator.weight))
 	{
 	  locator.local = 1;
+	  locator.state = 1;
 	  vec_add1 (locators, locator);
 	}
       else
@@ -1774,8 +1777,8 @@ lisp_add_del_locator_in_set_command_fn (vlib_main_t * vm,
   vnet_lisp_add_del_locator_set_args_t _a, *a = &_a;
   u32 ls_index = 0;
 
-  memset (&locator, 0, sizeof (locator));
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (&locator, 0, sizeof (locator));
+  clib_memset (a, 0, sizeof (a[0]));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))

@@ -23,9 +23,10 @@ sctp_connection_bind (u32 session_index, transport_endpoint_t * tep)
   sctp_main_t *tm = &sctp_main;
   sctp_connection_t *listener;
   void *iface_ip;
+  u32 mtu = 1460;
 
   pool_get (tm->listener_pool, listener);
-  memset (listener, 0, sizeof (*listener));
+  clib_memset (listener, 0, sizeof (*listener));
 
   listener->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
     SCTP_PRIMARY_PATH_IDX;
@@ -43,11 +44,13 @@ sctp_connection_bind (u32 session_index, transport_endpoint_t * tep)
   ip_copy (&listener->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.lcl_ip,
 	   &tep->ip, tep->is_ip4);
 
-  u32 mtu = tep->is_ip4 ? vnet_sw_interface_get_mtu (vnet_get_main (),
-						     tep->sw_if_index,
-						     VNET_MTU_IP4) :
-    vnet_sw_interface_get_mtu (vnet_get_main (), tep->sw_if_index,
-			       VNET_MTU_IP6);
+  if (tep->sw_if_index != ENDPOINT_INVALID_INDEX)
+    mtu = tep->is_ip4 ? vnet_sw_interface_get_mtu (vnet_get_main (),
+						   tep->sw_if_index,
+						   VNET_MTU_IP4) :
+      vnet_sw_interface_get_mtu (vnet_get_main (), tep->sw_if_index,
+				 VNET_MTU_IP6);
+
   listener->sub_conn[SCTP_PRIMARY_PATH_IDX].PMTU = mtu;
   listener->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.is_ip4 = tep->is_ip4;
   listener->sub_conn[SCTP_PRIMARY_PATH_IDX].connection.proto =
@@ -78,7 +81,7 @@ sctp_connection_unbind (u32 listener_index)
 
   /* Poison the entry */
   if (CLIB_DEBUG > 0)
-    memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
+    clib_memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
 
   pool_put_index (tm->listener_pool, listener_index);
 }
@@ -192,12 +195,13 @@ format_sctp_connection_id (u8 * s, va_list * args)
   u8 i;
   for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
     {
+      if (i > 0 && sctp_conn->sub_conn[i].state == SCTP_SUBCONN_STATE_DOWN)
+	continue;
       if (sctp_conn->sub_conn[i].connection.is_ip4)
 	{
-	  s = format (s, "%U[#%d][%s] %U:%d->%U:%d",
-		      s,
+	  s = format (s, "[#%d][%s] %U:%d->%U:%d",
 		      sctp_conn->sub_conn[i].connection.thread_index,
-		      "T",
+		      "S",
 		      format_ip4_address,
 		      &sctp_conn->sub_conn[i].connection.lcl_ip.ip4,
 		      clib_net_to_host_u16 (sctp_conn->sub_conn[i].
@@ -209,10 +213,9 @@ format_sctp_connection_id (u8 * s, va_list * args)
 	}
       else
 	{
-	  s = format (s, "%U[#%d][%s] %U:%d->%U:%d",
-		      s,
+	  s = format (s, "[#%d][%s] %U:%d->%U:%d",
 		      sctp_conn->sub_conn[i].connection.thread_index,
-		      "T",
+		      "S",
 		      format_ip6_address,
 		      &sctp_conn->sub_conn[i].connection.lcl_ip.ip6,
 		      clib_net_to_host_u16 (sctp_conn->sub_conn[i].
@@ -238,6 +241,8 @@ format_sctp_connection (u8 * s, va_list * args)
   if (verbose)
     {
       s = format (s, "%-15U", format_sctp_state, sctp_conn->state);
+      if (verbose > 1)
+	s = format (s, "\n");
     }
 
   return s;
@@ -424,7 +429,7 @@ sctp_connection_new (u8 thread_index)
   sctp_connection_t *sctp_conn;
 
   pool_get (sctp_main->connections[thread_index], sctp_conn);
-  memset (sctp_conn, 0, sizeof (*sctp_conn));
+  clib_memset (sctp_conn, 0, sizeof (*sctp_conn));
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
     SCTP_PRIMARY_PATH_IDX;
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_c_index =
@@ -442,7 +447,7 @@ sctp_half_open_connection_new (u8 thread_index)
   sctp_connection_t *sctp_conn = 0;
   ASSERT (vlib_get_thread_index () == 0);
   pool_get (tm->half_open_connections, sctp_conn);
-  memset (sctp_conn, 0, sizeof (*sctp_conn));
+  clib_memset (sctp_conn, 0, sizeof (*sctp_conn));
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_c_index =
     sctp_conn - tm->half_open_connections;
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
@@ -451,13 +456,14 @@ sctp_half_open_connection_new (u8 thread_index)
 }
 
 static inline int
-sctp_connection_open (transport_endpoint_t * rmt)
+sctp_connection_open (transport_endpoint_cfg_t * rmt)
 {
   sctp_main_t *tm = vnet_get_sctp_main ();
   sctp_connection_t *sctp_conn;
   ip46_address_t lcl_addr;
   u16 lcl_port;
   uword thread_id;
+  u32 mtu = 1460;
   int rv;
 
   u8 idx = SCTP_PRIMARY_PATH_IDX;
@@ -484,11 +490,12 @@ sctp_connection_open (transport_endpoint_t * rmt)
 
   clib_spinlock_lock_if_init (&tm->half_open_lock);
   sctp_conn = sctp_half_open_connection_new (thread_id);
-  u32 mtu = rmt->is_ip4 ? vnet_sw_interface_get_mtu (vnet_get_main (),
-						     rmt->sw_if_index,
-						     VNET_MTU_IP4) :
-    vnet_sw_interface_get_mtu (vnet_get_main (), rmt->sw_if_index,
-			       VNET_MTU_IP6);
+  if (rmt->peer.sw_if_index != ENDPOINT_INVALID_INDEX)
+    mtu = rmt->is_ip4 ? vnet_sw_interface_get_mtu (vnet_get_main (),
+						   rmt->peer.sw_if_index,
+						   VNET_MTU_IP4) :
+      vnet_sw_interface_get_mtu (vnet_get_main (), rmt->peer.sw_if_index,
+				 VNET_MTU_IP6);
   sctp_conn->sub_conn[idx].PMTU = mtu;
 
   transport_connection_t *trans_conn = &sctp_conn->sub_conn[idx].connection;
@@ -537,12 +544,12 @@ sctp_connection_cleanup (sctp_connection_t * sctp_conn)
 
   /* Poison the entry */
   if (CLIB_DEBUG > 0)
-    memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
+    clib_memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
   pool_put (tm->connections[thread_index], sctp_conn);
 }
 
 int
-sctp_session_open (transport_endpoint_t * tep)
+sctp_session_open (transport_endpoint_cfg_t * tep)
 {
   return sctp_connection_open (tep);
 }
@@ -624,7 +631,6 @@ sctp_session_send_mss (transport_connection_t * trans_conn)
   update_smallest_pmtu_idx (sctp_conn);
 
   u8 idx = sctp_data_subconn_select (sctp_conn);
-
   return sctp_conn->sub_conn[idx].cwnd;
 }
 
@@ -712,12 +718,12 @@ sctp_expired_timers_cb (u32 conn_index, u32 timer_id)
 {
   sctp_connection_t *sctp_conn;
 
+  SCTP_DBG ("%s expired", sctp_timer_to_string (timer_id));
+
   sctp_conn = sctp_connection_get (conn_index, vlib_get_thread_index ());
   /* note: the connection may have already disappeared */
   if (PREDICT_FALSE (sctp_conn == 0))
     return;
-
-  SCTP_DBG ("%s expired", sctp_timer_to_string (timer_id));
 
   if (sctp_conn->sub_conn[conn_index].unacknowledged_hb >
       SCTP_PATH_MAX_RETRANS)
@@ -741,8 +747,8 @@ sctp_expired_timers_cb (u32 conn_index, u32 timer_id)
 	{
 	  /* Start cleanup. App wasn't notified yet so use delete notify as
 	   * opposed to delete to cleanup session layer state. */
-	  stream_session_delete_notify (&sctp_conn->sub_conn
-					[SCTP_PRIMARY_PATH_IDX].connection);
+	  session_transport_delete_notify (&sctp_conn->sub_conn
+					   [SCTP_PRIMARY_PATH_IDX].connection);
 
 	  sctp_connection_timers_reset (sctp_conn);
 
@@ -886,8 +892,7 @@ sctp_main_enable (vlib_main_t * vm)
   vec_validate (tm->ip_lookup_tx_frames[0], num_threads - 1);
   vec_validate (tm->ip_lookup_tx_frames[1], num_threads - 1);
 
-  tm->bytes_per_buffer = vlib_buffer_free_list_buffer_size
-    (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
+  tm->bytes_per_buffer = vlib_buffer_get_default_data_size (vm);
 
   vec_validate (tm->time_now, num_threads - 1);
   return error;
@@ -938,9 +943,9 @@ sctp_update_time (f64 now, u8 thread_index)
 /* *INDENT OFF* */
 const static transport_proto_vft_t sctp_proto = {
   .enable = sctp_enable_disable,
-  .bind = sctp_session_bind,
-  .unbind = sctp_session_unbind,
-  .open = sctp_session_open,
+  .start_listen = sctp_session_bind,
+  .stop_listen = sctp_session_unbind,
+  .connect = sctp_session_open,
   .close = sctp_session_close,
   .cleanup = sctp_session_cleanup,
   .push_header = sctp_push_header,
@@ -987,6 +992,29 @@ sctp_init (vlib_main_t * vm)
 }
 
 VLIB_INIT_FUNCTION (sctp_init);
+
+static clib_error_t *
+show_sctp_punt_fn (vlib_main_t * vm, unformat_input_t * input,
+		   vlib_cli_command_t * cmd_arg)
+{
+  sctp_main_t *tm = &sctp_main;
+  if (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    return clib_error_return (0, "unknown input `%U'", format_unformat_error,
+			      input);
+  vlib_cli_output (vm, "IPv4 UDP punt: %s",
+		   tm->punt_unknown4 ? "enabled" : "disabled");
+  vlib_cli_output (vm, "IPv6 UDP punt: %s",
+		   tm->punt_unknown6 ? "enabled" : "disabled");
+  return 0;
+}
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (show_tcp_punt_command, static) =
+{
+  .path = "show sctp punt",
+  .short_help = "show sctp punt",
+  .function = show_sctp_punt_fn,
+};
+/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

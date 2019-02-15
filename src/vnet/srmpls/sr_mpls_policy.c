@@ -61,9 +61,10 @@ create_sl (mpls_sr_policy_t * sr_policy, mpls_label_t * sl, u32 weight)
 {
   mpls_sr_main_t *sm = &sr_mpls_main;
   mpls_sr_sl_t *segment_list;
+  u32 ii;
 
   pool_get (sm->sid_lists, segment_list);
-  memset (segment_list, 0, sizeof (*segment_list));
+  clib_memset (segment_list, 0, sizeof (*segment_list));
 
   vec_add1 (sr_policy->segments_lists, segment_list - sm->sid_lists);
 
@@ -85,20 +86,37 @@ create_sl (mpls_sr_policy_t * sr_policy, mpls_label_t * sl, u32 weight)
       .frp_local_label = sl[0],
     };
 
-    vec_add (path.frp_label_stack, sl + 1, vec_len (sl) - 1);
+    if (vec_len (sl) > 1)
+      {
+	vec_validate (path.frp_label_stack, vec_len (sl) - 2);
+	for (ii = 1; ii < vec_len (sl); ii++)
+	  {
+	    path.frp_label_stack[ii - 1].fml_value = sl[ii];
+	  }
+      }
+    else
+      {
+	/*
+	 * add an impliciet NULL label to allow non-eos recursion
+	 */
+	fib_mpls_label_t lbl = {
+	  .fml_value = MPLS_IETF_IMPLICIT_NULL_LABEL,
+	};
+	vec_add1 (path.frp_label_stack, lbl);
+      }
 
     fib_route_path_t *paths = NULL;
     vec_add1 (paths, path);
 
-		/* *INDENT-OFF* */
-		fib_prefix_t	pfx = {
-			.fp_len = 21,
-			.fp_proto = FIB_PROTOCOL_MPLS,
-			.fp_label = sr_policy->bsid,
-			.fp_eos = eos,
-			.fp_payload_proto = DPO_PROTO_MPLS,
-		};
-		/* *INDENT-ON* */
+    /* *INDENT-OFF* */
+    fib_prefix_t pfx = {
+        .fp_len = 21,
+        .fp_proto = FIB_PROTOCOL_MPLS,
+        .fp_label = sr_policy->bsid,
+        .fp_eos = eos,
+        .fp_payload_proto = DPO_PROTO_MPLS,
+    };
+    /* *INDENT-ON* */
 
     fib_table_entry_path_add2 (0,
 			       &pfx,
@@ -141,6 +159,10 @@ sr_mpls_policy_add (mpls_label_t bsid, mpls_label_t * segments,
   if (!sm->sr_policies_index_hash)
     sm->sr_policies_index_hash = hash_create (0, sizeof (mpls_label_t));
 
+  /* MPLS SR policies cannot be created unless the MPLS table is present */
+  if (~0 == fib_table_find (FIB_PROTOCOL_MPLS, MPLS_FIB_DEFAULT_TABLE_ID))
+    return (VNET_API_ERROR_NO_SUCH_TABLE);
+
   /* Search for existing keys (BSID) */
   p = hash_get (sm->sr_policies_index_hash, bsid);
   if (p)
@@ -150,7 +172,14 @@ sr_mpls_policy_add (mpls_label_t bsid, mpls_label_t * segments,
     }
   /* Add an SR policy object */
   pool_get (sm->sr_policies, sr_policy);
-  memset (sr_policy, 0, sizeof (*sr_policy));
+  clib_memset (sr_policy, 0, sizeof (*sr_policy));
+
+  /* the first policy needs to lock the MPLS table so it doesn't
+   * disappear with policies in it */
+  if (1 == pool_elts (sm->sr_policies))
+    fib_table_find_or_create_and_lock (FIB_PROTOCOL_MPLS,
+				       MPLS_FIB_DEFAULT_TABLE_ID,
+				       FIB_SOURCE_SR);
   sr_policy->bsid = bsid;
   sr_policy->type = behavior;
   sr_policy->endpoint_type = 0;
@@ -242,6 +271,10 @@ sr_mpls_policy_del (mpls_label_t bsid)
   /* Remove SR policy entry */
   hash_unset (sm->sr_policies_index_hash, sr_policy->bsid);
   pool_put (sm->sr_policies, sr_policy);
+
+  if (0 == pool_elts (sm->sr_policies))
+    fib_table_unlock (MPLS_FIB_DEFAULT_TABLE_ID,
+		      FIB_PROTOCOL_MPLS, FIB_SOURCE_SR);
 
   return 0;
 }
@@ -484,6 +517,7 @@ sr_mpls_policy_command_fn (vlib_main_t * vm, unformat_input_t * input,
       rv = sr_mpls_policy_add (bsid, segments,
 			       (is_spray ? SR_POLICY_TYPE_SPRAY :
 				SR_POLICY_TYPE_DEFAULT), weight);
+      vec_free (segments);
     }
   else if (is_del)
     rv = sr_mpls_policy_del (bsid);
@@ -498,6 +532,7 @@ sr_mpls_policy_command_fn (vlib_main_t * vm, unformat_input_t * input,
       if (operation == 3 && weight == (u32) ~ 0)
 	return clib_error_return (0, "No new weight for the SL specified");
       rv = sr_mpls_policy_mod (bsid, operation, segments, sl_index, weight);
+      vec_free (segments);
     }
   switch (rv)
     {
@@ -525,6 +560,8 @@ sr_mpls_policy_command_fn (vlib_main_t * vm, unformat_input_t * input,
       return clib_error_return (0,
 				"Could not modify the segment list. "
 				"The given SL is not associated with such SR policy.");
+    case VNET_API_ERROR_NO_SUCH_TABLE:
+      return clib_error_return (0, "the Default MPLS table is not present");
     default:
       return clib_error_return (0, "BUG: sr policy returns %d", rv);
     }
@@ -803,7 +840,7 @@ cli_sr_mpls_policy_ec_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u8 endpoint_type = 0;
   char clear = 0, color_set = 0, bsid_set = 0;
 
-  memset (&endpoint, 0, sizeof (ip46_address_t));
+  clib_memset (&endpoint, 0, sizeof (ip46_address_t));
 
   int rv;
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)

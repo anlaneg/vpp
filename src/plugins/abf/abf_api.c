@@ -82,7 +82,7 @@ vl_api_abf_plugin_get_version_t_handler (vl_api_abf_plugin_get_version_t * mp)
     }
 
   rmp = vl_msg_api_alloc (msg_size);
-  memset (rmp, 0, msg_size);
+  clib_memset (rmp, 0, msg_size);
   rmp->_vl_msg_id =
     ntohs (VL_API_ABF_PLUGIN_GET_VERSION_REPLY + abf_base_msg_id);
   rmp->context = mp->context;
@@ -176,7 +176,7 @@ abf_policy_send_details (u32 api, void *args)
   msg_size = sizeof (*mp) + sizeof (mp->policy.paths[0]) * n_paths;
 
   mp = vl_msg_api_alloc (msg_size);
-  memset (mp, 0, msg_size);
+  clib_memset (mp, 0, msg_size);
   mp->_vl_msg_id = ntohs (VL_API_ABF_POLICY_DETAILS + abf_base_msg_id);
 
   /* fill in the message */
@@ -185,7 +185,7 @@ abf_policy_send_details (u32 api, void *args)
   mp->policy.acl_index = htonl (ap->ap_acl);
   mp->policy.policy_id = htonl (ap->ap_id);
 
-  fib_path_list_walk (ap->ap_pl, fib_path_encode, &api_rpaths);
+  fib_path_list_walk_w_ext (ap->ap_pl, NULL, fib_path_encode, &api_rpaths);
 
   fp = mp->policy.paths;
   vec_foreach (api_rpath, api_rpaths)

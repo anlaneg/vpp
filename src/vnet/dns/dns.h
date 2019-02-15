@@ -101,6 +101,9 @@ typedef struct
   /** enable / disable flag */
   int is_enabled;
 
+  /** udp port registration complete */
+  int udp_ports_registered;
+
   /** upstream name servers, e.g. 8.8.8.8 */
   ip4_address_t *ip4_name_servers;
   ip6_address_t *ip6_name_servers;
@@ -187,7 +190,7 @@ dns_cache_lock (dns_main_t * dm)
 {
   if (dm->cache_lock)
     {
-      while (__sync_lock_test_and_set (dm->cache_lock, 1))
+      while (clib_atomic_test_and_set (dm->cache_lock))
 	;
     }
 }

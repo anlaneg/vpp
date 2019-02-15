@@ -2,9 +2,9 @@
 
 User can LD_PRELOAD any application that uses POSIX socket API.
 
-NOTE: The sources have been moved to .../vpp/src/vcl and libvcl_ldpreload.so
-      libvcl-ldpreload.so is built with VPP and can be found in
-      .../vpp/build-root/install-vpp[_debug]-native/vpp/lib64
+NOTE: The sources have been moved to .../vpp/src/vcl and
+      libvcl_ldpreload.so is built with VPP and can be found in
+      .../vpp/build-root/install-vpp[_debug]-native/vpp/lib
 
 ## HowTo
 

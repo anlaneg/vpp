@@ -49,7 +49,7 @@ format_l2_patch_trace (u8 * s, va_list * args)
   return s;
 }
 
-l2_patch_main_t l2_patch_main;
+static l2_patch_main_t l2_patch_main;
 
 static vlib_node_registration_t l2_patch_node;
 
@@ -77,145 +77,125 @@ typedef enum
   L2_PATCH_N_NEXT,
 } l2_patch_next_t;
 
-static uword
-l2_patch_node_fn (vlib_main_t * vm,
-		  vlib_node_runtime_t * node, vlib_frame_t * frame)
+static_always_inline void
+l2_patch_trace (vlib_main_t * vm, vlib_node_runtime_t * node,
+		l2_patch_main_t * l2pm, vlib_buffer_t * b, u32 sw_if_index)
 {
-  u32 n_left_from, *from, *to_next;
-  l2_patch_next_t next_index;
+  l2_patch_trace_t *t;
+
+  if ((b->flags & VLIB_BUFFER_IS_TRACED) == 0)
+    return;
+
+  t = vlib_add_trace (vm, node, b, sizeof (*t));
+  t->rx_sw_if_index = sw_if_index;
+  t->tx_sw_if_index = l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index];
+}
+
+static_always_inline void
+l2_patch_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
+		 l2_patch_main_t * l2pm, vlib_buffer_t ** b, u16 * next,
+		 u32 n_left, int do_trace)
+{
+  u32 sw_if_index[4];
+
+  while (n_left >= 4)
+    {
+      /* Prefetch next iteration. */
+      if (n_left >= 8)
+	{
+	  vlib_buffer_t **p = b + 4;
+	  vlib_prefetch_buffer_header (p[0], LOAD);
+	  vlib_prefetch_buffer_header (p[1], LOAD);
+	  vlib_prefetch_buffer_header (p[2], LOAD);
+	  vlib_prefetch_buffer_header (p[3], LOAD);
+	}
+
+      sw_if_index[0] = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
+      sw_if_index[1] = vnet_buffer (b[1])->sw_if_index[VLIB_RX];
+      sw_if_index[2] = vnet_buffer (b[2])->sw_if_index[VLIB_RX];
+      sw_if_index[3] = vnet_buffer (b[3])->sw_if_index[VLIB_RX];
+
+      ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index[0]] != ~0);
+      ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[0]] != ~0);
+      ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index[1]] != ~0);
+      ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[1]] != ~0);
+      ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index[2]] != ~0);
+      ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[2]] != ~0);
+      ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index[3]] != ~0);
+      ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[3]] != ~0);
+
+      next[0] = l2pm->tx_next_by_rx_sw_if_index[sw_if_index[0]];
+      next[1] = l2pm->tx_next_by_rx_sw_if_index[sw_if_index[1]];
+      next[2] = l2pm->tx_next_by_rx_sw_if_index[sw_if_index[2]];
+      next[3] = l2pm->tx_next_by_rx_sw_if_index[sw_if_index[3]];
+
+      vnet_buffer (b[0])->sw_if_index[VLIB_TX] =
+	l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[0]];
+      vnet_buffer (b[1])->sw_if_index[VLIB_TX] =
+	l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[1]];
+      vnet_buffer (b[2])->sw_if_index[VLIB_TX] =
+	l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[2]];
+      vnet_buffer (b[3])->sw_if_index[VLIB_TX] =
+	l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[3]];
+
+      if (do_trace)
+	{
+	  l2_patch_trace (vm, node, l2pm, b[0], sw_if_index[0]);
+	  l2_patch_trace (vm, node, l2pm, b[1], sw_if_index[1]);
+	  l2_patch_trace (vm, node, l2pm, b[2], sw_if_index[2]);
+	  l2_patch_trace (vm, node, l2pm, b[3], sw_if_index[3]);
+	}
+
+      /* next */
+      next += 4;
+      b += 4;
+      n_left -= 4;
+    }
+
+  while (n_left)
+    {
+      sw_if_index[0] = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
+
+      ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index[0]] != ~0);
+      ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[0]] != ~0);
+
+      next[0] = l2pm->tx_next_by_rx_sw_if_index[sw_if_index[0]];
+
+      vnet_buffer (b[0])->sw_if_index[VLIB_TX] =
+	l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index[0]];
+
+      if (do_trace)
+	l2_patch_trace (vm, node, l2pm, b[0], sw_if_index[0]);
+
+      /* next */
+      next += 1;
+      b += 1;
+      n_left -= 1;
+    }
+}
+
+VLIB_NODE_FN (l2_patch_node) (vlib_main_t * vm,
+			      vlib_node_runtime_t * node,
+			      vlib_frame_t * frame)
+{
+  u32 *from;
   l2_patch_main_t *l2pm = &l2_patch_main;
   vlib_node_t *n = vlib_get_node (vm, l2_patch_node.index);
   u32 node_counter_base_index = n->error_heap_index;
   vlib_error_main_t *em = &vm->error_main;
+  vlib_buffer_t *bufs[VLIB_FRAME_SIZE];
+  u16 nexts[VLIB_FRAME_SIZE];
 
   from = vlib_frame_vector_args (frame);
-  n_left_from = frame->n_vectors;
-  next_index = node->cached_next_index;
 
-  while (n_left_from > 0)
-    {
-      u32 n_left_to_next;
+  vlib_get_buffers (vm, from, bufs, frame->n_vectors);
 
-      vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
+  if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)))
+    l2_patch_inline (vm, node, l2pm, bufs, nexts, frame->n_vectors, 1);
+  else
+    l2_patch_inline (vm, node, l2pm, bufs, nexts, frame->n_vectors, 0);
 
-      while (n_left_from >= 4 && n_left_to_next >= 2)
-	{
-	  u32 bi0, bi1;
-	  vlib_buffer_t *b0, *b1;
-	  u32 next0, next1;
-	  u32 sw_if_index0, sw_if_index1;
-
-	  /* Prefetch next iteration. */
-	  {
-	    vlib_buffer_t *p2, *p3;
-
-	    p2 = vlib_get_buffer (vm, from[2]);
-	    p3 = vlib_get_buffer (vm, from[3]);
-
-	    vlib_prefetch_buffer_header (p2, LOAD);
-	    vlib_prefetch_buffer_header (p3, LOAD);
-
-	    /* So stupid / simple, we don't need to prefetch data */
-	  }
-
-	  /* speculatively enqueue b0 and b1 to the current next frame */
-	  to_next[0] = bi0 = from[0];
-	  to_next[1] = bi1 = from[1];
-	  from += 2;
-	  to_next += 2;
-	  n_left_from -= 2;
-	  n_left_to_next -= 2;
-
-	  b0 = vlib_get_buffer (vm, bi0);
-	  b1 = vlib_get_buffer (vm, bi1);
-
-	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-	  sw_if_index1 = vnet_buffer (b1)->sw_if_index[VLIB_RX];
-
-	  ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index0] != ~0);
-	  ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0] != ~0);
-	  ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index1] != ~0);
-	  ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index1] != ~0);
-
-	  next0 = l2pm->tx_next_by_rx_sw_if_index[sw_if_index0];
-	  next1 = l2pm->tx_next_by_rx_sw_if_index[sw_if_index1];
-	  vnet_buffer (b0)->sw_if_index[VLIB_TX] =
-	    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0];
-	  vnet_buffer (b1)->sw_if_index[VLIB_TX] =
-	    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index1];
-
-	  if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)))
-	    {
-	      if (b0->flags & VLIB_BUFFER_IS_TRACED)
-		{
-		  l2_patch_trace_t *t =
-		    vlib_add_trace (vm, node, b0, sizeof (*t));
-		  t->rx_sw_if_index = sw_if_index0;
-		  t->tx_sw_if_index =
-		    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0];
-		}
-	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
-		{
-		  l2_patch_trace_t *t =
-		    vlib_add_trace (vm, node, b1, sizeof (*t));
-		  t->rx_sw_if_index = sw_if_index1;
-		  t->tx_sw_if_index =
-		    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index1];
-		}
-	    }
-
-	  /* verify speculative enqueues, maybe switch current next frame */
-	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
-					   to_next, n_left_to_next,
-					   bi0, bi1, next0, next1);
-	}
-
-      while (n_left_from > 0 && n_left_to_next > 0)
-	{
-	  u32 bi0;
-	  vlib_buffer_t *b0;
-	  u32 next0;
-	  u32 sw_if_index0;
-
-	  /* speculatively enqueue b0 to the current next frame */
-	  bi0 = from[0];
-	  to_next[0] = bi0;
-	  from += 1;
-	  to_next += 1;
-	  n_left_from -= 1;
-	  n_left_to_next -= 1;
-
-	  b0 = vlib_get_buffer (vm, bi0);
-
-	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-
-	  ASSERT (l2pm->tx_next_by_rx_sw_if_index[sw_if_index0] != ~0);
-	  ASSERT (l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0] != ~0);
-
-	  next0 = l2pm->tx_next_by_rx_sw_if_index[sw_if_index0];
-	  vnet_buffer (b0)->sw_if_index[VLIB_TX] =
-	    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0];
-
-	  if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)))
-	    {
-	      if (b0->flags & VLIB_BUFFER_IS_TRACED)
-		{
-		  l2_patch_trace_t *t =
-		    vlib_add_trace (vm, node, b0, sizeof (*t));
-		  t->rx_sw_if_index = sw_if_index0;
-		  t->tx_sw_if_index =
-		    l2pm->tx_sw_if_index_by_rx_sw_if_index[sw_if_index0];
-		}
-	    }
-
-	  /* verify speculative enqueue, maybe switch current next frame */
-	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
-					   to_next, n_left_to_next,
-					   bi0, next0);
-	}
-
-      vlib_put_next_frame (vm, node, next_index, n_left_to_next);
-    }
+  vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
 
   em->counters[node_counter_base_index + L2_PATCH_ERROR_PATCHED] +=
     frame->n_vectors;
@@ -225,7 +205,6 @@ l2_patch_node_fn (vlib_main_t * vm,
 
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (l2_patch_node, static) = {
-  .function = l2_patch_node_fn,
   .name = "l2-patch",
   .vector_size = sizeof (u32),
   .format_trace = format_l2_patch_trace,
@@ -243,9 +222,11 @@ VLIB_REGISTER_NODE (l2_patch_node, static) = {
 };
 /* *INDENT-ON* */
 
-VLIB_NODE_FUNCTION_MULTIARCH (l2_patch_node, l2_patch_node_fn)
-     int vnet_l2_patch_add_del (u32 rx_sw_if_index, u32 tx_sw_if_index,
-				int is_add)
+extern int
+vnet_l2_patch_add_del (u32 rx_sw_if_index, u32 tx_sw_if_index, int is_add);
+#ifndef CLIB_MARCH_VARIANT
+int
+vnet_l2_patch_add_del (u32 rx_sw_if_index, u32 tx_sw_if_index, int is_add)
 {
   l2_patch_main_t *l2pm = &l2_patch_main;
   vnet_hw_interface_t *rxhi, *txhi;
@@ -303,6 +284,7 @@ VLIB_NODE_FUNCTION_MULTIARCH (l2_patch_node, l2_patch_node_fn)
 
   return 0;
 }
+#endif
 
 static clib_error_t *
 test_patch_command_fn (vlib_main_t * vm,
@@ -444,7 +426,7 @@ VLIB_CLI_COMMAND (show_l2patch_cli, static) = {
 };
 /* *INDENT-ON* */
 
-clib_error_t *
+static clib_error_t *
 l2_patch_init (vlib_main_t * vm)
 {
   l2_patch_main_t *mp = &l2_patch_main;

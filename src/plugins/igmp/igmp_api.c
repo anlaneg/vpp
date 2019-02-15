@@ -50,15 +50,17 @@
 
 #define IGMP_MSG_ID(_id) (_id + igmp_main.msg_id_base)
 
-#define foreach_igmp_plugin_api_msg                      \
-_(IGMP_LISTEN, igmp_listen)                              \
-_(IGMP_ENABLE_DISABLE, igmp_enable_disable)              \
-_(IGMP_DUMP, igmp_dump)                                  \
-_(IGMP_CLEAR_INTERFACE, igmp_clear_interface)            \
-_(IGMP_CLEAR_INTERFACE, igmp_clear_interface)            \
-_(IGMP_GROUP_PREFIX_SET, igmp_group_prefix_set)          \
-_(IGMP_GROUP_PREFIX_DUMP, igmp_group_prefix_dump)        \
-_(WANT_IGMP_EVENTS, want_igmp_events)                    \
+#define foreach_igmp_plugin_api_msg                                            \
+_(IGMP_LISTEN, igmp_listen)                                                    \
+_(IGMP_ENABLE_DISABLE, igmp_enable_disable)                                    \
+_(IGMP_PROXY_DEVICE_ADD_DEL, igmp_proxy_device_add_del)                        \
+_(IGMP_PROXY_DEVICE_ADD_DEL_INTERFACE, igmp_proxy_device_add_del_interface)    \
+_(IGMP_DUMP, igmp_dump)                                                        \
+_(IGMP_CLEAR_INTERFACE, igmp_clear_interface)                                  \
+_(IGMP_CLEAR_INTERFACE, igmp_clear_interface)                                  \
+_(IGMP_GROUP_PREFIX_SET, igmp_group_prefix_set)                                \
+_(IGMP_GROUP_PREFIX_DUMP, igmp_group_prefix_dump)                              \
+_(WANT_IGMP_EVENTS, want_igmp_events)                                          \
 
 static void
 vl_api_igmp_listen_t_handler (vl_api_igmp_listen_t * mp)
@@ -79,7 +81,7 @@ vl_api_igmp_listen_t_handler (vl_api_igmp_listen_t * mp)
       goto done;
     }
 
-  memset (&gaddr, 0, sizeof (gaddr));
+  clib_memset (&gaddr, 0, sizeof (gaddr));
   clib_memcpy (&gaddr.ip4, &mp->group.gaddr, sizeof (ip4_address_t));
 
   vec_validate (saddrs, mp->group.n_srcs - 1);
@@ -121,6 +123,43 @@ vl_api_igmp_enable_disable_t_handler (vl_api_igmp_enable_disable_t * mp)
 }
 
 static void
+vl_api_igmp_proxy_device_add_del_t_handler (vl_api_igmp_proxy_device_add_del_t
+					    * mp)
+{
+  vl_api_igmp_proxy_device_add_del_reply_t *rmp;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  rv =
+    igmp_proxy_device_add_del (ntohl (mp->vrf_id), ntohl (mp->sw_if_index),
+			       mp->add);
+
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (IGMP_MSG_ID (VL_API_IGMP_PROXY_DEVICE_ADD_DEL_REPLY));
+}
+
+static void
+  vl_api_igmp_proxy_device_add_del_interface_t_handler
+  (vl_api_igmp_proxy_device_add_del_interface_t * mp)
+{
+  vl_api_igmp_proxy_device_add_del_interface_reply_t *rmp;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  rv =
+    igmp_proxy_device_add_del_interface (ntohl (mp->vrf_id),
+					 ntohl (mp->sw_if_index), mp->add);
+
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (IGMP_MSG_ID
+	       (VL_API_IGMP_PROXY_DEVICE_ADD_DEL_INTERFACE_REPLY));
+}
+
+static void
 send_igmp_details (unix_shared_memory_queue_t * q, igmp_main_t * im,
 		   igmp_config_t * config, igmp_group_t * group,
 		   igmp_src_t * src, u32 context)
@@ -128,13 +167,13 @@ send_igmp_details (unix_shared_memory_queue_t * q, igmp_main_t * im,
   vl_api_igmp_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
 
   mp->_vl_msg_id = htons (IGMP_MSG_ID (VL_API_IGMP_DETAILS));
   mp->context = context;
   mp->sw_if_index = htonl (config->sw_if_index);
-  clib_memcpy (mp->saddr.address, &src->key->ip4, sizeof (src->key->ip4));
-  clib_memcpy (mp->gaddr.address, &group->key->ip4, sizeof (group->key->ip4));
+  clib_memcpy (&mp->saddr, &src->key->ip4, sizeof (src->key->ip4));
+  clib_memcpy (&mp->gaddr, &group->key->ip4, sizeof (group->key->ip4));
 
   vl_msg_api_send_shmem (q, (u8 *) & mp);
 }
@@ -259,7 +298,7 @@ igmp_ssm_range_walk_dump (const fib_prefix_t * pfx,
   vl_api_igmp_group_prefix_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
 
   mp->_vl_msg_id = htons (IGMP_MSG_ID (VL_API_IGMP_DETAILS));
   mp->context = ctx->context;
@@ -325,7 +364,7 @@ vl_api_want_igmp_events_t_handler (vl_api_want_igmp_events_t * mp)
   if (mp->enable)
     {
       pool_get (im->api_clients, api_client);
-      memset (api_client, 0, sizeof (vpe_client_registration_t));
+      clib_memset (api_client, 0, sizeof (vpe_client_registration_t));
       api_client->client_index = mp->client_index;
       api_client->client_pid = mp->pid;
       hash_set (im->igmp_api_client_by_client_index,
@@ -366,7 +405,7 @@ send_igmp_event (unix_shared_memory_queue_t * q,
 		 const ip46_address_t * saddr, const ip46_address_t * gaddr)
 {
   vl_api_igmp_event_t *mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
 
   mp->_vl_msg_id = ntohs ((VL_API_IGMP_EVENT) + igmp_main.msg_id_base);
   mp->context = context;

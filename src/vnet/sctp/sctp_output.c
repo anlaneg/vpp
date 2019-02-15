@@ -264,21 +264,20 @@ sctp_reuse_buffer (vlib_main_t * vm, vlib_buffer_t * b)
   vnet_buffer (b)->sctp.subconn_idx = MAX_SCTP_CONNECTIONS;
 
   /* Leave enough space for headers */
-  return vlib_buffer_make_headroom (b, MAX_HDRS_LEN);
+  return vlib_buffer_make_headroom (b, TRANSPORT_MAX_HDRS_LEN);
 }
 
 always_inline void *
 sctp_init_buffer (vlib_main_t * vm, vlib_buffer_t * b)
 {
   ASSERT ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0);
-  b->flags &= VLIB_BUFFER_NON_DEFAULT_FREELIST;
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
   b->total_length_not_including_first_buffer = 0;
   vnet_buffer (b)->sctp.flags = 0;
   vnet_buffer (b)->sctp.subconn_idx = MAX_SCTP_CONNECTIONS;
   VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
   /* Leave enough space for headers */
-  return vlib_buffer_make_headroom (b, MAX_HDRS_LEN);
+  return vlib_buffer_make_headroom (b, TRANSPORT_MAX_HDRS_LEN);
 }
 
 always_inline int
@@ -584,8 +583,8 @@ sctp_prepare_cookie_echo_chunk (sctp_connection_t * sctp_conn, u8 idx,
   cookie_echo_chunk->sctp_hdr.verification_tag = sctp_conn->remote_tag;
   vnet_sctp_set_chunk_type (&cookie_echo_chunk->chunk_hdr, COOKIE_ECHO);
   vnet_sctp_set_chunk_length (&cookie_echo_chunk->chunk_hdr, chunk_len);
-  clib_memcpy (&(cookie_echo_chunk->cookie), &sctp_conn->cookie_param,
-	       sizeof (sctp_state_cookie_param_t));
+  clib_memcpy_fast (&(cookie_echo_chunk->cookie), &sctp_conn->cookie_param,
+		    sizeof (sctp_state_cookie_param_t));
 
   vnet_buffer (b)->sctp.connection_index =
     sctp_conn->sub_conn[idx].connection.c_index;
@@ -779,7 +778,7 @@ sctp_prepare_initack_chunk_for_collision (sctp_connection_t * sctp_conn,
     clib_host_to_net_u16 (SCTP_STATE_COOKIE_TYPE);
   state_cookie_param->param_hdr.length =
     clib_host_to_net_u16 (sizeof (sctp_state_cookie_param_t));
-  state_cookie_param->creation_time = clib_host_to_net_u32 (sctp_time_now ());
+  state_cookie_param->creation_time = clib_host_to_net_u64 (sctp_time_now ());
   state_cookie_param->cookie_lifespan =
     clib_host_to_net_u32 (SCTP_VALID_COOKIE_LIFE);
 
@@ -919,7 +918,7 @@ sctp_prepare_initack_chunk (sctp_connection_t * sctp_conn, u8 idx,
     clib_host_to_net_u16 (SCTP_STATE_COOKIE_TYPE);
   state_cookie_param->param_hdr.length =
     clib_host_to_net_u16 (sizeof (sctp_state_cookie_param_t));
-  state_cookie_param->creation_time = clib_host_to_net_u32 (sctp_time_now ());
+  state_cookie_param->creation_time = clib_host_to_net_u64 (sctp_time_now ());
   state_cookie_param->cookie_lifespan =
     clib_host_to_net_u32 (SCTP_VALID_COOKIE_LIFE);
 
@@ -1239,7 +1238,7 @@ sctp_send_heartbeat (sctp_connection_t * sctp_conn)
   vlib_main_t *vm = vlib_get_main ();
 
   u8 i;
-  u32 now = sctp_time_now ();
+  u64 now = sctp_time_now ();
 
   for (i = 0; i < MAX_SCTP_CONNECTIONS; i++)
     {
@@ -1367,6 +1366,7 @@ sctp_push_hdr_i (sctp_connection_t * sctp_conn, vlib_buffer_t * b,
 {
   u16 data_len =
     b->current_length + b->total_length_not_including_first_buffer;
+
   ASSERT (!b->total_length_not_including_first_buffer
 	  || (b->flags & VLIB_BUFFER_NEXT_PRESENT));
 
@@ -1375,10 +1375,15 @@ sctp_push_hdr_i (sctp_connection_t * sctp_conn, vlib_buffer_t * b,
 		       "data_len = %u",
 		       b->current_length, b->current_data, data_len);
 
+  u16 data_padding = vnet_sctp_calculate_padding (b->current_length);
+  if (data_padding > 0)
+    {
+      u8 *p_tail = vlib_buffer_put_uninit (b, data_padding);
+      clib_memset_u8 (p_tail, 0, data_padding);
+    }
+
   u16 bytes_to_add = sizeof (sctp_payload_data_chunk_t);
   u16 chunk_length = data_len + bytes_to_add - sizeof (sctp_header_t);
-
-  bytes_to_add += vnet_sctp_calculate_padding (bytes_to_add + data_len);
 
   sctp_payload_data_chunk_t *data_chunk =
     vlib_buffer_push_uninit (b, bytes_to_add);
@@ -1518,6 +1523,8 @@ sctp_data_retransmit (sctp_connection_t * sctp_conn)
   vlib_buffer_t *b = 0;
   u32 bi, n_bytes = 0;
 
+  u8 idx = sctp_data_subconn_select (sctp_conn);
+
   SCTP_DBG_OUTPUT
     ("SCTP_CONN = %p, IDX = %u, S_INDEX = %u, C_INDEX = %u, sctp_conn->[...].LCL_PORT = %u, sctp_conn->[...].RMT_PORT = %u",
      sctp_conn, idx, sctp_conn->sub_conn[idx].connection.s_index,
@@ -1529,8 +1536,6 @@ sctp_data_retransmit (sctp_connection_t * sctp_conn)
     {
       return;
     }
-
-  u8 idx = sctp_data_subconn_select (sctp_conn);
 
   n_bytes =
     sctp_prepare_data_retransmit (sctp_conn, idx, 0,
@@ -1844,15 +1849,15 @@ sctp46_output_inline (vlib_main_t * vm,
 	      t0 = vlib_add_trace (vm, node, b0, sizeof (*t0));
 	      if (th0)
 		{
-		  clib_memcpy (&t0->sctp_header, th0,
-			       sizeof (t0->sctp_header));
+		  clib_memcpy_fast (&t0->sctp_header, th0,
+				    sizeof (t0->sctp_header));
 		}
 	      else
 		{
-		  memset (&t0->sctp_header, 0, sizeof (t0->sctp_header));
+		  clib_memset (&t0->sctp_header, 0, sizeof (t0->sctp_header));
 		}
-	      clib_memcpy (&t0->sctp_connection, sctp_conn,
-			   sizeof (t0->sctp_connection));
+	      clib_memcpy_fast (&t0->sctp_connection, sctp_conn,
+				sizeof (t0->sctp_connection));
 	    }
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,

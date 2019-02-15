@@ -61,7 +61,6 @@ char *vlib_default_runtime_dir = "vlib";
 
 unix_main_t unix_main;
 clib_file_main_t file_main;
-vlib_physmem_main_t physmem_main;
 
 static clib_error_t *
 unix_main_init (vlib_main_t * vm)
@@ -172,7 +171,7 @@ setup_signal_handlers (unix_main_t * um)
 
   for (i = 1; i < 32; i++)
     {
-      memset (&sa, 0, sizeof (sa));
+      clib_memset (&sa, 0, sizeof (sa));
       sa.sa_sigaction = (void *) unix_signal_handler;
       sa.sa_flags = SA_SIGINFO;
 

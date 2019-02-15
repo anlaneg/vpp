@@ -89,7 +89,7 @@ vl_api_sw_interface_span_dump_t_handler (vl_api_sw_interface_span_dump_t * mp)
       clib_bitmap_foreach (i, b, (
         {
           rmp = vl_msg_api_alloc (sizeof (*rmp));
-          memset (rmp, 0, sizeof (*rmp));
+          clib_memset (rmp, 0, sizeof (*rmp));
           rmp->_vl_msg_id = ntohs (VL_API_SW_INTERFACE_SPAN_DETAILS);
           rmp->context = mp->context;
 
@@ -110,7 +110,7 @@ vl_api_sw_interface_span_dump_t_handler (vl_api_sw_interface_span_dump_t * mp)
 /*
  * vpe_api_hookup
  * Add vpe's API message handlers to the table.
- * vlib has alread mapped shared memory and
+ * vlib has already mapped shared memory and
  * added the client registration handlers.
  * See .../vlib-api/vlibmemory/memclnt_vlib.c:memclnt_process()
  */

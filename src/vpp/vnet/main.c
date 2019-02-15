@@ -29,7 +29,7 @@
 /*
  * Load plugins from /usr/lib/vpp_plugins by default
  */
-char *vlib_plugin_path = "/usr/lib/vpp_plugins";//vpp插件目录
+char *vlib_plugin_path = NULL;//vpp插件目录
 char *vlib_plugin_app_version = VPP_BUILD_VER;
 
 static void
@@ -57,17 +57,13 @@ vpp_find_plugin_path ()
     return;
   *p = 0;
 
-  s = format (0, "%s/lib/vpp_plugins", path);
-#if uword_bits == 64
-  s = format (s, ":%s/lib64/vpp_plugins", path);
-#endif
+  s = format (0, "%s/lib/" CLIB_TARGET_TRIPLET "/vpp_plugins:"
+	      "%s/lib/vpp_plugins", path, path);
   vec_add1 (s, 0);
   vlib_plugin_path = (char *) s;
 
-  s = format (0, "%s/lib/vpp_api_test_plugins", path);
-#if uword_bits == 64
-  s = format (s, ":%s/lib64/vpp_api_test_plugins", path);
-#endif
+  s = format (0, "%s/lib/" CLIB_TARGET_TRIPLET "/vpp_api_test_plugins:"
+	      "%s/lib/vpp_api_test_plugins", path, path);
   vec_add1 (s, 0);
   vat_plugin_path = (char *) s;
 }
@@ -90,7 +86,8 @@ vpe_main_init (vlib_main_t * vm)
    */
   vat_plugin_hash_create ();
 
-  vpp_find_plugin_path ();
+  if (!vlib_plugin_path)
+    vpp_find_plugin_path ();
 }
 
 /*
@@ -161,10 +158,17 @@ main (int argc, char *argv[])
 	}
       argv_ = calloc (1, sizeof (char *));
       if (argv_ == NULL)
-	return 1;
+	{
+	  fclose (fp);
+	  return 1;
+	}
       arg = strndup (argv[0], 1024);
       if (arg == NULL)
-	return 1;
+	{
+	  fclose (fp);
+	  free (argv_);
+	  return 1;
+	}
       argv_[0] = arg;
 
       while (1)

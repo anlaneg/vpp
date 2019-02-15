@@ -23,7 +23,6 @@
 #include <vnet/l2/l2_input.h>
 #include <vnet/l2/feat_bitmap.h>
 #include <vnet/l2/l2_bvi.h>
-#include <vnet/replication.h>
 #include <vnet/l2/l2_fib.h>
 
 #include <vppinfra/error.h>
@@ -156,11 +155,12 @@ l2flood_node_fn (vlib_main_t * vm,
 
       while (n_left_from > 0 && n_left_to_next > 0)
 	{
-	  u32 next0, sw_if_index0, bi0, ci0;
 	  u16 n_clones, n_cloned, clone0;
 	  l2_bridge_domain_t *bd_config;
+	  u32 sw_if_index0, bi0, ci0;
 	  l2_flood_member_t *member;
 	  vlib_buffer_t *b0, *c0;
+	  u16 next0;
 	  u8 in_shg;
 	  i32 mi;
 
@@ -209,77 +209,85 @@ l2flood_node_fn (vlib_main_t * vm,
 					       bi0, L2FLOOD_NEXT_DROP);
 	      continue;
 	    }
-
-	  vec_validate (msm->clones[thread_index], n_clones);
-	  vec_reset_length (msm->clones[thread_index]);
-
-	  /*
-	   * the header offset needs to be large enoguh to incorporate
-	   * all the L3 headers that could be touched when doing BVI
-	   * processing. So take the current l2 length plus 2 * IPv6
-	   * headers (for tunnel encap)
-	   */
-	  n_cloned = vlib_buffer_clone (vm, bi0,
-					msm->clones[thread_index],
-					n_clones,
-					(vnet_buffer (b0)->l2.l2_len +
-					 sizeof (udp_header_t) +
-					 2 * sizeof (ip6_header_t)));
-
-	  if (PREDICT_FALSE (n_cloned != n_clones))
+	  else if (n_clones > 1)
 	    {
-	      b0->error = node->errors[L2FLOOD_ERROR_REPL_FAIL];
-	    }
+	      vec_validate (msm->clones[thread_index], n_clones);
+	      vec_reset_length (msm->clones[thread_index]);
 
-	  /*
-	   * for all but the last clone, these are not BVI bound
-	   */
-	  for (clone0 = 0; clone0 < n_cloned - 1; clone0++)
-	    {
+	      /*
+	       * the header offset needs to be large enough to incorporate
+	       * all the L3 headers that could be touched when doing BVI
+	       * processing. So take the current l2 length plus 2 * IPv6
+	       * headers (for tunnel encap)
+	       */
+	      n_cloned = vlib_buffer_clone (vm, bi0,
+					    msm->clones[thread_index],
+					    n_clones,
+					    VLIB_BUFFER_CLONE_HEAD_SIZE);
+
+	      if (PREDICT_FALSE (n_cloned != n_clones))
+		{
+		  b0->error = node->errors[L2FLOOD_ERROR_REPL_FAIL];
+		}
+
+	      /*
+	       * for all but the last clone, these are not BVI bound
+	       */
+	      for (clone0 = 0; clone0 < n_cloned - 1; clone0++)
+		{
+		  member = msm->members[thread_index][clone0];
+		  ci0 = msm->clones[thread_index][clone0];
+		  c0 = vlib_get_buffer (vm, ci0);
+
+		  to_next[0] = ci0;
+		  to_next += 1;
+		  n_left_to_next -= 1;
+
+		  if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE) &&
+				     (b0->flags & VLIB_BUFFER_IS_TRACED)))
+		    {
+		      ethernet_header_t *h0;
+		      l2flood_trace_t *t;
+
+		      if (c0 != b0)
+			vlib_buffer_copy_trace_flag (vm, b0, ci0);
+
+		      t = vlib_add_trace (vm, node, c0, sizeof (*t));
+		      h0 = vlib_buffer_get_current (c0);
+		      t->sw_if_index = sw_if_index0;
+		      t->bd_index = vnet_buffer (c0)->l2.bd_index;
+		      clib_memcpy_fast (t->src, h0->src_address, 6);
+		      clib_memcpy_fast (t->dst, h0->dst_address, 6);
+		    }
+
+		  /* Do normal L2 forwarding */
+		  vnet_buffer (c0)->sw_if_index[VLIB_TX] =
+		    member->sw_if_index;
+
+		  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
+						   to_next, n_left_to_next,
+						   ci0, next0);
+		  if (PREDICT_FALSE (0 == n_left_to_next))
+		    {
+		      vlib_put_next_frame (vm, node, next_index,
+					   n_left_to_next);
+		      vlib_get_next_frame (vm, node, next_index, to_next,
+					   n_left_to_next);
+		    }
+		}
 	      member = msm->members[thread_index][clone0];
 	      ci0 = msm->clones[thread_index][clone0];
-	      c0 = vlib_get_buffer (vm, ci0);
-
-	      to_next[0] = ci0;
-	      to_next += 1;
-	      n_left_to_next -= 1;
-
-	      if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE) &&
-				 (b0->flags & VLIB_BUFFER_IS_TRACED)))
-		{
-		  ethernet_header_t *h0;
-		  l2flood_trace_t *t;
-
-		  if (c0 != b0)
-		    vlib_buffer_copy_trace_flag (vm, b0, ci0);
-
-		  t = vlib_add_trace (vm, node, c0, sizeof (*t));
-		  h0 = vlib_buffer_get_current (c0);
-		  t->sw_if_index = sw_if_index0;
-		  t->bd_index = vnet_buffer (c0)->l2.bd_index;
-		  clib_memcpy (t->src, h0->src_address, 6);
-		  clib_memcpy (t->dst, h0->dst_address, 6);
-		}
-
-	      /* Do normal L2 forwarding */
-	      vnet_buffer (c0)->sw_if_index[VLIB_TX] = member->sw_if_index;
-
-	      vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
-					       to_next, n_left_to_next,
-					       ci0, next0);
-	      if (PREDICT_FALSE (0 == n_left_to_next))
-		{
-		  vlib_put_next_frame (vm, node, next_index, n_left_to_next);
-		  vlib_get_next_frame (vm, node, next_index,
-				       to_next, n_left_to_next);
-		}
+	    }
+	  else
+	    {
+	      /* one clone */
+	      ci0 = bi0;
+	      member = msm->members[thread_index][0];
 	    }
 
 	  /*
 	   * the last clone that might go to a BVI
 	   */
-	  member = msm->members[thread_index][clone0];
-	  ci0 = msm->clones[thread_index][clone0];
 	  c0 = vlib_get_buffer (vm, ci0);
 
 	  to_next[0] = ci0;
@@ -299,8 +307,8 @@ l2flood_node_fn (vlib_main_t * vm,
 	      h0 = vlib_buffer_get_current (c0);
 	      t->sw_if_index = sw_if_index0;
 	      t->bd_index = vnet_buffer (c0)->l2.bd_index;
-	      clib_memcpy (t->src, h0->src_address, 6);
-	      clib_memcpy (t->dst, h0->dst_address, 6);
+	      clib_memcpy_fast (t->src, h0->src_address, 6);
+	      clib_memcpy_fast (t->dst, h0->dst_address, 6);
 	    }
 
 
@@ -372,10 +380,12 @@ VLIB_REGISTER_NODE (l2flood_node,static) = {
         [L2FLOOD_NEXT_DROP] = "error-drop",
   },
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FUNCTION_MULTIARCH (l2flood_node, l2flood_node_fn)
-     clib_error_t *l2flood_init (vlib_main_t * vm)
+/* *INDENT-ON* */
+
+clib_error_t *
+l2flood_init (vlib_main_t * vm)
 {
   l2flood_main_t *mp = &l2flood_main;
 

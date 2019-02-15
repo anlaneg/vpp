@@ -25,13 +25,19 @@
  */
 receive_dpo_t *receive_dpo_pool;
 
+int
+dpo_is_receive (const dpo_id_t *dpo)
+{
+    return (dpo->dpoi_type == DPO_RECEIVE);
+}
+
 static receive_dpo_t *
 receive_dpo_alloc (void)
 {
     receive_dpo_t *rd;
 
     pool_get_aligned(receive_dpo_pool, rd, CLIB_CACHE_LINE_BYTES);
-    memset(rd, 0, sizeof(*rd));
+    clib_memset(rd, 0, sizeof(*rd));
 
     return (rd);
 }

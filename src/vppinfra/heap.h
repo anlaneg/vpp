@@ -137,7 +137,7 @@ typedef struct
 
   format_function_t *format_elt;
 
-  /* Used for validattion/debugging. */
+  /* Used for validation/debugging. */
   uword *used_elt_bitmap;
 
   /* First and last element of doubly linked chain of elements. */
@@ -150,7 +150,7 @@ typedef struct
 
   u32 flags;
   /* Static heaps are made from external memory given to
-     us by user and are not re-sizeable vectors. */
+     us by user and are not re-sizable vectors. */
 #define HEAP_IS_STATIC (1)
 } heap_header_t;
 
@@ -204,7 +204,7 @@ _heap_dup (void *v_old, uword v_bytes)
 		 HEAP_DATA_ALIGN);
   h_new = heap_header (v_new);
   heap_dup_header (h_old, h_new);
-  clib_memcpy (v_new, v_old, v_bytes);
+  clib_memcpy_fast (v_new, v_old, v_bytes);
   return v_new;
 }
 
@@ -260,7 +260,7 @@ heap_create_from_memory (void *memory, uword max_len, uword elt_bytes)
     return 0;
 
   h = memory;
-  memset (h, 0, sizeof (h[0]));
+  clib_memset (h, 0, sizeof (h[0]));
   h->max_len = max_len;
   h->elt_bytes = elt_bytes;
   h->flags = HEAP_IS_STATIC;

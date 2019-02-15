@@ -14,8 +14,7 @@ from scapy.layers.ppp import PPPoE, PPPoED, PPP
 from scapy.layers.inet import IP, UDP
 from scapy.layers.inet6 import IPv6
 from scapy.volatile import RandMAC, RandIP
-
-from util import ppp, ppc, mactobinary
+from util import ppp, ppc
 import socket
 
 

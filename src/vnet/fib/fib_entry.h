@@ -65,6 +65,10 @@ typedef enum fib_source_t_ {
      */
     FIB_SOURCE_BIER,
     /**
+     * From 6RD.
+     */
+    FIB_SOURCE_6RD,
+    /**
      * From the control plane API
      */
     FIB_SOURCE_API,
@@ -157,6 +161,7 @@ STATIC_ASSERT (sizeof(fib_source_t) == 1,
     [FIB_SOURCE_INTERFACE] = "interface",		\
     [FIB_SOURCE_PROXY] = "proxy",                       \
     [FIB_SOURCE_BIER] = "BIER",			        \
+    [FIB_SOURCE_6RD] = "6RD",			        \
     [FIB_SOURCE_API] = "API",			        \
     [FIB_SOURCE_CLI] = "CLI",			        \
     [FIB_SOURCE_ADJ] = "adjacency",			\
@@ -281,6 +286,8 @@ typedef enum fib_entry_flag_t_ {
     FIB_ENTRY_FLAG_INTERPOSE = (1 << FIB_ENTRY_ATTRIBUTE_INTERPOSE),
 } __attribute__((packed)) fib_entry_flag_t;
 
+extern u8 * format_fib_entry_flags(u8 *s, va_list *args);
+
 /**
  * Flags for the source data
  */
@@ -331,6 +338,8 @@ typedef enum fib_entry_src_flag_t_ {
     FIB_ENTRY_SRC_FLAG_ACTIVE = (1 << FIB_ENTRY_SRC_ATTRIBUTE_ACTIVE),
     FIB_ENTRY_SRC_FLAG_INHERITED = (1 << FIB_ENTRY_SRC_ATTRIBUTE_INHERITED),
 } __attribute__ ((packed)) fib_entry_src_flag_t;
+
+extern u8 * format_fib_entry_src_flags(u8 *s, va_list *args);
 
 /*
  * Keep the size of the flags field to 2 bytes, so it
@@ -617,6 +626,8 @@ extern void fib_entry_set_flow_hash_config(fib_node_index_t fib_entry_index,
                                            flow_hash_config_t hash_config);
 
 extern void fib_entry_module_init(void);
+
+extern u32 fib_entry_get_stats_index(fib_node_index_t fib_entry_index);
 
 /*
  * unsafe... beware the raw pointer.

@@ -134,15 +134,14 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 	  u32 error0 = (u32) ~ 0;
 	  u32 sw_if_index = 0;
 	  u32 original_sw_if_index = 0;
-	  u8 *end = NULL;
 	  u32 fib_index;
 	  dhcp_proxy_t *proxy;
 	  dhcp_server_t *server;
 	  u32 rx_sw_if_index;
-	  dhcp_option_t *o;
+	  dhcp_option_t *o, *end;
 	  u32 len = 0;
-	  vlib_buffer_free_list_t *fl;
 	  u8 is_discover = 0;
+	  int space_left;
 
 	  bi0 = from[0];
 	  from += 1;
@@ -171,7 +170,6 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 	    }
 
 	  rx_sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-
 	  fib_index = im->fib_index_by_sw_if_index[rx_sw_if_index];
 	  proxy = dhcp_get_proxy (dpm, fib_index, FIB_PROTOCOL_IP4);
 
@@ -180,6 +178,18 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 	      error0 = DHCP_PROXY_ERROR_NO_SERVER;
 	      next0 = DHCP_PROXY_TO_SERVER_INPUT_NEXT_DROP;
 	      pkts_no_server++;
+	      goto do_trace;
+	    }
+
+	  space_left = vlib_buffer_chain_linearize (vm, b0);
+	  /* cant parse chains...
+	   * and we need some space for option 82*/
+	  if ((b0->flags & VLIB_BUFFER_NEXT_PRESENT) != 0 ||
+	      space_left < VPP_DHCP_OPTION82_SIZE)
+	    {
+	      error0 = DHCP_PROXY_ERROR_PKT_TOO_BIG;
+	      next0 = DHCP_PROXY_TO_SERVER_INPUT_NEXT_DROP;
+	      pkts_too_big++;
 	      goto do_trace;
 	    }
 
@@ -210,17 +220,14 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 	  /* Send to DHCP server via the configured FIB */
 	  vnet_buffer (b0)->sw_if_index[VLIB_TX] = server->server_fib_index;
 
-	  h0->gateway_ip_address.as_u32 = proxy->dhcp_src_address.ip4.as_u32;
+	  h0->gateway_ip_address = proxy->dhcp_src_address.ip4;
 	  pkts_to_server++;
 
-	  o = (dhcp_option_t *) h0->options;
+	  o = h0->options;
+	  end = (void *) vlib_buffer_get_tail (b0);
 
-	  fib_index = im->fib_index_by_sw_if_index
-	    [vnet_buffer (b0)->sw_if_index[VLIB_RX]];
-
-	  end = b0->data + b0->current_data + b0->current_length;
 	  /* TLVs are not performance-friendly... */
-	  while (o->option != 0xFF /* end of options */  && (u8 *) o < end)
+	  while (o->option != DHCP_PACKET_OPTION_END && o < end)
 	    {
 	      if (DHCP_PACKET_OPTION_MSG_TYPE == o->option)
 		{
@@ -229,30 +236,16 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 		      is_discover = 1;
 		    }
 		}
-	      o = (dhcp_option_t *) (((uword) o) + (o->length + 2));
+	      o = (dhcp_option_t *) (o->data + o->length);
 	    }
 
-	  fl =
-	    vlib_buffer_get_free_list (vm,
-				       vlib_buffer_get_free_list_index (b0));
-	  // start write at (option*)o, some packets have padding
-	  if (((u8 *) o - (u8 *) b0->data + VPP_DHCP_OPTION82_SIZE) >
-	      fl->n_data_bytes)
-	    {
-	      next0 = DHCP_PROXY_TO_SERVER_INPUT_NEXT_DROP;
-	      pkts_too_big++;
-	      goto do_trace;
-	    }
-
-	  if ((o->option == 0xFF) && ((u8 *) o <= end))
+	  if (o->option == DHCP_PACKET_OPTION_END && o <= end)
 	    {
 	      vnet_main_t *vnm = vnet_get_main ();
 	      u16 old_l0, new_l0;
 	      ip4_address_t _ia0, *ia0 = &_ia0;
 	      dhcp_vss_t *vss;
 	      vnet_sw_interface_t *swif;
-	      sw_if_index = 0;
-	      original_sw_if_index = 0;
 
 	      original_sw_if_index = sw_if_index =
 		vnet_buffer (b0)->sw_if_index[VLIB_RX];
@@ -286,7 +279,7 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 	      o->data[7] = 4;	/* length 4 */
 	      u32 *o_addr = (u32 *) & o->data[8];
 	      *o_addr = ia0->as_u32;
-	      o->data[12] = 0xFF;
+	      o->data[12] = DHCP_PACKET_OPTION_END;
 
 	      vss = dhcp_get_vss_info (dpm, fib_index, FIB_PROTOCOL_IP4);
 	      if (vss)
@@ -311,7 +304,7 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 		  o->data[14] = vss->vss_type;	/* vss option type */
 		  o->data[15 + id_len] = 152;	/* vss control suboption */
 		  o->data[16 + id_len] = 0;	/* length */
-		  o->data[17 + id_len] = 0xFF;	/* "end-of-options" (0xFF) */
+		  o->data[17 + id_len] = DHCP_PACKET_OPTION_END;	/* "end-of-options" (0xFF) */
 		  /* 5 bytes for suboption headers 151+len, 152+len and 0xFF */
 		  o->length += id_len + 5;
 		}
@@ -358,6 +351,8 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 		  u32 ci0;
 
 		  c0 = vlib_buffer_copy (vm, b0);
+		  vlib_buffer_copy_trace_flag (vm, c0, bi0);
+		  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (c0);
 		  ci0 = vlib_get_buffer_index (vm, c0);
 		  server = &proxy->dhcp_servers[ii];
 
@@ -429,7 +424,6 @@ dhcp_proxy_to_server_input (vlib_main_t * vm,
 
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
-
   vlib_node_increment_counter (vm, dhcp_proxy_to_server_node.index,
 			       DHCP_PROXY_ERROR_RELAY_TO_CLIENT,
 			       pkts_to_client);
@@ -535,24 +529,32 @@ dhcp_proxy_to_client_input (vlib_main_t * vm,
 
       if (1 /* dpm->insert_option_82 */ )
 	{
-	  dhcp_option_t *o = (dhcp_option_t *) h0->options;
-	  dhcp_option_t *sub;
+	  /* linearize needed to "unclone" and scan options */
+	  int space_left = vlib_buffer_chain_linearize (vm, b0);
+	  if ((b0->flags & VLIB_BUFFER_NEXT_PRESENT) != 0 || space_left < 0)
+	    {
+	      error0 = DHCP_PROXY_ERROR_PKT_TOO_BIG;
+	      goto drop_packet;
+	    }
+
+	  dhcp_option_t *o = h0->options, *end =
+	    (void *) vlib_buffer_get_tail (b0);
 
 	  /* Parse through TLVs looking for option 82.
 	     The circuit-ID is the FIB number we need
 	     to track down the client-facing interface */
 
-	  while (o->option != 0xFF /* end of options */  &&
-		 (u8 *) o <
-		 (b0->data + b0->current_data + b0->current_length))
+	  while (o->option != DHCP_PACKET_OPTION_END && o < end)
 	    {
 	      if (o->option == 82)
 		{
 		  u32 vss_exist = 0;
 		  u32 vss_ctrl = 0;
-		  sub = (dhcp_option_t *) & o->data[0];
-		  while (sub->option != 0xFF /* end of options */  &&
-			 (u8 *) sub < (u8 *) (o + o->length))
+		  dhcp_option_t *sub = (dhcp_option_t *) & o->data[0];
+		  dhcp_option_t *subend =
+		    (dhcp_option_t *) (o->data + o->length);
+		  while (sub->option != DHCP_PACKET_OPTION_END
+			 && sub < subend)
 		    {
 		      /* If this is one of ours, it will have
 		         total length 12, circuit-id suboption type,
@@ -576,8 +578,7 @@ dhcp_proxy_to_client_input (vlib_main_t * vm,
 			vss_exist = 1;
 		      else if (sub->option == 152 && sub->length == 0)
 			vss_ctrl = 1;
-		      sub = (dhcp_option_t *)
-			(((uword) sub) + (sub->length + 2));
+		      sub = (dhcp_option_t *) (sub->data + sub->length);
 		    }
 		  if (vss_ctrl && vss_exist)
 		    vlib_node_increment_counter
@@ -585,7 +586,7 @@ dhcp_proxy_to_client_input (vlib_main_t * vm,
 		       DHCP_PROXY_ERROR_OPTION_82_VSS_NOT_PROCESSED, 1);
 
 		}
-	      o = (dhcp_option_t *) (((uword) o) + (o->length + 2));
+	      o = (dhcp_option_t *) (o->data + o->length);
 	    }
 	}
 
@@ -685,7 +686,7 @@ dhcp_proxy_to_client_input (vlib_main_t * vm,
       hi0 = vnet_get_sup_hw_interface (vnm, original_sw_if_index);
       ei0 = pool_elt_at_index (em->interfaces, hi0->hw_instance);
       clib_memcpy (mac0->src_address, ei0->address, sizeof (ei0->address));
-      memset (mac0->dst_address, 0xff, sizeof (mac0->dst_address));
+      clib_memset (mac0->dst_address, 0xff, sizeof (mac0->dst_address));
       mac0->type = (si0->type == VNET_SW_INTERFACE_TYPE_SUB) ?
 	clib_net_to_host_u16 (0x8100) : clib_net_to_host_u16 (0x0800);
 
@@ -716,6 +717,7 @@ dhcp_proxy_to_client_input (vlib_main_t * vm,
 	  tr->sw_if_index = sw_if_index;
 	}
     }
+
   return from_frame->n_vectors;
 }
 
@@ -736,6 +738,24 @@ VLIB_REGISTER_NODE (dhcp_proxy_to_client_node, static) = {
 };
 /* *INDENT-ON* */
 
+void
+dhcp_maybe_register_udp_ports (void)
+{
+  dhcp_proxy_main_t *dm = &dhcp_proxy_main;
+  vlib_main_t *vm = dm->vlib_main;
+
+  if (dm->udp_ports_registered)
+    return;
+
+  udp_register_dst_port (vm, UDP_DST_PORT_dhcp_to_client,
+			 dhcp_proxy_to_client_node.index, 1 /* is_ip4 */ );
+
+  udp_register_dst_port (vm, UDP_DST_PORT_dhcp_to_server,
+			 dhcp_proxy_to_server_node.index, 1 /* is_ip4 */ );
+
+  dm->udp_ports_registered = 1;
+}
+
 static clib_error_t *
 dhcp4_proxy_init (vlib_main_t * vm)
 {
@@ -744,12 +764,7 @@ dhcp4_proxy_init (vlib_main_t * vm)
 
   error_drop_node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
   dm->error_drop_node_index = error_drop_node->index;
-
-  udp_register_dst_port (vm, UDP_DST_PORT_dhcp_to_client,
-			 dhcp_proxy_to_client_node.index, 1 /* is_ip4 */ );
-
-  udp_register_dst_port (vm, UDP_DST_PORT_dhcp_to_server,
-			 dhcp_proxy_to_server_node.index, 1 /* is_ip4 */ );
+  dm->vlib_main = vm;
 
   return 0;
 }
@@ -776,6 +791,8 @@ dhcp4_proxy_set_server (ip46_address_t * addr,
 
   if (ip46_address_is_zero (src_addr))
     return VNET_API_ERROR_INVALID_SRC_ADDRESS;
+
+  dhcp_maybe_register_udp_ports ();
 
   rx_fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4,
 						    rx_table_id,
@@ -818,8 +835,8 @@ dhcp4_proxy_set_command_fn (vlib_main_t * vm,
   int is_del = 0;
   int set_src = 0, set_server = 0;
 
-  memset (&server_addr, 0, sizeof (server_addr));
-  memset (&src_addr, 0, sizeof (src_addr));
+  clib_memset (&server_addr, 0, sizeof (server_addr));
+  clib_memset (&src_addr, 0, sizeof (src_addr));
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {

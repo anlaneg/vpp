@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-option version = "3.0.0";
+option version = "4.1.0";
 
 /**
  * @file nat.api
@@ -67,6 +67,8 @@ define nat_show_config
     @param static_mapping_only - if 1 dynamic translations disabled
     @param static_mapping_connection_tracking - if 1 create session data
     @param deterministic - if 1 deterministic mapping
+    @param endpoint_dependent - if 1 endpoint-dependent mode
+    @param out2in_dpo - if 1 out2in dpo mode
     @param translation_buckets - number of translation hash buckets
     @param translation_memory_size - translation hash memory size
     @param user_buckets - number of user hash buckets
@@ -74,6 +76,11 @@ define nat_show_config
     @param max_translations_per_user - maximum number of translations per user
     @param outside_vrf_id - outside VRF id
     @param inside_vrf_id - default inside VRF id
+    @param dslite_ce - if DS-Lite is CE/B4 element, if 0 AFTR elemet
+    @param nat64_bib_buckets - number of NAT64 BIB hash buckets
+    @param nat64_bib_memory_size - memory size of NAT64 BIB hash
+    @param nat64_st_buckets - number of NAT64 session table hash buckets
+    @param nat64_st_memory_size - memory size of NAT64 session table hash
 */
 define nat_show_config_reply
 {
@@ -82,6 +89,8 @@ define nat_show_config_reply
   u8 static_mapping_only;
   u8 static_mapping_connection_tracking;
   u8 deterministic;
+  u8 endpoint_dependent;
+  u8 out2in_dpo;
   u32 translation_buckets;
   u32 translation_memory_size;
   u32 user_buckets;
@@ -89,6 +98,11 @@ define nat_show_config_reply
   u32 max_translations_per_user;
   u32 outside_vrf_id;
   u32 inside_vrf_id;
+  u8 dslite_ce;
+  u32 nat64_bib_buckets;
+  u32 nat64_bib_memory_size;
+  u32 nat64_st_buckets;
+  u32 nat64_st_memory_size;
 };
 
 /** \brief Set NAT workers
@@ -218,6 +232,139 @@ define nat_reass_details {
   u32 frag_id;
   u8 proto;
   u8 frag_n;
+};
+
+/** \brief Set values of timeouts for NAT sessions (seconds)
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param udp - UDP timeout (default 300sec)
+    @param tcp_established - TCP established timeout (default 7440sec)
+    @param tcp_transitory - TCP transitory timeout (default 240sec)
+    @param icmp - ICMP timeout (default 60sec)
+*/
+autoreply define nat_set_timeouts {
+  u32 client_index;
+  u32 context;
+  u32 udp;
+  u32 tcp_established;
+  u32 tcp_transitory;
+  u32 icmp;
+};
+
+/** \brief Get values of timeouts for NAT sessions (seconds)
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+*/
+define nat_get_timeouts {
+  u32 client_index;
+  u32 context;
+};
+
+/** \brief Get values of timeouts for NAT sessions reply
+    @param context - sender context, to match reply w/ request
+    @param retval - return code
+    @param udp - UDP timeout
+    @param tcp_established - TCP established timeout
+    @param tcp_transitory - TCP transitory timeout
+    @param icmp - ICMP timeout
+*/
+define nat_get_timeouts_reply {
+  u32 context;
+  i32 retval;
+  u32 udp;
+  u32 tcp_established;
+  u32 tcp_transitory;
+  u32 icmp;
+};
+
+/** \brief Set address and port assignment algorithm
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param alg - address and port assignment algorithm:
+                 0 - default, 1 - MAP-E, 2 - port range
+                 (see nat_addr_and_port_alloc_alg_t in nat.h)
+    @param psid_offset - number of offset bits (valid only for MAP-E alg)
+    @param psid_length - length of PSID (valid only for MAP-E alg)
+    @param psid - Port Set Identifier (PSID) value (valid only for MAP-E alg)
+    @param start_port - beginning of the port range
+    @param end_port - end of the port range
+*/
+autoreply define nat_set_addr_and_port_alloc_alg {
+  u32 client_index;
+  u32 context;
+  u8 alg;
+  u8 psid_offset;
+  u8 psid_length;
+  u16 psid;
+  u16 start_port;
+  u16 end_port;
+};
+
+/** \brief Get address and port assignment algorithm
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+*/
+define nat_get_addr_and_port_alloc_alg {
+  u32 client_index;
+  u32 context;
+};
+
+/** \brief Get address and port assignment algorithm reply
+    @param context - sender context, to match reply w/ request
+    @param retval - return code
+    @param alg - address and port assignment algorithm:
+                 0 - default, 1 - MAP-E, 2 - port range
+                 (see nat_addr_and_port_alloc_alg_t in nat.h)
+    @param psid_offset - number of offset bits (valid only for MAP-E alg)
+    @param psid_length - length of PSID (valid only for MAP-E alg)
+    @param psid - Port Set Identifier (PSID) value (valid only for MAP-E alg)
+    @param start_port - beginning of the port range
+    @param end_port - end of the port range
+*/
+define nat_get_addr_and_port_alloc_alg_reply {
+  u32 context;
+  i32 retval;
+  u8 alg;
+  u8 psid_offset;
+  u8 psid_length;
+  u16 psid;
+  u16 start_port;
+  u16 end_port;
+};
+
+/** \brief Set TCP MSS rewriting configuration
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param mss_value - MSS value to be used for MSS rewriting
+    @param enable - disable(0)/enable(1) MSS rewriting feature
+*/
+autoreply define nat_set_mss_clamping {
+  u32 client_index;
+  u32 context;
+  u16 mss_value;
+  u8 enable;
+};
+
+/** \brief Get TCP MSS rewriting configuration
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+*/
+define nat_get_mss_clamping {
+  u32 client_index;
+  u32 context;
+};
+
+/** \brief Get TCP MSS rewriting configuration reply
+    @param context - sender context, to match reply w/ request
+    @param retval - return code
+    @param mss_value - MSS value to be used for MSS rewriting
+    @param enable - disable(0)/enable(1) MSS rewriting feature
+*/
+define nat_get_mss_clamping_reply {
+  u32 context;
+  i32 retval;
+  u16 mss_value;
+  u8 enable;
 };
 
 /*
@@ -611,6 +758,8 @@ typeonly manual_endian define nat44_lb_addr_port {
                             local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
+    @param affinity - if 0 disabled, otherwise client IP affinity sticky time
+                      in seconds
     @param local_num - number of local network nodes
     @param locals - local network nodes
 */
@@ -625,8 +774,28 @@ autoreply manual_endian define nat44_add_del_lb_static_mapping {
   u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
-  u8 local_num;
+  u32 affinity;
+  u32 local_num;
   vl_api_nat44_lb_addr_port_t locals[local_num];
+};
+
+/** \brief Add/delete NAT44 load-balancing static mapping rule backend
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param is_add - 1 if add, 0 if delete
+    @param external_addr - external IPv4 address of the service
+    @param external_port - external L4 port number of the service
+    @param protocol - IP protocol number of the service
+    @param local - local network node
+*/
+autoreply define nat44_lb_static_mapping_add_del_local {
+  u32 client_index;
+  u32 context;
+  u8 is_add;
+  u8 external_addr[4];
+  u16 external_port;
+  u8 protocol;
+  vl_api_nat44_lb_addr_port_t local;
 };
 
 /** \brief Dump NAT44 load-balancing static mapping rules
@@ -650,6 +819,8 @@ define nat44_lb_static_mapping_dump {
                             local address of internal host
     @param out2in_only - if 1 rule match only out2in direction
     @param tag - opaque string tag
+    @param affinity - if 0 disabled, otherwise client IP affinity sticky time
+                      in seconds
     @param local_num - number of local network nodes
     @param locals - local network nodes
 */
@@ -662,7 +833,8 @@ manual_endian define nat44_lb_static_mapping_details {
   u8 self_twice_nat;
   u8 out2in_only;
   u8 tag[64];
-  u8 local_num;
+  u32 affinity;
+  u32 local_num;
   vl_api_nat44_lb_addr_port_t locals[local_num];
 };
 
@@ -835,49 +1007,6 @@ define nat_det_map_details {
   u32 ses_num;
 };
 
-/** \brief Set values of timeouts for deterministic NAT (seconds, 0 = default)
-    @param client_index - opaque cookie to identify the sender
-    @param context - sender context, to match reply w/ request
-    @param udp - UDP timeout (default 300sec)
-    @param tcp_established - TCP established timeout (default 7440sec)
-    @param tcp_transitory - TCP transitory timeout (default 240sec)
-    @param icmp - ICMP timeout (default 60sec)
-*/
-autoreply define nat_det_set_timeouts {
-  u32 client_index;
-  u32 context;
-  u32 udp;
-  u32 tcp_established;
-  u32 tcp_transitory;
-  u32 icmp;
-};
-
-/** \brief Get values of timeouts for deterministic NAT (seconds)
-    @param client_index - opaque cookie to identify the sender
-    @param context - sender context, to match reply w/ request
-*/
-define nat_det_get_timeouts {
-  u32 client_index;
-  u32 context;
-};
-
-/** \brief Get values of timeouts for deterministic NAT reply
-    @param context - sender context, to match reply w/ request
-    @param retval - return code
-    @param udp - UDP timeout (default 300sec)
-    @param tcp_established - TCP established timeout (default 7440sec)
-    @param tcp_transitory - TCP transitory timeout (default 240sec)
-    @param icmp - ICMP timeout (default 60sec)
-*/
-define nat_det_get_timeouts_reply {
-  u32 context;
-  i32 retval;
-  u32 udp;
-  u32 tcp_established;
-  u32 tcp_transitory;
-  u32 icmp;
-};
-
 /** \brief Close deterministic NAT session by outside address and port
     @param client_index - opaque cookie to identify the sender
     @param context - sender context, to match reply w/ request
@@ -937,7 +1066,6 @@ define nat_det_session_dump {
     @param expire - session expiration timestamp
 */
 define nat_det_session_details {
-  u32 client_index;
   u32 context;
   u16 in_port;
   u8 ext_addr[4];
@@ -1082,53 +1210,6 @@ define nat64_bib_details {
   u8 proto;
   u8 is_static;
   u32 ses_num;
-};
-
-/** \brief Set values of timeouts for NAT64 (seconds, 0 = default)
-    @param client_index - opaque cookie to identify the sender
-    @param context - sender context, to match reply w/ request
-    @param udp - UDP timeout (default 300sec)
-    @param icmp - ICMP timeout (default 60sec)
-    @param tcp_trans - TCP transitory timeout (default 240sec)
-    @param tcp_est - TCP established timeout (default 7440sec)
-    @param tcp_incoming_syn - TCP incoming SYN timeout (default 6sec)
-*/
-autoreply define nat64_set_timeouts {
-  u32 client_index;
-  u32 context;
-  u32 udp;
-  u32 icmp;
-  u32 tcp_trans;
-  u32 tcp_est;
-  u32 tcp_incoming_syn;
-};
-
-/** \brief Get values of timeouts for NAT64 (seconds)
-    @param client_index - opaque cookie to identify the sender
-    @param context - sender context, to match reply w/ request
-*/
-define nat64_get_timeouts {
-  u32 client_index;
-  u32 context;
-};
-
-/** \brief Get values of timeouts for NAT64 reply
-    @param context - sender context, to match reply w/ request
-    @param retval - return code
-    @param udp - UDP timeout
-    @param icmp - ICMP timeout
-    @param tcp_trans - TCP transitory timeout
-    @param tcp_est - TCP established timeout
-    @param tcp_incoming_syn - TCP incoming SYN timeout
-*/
-define nat64_get_timeouts_reply {
-  u32 context;
-  i32 retval;
-  u32 udp;
-  u32 icmp;
-  u32 tcp_trans;
-  u32 tcp_est;
-  u32 tcp_incoming_syn;
 };
 
 /** \brief Dump NAT64 session table

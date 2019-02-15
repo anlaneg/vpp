@@ -47,6 +47,8 @@ typedef struct receive_dpo_t_
     u16 rd_locks;
 } receive_dpo_t;
 
+extern int dpo_is_receive(const dpo_id_t *dpo);
+
 extern void receive_dpo_add_or_lock (dpo_proto_t proto,
                                      u32 sw_if_index,
                                      const ip46_address_t *nh_addr,
@@ -57,7 +59,7 @@ extern void receive_dpo_module_init(void);
 /**
  * @brief pool of all receive DPOs
  */
-receive_dpo_t *receive_dpo_pool;
+extern receive_dpo_t *receive_dpo_pool;
 
 static inline receive_dpo_t *
 receive_dpo_get (index_t index)

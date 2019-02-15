@@ -4,16 +4,19 @@ import argparse
 import os
 import sys
 import logging
-from vapi_json_parser import Field, Struct, Message, JsonParser,\
-    SimpleType, StructType
+from vapi_json_parser import Field, Struct, Enum, Union, Message, JsonParser,\
+    SimpleType, StructType, Alias
 
 
 class CField(Field):
+    def get_c_name(self):
+        return "vapi_type_%s" % self.name
+
     def get_c_def(self):
         if self.len is not None:
-            return "%s %s[%d]" % (self.type.get_c_name(), self.name, self.len)
+            return "%s %s[%d];" % (self.type.get_c_name(), self.name, self.len)
         else:
-            return "%s %s" % (self.type.get_c_name(), self.name)
+            return "%s %s;" % (self.type.get_c_name(), self.name)
 
     def get_swap_to_be_code(self, struct, var):
         if self.len is not None:
@@ -56,21 +59,78 @@ class CField(Field):
     def needs_byte_swap(self):
         return self.type.needs_byte_swap()
 
+    def get_vla_field_length_name(self, path):
+        return "%s_%s_array_size" % ("_".join(path), self.name)
+
+    def get_alloc_vla_param_names(self, path):
+        if self.is_vla():
+            result = [self.get_vla_field_length_name(path)]
+        else:
+            result = []
+        if self.type.has_vla():
+            t = self.type.get_alloc_vla_param_names(path + [self.name])
+            result.extend(t)
+        return result
+
+    def get_vla_calc_size_code(self, prefix, path):
+        if self.is_vla():
+            result = ["sizeof(%s.%s[0]) * %s" % (
+                ".".join([prefix] + path),
+                self.name,
+                self.get_vla_field_length_name(path))]
+        else:
+            result = []
+        if self.type.has_vla():
+            t = self.type.get_vla_calc_size_code(prefix, path + [self.name])
+            result.extend(t)
+        return result
+
+    def get_vla_assign_code(self, prefix, path):
+        result = []
+        if self.is_vla():
+            result.append("%s.%s = %s" % (
+                ".".join([prefix] + path),
+                self.nelem_field.name,
+                self.get_vla_field_length_name(path)))
+        if self.type.has_vla():
+            t = self.type.get_vla_assign_code(prefix, path + [self.name])
+            result.extend(t)
+        return result
+
+
+class CAlias(CField):
+    def get_c_name(self):
+        return "vapi_type_%s" % self.name
+
+    def get_c_def(self):
+        if self.len is not None:
+            return "typedef %s vapi_type_%s[%d];" % (
+                self.type.get_c_name(), self.name, self.len)
+        else:
+            return "typedef %s vapi_type_%s;" % (
+                self.type.get_c_name(), self.name)
+
 
 class CStruct(Struct):
-    def duplicate_barrier(func):
-        def func_wrapper(self):
-            name = self.get_c_name()
-            return "#ifndef defined_{}\n#define defined_{}\n{}\n#endif".format(name, name, func(self))
-        return func_wrapper
-
-    @duplicate_barrier
     def get_c_def(self):
         return "\n".join([
-            "typedef struct __attribute__((__packed__)) {",
-            "%s;" % ";\n".join(["  %s" % x.get_c_def()
-                                for x in self.fields]),
+            "typedef struct __attribute__((__packed__)) {\n%s" % (
+                "\n".join(["  %s" % x.get_c_def()
+                           for x in self.fields])),
             "} %s;" % self.get_c_name()])
+
+    def get_vla_assign_code(self, prefix, path):
+        return [x for f in self.fields if f.has_vla()
+                for x in f.get_vla_assign_code(prefix, path)]
+
+    def get_alloc_vla_param_names(self, path):
+        return [x for f in self.fields
+                if f.has_vla()
+                for x in f.get_alloc_vla_param_names(path)]
+
+    def get_vla_calc_size_code(self, prefix, path):
+        return [x for f in self.fields if f.has_vla()
+                for x in f.get_vla_calc_size_code(prefix, path)]
 
 
 class CSimpleType (SimpleType):
@@ -96,20 +156,59 @@ class CSimpleType (SimpleType):
     def get_swap_to_host_func_name(self):
         return self.swap_to_host_dict[self.name]
 
-    def get_swap_to_be_code(self, struct, var):
+    def get_swap_to_be_code(self, struct, var, cast=None):
         x = "%s%s" % (struct, var)
-        return "%s = %s(%s);" % (x, self.get_swap_to_be_func_name(), x)
+        return "%s = %s%s(%s);" % (x,
+                                   "(%s)" % cast if cast else "",
+                                   self.get_swap_to_be_func_name(), x)
 
-    def get_swap_to_host_code(self, struct, var):
+    def get_swap_to_host_code(self, struct, var, cast=None):
         x = "%s%s" % (struct, var)
-        return "%s = %s(%s);" % (x, self.get_swap_to_host_func_name(), x)
+        return "%s = %s%s(%s);" % (x,
+                                   "(%s)" % cast if cast else "",
+                                   self.get_swap_to_host_func_name(), x)
 
     def needs_byte_swap(self):
         try:
             self.get_swap_to_host_func_name()
             return True
-        except:
+        except KeyError:
             pass
+        return False
+
+
+class CEnum(Enum):
+    def get_c_name(self):
+        return "vapi_enum_%s" % self.name
+
+    def get_c_def(self):
+        return "typedef enum {\n%s\n} %s;" % (
+            "\n".join(["  %s = %s," % (i, j) for i, j in self.value_pairs]),
+            self.get_c_name()
+        )
+
+    def needs_byte_swap(self):
+        return self.type.needs_byte_swap()
+
+    def get_swap_to_be_code(self, struct, var):
+        return self.type.get_swap_to_be_code(struct, var, self.get_c_name())
+
+    def get_swap_to_host_code(self, struct, var):
+        return self.type.get_swap_to_host_code(struct, var, self.get_c_name())
+
+
+class CUnion(Union):
+    def get_c_name(self):
+        return "vapi_union_%s" % self.name
+
+    def get_c_def(self):
+        return "typedef union {\n%s\n} %s;" % (
+            "\n".join(["  %s %s;" % (i.get_c_name(), j)
+                       for i, j in self.type_pairs]),
+            self.get_c_name()
+        )
+
+    def needs_byte_swap(self):
         return False
 
 
@@ -161,11 +260,8 @@ class CStructType (StructType, CStruct):
 
 
 class CMessage (Message):
-    def __init__(self, logger, definition, typedict,
-                 struct_type_class, simple_type_class, field_class):
-        super(CMessage, self).__init__(logger, definition, typedict,
-                                       struct_type_class, simple_type_class,
-                                       field_class)
+    def __init__(self, logger, definition, json_parser):
+        super(CMessage, self).__init__(logger, definition, json_parser)
         self.payload_members = [
             "  %s" % p.get_c_def()
             for p in self.fields
@@ -184,16 +280,13 @@ class CMessage (Message):
     def get_payload_struct_name(self):
         return "vapi_payload_%s" % self.name
 
-    def get_alloc_func_vla_field_length_name(self, field):
-        return "%s_array_size" % field.name
-
     def get_alloc_func_name(self):
         return "vapi_alloc_%s" % self.name
 
     def get_alloc_vla_param_names(self):
-        return [self.get_alloc_func_vla_field_length_name(f)
-                for f in self.fields
-                if f.nelem_field is not None]
+        return [x for f in self.fields
+                if f.has_vla()
+                for x in f.get_alloc_vla_param_names([])]
 
     def get_alloc_func_decl(self):
         return "%s* %s(struct vapi_ctx_s *ctx%s)" % (
@@ -215,13 +308,9 @@ class CMessage (Message):
             "  %s *msg = NULL;" % self.get_c_name(),
             "  const size_t size = sizeof(%s)%s;" % (
                 self.get_c_name(),
-                "".join([
-                    " + sizeof(msg->payload.%s[0]) * %s" % (
-                        f.name,
-                        self.get_alloc_func_vla_field_length_name(f))
-                    for f in self.fields
-                    if f.nelem_field is not None
-                ])),
+                "".join([" + %s" % x for f in self.fields if f.has_vla()
+                         for x in f.get_vla_calc_size_code("msg->payload",
+                                                           [])])),
             "  /* cast here required to play nicely with C++ world ... */",
             "  msg = (%s*)vapi_msg_alloc(ctx, size);" % self.get_c_name(),
             "  if (!msg) {",
@@ -230,11 +319,9 @@ class CMessage (Message):
         ] + extra + [
             "  msg->header._vl_msg_id = vapi_lookup_vl_msg_id(ctx, %s);" %
             self.get_msg_id_name(),
-            "\n".join(["  msg->payload.%s = %s;" % (
-                f.nelem_field.name,
-                self.get_alloc_func_vla_field_length_name(f))
-                for f in self.fields
-                if f.nelem_field is not None]),
+            "".join(["  %s;\n" % line
+                     for f in self.fields if f.has_vla()
+                     for line in f.get_vla_assign_code("msg->payload", [])]),
             "  return msg;",
             "}"])
 
@@ -260,19 +347,12 @@ class CMessage (Message):
             "}",
         ])
 
-    def duplicate_barrier(func):
-        def func_wrapper(self):
-            name = self.get_payload_struct_name()
-            return "#ifndef defined_{}\n#define defined_{}\n{}\n#endif".format(name, name, func(self))
-        return func_wrapper
-
-    @duplicate_barrier
     def get_c_def(self):
         if self.has_payload():
             return "\n".join([
                 "typedef struct __attribute__ ((__packed__)) {",
-                "%s; " %
-                ";\n".join(self.payload_members),
+                "%s " %
+                "\n".join(self.payload_members),
                 "} %s;" % self.get_payload_struct_name(),
                 "",
                 "typedef struct __attribute__ ((__packed__)) {",
@@ -415,12 +495,12 @@ class CMessage (Message):
             "  %s(msg);" % self.get_swap_to_be_func_name(),
             ("  if (VAPI_OK == (rv = vapi_send_with_control_ping "
                 "(ctx, msg, req_context))) {"
-                if self.is_dump() else
+                if self.reply_is_stream else
                 "  if (VAPI_OK == (rv = vapi_send (ctx, msg))) {"
              ),
             ("    vapi_store_request(ctx, req_context, %s, "
              "(vapi_cb_t)callback, callback_ctx);" %
-             ("true" if self.is_dump() else "false")),
+             ("true" if self.reply_is_stream else "false")),
             "    if (VAPI_OK != vapi_producer_unlock (ctx)) {",
             "      abort (); /* this really shouldn't happen */",
             "    }",
@@ -441,7 +521,7 @@ class CMessage (Message):
         ])
 
     def get_event_cb_func_decl(self):
-        if not self.is_reply():
+        if not self.is_reply and not self.is_event:
             raise Exception(
                 "Cannot register event callback for non-reply message")
         if self.has_payload():
@@ -465,7 +545,7 @@ class CMessage (Message):
             ])
 
     def get_event_cb_func_def(self):
-        if not self.is_reply():
+        if not self.is_reply and not self.is_event:
             raise Exception(
                 "Cannot register event callback for non-reply function")
         return "\n".join([
@@ -531,7 +611,63 @@ vapi_send_with_control_ping (vapi_ctx_t ctx, void *msg, u32 context)
 """
 
 
+def emit_definition(parser, json_file, emitted, o):
+    if o in emitted:
+        return
+    if o.name in ("msg_header1_t", "msg_header2_t"):
+        return
+    if hasattr(o, "depends"):
+        for x in o.depends:
+            emit_definition(parser, json_file, emitted, x)
+    if hasattr(o, "reply"):
+        emit_definition(parser, json_file, emitted, o.reply)
+    if hasattr(o, "get_c_def"):
+        if (o not in parser.enums_by_json[json_file] and
+                o not in parser.types_by_json[json_file] and
+                o not in parser.unions_by_json[json_file] and
+                o.name not in parser.messages_by_json[json_file] and
+                o not in parser.aliases_by_json[json_file]):
+            return
+        guard = "defined_%s" % o.get_c_name()
+        print("#ifndef %s" % guard)
+        print("#define %s" % guard)
+        print("%s" % o.get_c_def())
+        print("")
+        function_attrs = "static inline "
+        if o.name in parser.messages_by_json[json_file]:
+            if o.has_payload():
+                print("%s%s" % (function_attrs,
+                                o.get_swap_payload_to_be_func_def()))
+                print("")
+                print("%s%s" % (function_attrs,
+                                o.get_swap_payload_to_host_func_def()))
+                print("")
+            print("%s%s" % (function_attrs, o.get_swap_to_be_func_def()))
+            print("")
+            print("%s%s" % (function_attrs, o.get_swap_to_host_func_def()))
+            print("")
+            print("%s%s" % (function_attrs, o.get_calc_msg_size_func_def()))
+            if not o.is_reply and not o.is_event:
+                print("")
+                print("%s%s" % (function_attrs, o.get_alloc_func_def()))
+                print("")
+                print("%s%s" % (function_attrs, o.get_op_func_def()))
+            print("")
+            print("%s" % o.get_c_constructor())
+            if o.is_reply or o.is_event:
+                print("")
+                print("%s%s;" % (function_attrs, o.get_event_cb_func_def()))
+        elif hasattr(o, "get_swap_to_be_func_def"):
+            print("%s%s" % (function_attrs, o.get_swap_to_be_func_def()))
+            print("")
+            print("%s%s" % (function_attrs, o.get_swap_to_host_func_def()))
+        print("#endif")
+        print("")
+    emitted.append(o)
+
+
 def gen_json_unified_header(parser, logger, j, io, name):
+    d, f = os.path.split(j)
     logger.info("Generating header `%s'" % name)
     orig_stdout = sys.stdout
     sys.stdout = io
@@ -561,64 +697,25 @@ def gen_json_unified_header(parser, logger, j, io, name):
         print("extern vapi_msg_id_t %s;" % m.get_msg_id_name())
     print("")
     print("#define DEFINE_VAPI_MSG_IDS_%s\\" %
-          j.replace(".", "_").replace("/", "_").replace("-", "_").upper())
+          f.replace(".", "_").replace("/", "_").replace("-", "_").upper())
     print("\\\n".join([
         "  vapi_msg_id_t %s;" % m.get_msg_id_name()
         for m in parser.messages_by_json[j].values()
     ]))
     print("")
     print("")
+    emitted = []
+    for e in parser.enums_by_json[j]:
+        emit_definition(parser, j, emitted, e)
+    for a in parser.aliases_by_json[j]:
+        emit_definition(parser, j, emitted, a)
+    for u in parser.unions_by_json[j]:
+        emit_definition(parser, j, emitted, u)
     for t in parser.types_by_json[j]:
-        try:
-            print("%s" % t.get_c_def())
-            print("")
-        except:
-            pass
+        emit_definition(parser, j, emitted, t)
     for m in parser.messages_by_json[j].values():
-        print("%s" % m.get_c_def())
-        print("")
+        emit_definition(parser, j, emitted, m)
 
-    print("")
-    function_attrs = "static inline "
-    for t in parser.types_by_json[j]:
-        print("#ifndef defined_inline_%s" % t.get_c_name())
-        print("#define defined_inline_%s" % t.get_c_name())
-        print("%s%s" % (function_attrs, t.get_swap_to_be_func_def()))
-        print("")
-        print("%s%s" % (function_attrs, t.get_swap_to_host_func_def()))
-        print("#endif")
-        print("")
-    for m in parser.messages_by_json[j].values():
-        if m.has_payload():
-            print("%s%s" % (function_attrs,
-                            m.get_swap_payload_to_be_func_def()))
-            print("")
-            print("%s%s" % (function_attrs,
-                            m.get_swap_payload_to_host_func_def()))
-            print("")
-        print("%s%s" % (function_attrs, m.get_calc_msg_size_func_def()))
-        print("")
-        print("%s%s" % (function_attrs, m.get_swap_to_be_func_def()))
-        print("")
-        print("%s%s" % (function_attrs, m.get_swap_to_host_func_def()))
-        print("")
-    for m in parser.messages_by_json[j].values():
-        if m.is_reply():
-            continue
-        print("%s%s" % (function_attrs, m.get_alloc_func_def()))
-        print("")
-        print("%s%s" % (function_attrs, m.get_op_func_def()))
-        print("")
-    print("")
-    for m in parser.messages_by_json[j].values():
-        print("%s" % m.get_c_constructor())
-        print("")
-    print("")
-    for m in parser.messages_by_json[j].values():
-        if not m.is_reply():
-            continue
-        print("%s%s;" % (function_attrs, m.get_event_cb_func_def()))
-        print("")
     print("")
 
     if name == "vpe.api.vapi.h":
@@ -639,15 +736,19 @@ def json_to_c_header_name(json_name):
     raise Exception("Unexpected json name `%s'!" % json_name)
 
 
-def gen_c_unified_headers(parser, logger, prefix):
+def gen_c_unified_headers(parser, logger, prefix, remove_path):
     if prefix == "" or prefix is None:
         prefix = ""
     else:
         prefix = "%s/" % prefix
     for j in parser.json_files:
-        with open('%s%s' % (prefix, json_to_c_header_name(j)), "w") as io:
+        if remove_path:
+            d, f = os.path.split(j)
+        else:
+            f = j
+        with open('%s%s' % (prefix, json_to_c_header_name(f)), "w") as io:
             gen_json_unified_header(
-                parser, logger, j, io, json_to_c_header_name(j))
+                parser, logger, j, io, json_to_c_header_name(f))
 
 
 if __name__ == '__main__':
@@ -673,20 +774,25 @@ if __name__ == '__main__':
                            '(may be specified multiple times)')
     argparser.add_argument('--prefix', action='store', default=None,
                            help='path prefix')
+    argparser.add_argument('--remove-path', action='store_true',
+                           help='remove path from filename')
     args = argparser.parse_args()
 
     jsonparser = JsonParser(logger, args.files,
                             simple_type_class=CSimpleType,
+                            enum_class=CEnum,
+                            union_class=CUnion,
                             struct_type_class=CStructType,
                             field_class=CField,
-                            message_class=CMessage)
+                            message_class=CMessage,
+                            alias_class=CAlias)
 
     # not using the model of having separate generated header and code files
     # with generated symbols present in shared library (per discussion with
     # Damjan), to avoid symbol version issues in .so
     # gen_c_headers_and_code(jsonparser, logger, args.prefix)
 
-    gen_c_unified_headers(jsonparser, logger, args.prefix)
+    gen_c_unified_headers(jsonparser, logger, args.prefix, args.remove_path)
 
     for e in jsonparser.exceptions:
-        logger.error(e)
+        logger.warning(e)

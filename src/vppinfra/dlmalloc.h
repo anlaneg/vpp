@@ -699,7 +699,28 @@ MAX_RELEASE_CHECK_RATE   default: 4095 unless not HAVE_MMAP
 #endif  /* DEFAULT_TRIM_THRESHOLD */
 #ifndef DEFAULT_MMAP_THRESHOLD
 #if HAVE_MMAP
-#define DEFAULT_MMAP_THRESHOLD ((size_t)256U * (size_t)1024U)
+/*
+ * The default value in the dlmalloc was set as follows:
+ *
+ * #define DEFAULT_MMAP_THRESHOLD ((size_t)256U * (size_t)1024U)
+ *
+ * Above this threshold the sys_alloc() calls mmap_alloc() to directly mmap the memory.
+ * However, the interaction of this path with the rest of the vpp infra results
+ * in vpp infra considering directly mmap-allocated pieces to not
+ * be part of the heap, with predictable consequence.
+ *
+ * A simple unit-test to show that behavior is to make a small private
+ * heap and repeatedly perform vec_add1() within that heap.
+ *
+ * The issue is because there is no tracking which mmap-allocated chunk
+ * belongs to which heap.
+ *
+ * The temporary approach is to dial up the threshold so that the problematic
+ * code path never gets called. The full fix needs to introduce
+ * introduce the vector of mmap-allocated chunks to mspace, and in general
+ * do some more thorough testing.
+ */
+#define DEFAULT_MMAP_THRESHOLD ((size_t)~0ULL)
 #else   /* HAVE_MMAP */
 #define DEFAULT_MMAP_THRESHOLD MAX_SIZE_T
 #endif  /* HAVE_MMAP */
@@ -768,14 +789,14 @@ MAX_RELEASE_CHECK_RATE   default: 4095 unless not HAVE_MMAP
 
 /* #define HAVE_USR_INCLUDE_MALLOC_H */
 
-#ifdef HAVE_USR_INCLUDE_MALLOC_H
+#if 0 // def HAVE_USR_INCLUDE_MALLOC_H
 #include "/usr/include/malloc.h"
 #else /* HAVE_USR_INCLUDE_MALLOC_H */
 #ifndef STRUCT_MALLINFO_DECLARED
 /* HP-UX (and others?) redefines mallinfo unless _STRUCT_MALLINFO is defined */
 #define _STRUCT_MALLINFO
 #define STRUCT_MALLINFO_DECLARED 1
-struct mallinfo {
+struct dlmallinfo {
   MALLINFO_FIELD_TYPE arena;    /* non-mmapped space allocated from system */
   MALLINFO_FIELD_TYPE ordblks;  /* number of free chunks */
   MALLINFO_FIELD_TYPE smblks;   /* always 0 */
@@ -837,7 +858,7 @@ extern "C" {
 #define dlrealloc_in_place     realloc_in_place
 #define dlvalloc               valloc
 #define dlpvalloc              pvalloc
-#define dlmallinfo             mallinfo
+// #define dlmallinfo             mallinfo
 #define dlmallopt              mallopt
 #define dlmalloc_trim          malloc_trim
 #define dlmalloc_stats         malloc_stats
@@ -1084,7 +1105,7 @@ DLMALLOC_EXPORT void dlmalloc_inspect_all(void(*handler)(void*, void *, size_t, 
   be kept as longs, the reported values may wrap around zero and
   thus be inaccurate.
 */
-DLMALLOC_EXPORT struct mallinfo dlmallinfo(void);
+DLMALLOC_EXPORT struct dlmallinfo dlmallinfo(void);
 #endif /* NO_MALLINFO */
 
 /*
@@ -1401,7 +1422,7 @@ DLMALLOC_EXPORT size_t mspace_max_footprint(mspace msp);
   mspace_mallinfo behaves as mallinfo, but reports properties of
   the given space.
 */
-DLMALLOC_EXPORT struct mallinfo mspace_mallinfo(mspace msp);
+DLMALLOC_EXPORT struct dlmallinfo mspace_mallinfo(mspace msp);
 #endif /* NO_MALLINFO */
 
 /*
@@ -1427,22 +1448,20 @@ DLMALLOC_EXPORT int mspace_trim(mspace msp, size_t pad);
 DLMALLOC_EXPORT int mspace_mallopt(int, int);
 
 DLMALLOC_EXPORT void* mspace_get_aligned (mspace msp, 
-                                          unsigned long long n_user_data_bytes,
-                                          unsigned long long align, 
-                                          unsigned long long align_offset);
+                                          unsigned long n_user_data_bytes,
+                                          unsigned long align, 
+                                          unsigned long align_offset);
 
 DLMALLOC_EXPORT int mspace_is_heap_object (mspace msp, void *p);
 
-DLMALLOC_EXPORT void mspace_get_address_and_size (mspace msp, 
-                                                  unsigned long long *addrp,
-                                                  unsigned long long *sizep);
+DLMALLOC_EXPORT void mspace_get_address_and_size (mspace msp, char **addrp, size_t *sizep);
 DLMALLOC_EXPORT void mspace_put (mspace msp, void *p);
 DLMALLOC_EXPORT void mspace_put_no_offset (mspace msp, void *p);
 DLMALLOC_EXPORT size_t mspace_usable_size_with_delta (const void *p);
 DLMALLOC_EXPORT void mspace_disable_expand (mspace msp);
 DLMALLOC_EXPORT void *mspace_least_addr (mspace msp);
-DLMALLOC_EXPORT void mheap_get_trace (u64 offset, u64 size);
-DLMALLOC_EXPORT void mheap_put_trace (u64 offset, u64 size);
+DLMALLOC_EXPORT void mheap_get_trace (uword offset, uword size);
+DLMALLOC_EXPORT void mheap_put_trace (uword offset, uword size);
 DLMALLOC_EXPORT int mspace_enable_disable_trace (mspace msp, int enable);
 
 #endif /* MSPACES */

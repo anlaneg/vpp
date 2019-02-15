@@ -16,10 +16,10 @@
 
 /* ICMPv4 invert type for stateful ACL */
 static const u8 icmp4_invmap[] = {
-  [ICMP4_echo_reply] = ICMP4_echo_request + 1,
-  [ICMP4_timestamp_reply] = ICMP4_timestamp_request + 1,
-  [ICMP4_information_reply] = ICMP4_information_request + 1,
-  [ICMP4_address_mask_reply] = ICMP4_address_mask_request + 1
+  [ICMP4_echo_request] = ICMP4_echo_reply + 1,
+  [ICMP4_timestamp_request] = ICMP4_timestamp_reply + 1,
+  [ICMP4_information_request] = ICMP4_information_reply + 1,
+  [ICMP4_address_mask_request] = ICMP4_address_mask_reply + 1
 };
 
 /* Supported ICMPv4 messages for session creation */
@@ -32,8 +32,8 @@ static const u8 icmp4_valid_new[] = {
 
 /* ICMPv6 invert type for stateful ACL */
 static const u8 icmp6_invmap[] = {
-  [ICMP6_echo_reply - 128] = ICMP6_echo_request + 1,
-  [ICMP6_node_information_response - 128] = ICMP6_node_information_request + 1
+  [ICMP6_echo_request - 128] = ICMP6_echo_reply + 1,
+  [ICMP6_node_information_request - 128] = ICMP6_node_information_response + 1
 };
 
 /* Supported ICMPv6 messages for session creation */
@@ -70,7 +70,7 @@ acl_fa_ifc_has_out_acl (acl_main_t * am, int sw_if_index0)
 always_inline int
 fa_session_get_timeout_type (acl_main_t * am, fa_session_t * sess)
 {
-  /* seen both SYNs and ACKs but not FINs means we are in establshed state */
+  /* seen both SYNs and ACKs but not FINs means we are in established state */
   u16 masked_flags =
     sess->tcp_flags_seen.as_u16 & ((TCP_FLAGS_RSTFINACKSYN << 8) +
 				   TCP_FLAGS_RSTFINACKSYN);
@@ -114,13 +114,21 @@ fa_session_get_timeout (acl_main_t * am, fa_session_t * sess)
   return timeout;
 }
 
+always_inline fa_session_t *
+get_session_ptr_no_check (acl_main_t * am, u16 thread_index,
+			  u32 session_index)
+{
+  acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
+  return pool_elt_at_index (pw->fa_sessions_pool, session_index);
+}
 
 
 always_inline fa_session_t *
 get_session_ptr (acl_main_t * am, u16 thread_index, u32 session_index)
 {
   acl_fa_per_worker_data_t *pw = &am->per_worker_data[thread_index];
-  if (session_index >= vec_len (pw->fa_sessions_pool))
+
+  if (PREDICT_FALSE (session_index >= vec_len (pw->fa_sessions_pool)))
     return 0;
 
   return pool_elt_at_index (pw->fa_sessions_pool, session_index);
@@ -247,12 +255,12 @@ acl_fa_restart_timer_for_session (acl_main_t * am, u64 now,
   else
     {
       /*
-       * Our thread does not own this connection, so we can not delete
-       * The session. To avoid the complicated signaling, we simply
-       * pick the list waiting time to be the shortest of the timeouts.
-       * This way we do not have to do anything special, and let
-       * the regular requeue check take care of everything.
+       * Our thread does not own this connection, so we can not requeue
+       * The session. So we post the signal to the owner.
        */
+      aclp_post_session_change_request (am, sess_id.thread_index,
+					sess_id.session_index,
+					ACL_FA_REQ_SESS_RESCHEDULE);
       return 0;
     }
 }
@@ -265,17 +273,20 @@ is_ip6_5tuple (fa_5tuple_t * p5t)
 	  l3_zero_pad[4] | p5t->l3_zero_pad[5]) != 0;
 }
 
-
-
-
 always_inline u8
 acl_fa_track_session (acl_main_t * am, int is_input, u32 sw_if_index, u64 now,
-		      fa_session_t * sess, fa_5tuple_t * pkt_5tuple)
+		      fa_session_t * sess, fa_5tuple_t * pkt_5tuple,
+		      u32 pkt_len)
 {
   sess->last_active_time = now;
-  if (pkt_5tuple->pkt.tcp_flags_valid)
+  u8 old_flags = sess->tcp_flags_seen.as_u8[is_input];
+  u8 new_flags = old_flags | pkt_5tuple->pkt.tcp_flags;
+
+  int flags_need_update = pkt_5tuple->pkt.tcp_flags_valid
+    && (old_flags != new_flags);
+  if (PREDICT_FALSE (flags_need_update))
     {
-      sess->tcp_flags_seen.as_u8[is_input] |= pkt_5tuple->pkt.tcp_flags;
+      sess->tcp_flags_seen.as_u8[is_input] = new_flags;
     }
   return 3;
 }
@@ -290,12 +301,12 @@ reverse_l4_u64_fastpath (u64 l4, int is_ip6)
   l4o.port[0] = l4i.port[1];
 
   l4o.non_port_l4_data = l4i.non_port_l4_data;
-  l4o.is_input = 1 - l4i.is_input;
+  l4o.l4_flags = l4i.l4_flags ^ FA_SK_L4_FLAG_IS_INPUT;
   return l4o.as_u64;
 }
 
-always_inline u64
-reverse_l4_u64_slowpath (u64 l4, int is_ip6)
+always_inline int
+reverse_l4_u64_slowpath_valid (u64 l4, int is_ip6, u64 * out)
 {
   fa_session_l4_key_t l4i = {.as_u64 = l4 };
   fa_session_l4_key_t l4o;
@@ -324,39 +335,24 @@ reverse_l4_u64_slowpath (u64 l4, int is_ip6)
        * The other messages will be forwarded without creating a reverse session.
        */
 
-      if (type >= 0 && (type <= icmp_valid_new_size[is_ip6])
-	  && (icmp_valid_new[is_ip6][type])
-	  && (type <= icmp_invmap_size[is_ip6]) && icmp_invmap[is_ip6][type])
+      int valid_reverse_sess = (type >= 0
+				&& (type <= icmp_valid_new_size[is_ip6])
+				&& (icmp_valid_new[is_ip6][type])
+				&& (type <= icmp_invmap_size[is_ip6])
+				&& icmp_invmap[is_ip6][type]);
+      if (valid_reverse_sess)
 	{
-	  /*
-	   * we set the inverse direction and correct the port,
-	   * if it is okay to add the reverse session.
-	   * If not, then the same session will be added twice
-	   * to bihash, which is the same as adding just one session.
-	   */
-	  l4o.is_input = 1 - l4i.is_input;
+	  l4o.l4_flags = l4i.l4_flags ^ FA_SK_L4_FLAG_IS_INPUT;
 	  l4o.port[0] = icmp_invmap[is_ip6][type] - 1;
 	}
 
-      return l4o.as_u64;
+      *out = l4o.as_u64;
+      return valid_reverse_sess;
     }
   else
-    return reverse_l4_u64_fastpath (l4, is_ip6);
-}
+    *out = reverse_l4_u64_fastpath (l4, is_ip6);
 
-always_inline u64
-reverse_l4_u64 (u64 l4, int is_ip6)
-{
-  fa_session_l4_key_t l4i = {.as_u64 = l4 };
-
-  if (PREDICT_FALSE (l4i.is_slowpath))
-    {
-      return reverse_l4_u64_slowpath (l4, is_ip6);
-    }
-  else
-    {
-      return reverse_l4_u64_fastpath (l4, is_ip6);
-    }
+  return 1;
 }
 
 always_inline void
@@ -368,10 +364,18 @@ reverse_session_add_del_ip6 (acl_main_t * am,
   kv2.key[1] = pkv->key[3];
   kv2.key[2] = pkv->key[0];
   kv2.key[3] = pkv->key[1];
-  /* the last u64 needs special treatment (ports, etc.) */
-  kv2.key[4] = reverse_l4_u64 (pkv->key[4], 1);
+  /* the last u64 needs special treatment (ports, etc.) so we do it last */
   kv2.value = pkv->value;
-  clib_bihash_add_del_40_8 (&am->fa_ip6_sessions_hash, &kv2, is_add);
+  if (PREDICT_FALSE (is_session_l4_key_u64_slowpath (pkv->key[4])))
+    {
+      if (reverse_l4_u64_slowpath_valid (pkv->key[4], 1, &kv2.key[4]))
+	clib_bihash_add_del_40_8 (&am->fa_ip6_sessions_hash, &kv2, is_add);
+    }
+  else
+    {
+      kv2.key[4] = reverse_l4_u64_fastpath (pkv->key[4], 1);
+      clib_bihash_add_del_40_8 (&am->fa_ip6_sessions_hash, &kv2, is_add);
+    }
 }
 
 always_inline void
@@ -381,10 +385,18 @@ reverse_session_add_del_ip4 (acl_main_t * am,
   clib_bihash_kv_16_8_t kv2;
   kv2.key[0] =
     ((pkv->key[0] & 0xffffffff) << 32) | ((pkv->key[0] >> 32) & 0xffffffff);
-  /* the last u64 needs special treatment (ports, etc.) */
-  kv2.key[1] = reverse_l4_u64 (pkv->key[1], 0);
+  /* the last u64 needs special treatment (ports, etc.) so we do it last */
   kv2.value = pkv->value;
-  clib_bihash_add_del_16_8 (&am->fa_ip4_sessions_hash, &kv2, is_add);
+  if (PREDICT_FALSE (is_session_l4_key_u64_slowpath (pkv->key[1])))
+    {
+      if (reverse_l4_u64_slowpath_valid (pkv->key[1], 0, &kv2.key[1]))
+	clib_bihash_add_del_16_8 (&am->fa_ip4_sessions_hash, &kv2, is_add);
+    }
+  else
+    {
+      kv2.key[1] = reverse_l4_u64_fastpath (pkv->key[1], 0);
+      clib_bihash_add_del_16_8 (&am->fa_ip4_sessions_hash, &kv2, is_add);
+    }
 }
 
 always_inline void
@@ -394,6 +406,7 @@ acl_fa_deactivate_session (acl_main_t * am, u32 sw_if_index,
   fa_session_t *sess =
     get_session_ptr (am, sess_id.thread_index, sess_id.session_index);
   ASSERT (sess->thread_index == os_get_thread_index ());
+  void *oldheap = clib_mem_set_heap (am->acl_mheap);
   if (sess->is_ip6)
     {
       clib_bihash_add_del_40_8 (&am->fa_ip6_sessions_hash,
@@ -408,7 +421,8 @@ acl_fa_deactivate_session (acl_main_t * am, u32 sw_if_index,
     }
 
   sess->deleted = 1;
-  clib_smp_atomic_add (&am->fa_session_total_deactivations, 1);
+  clib_atomic_fetch_add (&am->fa_session_total_deactivations, 1);
+  clib_mem_set_heap (oldheap);
 }
 
 always_inline void
@@ -428,8 +442,8 @@ acl_fa_put_session (acl_main_t * am, u32 sw_if_index,
      as the caller must have dealt with the timers. */
   vec_validate (pw->fa_session_dels_by_sw_if_index, sw_if_index);
   clib_mem_set_heap (oldheap);
-  clib_smp_atomic_add (&pw->fa_session_dels_by_sw_if_index[sw_if_index], 1);
-  clib_smp_atomic_add (&am->fa_session_total_dels, 1);
+  pw->fa_session_dels_by_sw_if_index[sw_if_index]++;
+  clib_atomic_fetch_add (&am->fa_session_total_dels, 1);
 }
 
 always_inline int
@@ -501,7 +515,7 @@ acl_fa_try_recycle_session (acl_main_t * am, int is_input, u16 thread_index,
 }
 
 
-always_inline fa_session_t *
+always_inline fa_full_session_id_t
 acl_fa_add_session (acl_main_t * am, int is_input, int is_ip6,
 		    u32 sw_if_index, u64 now, fa_5tuple_t * p5tuple,
 		    u16 current_policy_epoch)
@@ -567,9 +581,9 @@ acl_fa_add_session (acl_main_t * am, int is_input, int is_ip6,
 
   vec_validate (pw->fa_session_adds_by_sw_if_index, sw_if_index);
   clib_mem_set_heap (oldheap);
-  clib_smp_atomic_add (&pw->fa_session_adds_by_sw_if_index[sw_if_index], 1);
-  clib_smp_atomic_add (&am->fa_session_total_adds, 1);
-  return sess;
+  pw->fa_session_adds_by_sw_if_index[sw_if_index]++;
+  clib_atomic_fetch_add (&am->fa_session_total_adds, 1);
+  return f_sess_id;
 }
 
 always_inline int
@@ -593,6 +607,63 @@ acl_fa_find_session (acl_main_t * am, int is_ip6, u32 sw_if_index0,
     }
   return res;
 }
+
+always_inline u64
+acl_fa_make_session_hash (acl_main_t * am, int is_ip6, u32 sw_if_index0,
+			  fa_5tuple_t * p5tuple)
+{
+  if (is_ip6)
+    return clib_bihash_hash_40_8 (&p5tuple->kv_40_8);
+  else
+    return clib_bihash_hash_16_8 (&p5tuple->kv_16_8);
+}
+
+always_inline void
+acl_fa_prefetch_session_bucket_for_hash (acl_main_t * am, int is_ip6,
+					 u64 hash)
+{
+  if (is_ip6)
+    clib_bihash_prefetch_bucket_40_8 (&am->fa_ip6_sessions_hash, hash);
+  else
+    clib_bihash_prefetch_bucket_16_8 (&am->fa_ip4_sessions_hash, hash);
+}
+
+always_inline void
+acl_fa_prefetch_session_data_for_hash (acl_main_t * am, int is_ip6, u64 hash)
+{
+  if (is_ip6)
+    clib_bihash_prefetch_data_40_8 (&am->fa_ip6_sessions_hash, hash);
+  else
+    clib_bihash_prefetch_data_16_8 (&am->fa_ip4_sessions_hash, hash);
+}
+
+always_inline int
+acl_fa_find_session_with_hash (acl_main_t * am, int is_ip6, u32 sw_if_index0,
+			       u64 hash, fa_5tuple_t * p5tuple,
+			       u64 * pvalue_sess)
+{
+  int res = 0;
+  if (is_ip6)
+    {
+      clib_bihash_kv_40_8_t kv_result;
+      kv_result.value = ~0ULL;
+      res = (clib_bihash_search_inline_2_with_hash_40_8
+	     (&am->fa_ip6_sessions_hash, hash, &p5tuple->kv_40_8,
+	      &kv_result) == 0);
+      *pvalue_sess = kv_result.value;
+    }
+  else
+    {
+      clib_bihash_kv_16_8_t kv_result;
+      kv_result.value = ~0ULL;
+      res = (clib_bihash_search_inline_2_with_hash_16_8
+	     (&am->fa_ip4_sessions_hash, hash, &p5tuple->kv_16_8,
+	      &kv_result) == 0);
+      *pvalue_sess = kv_result.value;
+    }
+  return res;
+}
+
 
 /*
  * fd.io coding-style-patch-verification: ON

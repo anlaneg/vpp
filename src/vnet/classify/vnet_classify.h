@@ -26,9 +26,6 @@
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/ip6_packet.h>
 #include <vlib/cli.h>
-#include <vnet/l2/l2_input.h>
-#include <vnet/l2/l2_output.h>
-#include <vnet/l2/feat_bitmap.h>
 #include <vnet/api_errno.h>	/* for API error numbers */
 
 #include <vppinfra/error.h>
@@ -152,6 +149,7 @@ typedef struct
 
 typedef struct
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Mask to apply after skipping N vectors */
   u32x4 *mask;
   /* Buckets and entries */

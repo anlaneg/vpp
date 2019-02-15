@@ -60,6 +60,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <limits.h>
+#include <netinet/tcp.h>
 
 /** ANSI escape code. */
 #define ESC "\x1b"
@@ -1294,7 +1295,7 @@ unix_cli_process_telnet (unix_main_t * um,
     case DO:
     case DONT:
       /* Expect 3 bytes */
-      if (vec_len (input_vector) < 3)
+      if (len < 3)
 	return -1;		/* want more bytes */
 
       consume = 2;
@@ -2727,7 +2728,7 @@ unix_cli_file_add (unix_cli_main_t * cm, char *name, int fd)
     }
 
   pool_get (cm->cli_file_pool, cf);
-  memset (cf, 0, sizeof (*cf));
+  clib_memset (cf, 0, sizeof (*cf));
 
   template.read_function = unix_cli_read_ready;
   template.write_function = unix_cli_write_ready;
@@ -2763,10 +2764,16 @@ unix_cli_listen_read_ready (clib_file_t * uf)
   clib_error_t *error;
   unix_cli_file_t *cf;
   u32 cf_index;
+  int one;
 
   error = clib_socket_accept (s, &client);
   if (error)
     return error;
+
+  /* Disable Nagle, ignore any errors doing so eg on PF_LOCAL socket */
+  one = 1;
+  (void) setsockopt (client.fd, IPPROTO_TCP, TCP_NODELAY,
+		     (void *) &one, sizeof (one));
 
   client_name = (char *) format (0, "%U%c", format_sockaddr, &client.peer, 0);
 
@@ -2911,7 +2918,7 @@ unix_cli_config (vlib_main_t * vm, unformat_input_t * input)
       if (isatty (STDIN_FILENO) && um->cli_line_mode == 0)
 	{
 	  /* Capture terminal resize events */
-	  memset (&sa, 0, sizeof (sa));
+	  clib_memset (&sa, 0, sizeof (sa));
 	  sa.sa_handler = unix_cli_resize_interrupt;
 	  if (sigaction (SIGWINCH, &sa, 0) < 0)
 	    clib_panic ("sigaction");

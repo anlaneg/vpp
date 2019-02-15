@@ -199,7 +199,7 @@ mactime_send_create_entry_message (u8 * mac_address)
   am = &api_main;
   shmem_hdr = am->shmem_hdr;
   mp = vl_msg_api_alloc_as_if_client (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_MACTIME_ADD_DEL_RANGE + mm->msg_id_base);
   name = format (0, "mac-%U", format_mac_address, mac_address);
 
@@ -227,7 +227,7 @@ static void vl_api_mactime_add_del_range_t_handler
 
   feature_init (mm);
 
-  memset (&kv, 0, sizeof (kv));
+  clib_memset (&kv, 0, sizeof (kv));
   memcpy (&kv.key, mp->mac_address, sizeof (mp->mac_address));
 
   /* See if we have a lookup table entry for this src mac address */
@@ -241,7 +241,7 @@ static void vl_api_mactime_add_del_range_t_handler
       if (found == 0)
 	{
 	  pool_get (mm->devices, dp);
-	  memset (dp, 0, sizeof (*dp));
+	  clib_memset (dp, 0, sizeof (*dp));
 	  vlib_validate_combined_counter (&mm->allow_counters,
 					  dp - mm->devices);
 	  vlib_zero_combined_counter (&mm->allow_counters, dp - mm->devices);
@@ -339,7 +339,7 @@ mactime_plugin_api_hookup (vlib_main_t * vm)
 static void
 setup_message_id_table (mactime_main_t * mm, api_main_t * am)
 {
-#define _(id,n,crc)   vl_msg_api_add_msg_name_crc (am, #n  #crc, id + mm->msg_id_base);
+#define _(id,n,crc)   vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id + mm->msg_id_base);
   foreach_vl_msg_name_crc_mactime;
 #undef _
 }
@@ -553,8 +553,7 @@ show_mactime_command_fn (vlib_main_t * vm,
       for (j = 0; j < vec_len (mm->arp_cache_copy); j++)
 	{
 	  n = mm->arp_cache_copy + j;
-	  if (!memcmp (dp->mac_address, n->ethernet_address,
-		       sizeof (n->ethernet_address)))
+	  if (!memcmp (dp->mac_address, n->mac.bytes, sizeof (n->mac)))
 	    {
 	      vlib_cli_output (vm, "%17s%U", " ", format_ip4_address,
 			       &n->ip4_address);

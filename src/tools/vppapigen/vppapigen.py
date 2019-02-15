@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from __future__ import print_function
 import ply.lex as lex
@@ -122,22 +122,30 @@ class VPPAPILexer(object):
     t_ignore = ' \t'
 
 
+#
+# Side-effect: Sets global_crc
+#
+def crc_block(block):
+    global global_crc
+    s = str(block).encode()
+    global_crc = binascii.crc32(s, global_crc)
+    return binascii.crc32(s) & 0xffffffff
+
+
 class Service():
-    def __init__(self, caller, reply, events=[], stream=False):
+    def __init__(self, caller, reply, events=None, stream=False):
         self.caller = caller
         self.reply = reply
         self.stream = stream
-        self.events = events
+        self.events = [] if events is None else events
 
 
 class Typedef():
     def __init__(self, name, flags, block):
-        global global_crc
         self.name = name
         self.flags = flags
         self.block = block
-        self.crc = binascii.crc32(str(block)) & 0xffffffff
-        global_crc = binascii.crc32(str(block), global_crc)
+        self.crc = crc_block(block)
         self.manual_print = False
         self.manual_endian = False
         for f in flags:
@@ -151,6 +159,25 @@ class Typedef():
         return self.name + str(self.flags) + str(self.block)
 
 
+class Using():
+    def __init__(self, name, alias):
+        global global_crc
+        self.name = name
+
+        if isinstance(alias, Array):
+            a = { 'type': alias.fieldtype,
+                  'length': alias.length }
+        else:
+            a = { 'type': alias.fieldtype }
+        self.alias = a
+        self.crc = binascii.crc32(str(alias).encode()) & 0xffffffff
+        global_crc = binascii.crc32(str(alias).encode(), global_crc)
+        global_type_add(name)
+
+    def __repr__(self):
+        return self.name + str(self.alias)
+
+
 class Union():
     def __init__(self, name, block):
         self.type = 'Union'
@@ -159,8 +186,7 @@ class Union():
         global global_crc
         self.name = name
         self.block = block
-        self.crc = binascii.crc32(str(block)) & 0xffffffff
-        global_crc = binascii.crc32(str(block), global_crc)
+        self.crc = crc_block(block)
         global_type_add(name)
 
     def __repr__(self):
@@ -169,12 +195,10 @@ class Union():
 
 class Define():
     def __init__(self, name, flags, block):
-        global global_crc
         self.name = name
         self.flags = flags
         self.block = block
-        self.crc = binascii.crc32(str(block)) & 0xffffffff
-        global_crc = binascii.crc32(str(block), global_crc)
+        self.crc = crc_block(block)
         self.dont_trace = False
         self.manual_print = False
         self.manual_endian = False
@@ -202,7 +226,6 @@ class Define():
 
 class Enum():
     def __init__(self, name, block, enumtype='u32'):
-        global global_crc
         self.name = name
         self.enumtype = enumtype
 
@@ -215,8 +238,7 @@ class Enum():
                 block[i] = [b, count]
 
         self.block = block
-        self.crc = binascii.crc32(str(block)) & 0xffffffff
-        global_crc = binascii.crc32(str(block), global_crc)
+        self.crc = crc_block(block)
         global_type_add(name)
 
     def __repr__(self):
@@ -235,8 +257,12 @@ class Import():
             f = os.path.join(dir, filename)
             if os.path.exists(f):
                 break
-        with open(f) as fd:
-            self.result = parser.parse_file(fd, None)
+        if sys.version[0] == '2':
+            with open(f) as fd:
+                self.result = parser.parse_file(fd, None)
+        else:
+            with open(f, encoding='utf-8') as fd:
+                self.result = parser.parse_file(fd, None)
 
     def __repr__(self):
         return self.filename
@@ -244,10 +270,8 @@ class Import():
 
 class Option():
     def __init__(self, option):
-        global global_crc
         self.option = option
-        self.crc = binascii.crc32(str(option)) & 0xffffffff
-        global_crc = binascii.crc32(str(option), global_crc)
+        self.crc = crc_block(option)
 
     def __repr__(self):
         return str(self.option)
@@ -457,6 +481,10 @@ class VPPAPIParser(object):
         '''typedef : TYPEDEF ID '{' block_statements_opt '}' ';' '''
         p[0] = Typedef(p[2], [], p[4])
 
+    def p_typedef_alias(self, p):
+        '''typedef : TYPEDEF declaration '''
+        p[0] = Using(p[2].fieldname, p[2])
+
     def p_block_statements_opt(self, p):
         '''block_statements_opt : block_statements '''
         p[0] = p[1]
@@ -594,6 +622,7 @@ class VPPAPI(object):
         s['Service'] = []
         s['types'] = []
         s['Import'] = []
+        s['Alias'] = {}
         for o in objs:
             tname = o.__class__.__name__
             if isinstance(o, Define):
@@ -606,11 +635,16 @@ class VPPAPI(object):
                 for o2 in o:
                     if isinstance(o2, Service):
                         s['Service'].append(o2)
-            elif isinstance(o, Enum) or isinstance(o, Typedef) or isinstance(o, Union):
+            elif (isinstance(o, Enum) or
+                  isinstance(o, Typedef) or
+                  isinstance(o, Union)):
                 s['types'].append(o)
+            elif isinstance(o, Using):
+                s['Alias'][o.name] = o.alias
             else:
                 if tname not in s:
-                    raise ValueError('Unknown class type: {} {}'.format(tname, o))
+                    raise ValueError('Unknown class type: {} {}'
+                                     .format(tname, o))
                 s[tname].append(o)
 
         msgs = {d.name: d for d in s['Define']}
@@ -656,7 +690,7 @@ class VPPAPI(object):
                     continue
                 if d[:-5]+'_details' in msgs:
                     s['Service'].append(Service(d, d[:-5]+'_details',
-                                                 stream=True))
+                                                stream=True))
                 else:
                     raise ValueError('{} missing details message'
                                      .format(d))
@@ -686,12 +720,14 @@ class VPPAPI(object):
             if in_import and not (isinstance(o, Enum) or
                                   isinstance(o, Union) or
                                   isinstance(o, Typedef) or
-                                  isinstance(o, Import)):
+                                  isinstance(o, Import) or
+                                  isinstance(o, Using)):
                 continue
             if isinstance(o, Import):
                 self.process_imports(o.result, True, result)
             else:
                 result.append(o)
+
 
 # Add message ids to each message.
 def add_msg_id(s):
@@ -720,10 +756,20 @@ def main():
     cliparser = argparse.ArgumentParser(description='VPP API generator')
     cliparser.add_argument('--pluginpath', default=""),
     cliparser.add_argument('--includedir', action='append'),
-    cliparser.add_argument('--input', type=argparse.FileType('r'),
-                           default=sys.stdin)
-    cliparser.add_argument('--output', nargs='?', type=argparse.FileType('w'),
-                           default=sys.stdout)
+    if sys.version[0] == '2':
+        cliparser.add_argument('--input', type=argparse.FileType('r'),
+                               default=sys.stdin)
+        cliparser.add_argument('--output', nargs='?',
+                               type=argparse.FileType('w'),
+                               default=sys.stdout)
+
+    else:
+        cliparser.add_argument('--input',
+                               type=argparse.FileType('r', encoding='UTF-8'),
+                               default=sys.stdin)
+        cliparser.add_argument('--output', nargs='?',
+                               type=argparse.FileType('w', encoding='UTF-8'),
+                               default=sys.stdout)
 
     cliparser.add_argument('output_module', nargs='?', default='C')
     cliparser.add_argument('--debug', action='store_true')
@@ -785,18 +831,20 @@ def main():
                     '/../share/vpp/')
         for c in cand:
             c += '/'
-            if os.path.isfile(c + args.output_module + '.py'):
+            if os.path.isfile('{}vppapigen_{}.py'
+                              .format(c, args.output_module.lower())):
                 pluginpath = c
                 break
     else:
         pluginpath = args.pluginpath + '/'
     if pluginpath == '':
         raise Exception('Output plugin not found')
-    module_path = pluginpath + args.output_module + '.py'
+    module_path = '{}vppapigen_{}.py'.format(pluginpath,
+                                             args.output_module.lower())
 
     try:
         plugin = imp.load_source(args.output_module, module_path)
-    except Exception, err:
+    except Exception as err:
         raise Exception('Error importing output plugin: {}, {}'
                         .format(module_path, err))
 

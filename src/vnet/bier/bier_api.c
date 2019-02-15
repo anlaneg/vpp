@@ -123,7 +123,7 @@ send_bier_table_details (vl_api_registration_t * reg,
     mp = vl_msg_api_alloc(sizeof(*mp));
     if (!mp)
         return;
-    memset(mp, 0, sizeof(*mp));
+    clib_memset(mp, 0, sizeof(*mp));
     mp->_vl_msg_id = ntohs(VL_API_BIER_TABLE_DETAILS);
     mp->context = context;
 
@@ -204,13 +204,24 @@ vl_api_bier_route_add_del_t_handler (vl_api_bier_route_add_del_t * mp)
         }
     }
 
-    if (mp->br_is_add)
+    if (mp->br_is_replace)
     {
-        bier_table_route_add(&bti, bp, brpaths);
+        if (0 == vec_len(brpaths))
+        {
+            bier_table_route_delete(&bti, bp);
+        }
+        else
+        {
+            bier_table_route_path_update(&bti, bp, brpaths);
+        }
+    }
+    else if (mp->br_is_add)
+    {
+        bier_table_route_path_add(&bti, bp, brpaths);
     }
     else
     {
-        bier_table_route_remove(&bti, bp, brpaths);
+        bier_table_route_path_remove(&bti, bp, brpaths);
     }
     vec_free(brpaths);
 
@@ -243,7 +254,7 @@ send_bier_route_details (const bier_table_t *bt,
     if (!mp)
         return;
 
-    memset(mp, 0, m_size);
+    clib_memset(mp, 0, m_size);
     mp->_vl_msg_id = ntohs(VL_API_BIER_ROUTE_DETAILS);
     mp->context = ctx->context;
 
@@ -253,7 +264,10 @@ send_bier_route_details (const bier_table_t *bt,
     mp->br_bp = htons(be->be_bp);
     mp->br_n_paths = htonl(n_paths);
 
-    fib_path_list_walk(be->be_path_list, fib_path_encode, &api_rpaths);
+    fib_path_list_walk_w_ext(be->be_path_list,
+                             NULL,
+                             fib_path_encode,
+                             &api_rpaths);
 
     fp = mp->br_paths;
     vec_foreach (api_rpath, api_rpaths)
@@ -362,7 +376,7 @@ send_bier_imp_details (vl_api_registration_t * reg,
     mp = vl_msg_api_alloc(sizeof(*mp) + n_bytes);
     if (!mp)
         return;
-    memset(mp, 0, sizeof(*mp)+n_bytes);
+    clib_memset(mp, 0, sizeof(*mp)+n_bytes);
     mp->_vl_msg_id = ntohs(VL_API_BIER_IMP_DETAILS);
     mp->context = context;
 
@@ -429,7 +443,7 @@ send_bier_disp_table_details (vl_api_registration_t * reg,
     mp = vl_msg_api_alloc(sizeof(*mp));
     if (!mp)
         return;
-    memset(mp, 0, sizeof(*mp));
+    clib_memset(mp, 0, sizeof(*mp));
     mp->_vl_msg_id = ntohs(VL_API_BIER_DISP_TABLE_DETAILS);
     mp->context = context;
 
@@ -494,13 +508,13 @@ vl_api_bier_disp_entry_add_del_t_handler (vl_api_bier_disp_entry_add_del_t * mp)
 
         if (0 == mp->bde_paths[ii].afi)
         {
-            clib_memcpy (&brp->frp_addr.ip4,
+            clib_memcpy_fast (&brp->frp_addr.ip4,
                          mp->bde_paths[ii].next_hop,
                          sizeof (brp->frp_addr.ip4));
         }
         else
         {
-            clib_memcpy (&brp->frp_addr.ip6,
+            clib_memcpy_fast (&brp->frp_addr.ip6,
                          mp->bde_paths[ii].next_hop,
                          sizeof (brp->frp_addr.ip6));
         }
@@ -605,7 +619,7 @@ send_bier_disp_entry_details (const bier_disp_table_t *bdt,
             if (!mp)
                 return;
 
-            memset(mp, 0, m_size);
+            clib_memset(mp, 0, m_size);
             mp->_vl_msg_id = ntohs(VL_API_BIER_DISP_ENTRY_DETAILS);
             mp->context = ctx->context;
 
@@ -614,7 +628,10 @@ send_bier_disp_entry_details (const bier_disp_table_t *bdt,
             mp->bde_payload_proto = pproto;
             mp->bde_bp = htons(bp);
 
-            fib_path_list_walk(pl, fib_path_encode, &api_rpaths);
+            fib_path_list_walk_w_ext(pl,
+                                     NULL,
+                                     fib_path_encode,
+                                     &api_rpaths);
 
             fp = mp->bde_paths;
             vec_foreach (api_rpath, api_rpaths)

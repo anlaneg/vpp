@@ -52,7 +52,7 @@
 #endif
 
 #include <vppinfra/os.h>
-#include <vppinfra/string.h>	/* memcpy, memset */
+#include <vppinfra/string.h>	/* memcpy, clib_memset */
 #include <vppinfra/valgrind.h>
 
 #define CLIB_MAX_MHEAPS 256
@@ -233,7 +233,7 @@ clib_mem_realloc (void *p, uword new_size, uword old_size)
 	copy_size = old_size;
       else
 	copy_size = new_size;
-      clib_memcpy (q, p, copy_size);
+      clib_memcpy_fast (q, p, copy_size);
       clib_mem_free (p);
     }
   return q;
@@ -349,7 +349,7 @@ always_inline void *
 clib_mem_vm_map (void *addr, uword size)
 {
   void *mmap_addr;
-  uword flags = MAP_PRIVATE | MAP_FIXED;
+  uword flags = MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
 
   mmap_addr = mmap (addr, size, (PROT_READ | PROT_WRITE), flags, -1, 0);
   if (mmap_addr == (void *) -1)
@@ -387,9 +387,13 @@ typedef struct
   uword requested_va;		/**< Request fixed position mapping */
 } clib_mem_vm_alloc_t;
 
+clib_error_t *clib_mem_create_fd (char *name, int *fdp);
+clib_error_t *clib_mem_create_hugetlb_fd (char *name, int *fdp);
 clib_error_t *clib_mem_vm_ext_alloc (clib_mem_vm_alloc_t * a);
-u64 clib_mem_vm_get_page_size (int fd);
-int clib_mem_vm_get_log2_page_size (int fd);
+void clib_mem_vm_ext_free (clib_mem_vm_alloc_t * a);
+u64 clib_mem_get_fd_page_size (int fd);
+uword clib_mem_get_default_hugepage_size (void);
+int clib_mem_get_fd_log2_page_size (int fd);
 u64 *clib_mem_vm_get_paddr (void *mem, int log2_page_size, int n_pages);
 
 typedef struct

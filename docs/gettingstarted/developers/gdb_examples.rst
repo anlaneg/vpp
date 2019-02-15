@@ -10,7 +10,7 @@ In this section we have a few useful gdb commands.
 Starting GDB
 ----------------------------
 
-Once at the gdb prompt, VPP can be started by isuuing the following commands:
+Once at the gdb prompt, VPP can be started by running the following commands:
 
 .. code-block:: console
 
@@ -18,13 +18,13 @@ Once at the gdb prompt, VPP can be started by isuuing the following commands:
    Starting program: /scratch/vpp-master/build-root/install-vpp_debug-native/vpp/bin/vpp -c /etc/vpp/startup.conf
     [Thread debugging using libthread_db enabled]
     Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-    vlib_plugin_early_init:361: plugin path /scratch/vpp-master/build-root/install-vpp_debug-native/vpp/lib/vpp_plugins:/scratch/vpp-master/build-root/install-vpp_debug-native/vpp/lib64/vpp_plugins
+    vlib_plugin_early_init:361: plugin path /scratch/vpp-master/build-root/install-vpp_debug-native/vpp/lib/vpp_plugins:/scratch/vpp-master/build-root/install-vpp_debug-native/vpp/lib/vpp_plugins
     ....
 
 Backtrace
 ----------------------------
 
-If you encounter issues when running VPP, such as VPP terminating due to a segfault
+If you encounter errors when running VPP, such as VPP terminating due to a segfault
 or abort signal, then you can run the VPP debug binary and then execute **backtrace** or **bt**.
 
 .. code-block:: console
@@ -38,12 +38,12 @@ or abort signal, then you can run the VPP debug binary and then execute **backtr
 Get to the GDB prompt
 ---------------------------------------
 
-When VPP is running, you can get to the command prompt by entering CTRL-c.
+When VPP is running, you can get to the command prompt by pressing **CTRL+C**.
 
 Breakpoints
 ---------------------------------------
 
-When at the GDB prompt, set a breakpoint by using the commands below:
+When at the GDB prompt, set a breakpoint by running the commands below:
 
 .. code-block:: console
 

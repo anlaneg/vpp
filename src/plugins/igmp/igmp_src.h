@@ -46,7 +46,7 @@ typedef struct igmp_src_t_
   igmp_key_t *key;
 
   /**
-   * The liveness timer. Reset with each recieved report. on expiry
+   * The liveness timer. Reset with each received report. on expiry
    * the source is removed from the group.
    */
   u32 exp_timer;
@@ -65,6 +65,12 @@ typedef struct igmp_src_t_
    * Timers
    */
   u32 timers[IGMP_SRC_N_TIMERS];
+
+  /**
+   * Tells us which configurations
+   * have this source.
+   */
+  u8 *referance_by_config_index;
 } igmp_src_t;
 
 extern void igmp_src_free (igmp_src_t * src);
@@ -76,6 +82,7 @@ extern u32 igmp_src_index (igmp_src_t * src);
 
 extern void igmp_src_refresh (igmp_src_t * src);
 extern void igmp_src_blocked (igmp_src_t * src);
+extern u8 *format_igmp_src (u8 * s, va_list * args);
 
 #endif
 

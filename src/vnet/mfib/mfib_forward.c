@@ -165,9 +165,9 @@ mfib_forward_lookup (vlib_main_t * vm,
                 fib_index0 = vec_elt (ip6_main.mfib_index_by_sw_if_index,
                                       vnet_buffer(p0)->sw_if_index[VLIB_RX]);
                 ip0 = vlib_buffer_get_current (p0);
-                mfei0 = ip6_mfib_table_lookup2(ip6_mfib_get(fib_index0),
-                                               &ip0->src_address,
-                                               &ip0->dst_address);
+                mfei0 = ip6_mfib_table_fwd_lookup(ip6_mfib_get(fib_index0),
+                                                  &ip0->src_address,
+                                                  &ip0->dst_address);
             }
 
             vnet_buffer (p0)->ip.adj_index[VLIB_TX] = mfei0;
@@ -300,8 +300,8 @@ mfib_forward_itf_signal (vlib_main_t *vm,
 {
     mfib_itf_flags_t old_flags;
 
-    old_flags = __sync_fetch_and_or(&mfi->mfi_flags,
-                                    MFIB_ITF_FLAG_SIGNAL_PRESENT);
+    old_flags = clib_atomic_fetch_or(&mfi->mfi_flags,
+				     MFIB_ITF_FLAG_SIGNAL_PRESENT);
 
     if (!(old_flags & MFIB_ITF_FLAG_SIGNAL_PRESENT))
     {

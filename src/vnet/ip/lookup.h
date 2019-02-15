@@ -64,6 +64,7 @@
 #define IP_FLOW_HASH_SRC_PORT (1<<3)
 #define IP_FLOW_HASH_DST_PORT (1<<4)
 #define IP_FLOW_HASH_REVERSE_SRC_DST (1<<5)
+#define IP_FLOW_HASH_SYMMETRIC (1<<6)
 
 /** Default: 5-tuple without the "reverse" bit */
 #define IP_FLOW_HASH_DEFAULT (0x1F)
@@ -74,7 +75,8 @@ _(dst, IP_FLOW_HASH_DST_ADDR)                   \
 _(sport, IP_FLOW_HASH_SRC_PORT)                 \
 _(dport, IP_FLOW_HASH_DST_PORT)                 \
 _(proto, IP_FLOW_HASH_PROTO)	                \
-_(reverse, IP_FLOW_HASH_REVERSE_SRC_DST)
+_(reverse, IP_FLOW_HASH_REVERSE_SRC_DST)	\
+_(symmetric, IP_FLOW_HASH_SYMMETRIC)
 
 /**
  * A flow hash configuration is a mask of the flow hash options
@@ -111,6 +113,7 @@ typedef enum
   IP_LOCAL_NEXT_PUNT,
   IP_LOCAL_NEXT_UDP_LOOKUP,
   IP_LOCAL_NEXT_ICMP,
+  IP_LOCAL_NEXT_REASSEMBLY,
   IP_LOCAL_N_NEXT,
 } ip_local_next_t;
 
@@ -215,12 +218,14 @@ always_inline void
 ip_lookup_set_buffer_fib_index (u32 * fib_index_by_sw_if_index,
 				vlib_buffer_t * b)
 {
+  /* *INDENT-OFF* */
   vnet_buffer (b)->ip.fib_index =
     vec_elt (fib_index_by_sw_if_index, vnet_buffer (b)->sw_if_index[VLIB_RX]);
   vnet_buffer (b)->ip.fib_index =
-    (vnet_buffer (b)->sw_if_index[VLIB_TX] ==
-     (u32) ~ 0) ? vnet_buffer (b)->ip.
-    fib_index : vnet_buffer (b)->sw_if_index[VLIB_TX];
+    ((vnet_buffer (b)->sw_if_index[VLIB_TX] ==  (u32) ~ 0) ?
+     vnet_buffer (b)->ip.fib_index :
+     vnet_buffer (b)->sw_if_index[VLIB_TX]);
+  /* *INDENT-ON* */
 }
 
 typedef struct _vnet_ip_container_proxy_args
@@ -233,10 +238,13 @@ typedef struct _vnet_ip_container_proxy_args
 clib_error_t *vnet_ip_container_proxy_add_del (vnet_ip_container_proxy_args_t
 					       * args);
 
+typedef int (*ip_container_proxy_cb_t) (const fib_prefix_t * pfx,
+					u32 sw_if_index, void *ctx);
+void ip_container_proxy_walk (ip_container_proxy_cb_t cb, void *ctx);
+
 void ip_lookup_init (ip_lookup_main_t * lm, u32 ip_lookup_node_index);
 
 #endif /* included_ip_lookup_h */
-
 /*
  * fd.io coding-style-patch-verification: ON
  *

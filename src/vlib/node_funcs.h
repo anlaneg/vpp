@@ -135,7 +135,8 @@ vlib_node_set_runtime_data (vlib_main_t * vm, u32 node_index,
 	  STRUCT_OFFSET_OF (vlib_node_runtime_t, runtime_data));
 
   if (vec_len (n->runtime_data) > 0)
-    clib_memcpy (r->runtime_data, n->runtime_data, vec_len (n->runtime_data));
+    clib_memcpy_fast (r->runtime_data, n->runtime_data,
+		      vec_len (n->runtime_data));
 }
 
 /** \brief Set node dispatch state.
@@ -237,7 +238,7 @@ always_inline vlib_frame_t *
 vlib_get_frame (vlib_main_t * vm, uword frame_index)
 {
   vlib_frame_t *f = vlib_get_frame_no_check (vm, frame_index);
-  ASSERT (f->flags & VLIB_FRAME_IS_ALLOCATED);
+  ASSERT (f->frame_flags & VLIB_FRAME_IS_ALLOCATED);
   return f;
 }
 
@@ -271,9 +272,6 @@ vlib_frame_vector_args (vlib_frame_t * f)
 
 /** \brief Get pointer to frame scalar data.
 
- @warning This is almost certainly not the function you wish to call.
- See @ref vlib_frame_vector_args instead.
-
  @param f vlib_frame_t pointer
 
  @return arbitrary node scalar data
@@ -281,7 +279,7 @@ vlib_frame_vector_args (vlib_frame_t * f)
  @sa vlib_frame_vector_args
 */
 always_inline void *
-vlib_frame_args (vlib_frame_t * f)
+vlib_frame_scalar_args (vlib_frame_t * f)
 {
   return vlib_frame_vector_args (f) - f->scalar_size;
 }
@@ -1015,7 +1013,7 @@ vlib_signal_one_time_waiting_process (vlib_main_t * vm,
 {
   vlib_process_signal_one_time_event (vm, p->node_index, p->one_time_event,
 				      /* data */ ~0);
-  memset (p, ~0, sizeof (p[0]));
+  clib_memset (p, ~0, sizeof (p[0]));
 }
 
 always_inline void

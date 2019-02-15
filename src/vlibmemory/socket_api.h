@@ -65,12 +65,6 @@ extern socket_main_t socket_main;
 
 void vl_socket_free_registration_index (u32 pool_index);
 clib_error_t *vl_socket_read_ready (struct clib_file *uf);
-void vl_socket_add_pending_output (struct clib_file *uf,
-				   struct vl_api_registration_ *rp,
-				   u8 * buffer, uword buffer_bytes);
-void vl_socket_add_pending_output_no_flush (struct clib_file *uf,
-					    struct vl_api_registration_ *rp,
-					    u8 * buffer, uword buffer_bytes);
 clib_error_t *vl_socket_write_ready (struct clib_file *uf);
 void vl_socket_api_send (vl_api_registration_t * rp, u8 * elem);
 void vl_socket_process_api_msg (clib_file_t * uf, vl_api_registration_t * rp,
@@ -80,6 +74,9 @@ clib_error_t *vl_sock_api_init (vlib_main_t * vm);
 clib_error_t *vl_sock_api_send_fd_msg (int socket_fd, int fds[], int n_fds);
 clib_error_t *vl_sock_api_recv_fd_msg (int socket_fd, int fds[], int n_fds,
 				       u32 wait);
+
+vl_api_registration_t *vl_socket_api_client_handle_to_registration (u32 idx);
+u8 vl_socket_api_registration_handle_is_valid (u32 reg_index);
 
 #endif /* SRC_VLIBMEMORY_SOCKET_API_H_ */
 

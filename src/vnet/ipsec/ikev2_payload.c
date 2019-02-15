@@ -111,7 +111,7 @@ ikev2_payload_add_hdr (ikev2_payload_chain_t * c, u8 payload_type, int len)
   c->last_hdr_off = vec_len (c->data);
   vec_add2 (c->data, tmp, len);
   hdr = (ike_payload_header_t *) tmp;
-  memset (hdr, 0, len);
+  clib_memset (hdr, 0, len);
 
   hdr->length = clib_host_to_net_u16 (len);
 
@@ -205,7 +205,7 @@ ikev2_payload_add_sa (ikev2_payload_chain_t * c,
 	clib_host_to_net_u16 (sizeof (*tr) + vec_len (t->attrs));
 
       if (vec_len (t->attrs) > 0)
-	clib_memcpy (tr->attributes, t->attrs, vec_len (t->attrs));
+	clib_memcpy_fast (tr->attributes, t->attrs, vec_len (t->attrs));
 
       DBG_PLD
 	("transform type %U transform_id %u last_or_more %u attr_size %u%s%U",

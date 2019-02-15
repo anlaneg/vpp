@@ -52,8 +52,9 @@ bd_validate (l2_bridge_domain_t * bd_config)
 {
   if (bd_is_valid (bd_config))
     return;
-  bd_config->feature_bitmap = ~L2INPUT_FEAT_ARP_TERM;
+  bd_config->feature_bitmap = ~(L2INPUT_FEAT_ARP_TERM | L2INPUT_FEAT_UU_FWD);
   bd_config->bvi_sw_if_index = ~0;
+  bd_config->uu_fwd_sw_if_index = ~0;
   bd_config->members = 0;
   bd_config->flood_count = 0;
   bd_config->tun_master_count = 0;
@@ -90,13 +91,27 @@ bd_add_bd_index (bd_main_t * bdm, u32 bd_id)
   return rv;
 }
 
+static inline void
+bd_free_ip_mac_tables (l2_bridge_domain_t * bd)
+{
+  u64 mac_addr;
+  ip6_address_t *ip6_addr_key;
+
+  hash_free (bd->mac_by_ip4);
+  /* *INDENT-OFF* */
+  hash_foreach_mem (ip6_addr_key, mac_addr, bd->mac_by_ip6,
+  ({
+    clib_mem_free (ip6_addr_key); /* free memory used for ip6 addr key */
+  }));
+  /* *INDENT-ON* */
+  hash_free (bd->mac_by_ip6);
+}
+
 static int
 bd_delete (bd_main_t * bdm, u32 bd_index)
 {
   l2_bridge_domain_t *bd = &l2input_main.bd_configs[bd_index];
   u32 bd_id = bd->bd_id;
-  u64 mac_addr;
-  ip6_address_t *ip6_addr_key;
 
   /* flush non-static MACs in BD and removed bd_id from hash table */
   l2fib_flush_bd_mac (vlib_get_main (), bd_index);
@@ -114,14 +129,7 @@ bd_delete (bd_main_t * bdm, u32 bd_index)
 
   /* free memory used by BD */
   vec_free (bd->members);
-  hash_free (bd->mac_by_ip4);
-  /* *INDENT-OFF* */
-  hash_foreach_mem (ip6_addr_key, mac_addr, bd->mac_by_ip6,
-  ({
-    clib_mem_free (ip6_addr_key); /* free memory used for ip6 addr key */
-  }));
-  /* *INDENT-ON* */
-  hash_free (bd->mac_by_ip6);
+  bd_free_ip_mac_tables (bd);
 
   return 0;
 }
@@ -240,7 +248,7 @@ VLIB_INIT_FUNCTION (l2bd_init);
     Return 0 if ok, non-zero if for an error.
 */
 u32
-bd_set_flags (vlib_main_t * vm, u32 bd_index, u32 flags, u32 enable)
+bd_set_flags (vlib_main_t * vm, u32 bd_index, bd_flags_t flags, u32 enable)
 {
 
   l2_bridge_domain_t *bd_config = l2input_bd_config (bd_index);
@@ -727,41 +735,45 @@ VLIB_CLI_COMMAND (bd_arp_term_cli, static) = {
  * 6-byte MAC address directly in the hash table entry uword.
  *
  * @warning This only works for 64-bit processor with 8-byte uword;
- * which means this code *WILL NOT WORK* for a 32-bit prcessor with
+ * which means this code *WILL NOT WORK* for a 32-bit processor with
  * 4-byte uword.
  */
 u32
 bd_add_del_ip_mac (u32 bd_index,
-		   u8 * ip_addr, u8 * mac_addr, u8 is_ip6, u8 is_add)
+		   ip46_type_t type,
+		   const ip46_address_t * ip,
+		   const mac_address_t * mac, u8 is_add)
 {
   l2_bridge_domain_t *bd_cfg = l2input_bd_config (bd_index);
-  u64 new_mac = *(u64 *) mac_addr;
+  u64 new_mac = mac_address_as_u64 (mac);
   u64 *old_mac;
-  u16 *mac16 = (u16 *) & new_mac;
 
-  ASSERT (sizeof (uword) == sizeof (u64));	/* make sure uword is 8 bytes */
+  /* make sure uword is 8 bytes */
+  ASSERT (sizeof (uword) == sizeof (u64));
   ASSERT (bd_is_valid (bd_cfg));
 
-  mac16[3] = 0;			/* Clear last 2 unsed bytes of the 8-byte MAC address */
-  if (is_ip6)
+  if (IP46_TYPE_IP6 == type)
     {
       ip6_address_t *ip6_addr_key;
       hash_pair_t *hp;
-      old_mac = (u64 *) hash_get_mem (bd_cfg->mac_by_ip6, ip_addr);
+      old_mac = (u64 *) hash_get_mem (bd_cfg->mac_by_ip6, &ip->ip6);
       if (is_add)
 	{
-	  if (old_mac == 0)
-	    {			/* new entry - allocate and craete ip6 address key */
+	  if (old_mac == NULL)
+	    {
+	      /* new entry - allocate and create ip6 address key */
 	      ip6_addr_key = clib_mem_alloc (sizeof (ip6_address_t));
-	      clib_memcpy (ip6_addr_key, ip_addr, sizeof (ip6_address_t));
+	      clib_memcpy (ip6_addr_key, &ip->ip6, sizeof (ip6_address_t));
 	    }
 	  else if (*old_mac == new_mac)
-	    {			/* same mac entry already exist for ip6 address */
+	    {
+	      /* same mac entry already exist for ip6 address */
 	      return 0;
 	    }
 	  else
-	    {			/* updat mac for ip6 address */
-	      hp = hash_get_pair (bd_cfg->mac_by_ip6, ip_addr);
+	    {
+	      /* update mac for ip6 address */
+	      hp = hash_get_pair (bd_cfg->mac_by_ip6, &ip->ip6);
 	      ip6_addr_key = (ip6_address_t *) hp->key;
 	    }
 	  hash_set_mem (bd_cfg->mac_by_ip6, ip6_addr_key, new_mac);
@@ -770,9 +782,9 @@ bd_add_del_ip_mac (u32 bd_index,
 	{
 	  if (old_mac && (*old_mac == new_mac))
 	    {
-	      hp = hash_get_pair (bd_cfg->mac_by_ip6, ip_addr);
+	      hp = hash_get_pair (bd_cfg->mac_by_ip6, &ip->ip6);
 	      ip6_addr_key = (ip6_address_t *) hp->key;
-	      hash_unset_mem (bd_cfg->mac_by_ip6, ip_addr);
+	      hash_unset_mem (bd_cfg->mac_by_ip6, &ip->ip6);
 	      clib_mem_free (ip6_addr_key);
 	    }
 	  else
@@ -781,23 +793,37 @@ bd_add_del_ip_mac (u32 bd_index,
     }
   else
     {
-      ip4_address_t ip4_addr = *(ip4_address_t *) ip_addr;
-      old_mac = (u64 *) hash_get (bd_cfg->mac_by_ip4, ip4_addr.as_u32);
+      old_mac = (u64 *) hash_get (bd_cfg->mac_by_ip4, ip->ip4.as_u32);
       if (is_add)
 	{
 	  if (old_mac && (*old_mac == new_mac))
-	    return 0;		/* mac entry already exist */
-	  hash_set (bd_cfg->mac_by_ip4, ip4_addr.as_u32, new_mac);
+	    /* mac entry already exist */
+	    return 0;
+	  hash_set (bd_cfg->mac_by_ip4, ip->ip4.as_u32, new_mac);
 	}
       else
 	{
 	  if (old_mac && (*old_mac == new_mac))
-	    hash_unset (bd_cfg->mac_by_ip4, ip4_addr.as_u32);
+	    hash_unset (bd_cfg->mac_by_ip4, ip->ip4.as_u32);
 	  else
 	    return 1;
 	}
     }
   return 0;
+}
+
+/**
+ * Flush IP address to MAC address mapping tables in a BD.
+ */
+void
+bd_flush_ip_mac (u32 bd_index)
+{
+  l2_bridge_domain_t *bd = l2input_bd_config (bd_index);
+  ASSERT (bd_is_valid (bd));
+  bd_free_ip_mac_tables (bd);
+  bd->mac_by_ip4 = 0;
+  bd->mac_by_ip6 =
+    hash_create_mem (0, sizeof (ip6_address_t), sizeof (uword));
 }
 
 /**
@@ -809,13 +835,13 @@ static clib_error_t *
 bd_arp_entry (vlib_main_t * vm,
 	      unformat_input_t * input, vlib_cli_command_t * cmd)
 {
+  ip46_address_t ip_addr = ip46_address_initializer;
+  ip46_type_t type = IP46_TYPE_IP4;
   bd_main_t *bdm = &bd_main;
   clib_error_t *error = 0;
   u32 bd_index, bd_id;
+  mac_address_t mac;
   u8 is_add = 1;
-  u8 is_ip6 = 0;
-  u8 ip_addr[16];
-  u8 mac_addr[6];
   uword *p;
 
   if (!unformat (input, "%d", &bd_id))
@@ -836,13 +862,18 @@ bd_arp_entry (vlib_main_t * vm,
   else
     return clib_error_return (0, "No such bridge domain %d", bd_id);
 
-  if (unformat (input, "%U", unformat_ip4_address, ip_addr))
+  if (unformat (input, "%U", unformat_ip4_address, &ip_addr.ip4))
     {
-      is_ip6 = 0;
+      type = IP46_TYPE_IP4;
     }
-  else if (unformat (input, "%U", unformat_ip6_address, ip_addr))
+  else if (unformat (input, "%U", unformat_ip6_address, &ip_addr.ip6))
     {
-      is_ip6 = 1;
+      type = IP46_TYPE_IP6;
+    }
+  else if (unformat (input, "del-all"))
+    {
+      bd_flush_ip_mac (bd_index);
+      goto done;
     }
   else
     {
@@ -851,7 +882,7 @@ bd_arp_entry (vlib_main_t * vm,
       goto done;
     }
 
-  if (!unformat (input, "%U", unformat_ethernet_address, mac_addr))
+  if (!unformat (input, "%U", unformat_mac_address_t, &mac))
     {
       error = clib_error_return (0, "expecting MAC address but got `%U'",
 				 format_unformat_error, input);
@@ -864,13 +895,12 @@ bd_arp_entry (vlib_main_t * vm,
     }
 
   /* set the bridge domain flagAdd IP-MAC entry into bridge domain */
-  if (bd_add_del_ip_mac (bd_index, ip_addr, mac_addr, is_ip6, is_add))
+  if (bd_add_del_ip_mac (bd_index, type, &ip_addr, &mac, is_add))
     {
       error = clib_error_return (0, "MAC %s for IP %U and MAC %U failed",
 				 is_add ? "add" : "del",
-				 is_ip6 ?
-				 format_ip4_address : format_ip6_address,
-				 ip_addr, format_ethernet_address, mac_addr);
+				 format_ip46_address, &ip_addr, IP46_TYPE_ANY,
+				 format_mac_address_t, &mac);
     }
 
 done:
@@ -889,12 +919,12 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (bd_arp_entry_cli, static) = {
   .path = "set bridge-domain arp entry",
-  .short_help = "set bridge-domain arp entry <bridge-domain-id> <ip-addr> <mac-addr> [del]",
+  .short_help = "set bridge-domain arp entry <bridge-domain-id> [<ip-addr> <mac-addr> [del] | del-all]",
   .function = bd_arp_entry,
 };
 /* *INDENT-ON* */
 
-u8 *
+static u8 *
 format_vtr (u8 * s, va_list * args)
 {
   u32 vtr_op = va_arg (*args, u32);
@@ -927,6 +957,20 @@ format_vtr (u8 * s, va_list * args)
     default:
       return format (s, "none");
     }
+}
+
+static u8 *
+format_uu_cfg (u8 * s, va_list * args)
+{
+  l2_bridge_domain_t *bd_config = va_arg (*args, l2_bridge_domain_t *);
+
+  if (bd_config->feature_bitmap & L2INPUT_FEAT_UU_FWD)
+    return (format (s, "%U", format_vnet_sw_if_index_name_with_NA,
+		    vnet_get_main (), bd_config->uu_fwd_sw_if_index));
+  else if (bd_config->feature_bitmap & L2INPUT_FEAT_UU_FLOOD)
+    return (format (s, "flood"));
+  else
+    return (format (s, "drop"));
 }
 
 /**
@@ -1002,10 +1046,10 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 	    {
 	      printed = 1;
 	      vlib_cli_output (vm,
-			       "%=8s %=7s %=4s %=9s %=9s %=9s %=9s %=9s %=9s %=9s",
+			       "%=8s %=7s %=4s %=9s %=9s %=9s %=11s %=9s %=9s %=11s",
 			       "BD-ID", "Index", "BSN", "Age(min)",
-			       "Learning", "U-Forwrd", "UU-Flood", "Flooding",
-			       "ARP-Term", "BVI-Intf");
+			       "Learning", "U-Forwrd", "UU-Flood",
+			       "Flooding", "ARP-Term", "BVI-Intf");
 	    }
 
 	  if (bd_config->mac_age)
@@ -1013,14 +1057,13 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 	  else
 	    as = format (as, "off");
 	  vlib_cli_output (vm,
-			   "%=8d %=7d %=4d %=9v %=9s %=9s %=9s %=9s %=9s %=9U",
+			   "%=8d %=7d %=4d %=9v %=9s %=9s %=11U %=9s %=9s %=11U",
 			   bd_config->bd_id, bd_index, bd_config->seq_num, as,
 			   bd_config->feature_bitmap & L2INPUT_FEAT_LEARN ?
 			   "on" : "off",
 			   bd_config->feature_bitmap & L2INPUT_FEAT_FWD ?
 			   "on" : "off",
-			   bd_config->feature_bitmap & L2INPUT_FEAT_UU_FLOOD ?
-			   "on" : "off",
+			   format_uu_cfg, bd_config,
 			   bd_config->feature_bitmap & L2INPUT_FEAT_FLOOD ?
 			   "on" : "off",
 			   bd_config->feature_bitmap & L2INPUT_FEAT_ARP_TERM ?
@@ -1055,6 +1098,13 @@ bd_show (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
 				 "-", i < bd_config->flood_count ? "*" : "-",
 				 format_vtr, vtr_opr, dot1q, tag1, tag2);
 	      }
+	      if (~0 != bd_config->uu_fwd_sw_if_index)
+		vlib_cli_output (vm, "%=30U%=7d%=5d%=5d%=5s%=9s%=30s",
+				 format_vnet_sw_if_index_name, vnm,
+				 bd_config->uu_fwd_sw_if_index,
+				 bd_config->uu_fwd_sw_if_index,
+				 0, 0, "uu", "-", "None");
+
 	    }
 
 	  if ((detail || arp) &&
@@ -1150,7 +1200,7 @@ bd_add_del (l2_bridge_domain_add_del_args_t * a)
 	return VNET_API_ERROR_BD_ID_EXCEED_MAX;
       bd_index = bd_add_bd_index (bdm, a->bd_id);
 
-      u32 enable_flags = 0, disable_flags = 0;
+      bd_flags_t enable_flags = 0, disable_flags = 0;
       if (a->flood)
 	enable_flags |= L2_FLOOD;
       else
@@ -1277,7 +1327,7 @@ bd_add_del_command_fn (vlib_main_t * vm, unformat_input_t * input,
       goto done;
     }
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->is_add = is_add;
   a->bd_id = bd_id;
   a->flood = (u8) flood;

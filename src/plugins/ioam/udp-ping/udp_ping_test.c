@@ -95,7 +95,7 @@ _(UDP_PING_EXPORT_REPLY, udp_ping_export_reply)                         \
 do {                                                            \
     vam->result_ready = 0;                                      \
     mp = vl_msg_api_alloc(sizeof(*mp));                         \
-    memset (mp, 0, sizeof (*mp));                               \
+    clib_memset (mp, 0, sizeof (*mp));                               \
     mp->_vl_msg_id = ntohs (VL_API_##T + sm->msg_id_base);      \
     mp->client_index = vam->my_client_index;                    \
 } while(0);
@@ -242,7 +242,7 @@ udp_ping_test_api_hookup (vat_main_t * vam)
 }
 
 clib_error_t *
-vat_plugin_register (vat_main_t * vam)
+udp_ping_vat_plugin_register (vat_main_t * vam)
 {
   udp_ping_test_main_t *sm = &udp_ping_test_main;
   u8 *name;

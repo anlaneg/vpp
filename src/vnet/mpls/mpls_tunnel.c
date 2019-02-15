@@ -32,11 +32,6 @@
 static mpls_tunnel_t *mpls_tunnel_pool;
 
 /**
- * @brief Pool of free tunnel SW indices - i.e. recycled indices
- */
-static u32 * mpls_tunnel_free_hw_if_indices;
-
-/**
  * @brief DB of SW index to tunnel index
  */
 static u32 *mpls_tunnel_db;
@@ -170,9 +165,12 @@ mpls_tunnel_mk_lb (mpls_tunnel_t *mt,
 
     lb_proto = fib_forw_chain_type_to_dpo_proto(fct);
 
-    fib_path_list_walk(mt->mt_path_list,
-                       mpls_tunnel_collect_forwarding,
-                       &ctx);
+    if (FIB_NODE_INDEX_INVALID != mt->mt_path_list)
+    {
+        fib_path_list_walk(mt->mt_path_list,
+                           mpls_tunnel_collect_forwarding,
+                           &ctx);
+    }
 
     if (!dpo_id_is_valid(dpo_lb))
     {
@@ -594,7 +592,8 @@ vnet_mpls_tunnel_del (u32 sw_if_index)
                                    mt->mt_sibling_index);
     dpo_reset(&mt->mt_l2_lb);
 
-    vec_add1 (mpls_tunnel_free_hw_if_indices, mt->mt_hw_if_index);
+    vnet_delete_hw_interface (vnet_get_main(), mt->mt_hw_if_index);
+
     pool_put(mpls_tunnel_pool, mt);
     mpls_tunnel_db[sw_if_index] = ~0;
 }
@@ -610,7 +609,7 @@ vnet_mpls_tunnel_create (u8 l2_only,
 
     vnm = vnet_get_main();
     pool_get(mpls_tunnel_pool, mt);
-    memset (mt, 0, sizeof (*mt));
+    clib_memset (mt, 0, sizeof (*mt));
     mti = mt - mpls_tunnel_pool;
     fib_node_init(&mt->mt_node, FIB_NODE_TYPE_MPLS_TUNNEL);
     mt->mt_path_list = FIB_NODE_INDEX_INVALID;
@@ -622,27 +621,15 @@ vnet_mpls_tunnel_create (u8 l2_only,
         mt->mt_flags |= MPLS_TUNNEL_FLAG_L2;
 
     /*
-     * Create a new, or re=use and old, tunnel HW interface
+     * Create a new tunnel HW interface
      */
-    if (vec_len (mpls_tunnel_free_hw_if_indices) > 0)
-    {
-        mt->mt_hw_if_index =
-            mpls_tunnel_free_hw_if_indices[vec_len(mpls_tunnel_free_hw_if_indices)-1];
-        _vec_len (mpls_tunnel_free_hw_if_indices) -= 1;
-        hi = vnet_get_hw_interface (vnm, mt->mt_hw_if_index);
-        hi->hw_instance = mti;
-        hi->dev_instance = mti;
-    }
-    else
-    {
-        mt->mt_hw_if_index = vnet_register_interface(
-                                 vnm,
-                                 mpls_tunnel_class.index,
-                                 mti,
-                                 mpls_tunnel_hw_interface_class.index,
-                                 mti);
-        hi = vnet_get_hw_interface (vnm, mt->mt_hw_if_index);
-    }
+    mt->mt_hw_if_index = vnet_register_interface(
+        vnm,
+        mpls_tunnel_class.index,
+        mti,
+        mpls_tunnel_hw_interface_class.index,
+        mti);
+    hi = vnet_get_hw_interface (vnm, mt->mt_hw_if_index);
 
     /* Standard default MPLS tunnel MTU. */
     vnet_sw_interface_set_mtu (vnm, hi->sw_if_index, 9000);
@@ -737,6 +724,7 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
 
         old_pl_index = mt->mt_path_list;
 
+        fib_path_list_lock(old_pl_index);
         mt->mt_path_list =
             fib_path_list_copy_and_path_remove(old_pl_index,
                                                FIB_PATH_LIST_FLAG_SHARED,
@@ -748,6 +736,7 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
         if (FIB_NODE_INDEX_INVALID == mt->mt_path_list)
         {
             /* no paths left */
+            fib_path_list_unlock(old_pl_index);
             return (0);
         }
         else
@@ -771,11 +760,24 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
                                   mt->mt_path_list);
 
         mpls_tunnel_restack(mt);
+        fib_path_list_unlock(old_pl_index);
    }
 
     return (fib_path_list_get_n_paths(mt->mt_path_list));
 }
 
+int
+vnet_mpls_tunnel_get_index (u32 sw_if_index)
+{
+    mpls_tunnel_t *mt;
+
+    mt = mpls_tunnel_get_from_sw_if_index(sw_if_index);
+
+    if (NULL == mt)
+        return (~0);
+
+    return (mt - mpls_tunnel_pool);
+}
 
 static clib_error_t *
 vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
@@ -789,7 +791,7 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
     u32 sw_if_index = ~0, payload_proto;
     clib_error_t *error = NULL;
 
-    memset(&rpath, 0, sizeof(rpath));
+    clib_memset(&rpath, 0, sizeof(rpath));
     payload_proto = DPO_PROTO_MPLS;
 
     /* Get a line of input. */
@@ -826,7 +828,11 @@ vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
 
     if (is_del)
     {
-        if (!vnet_mpls_tunnel_path_remove(sw_if_index, rpaths))
+        if (NULL == rpaths)
+        {
+            vnet_mpls_tunnel_del(sw_if_index);
+        }
+        else if (!vnet_mpls_tunnel_path_remove(sw_if_index, rpaths))
         {
             vnet_mpls_tunnel_del(sw_if_index);
         }
@@ -875,7 +881,7 @@ format_mpls_tunnel (u8 * s, va_list * args)
     mpls_tunnel_t *mt = va_arg (*args, mpls_tunnel_t *);
     mpls_tunnel_attribute_t attr;
 
-    s = format(s, "mpls_tunnel%d: sw_if_index:%d hw_if_index:%d",
+    s = format(s, "mpls-tunnel%d: sw_if_index:%d hw_if_index:%d",
                mt - mpls_tunnel_pool,
                mt->mt_sw_if_index,
                mt->mt_hw_if_index);
@@ -934,7 +940,7 @@ show_mpls_tunnel_command_fn (vlib_main_t * vm,
     else
     {
         if (pool_is_free_index(mpls_tunnel_pool, mti))
-            return clib_error_return (0, "Not atunnel index %d", mti);
+            return clib_error_return (0, "Not a tunnel index %d", mti);
 
         mt = pool_elt_at_index(mpls_tunnel_pool, mti);
 

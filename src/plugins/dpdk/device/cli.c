@@ -24,6 +24,7 @@
 #include <vppinfra/linux/sysfs.c>
 
 #include <vnet/ethernet/ethernet.h>
+#include <dpdk/buffer.h>
 #include <dpdk/device/dpdk.h>
 #include <vnet/classify/vnet_classify.h>
 #include <vnet/mpls/packet.h>
@@ -39,6 +40,7 @@
  */
 
 
+#if 0
 static clib_error_t *
 get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
 	  dpdk_device_config_t ** devconf)
@@ -68,10 +70,10 @@ get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
 
   rte_eth_dev_info_get ((*xd)->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
-    {				/* bonded interface has no pci info */
+    {
       vlib_pci_addr_t pci_addr;
 
       pci_addr.domain = pci_dev->addr.domain;
@@ -91,6 +93,7 @@ get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
 done:
   return error;
 }
+#endif
 
 static inline clib_error_t *
 pcap_trace_command_internal (vlib_main_t * vm,
@@ -337,7 +340,7 @@ pcap_tx_trace_command_fn (vlib_main_t * vm,
  *   associated with a packet capture. If packet capture is in progress,
  *   '<em>status</em>' also will return the number of packets currently in
  *   the local buffer. All additional attributes entered on command line
- *   with '<em>status</em>' will be ingnored and not applied.
+ *   with '<em>status</em>' will be ignored and not applied.
  *
  * @cliexpar
  * Example of how to display the status of a tx packet capture when off:
@@ -381,27 +384,27 @@ static clib_error_t *
 show_dpdk_buffer (vlib_main_t * vm, unformat_input_t * input,
 		  vlib_cli_command_t * cmd)
 {
-  struct rte_mempool *rmp;
-  int i;
+  vlib_buffer_main_t *bm = vm->buffer_main;
+  vlib_buffer_pool_t *bp;
 
-  for (i = 0; i < vec_len (dpdk_main.pktmbuf_pools); i++)
-    {
-      rmp = dpdk_main.pktmbuf_pools[i];
-      if (rmp)
-	{
-	  unsigned count = rte_mempool_avail_count (rmp);
-	  unsigned free_count = rte_mempool_in_use_count (rmp);
+  vec_foreach (bp, bm->buffer_pools)
+  {
+    struct rte_mempool *rmp = dpdk_mempool_by_buffer_pool_index[bp->index];
+    if (rmp)
+      {
+	unsigned count = rte_mempool_avail_count (rmp);
+	unsigned free_count = rte_mempool_in_use_count (rmp);
 
-	  vlib_cli_output (vm,
-			   "name=\"%s\"  available = %7d allocated = %7d total = %7d\n",
-			   rmp->name, (u32) count, (u32) free_count,
-			   (u32) (count + free_count));
-	}
-      else
-	{
-	  vlib_cli_output (vm, "rte_mempool is NULL (!)\n");
-	}
-    }
+	vlib_cli_output (vm,
+			 "name=\"%s\"  available = %7d allocated = %7d total = %7d\n",
+			 rmp->name, (u32) count, (u32) free_count,
+			 (u32) (count + free_count));
+      }
+    else
+      {
+	vlib_cli_output (vm, "rte_mempool is NULL (!)\n");
+      }
+  }
   return 0;
 }
 
@@ -571,7 +574,7 @@ test_dpdk_buffer (vlib_main_t * vm, unformat_input_t * input,
  * @cliexpar
  * @parblock
  *
- * Example of how to display how many DPDK buffer test command has allcoated:
+ * Example of how to display how many DPDK buffer test command has allocated:
  * @cliexstart{test dpdk buffer}
  * Currently 0 buffers allocated
  * @cliexend
@@ -690,6 +693,7 @@ VLIB_CLI_COMMAND (cmd_set_dpdk_if_desc,static) = {
 };
 /* *INDENT-ON* */
 
+#if 0
 static int
 dpdk_device_queue_sort (void *a1, void *a2)
 {
@@ -727,7 +731,7 @@ show_dpdk_if_hqos_placement (vlib_main_t * vm, unformat_input_t * input,
 	  cpu < (dm->hqos_cpu_first_index + dm->hqos_cpu_count))
 	vlib_cli_output (vm, "Thread %u (%s at lcore %u):", cpu,
 			 vlib_worker_threads[cpu].name,
-			 vlib_worker_threads[cpu].lcore_id);
+			 vlib_worker_threads[cpu].cpu_id);
 
       vec_foreach (dq, dm->devices_by_hqos_cpu[cpu])
       {
@@ -1286,7 +1290,7 @@ set_dpdk_if_hqos_pktfield (vlib_main_t * vm, unformat_input_t * input,
 
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
     {				/* bonded interface has no pci info */
@@ -1384,7 +1388,7 @@ done:
 }
 
 /*?
- * This command is used to set the packet fields required for classifiying the
+ * This command is used to set the packet fields required for classifying the
  * incoming packet. As a result of classification process, packet field
  * information will be mapped to 5 tuples (subport, pipe, traffic class, pipe,
  * color) and stored in packet mbuf.
@@ -1481,7 +1485,7 @@ show_dpdk_if_hqos (vlib_main_t * vm, unformat_input_t * input,
 
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
     {				/* bonded interface has no pci info */
@@ -1985,6 +1989,7 @@ VLIB_CLI_COMMAND (cmd_show_dpdk_hqos_queue_stats, static) = {
   .function = show_dpdk_hqos_queue_stats,
 };
 /* *INDENT-ON* */
+#endif
 
 static clib_error_t *
 show_dpdk_version_command_fn (vlib_main_t * vm,
@@ -2003,7 +2008,7 @@ show_dpdk_version_command_fn (vlib_main_t * vm,
  * the list of arguments passed to DPDK when started.
  *
  * @cliexpar
- * Example of how to display how many DPDK buffer test command has allcoated:
+ * Example of how to display how many DPDK buffer test command has allocated:
  * @cliexstart{show dpdk version}
  * DPDK Version:        DPDK 16.11.0
  * DPDK EAL init args:  -c 1 -n 4 --huge-dir /run/vpp/hugepages --file-prefix vpp -w 0000:00:08.0 -w 0000:00:09.0 --master-lcore 0 --socket-mem 256
@@ -2016,59 +2021,6 @@ VLIB_CLI_COMMAND (show_vpe_version_command, static) = {
   .function = show_dpdk_version_command_fn,
 };
 /* *INDENT-ON* */
-
-#if CLI_DEBUG
-
-static clib_error_t *
-dpdk_validate_buffers_fn (vlib_main_t * vm, unformat_input_t * input,
-			  vlib_cli_command_t * cmd_arg)
-{
-  u32 n_invalid_bufs = 0, uninitialized = 0;
-  u32 is_poison = 0, is_test = 0;
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (input, "poison"))
-	is_poison = 1;
-      else if (unformat (input, "trajectory"))
-	is_test = 1;
-      else
-	return clib_error_return (0, "unknown input `%U'",
-				  format_unformat_error, input);
-    }
-
-  if (VLIB_BUFFER_TRACE_TRAJECTORY == 0)
-    {
-      vlib_cli_output (vm, "Trajectory not enabled. Recompile with "
-		       "VLIB_BUFFER_TRACE_TRAJECTORY 1");
-      return 0;
-    }
-  if (is_poison)
-    {
-      dpdk_buffer_poison_trajectory_all ();
-    }
-  if (is_test)
-    {
-      n_invalid_bufs = dpdk_buffer_validate_trajectory_all (&uninitialized);
-      if (!n_invalid_bufs)
-	vlib_cli_output (vm, "All buffers are valid %d uninitialized",
-			 uninitialized);
-      else
-	vlib_cli_output (vm, "Found %d invalid buffers and %d uninitialized",
-			 n_invalid_bufs, uninitialized);
-    }
-  return 0;
-}
-
-/* *INDENT-OFF* */
-VLIB_CLI_COMMAND (test_dpdk_buffers_command, static) =
-{
-  .path = "test dpdk buffers",
-  .short_help = "test dpdk buffers [poison] [trajectory]",
-  .function = dpdk_validate_buffers_fn,
-};
-/* *INDENT-ON* */
-
-#endif
 
 clib_error_t *
 dpdk_cli_init (vlib_main_t * vm)

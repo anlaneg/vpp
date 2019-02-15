@@ -103,7 +103,7 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			   memif_per_thread_data_t * ptd)
 {
   memif_ring_t *ring;
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   u32 n_left = frame->n_vectors;
   u32 n_copy_op;
   u16 ring_size, mask, slot, free_slots;
@@ -239,14 +239,14 @@ no_free_slots:
       b2 = vlib_get_buffer (vm, ptd->buffers[co[2].buffer_vec_index]);
       b3 = vlib_get_buffer (vm, ptd->buffers[co[3].buffer_vec_index]);
 
-      clib_memcpy (co[0].data, b0->data + co[0].buffer_offset,
-		   co[0].data_len);
-      clib_memcpy (co[1].data, b1->data + co[1].buffer_offset,
-		   co[1].data_len);
-      clib_memcpy (co[2].data, b2->data + co[2].buffer_offset,
-		   co[2].data_len);
-      clib_memcpy (co[3].data, b3->data + co[3].buffer_offset,
-		   co[3].data_len);
+      clib_memcpy_fast (co[0].data, b0->data + co[0].buffer_offset,
+			co[0].data_len);
+      clib_memcpy_fast (co[1].data, b1->data + co[1].buffer_offset,
+			co[1].data_len);
+      clib_memcpy_fast (co[2].data, b2->data + co[2].buffer_offset,
+			co[2].data_len);
+      clib_memcpy_fast (co[3].data, b3->data + co[3].buffer_offset,
+			co[3].data_len);
 
       co += 4;
       n_copy_op -= 4;
@@ -254,8 +254,8 @@ no_free_slots:
   while (n_copy_op)
     {
       b0 = vlib_get_buffer (vm, ptd->buffers[co[0].buffer_vec_index]);
-      clib_memcpy (co[0].data, b0->data + co[0].buffer_offset,
-		   co[0].data_len);
+      clib_memcpy_fast (co[0].data, b0->data + co[0].buffer_offset,
+			co[0].data_len);
       co += 1;
       n_copy_op -= 1;
     }
@@ -287,7 +287,7 @@ no_free_slots:
       mq->int_count++;
     }
 
-  vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+  vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
 
   return frame->n_vectors;
 }
@@ -299,7 +299,7 @@ memif_interface_tx_zc_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			      memif_per_thread_data_t * ptd)
 {
   memif_ring_t *ring = mq->ring;
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   u32 n_left = frame->n_vectors;
   u16 slot, free_slots, n_free;
   u16 ring_size = 1 << mq->log2_ring_size;

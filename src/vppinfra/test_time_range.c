@@ -55,7 +55,7 @@ test_time_range_main (unformat_input_t * input)
 
   fformat (stdout, "Test daylight time rules:\n");
 
-  memset (cp, 0, sizeof (*cp));
+  clib_memset (cp, 0, sizeof (*cp));
 
   /* Just before DST starts */
   cp->year = 2011;
@@ -161,6 +161,8 @@ main (int argc, char *argv[])
 {
   unformat_input_t i;
   int ret;
+
+  clib_mem_init (0, 64ULL << 20);
 
   unformat_init_command_line (&i, argv);
   ret = test_time_range_main (&i);

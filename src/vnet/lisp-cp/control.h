@@ -119,7 +119,7 @@ typedef enum
 #define foreach_lisp_flag_bit       \
   _(USE_PETR, "Use Proxy-ETR")                    \
   _(XTR_MODE, "ITR/ETR mode")                     \
-  _(PETR_MODE, "Use Proxy-ETR")                   \
+  _(PETR_MODE, "Proxy-ETR mode")                   \
   _(PITR_MODE, "Proxy-ITR mode")                  \
   _(STATS_ENABLED, "Statistics enabled")
 
@@ -265,7 +265,7 @@ typedef struct
   /* enable/disable rloc-probing */
   u8 rloc_probing;
 
-  /* timing wheel for mappping timeouts */
+  /* timing wheel for mapping timeouts */
   timing_wheel_t wheel;
 
   /** Per thread pool of records shared with thread0 */

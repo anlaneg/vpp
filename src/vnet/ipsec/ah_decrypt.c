@@ -23,11 +23,11 @@
 #include <vnet/ipsec/esp.h>
 #include <vnet/ipsec/ah.h>
 
-#define foreach_ah_decrypt_next                \
-_(DROP, "error-drop")                           \
-_(IP4_INPUT, "ip4-input")                       \
-_(IP6_INPUT, "ip6-input")                       \
-_(IPSEC_GRE_INPUT, "ipsec-gre-input")
+#define foreach_ah_decrypt_next \
+  _ (DROP, "error-drop")        \
+  _ (IP4_INPUT, "ip4-input")    \
+  _ (IP6_INPUT, "ip6-input")    \
+  _ (IPSEC_GRE_INPUT, "ipsec-gre-input")
 
 #define _(v, s) AH_DECRYPT_NEXT_##v,
 typedef enum
@@ -37,14 +37,11 @@ typedef enum
     AH_DECRYPT_N_NEXT,
 } ah_decrypt_next_t;
 
-
-#define foreach_ah_decrypt_error                   \
- _(RX_PKTS, "AH pkts received")                    \
- _(DECRYPTION_FAILED, "AH decryption failed")      \
- _(INTEG_ERROR, "Integrity check failed")           \
- _(REPLAY, "SA replayed packet")                    \
- _(NOT_IP, "Not IP packet (dropped)")
-
+#define foreach_ah_decrypt_error                \
+  _ (RX_PKTS, "AH pkts received")               \
+  _ (DECRYPTION_FAILED, "AH decryption failed") \
+  _ (INTEG_ERROR, "Integrity check failed")     \
+  _ (REPLAY, "SA replayed packet")
 
 typedef enum
 {
@@ -63,6 +60,7 @@ static char *ah_decrypt_error_strings[] = {
 typedef struct
 {
   ipsec_integ_alg_t integ_alg;
+  u32 seq_num;
 } ah_decrypt_trace_t;
 
 /* packet trace format function */
@@ -73,13 +71,15 @@ format_ah_decrypt_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   ah_decrypt_trace_t *t = va_arg (*args, ah_decrypt_trace_t *);
 
-  s = format (s, "ah: integrity %U", format_ipsec_integ_alg, t->integ_alg);
+  s = format (s, "ah: integrity %U seq-num %d",
+	      format_ipsec_integ_alg, t->integ_alg, t->seq_num);
   return s;
 }
 
-static uword
-ah_decrypt_node_fn (vlib_main_t * vm,
-		    vlib_node_runtime_t * node, vlib_frame_t * from_frame)
+always_inline uword
+ah_decrypt_inline (vlib_main_t * vm,
+		   vlib_node_runtime_t * node, vlib_frame_t * from_frame,
+		   int is_ip6)
 {
   u32 n_left_from, *from, next_index, *to_next;
   ipsec_main_t *im = &ipsec_main;
@@ -107,11 +107,13 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 	  u32 seq;
 	  ip4_header_t *ih4 = 0, *oh4 = 0;
 	  ip6_header_t *ih6 = 0, *oh6 = 0;
-	  u8 tunnel_mode = 1;
-	  u8 transport_ip6 = 0;
 	  u8 ip_hdr_size = 0;
 	  u8 tos = 0;
 	  u8 ttl = 0;
+	  u32 ip_version_traffic_class_and_flow_label = 0;
+	  u8 hop_limit = 0;
+	  u8 nexthdr = 0;
+	  u8 icv_padding_len = 0;
 
 
 	  i_bi0 = from[0];
@@ -125,15 +127,26 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 	  to_next[0] = i_bi0;
 	  to_next += 1;
 	  ih4 = vlib_buffer_get_current (i_b0);
-	  ip_hdr_size = ip4_header_bytes (ih4);
-	  ah0 = (ah_header_t *) ((u8 *) ih4 + ip_hdr_size);
-
+	  ih6 = vlib_buffer_get_current (i_b0);
 	  sa_index0 = vnet_buffer (i_b0)->ipsec.sad_index;
 	  sa0 = pool_elt_at_index (im->sad, sa_index0);
 
+	  if (is_ip6)
+	    {
+	      ip6_ext_header_t *prev = NULL;
+	      ip6_ext_header_find_t (ih6, prev, ah0, IP_PROTOCOL_IPSEC_AH);
+	      ip_hdr_size = sizeof (ip6_header_t);
+	      ASSERT ((u8 *) ah0 - (u8 *) ih6 == ip_hdr_size);
+	    }
+	  else
+	    {
+	      ip_hdr_size = ip4_header_bytes (ih4);
+	      ah0 = (ah_header_t *) ((u8 *) ih4 + ip_hdr_size);
+	    }
+
 	  seq = clib_host_to_net_u32 (ah0->seq_no);
+
 	  /* anti-replay check */
-	  //TODO UT remaining
 	  if (sa0->use_anti_replay)
 	    {
 	      int rv = 0;
@@ -145,11 +158,8 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 
 	      if (PREDICT_FALSE (rv))
 		{
-		  clib_warning ("anti-replay SPI %u seq %u", sa0->spi, seq);
-		  vlib_node_increment_counter (vm, ah_decrypt_node.index,
+		  vlib_node_increment_counter (vm, node->node_index,
 					       AH_DECRYPT_ERROR_REPLAY, 1);
-		  to_next[0] = i_bi0;
-		  to_next += 1;
 		  goto trace;
 		}
 	    }
@@ -162,15 +172,24 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 	    {
 	      u8 sig[64];
 	      u8 digest[64];
-	      memset (sig, 0, sizeof (sig));
-	      memset (digest, 0, sizeof (digest));
-	      u8 *icv =
-		vlib_buffer_get_current (i_b0) + ip_hdr_size +
-		sizeof (ah_header_t);
+	      clib_memset (sig, 0, sizeof (sig));
+	      clib_memset (digest, 0, sizeof (digest));
+	      u8 *icv = ah0->auth_data;
 	      memcpy (digest, icv, icv_size);
-	      memset (icv, 0, icv_size);
+	      clib_memset (icv, 0, icv_size);
 
-	      if ((ih4->ip_version_and_header_length & 0xF0) == 0x40)
+	      if (is_ip6)
+		{
+		  ip_version_traffic_class_and_flow_label =
+		    ih6->ip_version_traffic_class_and_flow_label;
+		  hop_limit = ih6->hop_limit;
+		  ih6->ip_version_traffic_class_and_flow_label = 0x60;
+		  ih6->hop_limit = 0;
+		  nexthdr = ah0->nexthdr;
+		  icv_padding_len =
+		    ah_calc_icv_padding_len (icv_size, 1 /* is_ipv6 */ );
+		}
+	      else
 		{
 		  tos = ih4->tos;
 		  ttl = ih4->ttl;
@@ -178,22 +197,21 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 		  ih4->ttl = 0;
 		  ih4->checksum = 0;
 		  ih4->flags_and_fragment_offset = 0;
-		}		//TODO else part for IPv6
-	      hmac_calc (sa0->integ_alg, sa0->integ_key, sa0->integ_key_len,
-			 (u8 *) ih4, i_b0->current_length, sig, sa0->use_esn,
-			 sa0->seq_hi);
+		  icv_padding_len =
+		    ah_calc_icv_padding_len (icv_size, 0 /* is_ipv6 */ );
+		}
+	      hmac_calc (sa0->integ_alg, sa0->integ_key.data,
+			 sa0->integ_key.len, (u8 *) ih4, i_b0->current_length,
+			 sig, sa0->use_esn, sa0->seq_hi);
 
 	      if (PREDICT_FALSE (memcmp (digest, sig, icv_size)))
 		{
-		  vlib_node_increment_counter (vm, ah_decrypt_node.index,
+		  vlib_node_increment_counter (vm, node->node_index,
 					       AH_DECRYPT_ERROR_INTEG_ERROR,
 					       1);
-		  to_next[0] = i_bi0;
-		  to_next += 1;
 		  goto trace;
 		}
 
-	      //TODO UT remaining
 	      if (PREDICT_TRUE (sa0->use_anti_replay))
 		{
 		  if (PREDICT_TRUE (sa0->use_esn))
@@ -204,62 +222,38 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 
 	    }
 
-
 	  vlib_buffer_advance (i_b0,
-			       ip_hdr_size + sizeof (ah_header_t) + icv_size);
+			       ip_hdr_size + sizeof (ah_header_t) + icv_size +
+			       icv_padding_len);
 	  i_b0->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
 
-	  /* transport mode */
-	  if (PREDICT_FALSE (!sa0->is_tunnel && !sa0->is_tunnel_ip6))
-	    {
-	      tunnel_mode = 0;
-
-	      if (PREDICT_TRUE
-		  ((ih4->ip_version_and_header_length & 0xF0) != 0x40))
-		{
-		  if (PREDICT_TRUE
-		      ((ih4->ip_version_and_header_length & 0xF0) == 0x60))
-		    transport_ip6 = 1;
-		  else
-		    {
-		      clib_warning ("next header: 0x%x", ah0->nexthdr);
-		      vlib_node_increment_counter (vm, ah_decrypt_node.index,
-						   AH_DECRYPT_ERROR_NOT_IP,
-						   1);
-		      goto trace;
-		    }
-		}
-	    }
-
-	  if (PREDICT_TRUE (tunnel_mode))
-	    {
+	  if (PREDICT_TRUE (sa0->is_tunnel))
+	    {			/* tunnel mode */
 	      if (PREDICT_TRUE (ah0->nexthdr == IP_PROTOCOL_IP_IN_IP))
 		next0 = AH_DECRYPT_NEXT_IP4_INPUT;
 	      else if (ah0->nexthdr == IP_PROTOCOL_IPV6)
 		next0 = AH_DECRYPT_NEXT_IP6_INPUT;
 	      else
 		{
-		  clib_warning ("next header: 0x%x", ah0->nexthdr);
-		  vlib_node_increment_counter (vm, ah_decrypt_node.index,
+		  vlib_node_increment_counter (vm, node->node_index,
 					       AH_DECRYPT_ERROR_DECRYPTION_FAILED,
 					       1);
 		  goto trace;
 		}
 	    }
-	  /* transport mode */
 	  else
-	    {
-	      if (PREDICT_FALSE (transport_ip6))
+	    {			/* transport mode */
+	      if (is_ip6)
 		{
-		  ih6 =
-		    (ip6_header_t *) (i_b0->data +
-				      sizeof (ethernet_header_t));
 		  vlib_buffer_advance (i_b0, -sizeof (ip6_header_t));
 		  oh6 = vlib_buffer_get_current (i_b0);
 		  memmove (oh6, ih6, sizeof (ip6_header_t));
 
 		  next0 = AH_DECRYPT_NEXT_IP6_INPUT;
-		  oh6->protocol = ah0->nexthdr;
+		  oh6->protocol = nexthdr;
+		  oh6->hop_limit = hop_limit;
+		  oh6->ip_version_traffic_class_and_flow_label =
+		    ip_version_traffic_class_and_flow_label;
 		  oh6->payload_length =
 		    clib_host_to_net_u16 (vlib_buffer_length_in_chain
 					  (vm, i_b0) - sizeof (ip6_header_t));
@@ -299,24 +293,29 @@ ah_decrypt_node_fn (vlib_main_t * vm,
 	      ah_decrypt_trace_t *tr =
 		vlib_add_trace (vm, node, i_b0, sizeof (*tr));
 	      tr->integ_alg = sa0->integ_alg;
+	      tr->seq_num = seq;
 	    }
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, i_bi0, next0);
 	}
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
-  vlib_node_increment_counter (vm, ah_decrypt_node.index,
-			       AH_DECRYPT_ERROR_RX_PKTS,
+  vlib_node_increment_counter (vm, node->node_index, AH_DECRYPT_ERROR_RX_PKTS,
 			       from_frame->n_vectors);
 
   return from_frame->n_vectors;
 }
 
+VLIB_NODE_FN (ah4_decrypt_node) (vlib_main_t * vm,
+				 vlib_node_runtime_t * node,
+				 vlib_frame_t * from_frame)
+{
+  return ah_decrypt_inline (vm, node, from_frame, 0 /* is_ip6 */ );
+}
 
 /* *INDENT-OFF* */
-VLIB_REGISTER_NODE (ah_decrypt_node) = {
-  .function = ah_decrypt_node_fn,
-  .name = "ah-decrypt",
+VLIB_REGISTER_NODE (ah4_decrypt_node) = {
+  .name = "ah4-decrypt",
   .vector_size = sizeof (u32),
   .format_trace = format_ah_decrypt_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
@@ -333,7 +332,32 @@ VLIB_REGISTER_NODE (ah_decrypt_node) = {
 };
 /* *INDENT-ON* */
 
-VLIB_NODE_FUNCTION_MULTIARCH (ah_decrypt_node, ah_decrypt_node_fn)
+VLIB_NODE_FN (ah6_decrypt_node) (vlib_main_t * vm,
+				 vlib_node_runtime_t * node,
+				 vlib_frame_t * from_frame)
+{
+  return ah_decrypt_inline (vm, node, from_frame, 1 /* is_ip6 */ );
+}
+
+/* *INDENT-OFF* */
+VLIB_REGISTER_NODE (ah6_decrypt_node) = {
+  .name = "ah6-decrypt",
+  .vector_size = sizeof (u32),
+  .format_trace = format_ah_decrypt_trace,
+  .type = VLIB_NODE_TYPE_INTERNAL,
+
+  .n_errors = ARRAY_LEN(ah_decrypt_error_strings),
+  .error_strings = ah_decrypt_error_strings,
+
+  .n_next_nodes = AH_DECRYPT_N_NEXT,
+  .next_nodes = {
+#define _(s,n) [AH_DECRYPT_NEXT_##s] = n,
+    foreach_ah_decrypt_next
+#undef _
+  },
+};
+/* *INDENT-ON* */
+
 /*
  * fd.io coding-style-patch-verification: ON
  *

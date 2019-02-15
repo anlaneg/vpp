@@ -134,7 +134,7 @@ vhost_map_guest_mem_done:
 	}
     }
 #endif
-  DBG_VQ ("failed to map guest mem addr %llx", addr);
+  vu_log_err (vui, "failed to map guest mem addr %llx", addr);
   *hint = 0;
   return 0;
 }
@@ -173,7 +173,7 @@ vhost_user_log_dirty_pages_2 (vhost_user_intf_t * vui,
     }
   if (PREDICT_FALSE ((addr + len - 1) / VHOST_LOG_PAGE / 8 >= vui->log_size))
     {
-      DBG_SOCK ("vhost_user_log_dirty_pages(): out of range\n");
+      vu_log_debug (vui, "vhost_user_log_dirty_pages(): out of range\n");
       return;
     }
 
@@ -249,6 +249,12 @@ vhost_user_send_call (vlib_main_t * vm, vhost_user_vring_t * vq)
 
   vq->n_since_last_int = 0;
   vq->int_deadline = vlib_time_now (vm) + vum->coalesce_time;
+}
+
+static_always_inline u8
+vui_is_link_up (vhost_user_intf_t * vui)
+{
+  return vui->admin_up && vui->is_ready;
 }
 
 #endif

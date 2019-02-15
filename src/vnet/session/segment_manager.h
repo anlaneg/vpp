@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Cisco and/or its affiliates.
+ * Copyright (c) 2017-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -24,22 +24,17 @@
 
 typedef struct _segment_manager_properties
 {
-  /** Session fifo sizes.  */
-  u32 rx_fifo_size;
-  u32 tx_fifo_size;
-  u32 evt_q_size;
-
-  /** Configured additional segment size */
-  u32 add_segment_size;
-
-  /** Flags */
-  u8 add_segment:1;		/**< can add new segments */
-  u8 use_mq_eventfd:1;		/**< use eventfds for mqs */
-  u8 reserved:6;
-
-  /** Segment type: if set to SSVM_N_TYPES, private segments are used */
-  ssvm_segment_type_t segment_type;
-
+  u32 rx_fifo_size;			/**< receive fifo size */
+  u32 tx_fifo_size;			/**< transmit fifo size */
+  u32 evt_q_size;			/**< event queue length */
+  u32 segment_size;			/**< first segment size */
+  u32 prealloc_fifos;			/**< preallocated fifo pairs */
+  u32 add_segment_size;			/**< additional segment size */
+  u8 add_segment:1;			/**< can add new segments flag */
+  u8 use_mq_eventfd:1;			/**< use eventfds for mqs flag */
+  u8 reserved:6;			/**< reserved flags */
+  ssvm_segment_type_t segment_type;	/**< seg type: if set to SSVM_N_TYPES,
+					     private segments are used */
 } segment_manager_properties_t;
 
 typedef struct _segment_manager
@@ -50,8 +45,8 @@ typedef struct _segment_manager
   /** rwlock that protects the segments pool */
   clib_rwlock_t segments_rwlock;
 
-  /** Owner app index */
-  u32 app_index;
+  /** Owner app worker index */
+  u32 app_wrk_index;
 
   /**
    * First segment should not be deleted unless segment manger is deleted.
@@ -122,13 +117,23 @@ segment_manager_event_queue (segment_manager_t * sm)
   return sm->event_queue;
 }
 
+always_inline u64
+segment_manager_make_segment_handle (u32 segment_manager_index,
+				     u32 segment_index)
+{
+  return (((u64) segment_manager_index << 32) | segment_index);
+}
+
+u64 segment_manager_segment_handle (segment_manager_t * sm,
+				    svm_fifo_segment_private_t * segment);
+
 segment_manager_t *segment_manager_new ();
 int segment_manager_init (segment_manager_t * sm, u32 first_seg_size,
 			  u32 prealloc_fifo_pairs);
 
-svm_fifo_segment_private_t *segment_manager_get_segment (segment_manager_t *
-							 sm,
+svm_fifo_segment_private_t *segment_manager_get_segment (segment_manager_t *,
 							 u32 segment_index);
+svm_fifo_segment_private_t *segment_manager_get_segment_w_handle (u64);
 svm_fifo_segment_private_t
   * segment_manager_get_segment_w_lock (segment_manager_t * sm,
 					u32 segment_index);

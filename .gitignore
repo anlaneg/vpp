@@ -17,14 +17,15 @@
 /build-root/rpmbuild/
 /build-root/test-doc/
 /build-root/test-cov/
-/build-root/python/
-/build-root/vapi_test/
-/build-root/vom_test/
+/test/run/
+/test/build/
+/test/coverage/
 /build-config.mk
-/dpdk/*.tar.gz
-/dpdk/*.tar.xz
-/dpdk/vpp-dpdk*.deb
-/dpdk/vpp-dpdk*.changes
+/build/external/*.tar.gz
+/build/external/*.tar.xz
+/build/external/vpp-*.deb
+/build/external/vpp-*.changes
+/build/external/downloads/
 /path_setup
 /tools/
 # start autotools ignore
@@ -66,7 +67,6 @@ test-driver
 .cproject
 .pydevproject
 .vscode/
-CMakeLists.txt
 cmake-build*/
 
 # cscope and ctags
@@ -83,7 +83,7 @@ GTAGS
 /build-root/.doxygen-bootstrap.ok
 /build-root/.doxygen-siphon.dep
 /docs/_build
-/env
+/sphinx_venv
 !/docs/Makefile
 
 # indent backup files

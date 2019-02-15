@@ -99,8 +99,7 @@ netmap_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   struct netmap_ring *ring;
   int cur_ring;
   u32 thread_index = vm->thread_index;
-  u32 n_buffer_bytes = vlib_buffer_free_list_buffer_size (vm,
-							  VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
+  u32 n_buffer_bytes = vlib_buffer_get_default_data_size (vm);
 
   if (nif->per_interface_next_index != ~0)
     next_index = nif->per_interface_next_index;
@@ -174,10 +173,9 @@ netmap_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  u32 bytes_to_copy =
 		    data_len > n_buffer_bytes ? n_buffer_bytes : data_len;
 		  b0->current_data = 0;
-		  clib_memcpy (vlib_buffer_get_current (b0),
-			       (u8 *) NETMAP_BUF (ring,
-						  slot->buf_idx) + offset,
-			       bytes_to_copy);
+		  clib_memcpy_fast (vlib_buffer_get_current (b0),
+				    (u8 *) NETMAP_BUF (ring, slot->buf_idx) +
+				    offset, bytes_to_copy);
 
 		  /* fill buffer header */
 		  b0->current_length = bytes_to_copy;

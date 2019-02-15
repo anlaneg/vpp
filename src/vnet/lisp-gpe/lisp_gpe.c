@@ -47,8 +47,8 @@ lisp_gpe_add_del_fwd_entry_command_fn (vlib_main_t * vm,
   locator_pair_t pair, *pairs = 0;
   int rv;
 
-  memset (leid, 0, sizeof (*leid));
-  memset (reid, 0, sizeof (*reid));
+  clib_memset (leid, 0, sizeof (*leid));
+  clib_memset (reid, 0, sizeof (*reid));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -145,7 +145,7 @@ lisp_gpe_add_del_fwd_entry_command_fn (vlib_main_t * vm,
 
   /* add fwd entry */
   vnet_lisp_gpe_add_del_fwd_entry_args_t _a, *a = &_a;
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (a, 0, sizeof (a[0]));
 
   a->is_add = is_add;
   a->is_negative = is_negative;
@@ -193,10 +193,15 @@ clib_error_t *
 vnet_lisp_gpe_enable_disable (vnet_lisp_gpe_enable_disable_args_t * a)
 {
   lisp_gpe_main_t *lgm = &lisp_gpe_main;
+  vlib_main_t *vm = vlib_get_main ();
 
   if (a->is_en)
     {
       lgm->is_en = 1;
+      udp_register_dst_port (vm, UDP_DST_PORT_lisp_gpe,
+			     lisp_gpe_ip4_input_node.index, 1 /* is_ip4 */ );
+      udp_register_dst_port (vm, UDP_DST_PORT_lisp_gpe6,
+			     lisp_gpe_ip6_input_node.index, 0 /* is_ip4 */ );
     }
   else
     {
@@ -206,6 +211,8 @@ vnet_lisp_gpe_enable_disable (vnet_lisp_gpe_enable_disable_args_t * a)
       /* disable all l3 ifaces */
       lisp_gpe_tenant_flush ();
 
+      udp_unregister_dst_port (vm, UDP_DST_PORT_lisp_gpe, 0 /* is_ip4 */ );
+      udp_unregister_dst_port (vm, UDP_DST_PORT_lisp_gpe6, 1 /* is_ip4 */ );
       lgm->is_en = 0;
     }
 
@@ -496,7 +503,7 @@ gpe_native_forward_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 
-  memset (&rpath, 0, sizeof (rpath));
+  clib_memset (&rpath, 0, sizeof (rpath));
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -612,14 +619,9 @@ lisp_gpe_init (vlib_main_t * vm)
   lgm->lisp_gpe_fwd_entries =
     hash_create_mem (0, sizeof (lisp_gpe_fwd_entry_key_t), sizeof (uword));
 
-  udp_register_dst_port (vm, UDP_DST_PORT_lisp_gpe,
-			 lisp_gpe_ip4_input_node.index, 1 /* is_ip4 */ );
-  udp_register_dst_port (vm, UDP_DST_PORT_lisp_gpe6,
-			 lisp_gpe_ip6_input_node.index, 0 /* is_ip4 */ );
-
   lgm->lisp_stats_index_by_key =
     hash_create_mem (0, sizeof (lisp_stats_key_t), sizeof (uword));
-  memset (&lgm->counters, 0, sizeof (lgm->counters));
+  clib_memset (&lgm->counters, 0, sizeof (lgm->counters));
   lgm->counters.name = "LISP counters";
 
   return 0;
@@ -644,7 +646,7 @@ lisp_gpe_test_send_nsh_packet (u8 * file_name)
   if (!file_name)
     return clib_error_create ("no pcap file specified!");
 
-  memset (&pm, 0, sizeof (pm));
+  clib_memset (&pm, 0, sizeof (pm));
   pm.file_name = (char *) file_name;
   error = pcap_read (&pm);
   if (error)
@@ -667,7 +669,7 @@ lisp_gpe_test_send_nsh_packet (u8 * file_name)
 
   vnet_buffer (b)->sw_if_index[VLIB_TX] = hi->sw_if_index;
   u8 *p = vlib_buffer_put_uninit (b, vec_len (pm.packets_read[0]));
-  clib_memcpy (p, pm.packets_read[0], vec_len (pm.packets_read[0]));
+  clib_memcpy_fast (p, pm.packets_read[0], vec_len (pm.packets_read[0]));
   vlib_buffer_pull (b, sizeof (ethernet_header_t));
 
   vlib_node_t *n = vlib_get_node_by_name (lgm->vlib_main,

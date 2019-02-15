@@ -13,9 +13,17 @@ API_FILES_PATH = "japi/java"
 REGISTRY_JAR_PREFIX = "jvpp-registry"
 
 
-@unittest.skipUnless(running_extended_tests(), "part of extended tests")
+@unittest.skipUnless(running_extended_tests, "part of extended tests")
 class TestJVpp(VppTestCase):
     """ JVPP Core Test Case """
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestJVpp, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(TestJVpp, cls).tearDownClass()
 
     def invoke_for_jvpp_core(self, api_jar_name, test_class_name):
         self.jvpp_connection_test(api_jar_name=api_jar_name,
@@ -99,7 +107,7 @@ class TestJVpp(VppTestCase):
                             "{0}-{1}.jar".format(jar_name, version))
 
     def jvpp_connection_test(self, api_jar_name, test_class_name, timeout):
-        install_dir = os.getenv('VPP_TEST_BUILD_DIR')
+        install_dir = os.getenv('VPP_BUILD_DIR')
         self.logger.info("Install directory : {0}".format(install_dir))
 
         version_reply = self.vapi.show_version()
@@ -135,7 +143,7 @@ class TestJVpp(VppTestCase):
         self.logger.info("Process output : {0}{1}".format(os.linesep, out))
 
         if self.process.returncode != 0:
-            raise Exception(
+            raise subprocess.CalledProcessError(
                 "Command {0} failed with return code: {1}.{2}"
                 "Process error output: {2}{3}"
                 .format(command, self.process.returncode, os.linesep, err))

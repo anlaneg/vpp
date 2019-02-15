@@ -24,6 +24,7 @@ vnet_feature_init (vlib_main_t * vm)
   vnet_feature_main_t *fm = &feature_main;
   vnet_feature_registration_t *freg;
   vnet_feature_arc_registration_t *areg;
+  vnet_feature_constraint_registration_t *creg;
   u32 arc_index = 0;
 
   fm->arc_index_by_name = hash_create_string (0, sizeof (uword));
@@ -58,6 +59,7 @@ vnet_feature_init (vlib_main_t * vm)
   vec_validate (fm->next_feature_by_name, arc_index - 1);
   vec_validate (fm->sw_if_index_has_features, arc_index - 1);
   vec_validate (fm->feature_count_by_sw_if_index, arc_index - 1);
+  vec_validate (fm->next_constraint_by_arc, arc_index - 1);
 
   freg = fm->next_feature;
   while (freg)
@@ -82,24 +84,63 @@ vnet_feature_init (vlib_main_t * vm)
       freg = next;
     }
 
+  /* Move bulk constraints to the constraint by arc lists */
+  creg = fm->next_constraint;
+  while (creg)
+    {
+      vnet_feature_constraint_registration_t *next;
+      uword *p = hash_get_mem (fm->arc_index_by_name, creg->arc_name);
+      if (p == 0)
+	{
+	  /* Don't start vpp with broken features arcs */
+	  clib_warning ("Unknown feature arc '%s'", creg->arc_name);
+	  os_exit (1);
+	}
+
+      areg = uword_to_pointer (p[0], vnet_feature_arc_registration_t *);
+      arc_index = areg->feature_arc_index;
+
+      next = creg->next;
+      creg->next_in_arc = fm->next_constraint_by_arc[arc_index];
+      fm->next_constraint_by_arc[arc_index] = creg;
+
+      /* next */
+      creg = next;
+    }
+
+
   areg = fm->next_arc;
   while (areg)
     {
       clib_error_t *error;
       vnet_feature_config_main_t *cm;
       vnet_config_main_t *vcm;
+      char **features_in_order, *last_feature;
 
       arc_index = areg->feature_arc_index;
       cm = &fm->feature_config_mains[arc_index];
       vcm = &cm->config_main;
-      if ((error = vnet_feature_arc_init (vm, vcm,
-					  areg->start_nodes,
-					  areg->n_start_nodes,
-					  fm->next_feature_by_arc[arc_index],
-					  &fm->feature_nodes[arc_index])))
+      if ((error = vnet_feature_arc_init
+	   (vm, vcm, areg->start_nodes, areg->n_start_nodes,
+	    fm->next_feature_by_arc[arc_index],
+	    fm->next_constraint_by_arc[arc_index],
+	    &fm->feature_nodes[arc_index])))
 	{
 	  clib_error_report (error);
 	  os_exit (1);
+	}
+
+      features_in_order = fm->feature_nodes[arc_index];
+
+      /* If specificed, verify that the last node in the arc is actually last */
+      if (areg->last_in_arc && vec_len (features_in_order) > 0)
+	{
+	  last_feature = features_in_order[vec_len (features_in_order) - 1];
+	  if (strncmp (areg->last_in_arc, last_feature,
+		       strlen (areg->last_in_arc)))
+	    clib_warning
+	      ("WARNING: %s arc: last node is %s, but expected %s!",
+	       areg->arc_name, last_feature, areg->last_in_arc);
 	}
 
       fm->next_feature_by_name[arc_index] =
@@ -414,7 +455,7 @@ set_interface_features_command_fn (vlib_main_t * vm,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    goto done;
+    return 0;
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {

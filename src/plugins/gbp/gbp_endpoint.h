@@ -18,87 +18,345 @@
 
 #include <plugins/gbp/gbp_types.h>
 #include <vnet/ip/ip.h>
+#include <vnet/ethernet/mac_address.h>
+
+#include <vppinfra/bihash_16_8.h>
+#include <vppinfra/bihash_template.h>
+#include <vppinfra/bihash_24_8.h>
+#include <vppinfra/bihash_template.h>
 
 /**
- * The key for an Endpoint
+ * Flags for each endpoint
+ */
+typedef enum gbp_endpoint_attr_t_
+{
+  GBP_ENDPOINT_ATTR_FIRST = 0,
+  GBP_ENDPOINT_ATTR_BOUNCE = GBP_ENDPOINT_ATTR_FIRST,
+  GBP_ENDPOINT_ATTR_REMOTE,
+  GBP_ENDPOINT_ATTR_LEARNT,
+  GBP_ENDPOINT_ATTR_EXTERNAL,
+  GBP_ENDPOINT_ATTR_LAST,
+} gbp_endpoint_attr_t;
+
+typedef enum gbp_endpoint_flags_t_
+{
+  GBP_ENDPOINT_FLAG_NONE = 0,
+  GBP_ENDPOINT_FLAG_BOUNCE = (1 << GBP_ENDPOINT_ATTR_BOUNCE),
+  GBP_ENDPOINT_FLAG_REMOTE = (1 << GBP_ENDPOINT_ATTR_REMOTE),
+  GBP_ENDPOINT_FLAG_LEARNT = (1 << GBP_ENDPOINT_ATTR_LEARNT),
+  GBP_ENDPOINT_FLAG_EXTERNAL = (1 << GBP_ENDPOINT_ATTR_EXTERNAL),
+} gbp_endpoint_flags_t;
+
+#define GBP_ENDPOINT_ATTR_NAMES {                 \
+    [GBP_ENDPOINT_ATTR_BOUNCE] = "bounce",        \
+    [GBP_ENDPOINT_ATTR_REMOTE] = "remote",        \
+    [GBP_ENDPOINT_ATTR_LEARNT] = "learnt",        \
+    [GBP_ENDPOINT_ATTR_EXTERNAL] = "external",    \
+}
+
+extern u8 *format_gbp_endpoint_flags (u8 * s, va_list * args);
+
+/**
+ * Sources of Endpoints in priority order. The best (lowest value) source
+ * provides the forwarding information
+ */
+#define foreach_gbp_endpoint_src    \
+  _(CP, "control-plane")            \
+  _(DP, "data-plane")               \
+  _(RR, "recursive-resolution")
+
+typedef enum gbp_endpoint_src_t_
+{
+#define _(v,s) GBP_ENDPOINT_SRC_##v,
+  foreach_gbp_endpoint_src
+#undef _
+} gbp_endpoint_src_t;
+
+#define GBP_ENDPOINT_SRC_MAX (GBP_ENDPOINT_SRC_RR+1)
+
+extern u8 *format_gbp_endpoint_src (u8 * s, va_list * args);
+
+/**
+ * This is the identity of an endpoint, as such it is information
+ * about an endpoint that is idempotent.
+ * The ID is used to add the EP into the various data-bases for retrieval.
  */
 typedef struct gbp_endpoint_key_t_
 {
   /**
-   * The interface on which the EP is connected
+   * A vector of ip addresses that belong to the endpoint.
+   * Together with the route EPG's RD this forms the EP's L3 key
    */
-  u32 gek_sw_if_index;
+  fib_prefix_t *gek_ips;
 
   /**
-   * The IP[46] address of the endpoint
+   * MAC address of the endpoint.
+   * Together with the route EPG's BD this forms the EP's L2 key
    */
-  ip46_address_t gek_ip;
+  mac_address_t gek_mac;
+
+  /**
+   * Index of the Bridge-Domain
+   */
+  index_t gek_gbd;
+
+  /**
+   * Index of the Route-Domain
+   */
+  index_t gek_grd;
 } gbp_endpoint_key_t;
 
 /**
+ * Information about the location of the endpoint provided by a source
+ * of endpoints
+ */
+typedef struct gbp_endpoint_loc_t_
+{
+  /**
+   * The source providing this location information
+   */
+  gbp_endpoint_src_t gel_src;
+
+  /**
+   * The interface on which the EP is connected
+   */
+  u32 gel_sw_if_index;
+
+  /**
+   * Endpoint flags
+   */
+  gbp_endpoint_flags_t gel_flags;
+
+  /**
+   * Endpoint Group.
+   */
+  index_t gel_epg;
+
+  /**
+   * number of times this source has locked this
+   */
+  u32 gel_locks;
+
+  /**
+   * Tunnel info for remote endpoints
+   */
+  struct
+  {
+    u32 gel_parent_sw_if_index;
+    ip46_address_t gel_src;
+    ip46_address_t gel_dst;
+  } tun;
+} gbp_endpoint_loc_t;
+
+/**
+ * And endpoints current forwarding state
+ */
+typedef struct gbp_endpoint_fwd_t_
+{
+  /**
+   * The interface on which the EP is connected
+   */
+  index_t gef_itf;
+
+  /**
+   * The L3 adj, if created
+   */
+  index_t *gef_adjs;
+
+  /**
+   * Endpoint Group's ID. cached for fast DP access.
+   */
+  epg_id_t gef_epg_id;
+
+  gbp_endpoint_flags_t gef_flags;
+} gbp_endpoint_fwd_t;
+
+/**
  * A Group Based Policy Endpoint.
- * This is typcially a VM on the local compute node for which policy must be
- * locally applied
+ * This is typically a VM or container. If the endpoint is local (i.e. on
+ * the same compute node as VPP) then there is one interface per-endpoint.
+ * If the EP is remote,e.g. reachable over a [vxlan] tunnel, then there
+ * will be multiple EPs reachable over the tunnel and they can be distinguished
+ * via either their MAC or IP Address[es].
  */
 typedef struct gbp_endpoint_t_
 {
   /**
-   * The endpoint's interface and IP address
+   * A FIB node that allows the tracking of children.
    */
-  gbp_endpoint_key_t *ge_key;
+  fib_node_t ge_node;
 
   /**
-   * The endpoint's designated EPG
+   * The key/ID of this EP
    */
-  epg_id_t ge_epg_id;
+  gbp_endpoint_key_t ge_key;
+
+  /**
+   * Location information provided by the various sources.
+   * These are sorted based on source priority.
+   */
+  gbp_endpoint_loc_t *ge_locs;
+
+  gbp_endpoint_fwd_t ge_fwd;
+
+  /**
+   * The last time a packet from seen from this end point
+   */
+  f64 ge_last_time;
 } gbp_endpoint_t;
 
-/**
- * Result of a interface to EPG mapping.
- * multiple Endpoints can occur on the same interface, so this
- * mapping needs to be reference counted.
- */
-typedef struct gbp_itf_t_
-{
-  epg_id_t gi_epg;
-  u32 gi_ref_count;
-} gbp_itf_t;
+extern u8 *format_gbp_endpoint (u8 * s, va_list * args);
 
 /**
- * Interface to source EPG DB - a per-interface vector
+ * GBP Endpoint Databases
  */
-typedef struct gbp_itf_to_epg_db_t_
+typedef struct gbp_ep_by_ip_itf_db_t_
 {
-  gbp_itf_t *gte_vec;
-} gbp_itf_to_epg_db_t;
+  index_t *ged_by_sw_if_index;
+  clib_bihash_24_8_t ged_by_ip_rd;
+  clib_bihash_16_8_t ged_by_mac_bd;
+} gbp_ep_db_t;
 
-extern int gbp_endpoint_update (u32 sw_if_index,
-				const ip46_address_t * ip, epg_id_t epg_id);
-extern void gbp_endpoint_delete (u32 sw_if_index, const ip46_address_t * ip);
+extern int gbp_endpoint_update_and_lock (gbp_endpoint_src_t src,
+					 u32 sw_if_index,
+					 const ip46_address_t * ip,
+					 const mac_address_t * mac,
+					 index_t gbd, index_t grd,
+					 epg_id_t epg_id,
+					 gbp_endpoint_flags_t flags,
+					 const ip46_address_t * tun_src,
+					 const ip46_address_t * tun_dst,
+					 u32 * handle);
+extern void gbp_endpoint_unlock (gbp_endpoint_src_t src, index_t gbpei);
+extern u32 gbp_endpoint_child_add (index_t gei,
+				   fib_node_type_t type,
+				   fib_node_index_t index);
+extern void gbp_endpoint_child_remove (index_t gei, u32 sibling);
 
-typedef int (*gbp_endpoint_cb_t) (gbp_endpoint_t * gbpe, void *ctx);
+typedef walk_rc_t (*gbp_endpoint_cb_t) (index_t gbpei, void *ctx);
 extern void gbp_endpoint_walk (gbp_endpoint_cb_t cb, void *ctx);
+extern void gbp_endpoint_scan (vlib_main_t * vm);
+extern f64 gbp_endpoint_scan_threshold (void);
+extern int gbp_endpoint_is_remote (const gbp_endpoint_t * ge);
+extern int gbp_endpoint_is_local (const gbp_endpoint_t * ge);
+extern int gbp_endpoint_is_external (const gbp_endpoint_t * ge);
+extern int gbp_endpoint_is_learnt (const gbp_endpoint_t * ge);
 
-/**
- * Port to EPG mapping management
- */
-extern void gbp_itf_epg_update (u32 sw_if_index, epg_id_t src_epg,
-				u8 do_policy);
-extern void gbp_itf_epg_delete (u32 sw_if_index);
+
+extern void gbp_endpoint_flush (gbp_endpoint_src_t src, u32 sw_if_index);
 
 /**
  * DP functions and databases
  */
-extern gbp_itf_to_epg_db_t gbp_itf_to_epg_db;
+extern gbp_ep_db_t gbp_ep_db;
+extern gbp_endpoint_t *gbp_endpoint_pool;
 
 /**
- * Get the source EPG for a port/interface
+ * Get the endpoint from a port/interface
  */
-always_inline u32
-gbp_port_to_epg (u32 sw_if_index)
+always_inline gbp_endpoint_t *
+gbp_endpoint_get (index_t gbpei)
 {
-  return (gbp_itf_to_epg_db.gte_vec[sw_if_index].gi_epg);
+  return (pool_elt_at_index (gbp_endpoint_pool, gbpei));
 }
+
+static_always_inline void
+gbp_endpoint_mk_key_mac (const u8 * mac,
+			 u32 bd_index, clib_bihash_kv_16_8_t * key)
+{
+  key->key[0] = ethernet_mac_address_u64 (mac);
+  key->key[1] = bd_index;
+}
+
+static_always_inline gbp_endpoint_t *
+gbp_endpoint_find_mac (const u8 * mac, u32 bd_index)
+{
+  clib_bihash_kv_16_8_t key, value;
+  int rv;
+
+  gbp_endpoint_mk_key_mac (mac, bd_index, &key);
+
+  rv = clib_bihash_search_16_8 (&gbp_ep_db.ged_by_mac_bd, &key, &value);
+
+  if (0 != rv)
+    return NULL;
+
+  return (gbp_endpoint_get (value.value));
+}
+
+static_always_inline void
+gbp_endpoint_mk_key_ip (const ip46_address_t * ip,
+			u32 fib_index, clib_bihash_kv_24_8_t * key)
+{
+  key->key[0] = ip->as_u64[0];
+  key->key[1] = ip->as_u64[1];
+  key->key[2] = fib_index;
+}
+
+static_always_inline void
+gbp_endpoint_mk_key_ip4 (const ip4_address_t * ip,
+			 u32 fib_index, clib_bihash_kv_24_8_t * key)
+{
+  const ip46_address_t a = {
+    .ip4 = *ip,
+  };
+  gbp_endpoint_mk_key_ip (&a, fib_index, key);
+}
+
+static_always_inline gbp_endpoint_t *
+gbp_endpoint_find_ip4 (const ip4_address_t * ip, u32 fib_index)
+{
+  clib_bihash_kv_24_8_t key, value;
+  int rv;
+
+  gbp_endpoint_mk_key_ip4 (ip, fib_index, &key);
+
+  rv = clib_bihash_search_24_8 (&gbp_ep_db.ged_by_ip_rd, &key, &value);
+
+  if (0 != rv)
+    return NULL;
+
+  return (gbp_endpoint_get (value.value));
+}
+
+static_always_inline void
+gbp_endpoint_mk_key_ip6 (const ip6_address_t * ip,
+			 u32 fib_index, clib_bihash_kv_24_8_t * key)
+{
+  key->key[0] = ip->as_u64[0];
+  key->key[1] = ip->as_u64[1];
+  key->key[2] = fib_index;
+}
+
+static_always_inline gbp_endpoint_t *
+gbp_endpoint_find_ip6 (const ip6_address_t * ip, u32 fib_index)
+{
+  clib_bihash_kv_24_8_t key, value;
+  int rv;
+
+  gbp_endpoint_mk_key_ip6 (ip, fib_index, &key);
+
+  rv = clib_bihash_search_24_8 (&gbp_ep_db.ged_by_ip_rd, &key, &value);
+
+  if (0 != rv)
+    return NULL;
+
+  return (gbp_endpoint_get (value.value));
+}
+
+static_always_inline gbp_endpoint_t *
+gbp_endpoint_find_itf (u32 sw_if_index)
+{
+  index_t gei;
+
+  gei = gbp_ep_db.ged_by_sw_if_index[sw_if_index];
+
+  if (INDEX_INVALID != gei)
+    return (gbp_endpoint_get (gei));
+
+  return (NULL);
+}
+
 
 #endif
 

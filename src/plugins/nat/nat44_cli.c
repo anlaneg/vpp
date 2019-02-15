@@ -20,7 +20,9 @@
 #include <nat/nat.h>
 #include <nat/nat_ipfix_logging.h>
 #include <nat/nat_det.h>
+#include <nat/nat64.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat_affinity.h>
 #include <vnet/fib/fib_table.h>
 
 #define UNSUPPORTED_IN_DET_MODE_STR \
@@ -126,7 +128,13 @@ snat_ipfix_logging_enable_disable_command_fn (vlib_main_t * vm,
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    {
+      rv = snat_ipfix_logging_enable_disable (enable, domain_id,
+					      (u16) src_port);
+      if (rv)
+	return clib_error_return (0, "ipfix logging enable failed");
+      return 0;
+    }
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -164,6 +172,7 @@ nat44_show_hash_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
 {
   snat_main_t *sm = &snat_main;
   snat_main_per_thread_data_t *tsm;
+  nat_affinity_main_t *nam = &nat_affinity_main;
   int i;
   int verbose = 0;
 
@@ -197,6 +206,9 @@ nat44_show_hash_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
     vlib_cli_output (vm, "%U", format_bihash_8_8, &tsm->user_hash, verbose);
   }
 
+  if (sm->endpoint_dependent)
+    vlib_cli_output (vm, "%U", format_bihash_16_8, &nam->affinity_hash,
+		     verbose);
   return 0;
 }
 
@@ -208,7 +220,7 @@ nat44_set_alloc_addr_and_port_alg_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
-  u32 psid, psid_offset, psid_length;
+  u32 psid, psid_offset, psid_length, port_start, port_end;
 
   if (sm->deterministic)
     return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
@@ -228,6 +240,20 @@ nat44_set_alloc_addr_and_port_alg_command_fn (vlib_main_t * vm,
 	nat_set_alloc_addr_and_port_mape ((u16) psid, (u16) psid_offset,
 					  (u16) psid_length);
       else
+	if (unformat
+	    (line_input, "port-range %d - %d", &port_start, &port_end))
+	{
+	  if (port_end <= port_start)
+	    {
+	      error =
+		clib_error_return (0,
+				   "The end-port must be greater than start-port");
+	      goto done;
+	    }
+	  nat_set_alloc_addr_and_port_range ((u16) port_start,
+					     (u16) port_end);
+	}
+      else
 	{
 	  error = clib_error_return (0, "unknown input '%U'",
 				     format_unformat_error, line_input);
@@ -240,6 +266,86 @@ done:
 
   return error;
 };
+
+static clib_error_t *
+nat44_show_alloc_addr_and_port_alg_command_fn (vlib_main_t * vm,
+					       unformat_input_t * input,
+					       vlib_cli_command_t * cmd)
+{
+  snat_main_t *sm = &snat_main;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
+  vlib_cli_output (vm, "NAT address and port: %U",
+		   format_nat_addr_and_port_alloc_alg,
+		   sm->addr_and_port_alloc_alg);
+  switch (sm->addr_and_port_alloc_alg)
+    {
+    case NAT_ADDR_AND_PORT_ALLOC_ALG_MAPE:
+      vlib_cli_output (vm, "  psid %d psid-offset %d psid-len %d", sm->psid,
+		       sm->psid_offset, sm->psid_length);
+      break;
+    case NAT_ADDR_AND_PORT_ALLOC_ALG_RANGE:
+      vlib_cli_output (vm, "  start-port %d end-port %d", sm->start_port,
+		       sm->end_port);
+      break;
+    default:
+      break;
+    }
+
+  return 0;
+}
+
+static clib_error_t *
+nat_set_mss_clamping_command_fn (vlib_main_t * vm, unformat_input_t * input,
+				 vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
+  clib_error_t *error = 0;
+  u32 mss;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "disable"))
+	sm->mss_clamping = 0;
+      else if (unformat (line_input, "%d", &mss))
+	{
+	  sm->mss_clamping = (u16) mss;
+	  sm->mss_value_net = clib_host_to_net_u16 (sm->mss_clamping);
+	}
+      else
+	{
+	  error = clib_error_return (0, "unknown input '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+static clib_error_t *
+nat_show_mss_clamping_command_fn (vlib_main_t * vm, unformat_input_t * input,
+				  vlib_cli_command_t * cmd)
+{
+  snat_main_t *sm = &snat_main;
+
+  if (sm->mss_clamping)
+    vlib_cli_output (vm, "mss-clamping %d", sm->mss_clamping);
+  else
+    vlib_cli_output (vm, "mss-clamping disabled");
+
+  return 0;
+}
 
 static clib_error_t *
 add_address_command_fn (vlib_main_t * vm,
@@ -618,7 +724,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
 
   rv = snat_add_static_mapping (l_addr, e_addr, (u16) l_port, (u16) e_port,
 				vrf_id, addr_only, sw_if_index, proto, is_add,
-				twice_nat, out2in_only, 0);
+				twice_nat, out2in_only, 0, 0);
 
   switch (rv)
     {
@@ -627,7 +733,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
       goto done;
     case VNET_API_ERROR_NO_SUCH_ENTRY:
       if (is_add)
-	error = clib_error_return (0, "External addres must be allocated.");
+	error = clib_error_return (0, "External address must be allocated.");
       else
 	error = clib_error_return (0, "Mapping not exist.");
       goto done;
@@ -702,7 +808,7 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
 
   rv = snat_add_static_mapping (addr, addr, (u16) port, (u16) port,
 				vrf_id, addr_only, sw_if_index, proto, is_add,
-				0, 0, 0);
+				0, 0, 0, 1);
 
   switch (rv)
     {
@@ -711,7 +817,7 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
       goto done;
     case VNET_API_ERROR_NO_SUCH_ENTRY:
       if (is_add)
-	error = clib_error_return (0, "External addres must be allocated.");
+	error = clib_error_return (0, "External address must be allocated.");
       else
 	error = clib_error_return (0, "Mapping not exist.");
       goto done;
@@ -740,7 +846,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
   snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
   ip4_address_t l_addr, e_addr;
-  u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0;
+  u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0, affinity = 0;
   int is_add = 1;
   int rv;
   snat_protocol_t proto;
@@ -761,7 +867,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       if (unformat (line_input, "local %U:%u probability %u",
 		    unformat_ip4_address, &l_addr, &l_port, &probability))
 	{
-	  memset (&local, 0, sizeof (local));
+	  clib_memset (&local, 0, sizeof (local));
 	  local.addr = l_addr;
 	  local.port = (u16) l_port;
 	  local.probability = (u8) probability;
@@ -771,7 +877,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 			 unformat_ip4_address, &l_addr, &l_port, &vrf_id,
 			 &probability))
 	{
-	  memset (&local, 0, sizeof (local));
+	  clib_memset (&local, 0, sizeof (local));
 	  local.addr = l_addr;
 	  local.port = (u16) l_port;
 	  local.probability = (u8) probability;
@@ -792,6 +898,8 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 	out2in_only = 1;
       else if (unformat (line_input, "del"))
 	is_add = 0;
+      else if (unformat (line_input, "affinity %u", &affinity))
+	;
       else
 	{
 	  error = clib_error_return (0, "unknown input: '%U'",
@@ -813,7 +921,8 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
     }
 
   rv = nat44_add_del_lb_static_mapping (e_addr, (u16) e_port, proto, locals,
-					is_add, twice_nat, out2in_only, 0);
+					is_add, twice_nat, out2in_only, 0,
+					affinity);
 
   switch (rv)
     {
@@ -822,7 +931,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       goto done;
     case VNET_API_ERROR_NO_SUCH_ENTRY:
       if (is_add)
-	error = clib_error_return (0, "External addres must be allocated.");
+	error = clib_error_return (0, "External address must be allocated.");
       else
 	error = clib_error_return (0, "Mapping not exist.");
       goto done;
@@ -840,6 +949,98 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 done:
   unformat_free (line_input);
   vec_free (locals);
+
+  return error;
+}
+
+static clib_error_t *
+add_lb_backend_command_fn (vlib_main_t * vm,
+			   unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  snat_main_t *sm = &snat_main;
+  clib_error_t *error = 0;
+  ip4_address_t l_addr, e_addr;
+  u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0;
+  int is_add = 1;
+  int rv;
+  snat_protocol_t proto;
+  u8 proto_set = 0;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "local %U:%u probability %u",
+		    unformat_ip4_address, &l_addr, &l_port, &probability))
+	;
+      else if (unformat (line_input, "local %U:%u vrf %u probability %u",
+			 unformat_ip4_address, &l_addr, &l_port, &vrf_id,
+			 &probability))
+	;
+      else if (unformat (line_input, "external %U:%u", unformat_ip4_address,
+			 &e_addr, &e_port))
+	;
+      else if (unformat (line_input, "protocol %U", unformat_snat_protocol,
+			 &proto))
+	proto_set = 1;
+      else if (unformat (line_input, "del"))
+	is_add = 0;
+      else
+	{
+	  error = clib_error_return (0, "unknown input: '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  if (!l_port || !e_port)
+    {
+      error = clib_error_return (0, "local or external must be set");
+      goto done;
+    }
+
+  if (!proto_set)
+    {
+      error = clib_error_return (0, "missing protocol");
+      goto done;
+    }
+
+  rv =
+    nat44_lb_static_mapping_add_del_local (e_addr, (u16) e_port, l_addr,
+					   l_port, proto, vrf_id, probability,
+					   is_add);
+
+  switch (rv)
+    {
+    case VNET_API_ERROR_INVALID_VALUE:
+      error = clib_error_return (0, "External is not load-balancing static "
+				 "mapping.");
+      goto done;
+    case VNET_API_ERROR_NO_SUCH_ENTRY:
+      error = clib_error_return (0, "Mapping or back-end not exist.");
+      goto done;
+    case VNET_API_ERROR_VALUE_EXIST:
+      error = clib_error_return (0, "Back-end already exist.");
+      goto done;
+    case VNET_API_ERROR_FEATURE_DISABLED:
+      error =
+	clib_error_return (0, "Available only for endpoint-dependent mode.");
+      goto done;
+    case VNET_API_ERROR_UNSPECIFIED:
+      error = clib_error_return (0, "At least two back-ends must remain");
+      goto done;
+    default:
+      break;
+    }
+
+done:
+  unformat_free (line_input);
 
   return error;
 }
@@ -978,8 +1179,9 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
     {
       tsm = vec_elt_at_index (sm->per_thread_data, i);
 
-      vlib_cli_output (vm, "-------- thread %d %s --------\n",
-                       i, vlib_worker_threads[i].name);
+      vlib_cli_output (vm, "-------- thread %d %s: %d sessions --------\n",
+                       i, vlib_worker_threads[i].name,
+                       pool_elts (tsm->sessions));
       pool_foreach (u, tsm->users,
       ({
         vlib_cli_output (vm, "  %U", format_snat_user, tsm, u, verbose);
@@ -1307,9 +1509,6 @@ set_timeout_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   clib_error_t *error = 0;
 
-  if (!sm->deterministic)
-    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
-
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1317,21 +1516,54 @@ set_timeout_command_fn (vlib_main_t * vm,
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "udp %u", &sm->udp_timeout))
-	;
+	{
+	  if (nat64_set_udp_timeout (sm->udp_timeout))
+	    {
+	      error = clib_error_return (0, "Invalid UDP timeout value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "tcp-established %u",
 			 &sm->tcp_established_timeout))
-	;
+	{
+	  if (nat64_set_tcp_timeouts
+	      (sm->tcp_transitory_timeout, sm->tcp_established_timeout))
+	    {
+	      error =
+		clib_error_return (0,
+				   "Invalid TCP established timeouts value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "tcp-transitory %u",
 			 &sm->tcp_transitory_timeout))
-	;
+	{
+	  if (nat64_set_tcp_timeouts
+	      (sm->tcp_transitory_timeout, sm->tcp_established_timeout))
+	    {
+	      error =
+		clib_error_return (0,
+				   "Invalid TCP transitory timeouts value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "icmp %u", &sm->icmp_timeout))
-	;
+	{
+	  if (nat64_set_icmp_timeout (sm->icmp_timeout))
+	    {
+	      error = clib_error_return (0, "Invalid ICMP timeout value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "reset"))
 	{
 	  sm->udp_timeout = SNAT_UDP_TIMEOUT;
 	  sm->tcp_established_timeout = SNAT_TCP_ESTABLISHED_TIMEOUT;
 	  sm->tcp_transitory_timeout = SNAT_TCP_TRANSITORY_TIMEOUT;
 	  sm->icmp_timeout = SNAT_ICMP_TIMEOUT;
+	  nat64_set_udp_timeout (0);
+	  nat64_set_icmp_timeout (0);
+	  nat64_set_tcp_timeouts (0, 0);
 	}
       else
 	{
@@ -1348,14 +1580,11 @@ done:
 }
 
 static clib_error_t *
-nat44_det_show_timeouts_command_fn (vlib_main_t * vm,
-				    unformat_input_t * input,
-				    vlib_cli_command_t * cmd)
+nat_show_timeouts_command_fn (vlib_main_t * vm,
+			      unformat_input_t * input,
+			      vlib_cli_command_t * cmd)
 {
   snat_main_t *sm = &snat_main;
-
-  if (!sm->deterministic)
-    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   vlib_cli_output (vm, "udp timeout: %dsec", sm->udp_timeout);
   vlib_cli_output (vm, "tcp-established timeout: %dsec",
@@ -1544,6 +1773,40 @@ VLIB_CLI_COMMAND (nat_show_workers_command, static) = {
 
 /*?
  * @cliexpar
+ * @cliexstart{set nat timeout}
+ * Set values of timeouts for NAT sessions (in seconds), use:
+ *  vpp# set nat timeout udp 120 tcp-established 7500 tcp-transitory 250 icmp 90
+ * To reset default values use:
+ *  vpp# set nat44 deterministic timeout reset
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (set_timeout_command, static) = {
+  .path = "set nat timeout",
+  .function = set_timeout_command_fn,
+  .short_help =
+    "set nat timeout [udp <sec> | tcp-established <sec> "
+    "tcp-transitory <sec> | icmp <sec> | reset]",
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{show nat timeouts}
+ * Show values of timeouts for NAT sessions.
+ * vpp# show nat timeouts
+ * udp timeout: 300sec
+ * tcp-established timeout: 7440sec
+ * tcp-transitory timeout: 240sec
+ * icmp timeout: 60sec
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat_show_timeouts_command, static) = {
+  .path = "show nat timeouts",
+  .short_help = "show nat timeouts",
+  .function = nat_show_timeouts_command_fn,
+};
+
+/*?
+ * @cliexpar
  * @cliexstart{snat ipfix logging}
  * To enable NAT IPFIX logging use:
  *  vpp# nat ipfix logging
@@ -1563,6 +1826,8 @@ VLIB_CLI_COMMAND (snat_ipfix_logging_enable_disable_command, static) = {
  * Set address and port assignment algorithm
  * For the MAP-E CE limit port choice based on PSID use:
  *  vpp# nat addr-port-assignment-alg map-e psid 10 psid-offset 6 psid-len 6
+ * For port range use:
+ *  vpp# nat addr-port-assignment-alg port-range <start-port> - <end-port>
  * To set standard (default) address and port assignment algorithm use:
  *  vpp# nat addr-port-assignment-alg default
  * @cliexend
@@ -1571,6 +1836,44 @@ VLIB_CLI_COMMAND (nat44_set_alloc_addr_and_port_alg_command, static) = {
     .path = "nat addr-port-assignment-alg",
     .short_help = "nat addr-port-assignment-alg <alg-name> [<alg-params>]",
     .function = nat44_set_alloc_addr_and_port_alg_command_fn,
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{show nat addr-port-assignment-alg}
+ * Show address and port assignment algorithm
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat44_show_alloc_addr_and_port_alg_command, static) = {
+    .path = "show nat addr-port-assignment-alg",
+    .short_help = "show nat addr-port-assignment-alg",
+    .function = nat44_show_alloc_addr_and_port_alg_command_fn,
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{nat mss-clamping}
+ * Set TCP MSS rewriting configuration
+ * To enable TCP MSS rewriting use:
+ *  vpp# nat mss-clamping 1452
+ * To disbale TCP MSS rewriting use:
+ *  vpp# nat mss-clamping disable
+?*/
+VLIB_CLI_COMMAND (nat_set_mss_clamping_command, static) = {
+    .path = "nat mss-clamping",
+    .short_help = "nat mss-clamping <mss-value>|disable",
+    .function = nat_set_mss_clamping_command_fn,
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{nat mss-clamping}
+ * Show TCP MSS rewriting configuration
+?*/
+VLIB_CLI_COMMAND (nat_show_mss_clamping_command, static) = {
+    .path = "show nat mss-clamping",
+    .short_help = "show nat mss-clamping",
+    .function = nat_show_mss_clamping_command_fn,
 };
 
 /*?
@@ -1725,7 +2028,26 @@ VLIB_CLI_COMMAND (add_lb_static_mapping_command, static) = {
   .short_help =
     "nat44 add load-balancing static mapping protocol tcp|udp "
     "external <addr>:<port> local <addr>:<port> [vrf <table-id>] "
-    "probability <n> [twice-nat|self-twice-nat] [out2in-only] [del]",
+    "probability <n> [twice-nat|self-twice-nat] [out2in-only] "
+    "[affinity <timeout-seconds>] [del]",
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{nat44 add load-balancing static mapping}
+ * Modify service load balancing using NAT44
+ * To add new back-end server 10.100.10.30:8080 for service load balancing
+ * static mapping with external IP address 1.2.3.4 and TCP port 80 use:
+ *  vpp# nat44 add load-balancing back-end protocol tcp external 1.2.3.4:80 local 10.100.10.30:8080 probability 25
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (add_lb_backend_command, static) = {
+  .path = "nat44 add load-balancing back-end",
+  .function = add_lb_backend_command_fn,
+  .short_help =
+    "nat44 add load-balancing back-end protocol tcp|udp "
+    "external <addr>:<port> local <addr>:<port> [vrf <table-id>] "
+    "probability <n> [del]",
 };
 
 /*?
@@ -1889,41 +2211,6 @@ VLIB_CLI_COMMAND (snat_det_reverse_command, static) = {
     .path = "nat44 deterministic reverse",
     .short_help = "nat44 deterministic reverse <addr>:<port>",
     .function = snat_det_reverse_command_fn,
-};
-
-/*?
- * @cliexpar
- * @cliexstart{set nat44 deterministic timeout}
- * Set values of timeouts for deterministic NAT (in seconds), use:
- *  vpp# set nat44 deterministic timeout udp 120 tcp-established 7500
- *  tcp-transitory 250 icmp 90
- * To reset default values use:
- *  vpp# set nat44 deterministic timeout reset
- * @cliexend
-?*/
-VLIB_CLI_COMMAND (set_timeout_command, static) = {
-  .path = "set nat44 deterministic timeout",
-  .function = set_timeout_command_fn,
-  .short_help =
-    "set nat44 deterministic timeout [udp <sec> | tcp-established <sec> "
-    "tcp-transitory <sec> | icmp <sec> | reset]",
-};
-
-/*?
- * @cliexpar
- * @cliexstart{show nat44 deterministic timeouts}
- * Show values of timeouts for deterministic NAT.
- * vpp# show nat44 deterministic timeouts
- * udp timeout: 300sec
- * tcp-established timeout: 7440sec
- * tcp-transitory timeout: 240sec
- * icmp timeout: 60sec
- * @cliexend
-?*/
-VLIB_CLI_COMMAND (nat44_det_show_timeouts_command, static) = {
-  .path = "show nat44 deterministic timeouts",
-  .short_help = "show nat44 deterministic timeouts",
-  .function = nat44_det_show_timeouts_command_fn,
 };
 
 /*?

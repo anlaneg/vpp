@@ -241,7 +241,7 @@ vxlan_rewrite (vxlan_tunnel_t * t, bool is_ip6)
   vxlan_header_t *vxlan;
   /* Fixed portion of the (outer) ip header */
 
-  memset (&h, 0, sizeof (h));
+  clib_memset (&h, 0, sizeof (h));
   if (!is_ip6)
     {
       ip4_header_t *ip = &h.h4.ip4;
@@ -367,9 +367,8 @@ int vnet_vxlan_add_del_tunnel
   (vnet_vxlan_add_del_tunnel_args_t * a, u32 * sw_if_indexp)
 {
   vxlan_main_t *vxm = &vxlan_main;
-  vxlan_tunnel_t *t = 0;
   vnet_main_t *vnm = vxm->vnet_main;
-  u64 *p;
+  vxlan_decap_info_t *p;
   u32 sw_if_index = ~0;
   vxlan4_tunnel_key_t key4;
   vxlan6_tunnel_key_t key6;
@@ -378,12 +377,15 @@ int vnet_vxlan_add_del_tunnel
   int not_found;
   if (!is_ip6)
     {
-      key4.key[0] = a->dst.ip4.as_u32;
+      /* ip4 mcast is indexed by mcast addr only */
+      key4.key[0] = ip46_address_is_multicast (&a->dst) ?
+	a->dst.ip4.as_u32 :
+	a->dst.ip4.as_u32 | (((u64) a->src.ip4.as_u32) << 32);
       key4.key[1] = (((u64) a->encap_fib_index) << 32)
 	| clib_host_to_net_u32 (a->vni << 8);
       not_found =
 	clib_bihash_search_inline_16_8 (&vxm->vxlan4_tunnel_by_key, &key4);
-      p = &key4.value;
+      p = (void *) &key4.value;
     }
   else
     {
@@ -393,7 +395,7 @@ int vnet_vxlan_add_del_tunnel
 	| clib_host_to_net_u32 (a->vni << 8);
       not_found =
 	clib_bihash_search_inline_24_8 (&vxm->vxlan6_tunnel_by_key, &key6);
-      p = &key6.value;
+      p = (void *) &key6.value;
     }
 
   if (not_found)
@@ -415,8 +417,9 @@ int vnet_vxlan_add_del_tunnel
       if (!vxlan_decap_next_is_valid (vxm, is_ip6, a->decap_next_index))
 	return VNET_API_ERROR_INVALID_DECAP_NEXT;
 
+      vxlan_tunnel_t *t;
       pool_get_aligned (vxm->tunnels, t, CLIB_CACHE_LINE_BYTES);
-      memset (t, 0, sizeof (*t));
+      clib_memset (t, 0, sizeof (*t));
       dev_instance = t - vxm->tunnels;
 
       /* copy from arg structure */
@@ -442,27 +445,6 @@ int vnet_vxlan_add_del_tunnel
       t->user_instance = user_instance;	/* name */
       t->flow_index = ~0;
 
-      /* copy the key */
-      int add_failed;
-      if (is_ip6)
-	{
-	  key6.value = (u64) dev_instance;
-	  add_failed = clib_bihash_add_del_24_8 (&vxm->vxlan6_tunnel_by_key,
-						 &key6, 1 /*add */ );
-	}
-      else
-	{
-	  key4.value = (u64) dev_instance;
-	  add_failed = clib_bihash_add_del_16_8 (&vxm->vxlan4_tunnel_by_key,
-						 &key4, 1 /*add */ );
-	}
-
-      if (add_failed)
-	{
-	  pool_put (vxm->tunnels, t);
-	  return VNET_API_ERROR_INVALID_REGISTRATION;
-	}
-
       t->hw_if_index = vnet_register_interface
 	(vnm, vxlan_device_class.index, dev_instance,
 	 vxlan_hw_class.index, dev_instance);
@@ -474,6 +456,34 @@ int vnet_vxlan_add_del_tunnel
       vnet_set_interface_output_node (vnm, t->hw_if_index, encap_index);
 
       t->sw_if_index = sw_if_index = hi->sw_if_index;
+
+      /* copy the key */
+      int add_failed;
+      if (is_ip6)
+	{
+	  key6.value = (u64) dev_instance;
+	  add_failed = clib_bihash_add_del_24_8 (&vxm->vxlan6_tunnel_by_key,
+						 &key6, 1 /*add */ );
+	}
+      else
+	{
+	  vxlan_decap_info_t di = {.sw_if_index = t->sw_if_index, };
+	  if (ip46_address_is_multicast (&t->dst))
+	    di.local_ip = t->src.ip4;
+	  else
+	    di.next_index = t->decap_next_index;
+	  key4.value = di.as_u64;
+	  add_failed = clib_bihash_add_del_16_8 (&vxm->vxlan4_tunnel_by_key,
+						 &key4, 1 /*add */ );
+	}
+
+      if (add_failed)
+	{
+	  vnet_delete_hw_interface (vnm, t->hw_if_index);
+	  hash_unset (vxm->instance_used, t->user_instance);
+	  pool_put (vxm->tunnels, t);
+	  return VNET_API_ERROR_INVALID_REGISTRATION;
+	}
 
       vec_validate_init_empty (vxm->tunnel_index_by_sw_if_index, sw_if_index,
 			       ~0);
@@ -513,8 +523,8 @@ int vnet_vxlan_add_del_tunnel
       else
 	{
 	  /* Multicast tunnel -
-	   * as the same mcast group can be used for mutiple mcast tunnels
-	   * with different VNIs, create the output fib adjecency only if
+	   * as the same mcast group can be used for multiple mcast tunnels
+	   * with different VNIs, create the output fib adjacency only if
 	   * it does not already exist
 	   */
 	  fib_protocol_t fp = fib_ip_proto (is_ip6);
@@ -589,8 +599,9 @@ int vnet_vxlan_add_del_tunnel
       if (!p)
 	return VNET_API_ERROR_NO_SUCH_ENTRY;
 
-      u32 instance = p[0];
-      t = pool_elt_at_index (vxm->tunnels, instance);
+      u32 instance = is_ip6 ? key6.value :
+	vxm->tunnel_index_by_sw_if_index[p->sw_if_index];
+      vxlan_tunnel_t *t = pool_elt_at_index (vxm->tunnels, instance);
 
       sw_if_index = t->sw_if_index;
       vnet_sw_interface_set_flags (vnm, sw_if_index, 0 /* down */ );
@@ -830,7 +841,7 @@ vxlan_add_del_tunnel_command_fn (vlib_main_t * vm,
  * Example of how to create a VXLAN Tunnel with a known name, vxlan_tunnel42:
  * @cliexcmd{create vxlan tunnel src 10.0.3.1 dst 10.0.3.3 instance 42}
  * Example of how to create a multicast VXLAN Tunnel with a known name, vxlan_tunnel23:
- * @cliexcmd{create vxlan tunnel src 10.0.3.1 group 239.1.1.1 GigabitEtherner0/8/0 instance 23}
+ * @cliexcmd{create vxlan tunnel src 10.0.3.1 group 239.1.1.1 GigabitEthernet0/8/0 instance 23}
  * Example of how to delete a VXLAN Tunnel:
  * @cliexcmd{create vxlan tunnel src 10.0.3.1 dst 10.0.3.3 vni 13 del}
  ?*/
@@ -908,12 +919,38 @@ VLIB_CLI_COMMAND (show_vxlan_tunnel_command, static) = {
 void
 vnet_int_vxlan_bypass_mode (u32 sw_if_index, u8 is_ip6, u8 is_enable)
 {
+  vxlan_main_t *vxm = &vxlan_main;
+
+  if (pool_is_free_index (vxm->vnet_main->interface_main.sw_interfaces,
+			  sw_if_index))
+    return;
+
+  is_enable = ! !is_enable;
+
   if (is_ip6)
-    vnet_feature_enable_disable ("ip6-unicast", "ip6-vxlan-bypass",
-				 sw_if_index, is_enable, 0, 0);
+    {
+      if (clib_bitmap_get (vxm->bm_ip6_bypass_enabled_by_sw_if, sw_if_index)
+	  != is_enable)
+	{
+	  vnet_feature_enable_disable ("ip6-unicast", "ip6-vxlan-bypass",
+				       sw_if_index, is_enable, 0, 0);
+	  vxm->bm_ip6_bypass_enabled_by_sw_if =
+	    clib_bitmap_set (vxm->bm_ip6_bypass_enabled_by_sw_if,
+			     sw_if_index, is_enable);
+	}
+    }
   else
-    vnet_feature_enable_disable ("ip4-unicast", "ip4-vxlan-bypass",
-				 sw_if_index, is_enable, 0, 0);
+    {
+      if (clib_bitmap_get (vxm->bm_ip4_bypass_enabled_by_sw_if, sw_if_index)
+	  != is_enable)
+	{
+	  vnet_feature_enable_disable ("ip4-unicast", "ip4-vxlan-bypass",
+				       sw_if_index, is_enable, 0, 0);
+	  vxm->bm_ip4_bypass_enabled_by_sw_if =
+	    clib_bitmap_set (vxm->bm_ip4_bypass_enabled_by_sw_if,
+			     sw_if_index, is_enable);
+	}
+    }
 }
 
 
@@ -996,7 +1033,7 @@ set_ip4_vxlan_bypass (vlib_main_t * vm,
  *                                 ip4-lookup [2]
  * @cliexend
  *
- * Example of how to display the feature enabed on an interface:
+ * Example of how to display the feature enabled on an interface:
  * @cliexstart{show ip interface features GigabitEthernet2/0/0}
  * IP feature paths configured on GigabitEthernet2/0/0...
  * ...
@@ -1053,7 +1090,7 @@ set_ip6_vxlan_bypass (vlib_main_t * vm,
  *                                 ip6-lookup [2]
  * @cliexend
  *
- * Example of how to display the feature enabed on an interface:
+ * Example of how to display the feature enabled on an interface:
  * @cliexstart{show ip interface features GigabitEthernet2/0/0}
  * IP feature paths configured on GigabitEthernet2/0/0...
  * ...
@@ -1186,7 +1223,7 @@ vxlan_offload_command_fn (vlib_main_t * vm,
 VLIB_CLI_COMMAND (vxlan_offload_command, static) = {
     .path = "set flow-offload vxlan",
     .short_help =
-    "set flow-offload vxlan hw <inerface-name> rx <tunnel-name> [del]",
+    "set flow-offload vxlan hw <interface-name> rx <tunnel-name> [del]",
     .function = vxlan_offload_command_fn,
 };
 /* *INDENT-ON* */
@@ -1204,6 +1241,9 @@ vxlan_init (vlib_main_t * vm)
 
   vnet_flow_get_range (vxm->vnet_main, "vxlan", 1024 * 1024,
 		       &vxm->flow_id_start);
+
+  vxm->bm_ip4_bypass_enabled_by_sw_if = 0;
+  vxm->bm_ip6_bypass_enabled_by_sw_if = 0;
 
   /* initialize the ip6 hash */
   clib_bihash_init_16_8 (&vxm->vxlan4_tunnel_by_key, "vxlan4",

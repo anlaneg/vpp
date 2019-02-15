@@ -97,7 +97,7 @@ test_timing_wheel_main (unformat_input_t * input)
   timing_wheel_t *w = &tm->timing_wheel;
   uword iter, i;
 
-  memset (tm, 0, sizeof (tm[0]));
+  clib_memset (tm, 0, sizeof (tm[0]));
   tm->n_iter = 10;
   tm->time_per_status_update = 0;
   tm->n_events = 100;
@@ -366,6 +366,8 @@ main (int argc, char *argv[])
 {
   unformat_input_t i;
   clib_error_t *error;
+
+  clib_mem_init (0, 64ULL << 20);
 
   unformat_init_command_line (&i, argv);
   error = test_timing_wheel_main (&i);

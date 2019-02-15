@@ -45,20 +45,25 @@
 #define VRING_USED_F_NO_NOTIFY  1
 #define VRING_AVAIL_F_NO_INTERRUPT 1
 
-#define DBG_SOCK(args...)                       \
-  {                                             \
-    vhost_user_main_t *_vum = &vhost_user_main; \
-    if (_vum->debug)                            \
-      clib_warning(args);                       \
-  };
+#define vu_log_debug(dev, f, ...) \
+{                                                                             \
+  vlib_log(VLIB_LOG_LEVEL_DEBUG, vhost_user_main.log_default, "%U: " f,       \
+	   format_vnet_hw_if_index_name, vnet_get_main(),                     \
+	   dev->hw_if_index, ##__VA_ARGS__);                                  \
+};
 
-#define VHOST_DEBUG_VQ 0
-
-#if VHOST_DEBUG_VQ == 1
-#define DBG_VQ(args...) clib_warning(args);
-#else
-#define DBG_VQ(args...)
-#endif
+#define vu_log_warn(dev, f, ...) \
+{                                                                             \
+  vlib_log(VLIB_LOG_LEVEL_WARNING, vhost_user_main.log_default, "%U: " f,     \
+	   format_vnet_hw_if_index_name, vnet_get_main(),                     \
+	   dev->hw_if_index, ##__VA_ARGS__);                                  \
+};
+#define vu_log_err(dev, f, ...) \
+{                                                                             \
+  vlib_log(VLIB_LOG_LEVEL_ERR, vhost_user_main.log_default, "%U: " f,         \
+	   format_vnet_hw_if_index_name, vnet_get_main(),                     \
+	   dev->hw_if_index, ##__VA_ARGS__);                                  \
+};
 
 #define UNIX_GET_FD(unixfd_idx) ({ \
     typeof(unixfd_idx) __unixfd_idx = (unixfd_idx); \
@@ -253,7 +258,7 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  u32 is_up;
+  u32 is_ready;
   u32 admin_up;
   u32 unix_server_index;
   u32 clib_file_index;
@@ -345,8 +350,8 @@ typedef struct
   /* The number of rx interface/queue pairs in interrupt mode */
   u32 ifq_count;
 
-  /* debug on or off */
-  u8 debug;
+  /* logging */
+  vlib_log_class_t log_default;
 } vhost_user_main_t;
 
 typedef struct

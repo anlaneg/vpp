@@ -17,6 +17,7 @@
 #include <vlibmemory/api.h>
 #include <vnet/session/application.h>
 #include <vnet/session/application_interface.h>
+#include <vnet/session/session.h>
 
 typedef struct
 {
@@ -55,7 +56,7 @@ typedef struct
 echo_server_main_t echo_server_main;
 
 int
-echo_server_session_accept_callback (stream_session_t * s)
+echo_server_session_accept_callback (session_t * s)
 {
   echo_server_main_t *esm = &echo_server_main;
 
@@ -70,10 +71,10 @@ echo_server_session_accept_callback (stream_session_t * s)
 }
 
 void
-echo_server_session_disconnect_callback (stream_session_t * s)
+echo_server_session_disconnect_callback (session_t * s)
 {
   echo_server_main_t *esm = &echo_server_main;
-  vnet_disconnect_args_t _a, *a = &_a;
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
 
   a->handle = session_handle (s);
   a->app_index = esm->app_index;
@@ -81,22 +82,26 @@ echo_server_session_disconnect_callback (stream_session_t * s)
 }
 
 void
-echo_server_session_reset_callback (stream_session_t * s)
+echo_server_session_reset_callback (session_t * s)
 {
+  echo_server_main_t *esm = &echo_server_main;
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
   clib_warning ("Reset session %U", format_stream_session, s, 2);
-  stream_session_cleanup (s);
+  a->handle = session_handle (s);
+  a->app_index = esm->app_index;
+  vnet_disconnect_session (a);
 }
 
 int
 echo_server_session_connected_callback (u32 app_index, u32 api_context,
-					stream_session_t * s, u8 is_fail)
+					session_t * s, u8 is_fail)
 {
   clib_warning ("called...");
   return -1;
 }
 
 int
-echo_server_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
+echo_server_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   /* New heaps may be added */
   return 0;
@@ -131,15 +136,15 @@ test_bytes (echo_server_main_t * esm, int actual_transfer)
  * If no-echo, just drop the data and be done with it.
  */
 int
-echo_server_builtin_server_rx_callback_no_echo (stream_session_t * s)
+echo_server_builtin_server_rx_callback_no_echo (session_t * s)
 {
-  svm_fifo_t *rx_fifo = s->server_rx_fifo;
+  svm_fifo_t *rx_fifo = s->rx_fifo;
   svm_fifo_dequeue_drop (rx_fifo, svm_fifo_max_dequeue (rx_fifo));
   return 0;
 }
 
 int
-echo_server_rx_callback (stream_session_t * s)
+echo_server_rx_callback (session_t * s)
 {
   u32 n_written, max_dequeue, max_enqueue, max_transfer;
   int actual_transfer;
@@ -150,8 +155,8 @@ echo_server_rx_callback (stream_session_t * s)
 
   ASSERT (s->thread_index == thread_index);
 
-  rx_fifo = s->server_rx_fifo;
-  tx_fifo = s->server_tx_fifo;
+  rx_fifo = s->rx_fifo;
+  tx_fifo = s->tx_fifo;
 
   ASSERT (rx_fifo->master_thread_index == thread_index);
   ASSERT (tx_fifo->master_thread_index == thread_index);
@@ -287,8 +292,8 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   u64 options[APP_OPTIONS_N_OPTIONS];
   u32 segment_size = 512 << 20;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   if (esm->no_echo)
     echo_server_session_cb_vft.builtin_app_rx_callback =
@@ -327,16 +332,16 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
     }
   esm->app_index = a->app_index;
 
-  memset (a_cert, 0, sizeof (*a_cert));
+  clib_memset (a_cert, 0, sizeof (*a_cert));
   a_cert->app_index = a->app_index;
   vec_validate (a_cert->cert, test_srv_crt_rsa_len);
-  clib_memcpy (a_cert->cert, test_srv_crt_rsa, test_srv_crt_rsa_len);
+  clib_memcpy_fast (a_cert->cert, test_srv_crt_rsa, test_srv_crt_rsa_len);
   vnet_app_add_tls_cert (a_cert);
 
-  memset (a_key, 0, sizeof (*a_key));
+  clib_memset (a_key, 0, sizeof (*a_key));
   a_key->app_index = a->app_index;
   vec_validate (a_key->key, test_srv_key_rsa_len);
-  clib_memcpy (a_key->key, test_srv_key_rsa, test_srv_key_rsa_len);
+  clib_memcpy_fast (a_key->key, test_srv_key_rsa, test_srv_key_rsa_len);
   vnet_app_add_tls_key (a_key);
   return 0;
 }
@@ -358,8 +363,8 @@ static int
 echo_server_listen ()
 {
   echo_server_main_t *esm = &echo_server_main;
-  vnet_bind_args_t _a, *a = &_a;
-  memset (a, 0, sizeof (*a));
+  vnet_listen_args_t _a, *a = &_a;
+  clib_memset (a, 0, sizeof (*a));
   a->app_index = esm->app_index;
   a->uri = esm->server_uri;
   return vnet_bind_uri (a);
@@ -389,7 +394,7 @@ echo_server_create (vlib_main_t * vm, u8 * appns_id, u64 appns_flags,
   vec_validate (esm->rx_retries, num_threads - 1);
   for (i = 0; i < vec_len (esm->rx_retries); i++)
     vec_validate (esm->rx_retries[i],
-		  pool_elts (session_manager_main.sessions[i]));
+		  pool_elts (session_manager_main.wrk[i].sessions));
   esm->rcv_buffer_size = clib_max (esm->rcv_buffer_size, esm->fifo_size);
   for (i = 0; i < num_threads; i++)
     vec_validate (esm->rx_buf[i], esm->rcv_buffer_size);

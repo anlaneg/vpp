@@ -4,10 +4,11 @@ import unittest
 import socket
 
 from framework import VppTestCase, VppTestRunner
+from vpp_ip import DpoProto
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppMplsRoute, \
     VppMplsIpBind, VppIpMRoute, VppMRoutePath, \
-    MRouteItfFlags, MRouteEntryFlags, DpoProto, VppIpTable, VppMplsTable, \
-    VppMplsLabel, MplsLspMode
+    MRouteItfFlags, MRouteEntryFlags, VppIpTable, VppMplsTable, \
+    VppMplsLabel, MplsLspMode, find_mpls_route
 from vpp_mpls_tunnel_interface import VppMPLSTunnelInterface
 
 from scapy.packet import Raw
@@ -359,7 +360,7 @@ class TestMPLS(VppTestCase):
                 # ICMP sourced from the interface's address
                 self.assertEqual(rx_ip.src, src_if.local_ip6)
                 # hop-limit reset to 255 for IMCP packet
-                self.assertEqual(rx_ip.hlim, 254)
+                self.assertEqual(rx_ip.hlim, 255)
 
                 icmp = rx[ICMPv6TimeExceeded]
 
@@ -378,6 +379,12 @@ class TestMPLS(VppTestCase):
                                                   labels=[VppMplsLabel(33)])])
         route_32_eos.add_vpp_config()
 
+        self.assertTrue(
+            find_mpls_route(self, 0, 32, 1,
+                            [VppRoutePath(self.pg0.remote_ip4,
+                                          self.pg0.sw_if_index,
+                                          labels=[VppMplsLabel(33)])]))
+
         #
         # a stream that matches the route for 10.0.0.1
         # PG0 is in the default table
@@ -387,6 +394,8 @@ class TestMPLS(VppTestCase):
         rx = self.send_and_expect(self.pg0, tx, self.pg0)
         self.verify_capture_labelled(self.pg0, rx, tx,
                                      [VppMplsLabel(33, ttl=31, exp=1)])
+
+        self.assertEqual(route_32_eos.get_stats_to()['packets'], 257)
 
         #
         # A simple MPLS xconnect - non-eos label in label out
@@ -408,6 +417,7 @@ class TestMPLS(VppTestCase):
         self.verify_capture_labelled(self.pg0, rx, tx,
                                      [VppMplsLabel(33, ttl=20, exp=7),
                                       VppMplsLabel(99)])
+        self.assertEqual(route_32_neos.get_stats_to()['packets'], 257)
 
         #
         # A simple MPLS xconnect - non-eos label in label out, uniform mode
@@ -574,6 +584,9 @@ class TestMPLS(VppTestCase):
                                       VppMplsLabel(44),
                                       VppMplsLabel(45, ttl=2)])
 
+        self.assertEqual(route_34_eos.get_stats_to()['packets'], 257)
+        self.assertEqual(route_32_neos.get_stats_via()['packets'], 257)
+
         #
         # A recursive EOS x-connect, which resolves through another x-connect
         # in uniform mode
@@ -634,6 +647,7 @@ class TestMPLS(VppTestCase):
                                           VppMplsLabel(44),
                                           VppMplsLabel(46),
                                           VppMplsLabel(55)])
+        self.assertEqual(ip_10_0_0_1.get_stats_to()['packets'], 257)
 
         ip_10_0_0_1.remove_vpp_config()
         route_34_neos.remove_vpp_config()
@@ -781,6 +795,8 @@ class TestMPLS(VppTestCase):
                                          [VppMplsLabel(32),
                                           VppMplsLabel(44)])
 
+        self.assertEqual(route_11_0_0_1.get_stats_to()['packets'], 257)
+
         #
         # add a recursive path, with 2 labels, via the 3 label route
         #
@@ -803,6 +819,18 @@ class TestMPLS(VppTestCase):
                                           VppMplsLabel(34),
                                           VppMplsLabel(44),
                                           VppMplsLabel(45)])
+
+        self.assertEqual(route_11_0_0_2.get_stats_to()['packets'], 257)
+
+        rx = self.send_and_expect(self.pg0, tx, self.pg0)
+        self.verify_capture_labelled_ip4(self.pg0, rx, tx,
+                                         [VppMplsLabel(32),
+                                          VppMplsLabel(33),
+                                          VppMplsLabel(34),
+                                          VppMplsLabel(44),
+                                          VppMplsLabel(45)])
+
+        self.assertEqual(route_11_0_0_2.get_stats_to()['packets'], 514)
 
         #
         # cleanup
@@ -927,6 +955,19 @@ class TestMPLS(VppTestCase):
                                          [VppMplsLabel(44, ttl=32),
                                           VppMplsLabel(46, ttl=47),
                                           VppMplsLabel(33, ttl=47)])
+
+    def test_mpls_tunnel_many(self):
+        """ Multiple Tunnels """
+
+        for ii in range(10):
+            mpls_tun = VppMPLSTunnelInterface(
+                self,
+                [VppRoutePath(self.pg0.remote_ip4,
+                              self.pg0.sw_if_index,
+                              labels=[VppMplsLabel(44, ttl=32),
+                                      VppMplsLabel(46, MplsLspMode.UNIFORM)])])
+            mpls_tun.add_vpp_config()
+            mpls_tun.admin_up()
 
     def test_v4_exp_null(self):
         """ MPLS V4 Explicit NULL test """

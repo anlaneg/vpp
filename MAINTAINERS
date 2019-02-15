@@ -138,14 +138,21 @@ VNET GENEVE
 M:	Marco Varlese <mvarlese@suse.de>
 F:	src/vnet/geneve/
 
+VNET IPIP
+M:	Ole Troan <otroan@employees.org>
+F:	src/vnet/ipip/
+
+VNET TLS and TLS engine plugins
+M: 	Florin Coras <fcoras@cisco.com>
+M:	Ping Yu <ping.yu@intel.com>
+F:	src/vnet/tls
+F:	src/plugins/tlsopenssl
+F:	src/plugins/tlsmbedtls
+
 Plugin - ACL
 M:	Andrew Yourtchenko <ayourtch@gmail.com>
 F:	src/plugins/acl/
 F:	src/plugins/acl.am
-
-VNET IPIP
-M:	Ole Troan <otroan@employees.org>
-F:	src/vnet/ipip/
 
 Plugin - flowprobe
 M:	Ole Troan <otroan@employees.org>
@@ -158,9 +165,9 @@ F:	src/plugins/gtpu/
 F:	src/plugins/gtpu.am
 
 Plugin - PPPoE
-M:  Hongjun Ni <hongjun.ni@intel.com>
-F:  src/plugins/pppoe/
-F:  src/plugins/pppoe.am
+M:	Hongjun Ni <hongjun.ni@intel.com>
+F:	src/plugins/pppoe/
+F:	src/plugins/pppoe.am
 
 Plugin - IPv6 Segment Routing Dynamic Proxy
 M:	Francois Clad <fclad@cisco.com>
@@ -176,6 +183,19 @@ Plugin - IPv6 Segment Routing Static Proxy
 M:	Francois Clad <fclad@cisco.com>
 F:	src/plugins/srv6-as/
 F:	src/plugins/srv6_as.am
+
+Plugin - Load Balancer
+M:      Pierre Pfister <ppfister@cisco.com>
+M:      Hongjun Ni <hongjun.ni@intel.com>
+F:      src/plugins/lb/
+F:      src/plugins/lb.am
+
+Plugin - NSH
+M:      Hongjun Ni <hongjun.ni@intel.com>
+M:      Keith Burns <alagalah@gmail.com>
+M:      Vengada <venggovi@cisco.com>
+F:      src/plugins/nsh/
+F:      src/plugins/nsh.am
 
 Test Infrastructure
 M:	Klement Sekera <ksekera@cisco.com>

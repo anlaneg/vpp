@@ -56,6 +56,8 @@ typedef struct
      from clock cycles into seconds. */
   f64 seconds_per_clock;
 
+  f64 round_to_units;
+
   /* Time stamp of call to clib_time_init call. */
   u64 init_cpu_time;
 
@@ -238,10 +240,14 @@ void clib_time_init (clib_time_t * c);
 always_inline f64
 unix_time_now (void)
 {
+  struct timespec ts;
+#ifdef __MACH__
+  clock_gettime (CLOCK_REALTIME, &ts);
+#else
   /* clock_gettime without indirect syscall uses GLIBC wrappers which
      we don't want.  Just the bare metal, please. */
-  struct timespec ts;
   syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
+#endif
   return ts.tv_sec + 1e-9 * ts.tv_nsec;
 }
 
@@ -250,7 +256,11 @@ always_inline u64
 unix_time_now_nsec (void)
 {
   struct timespec ts;
+#ifdef __MACH__
+  clock_gettime (CLOCK_REALTIME, &ts);
+#else
   syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
+#endif
   return 1e9 * ts.tv_sec + ts.tv_nsec;
 }
 
@@ -258,7 +268,11 @@ always_inline void
 unix_time_now_nsec_fraction (u32 * sec, u32 * nsec)
 {
   struct timespec ts;
+#ifdef __MACH__
+  clock_gettime (CLOCK_REALTIME, &ts);
+#else
   syscall (SYS_clock_gettime, CLOCK_REALTIME, &ts);
+#endif
   *sec = ts.tv_sec;
   *nsec = ts.tv_nsec;
 }

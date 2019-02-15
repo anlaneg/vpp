@@ -54,7 +54,7 @@ Otherwise, clone with:
 
 .. code-block:: console
 
-    $ git clone ssh://YOUR_GERRIT_USERNAME@gerrit.fd.io:29418/vpp
+    $ git clone ssh://<YOUR_GERRIT_USERNAME>@gerrit.fd.io:29418/vpp
     $ cd vpp
 
 When attempting to clone the repo Git will prompt you asking if you want to add the Server Host Key to the list of known hosts. Enter **yes** and press the **Enter** key.
@@ -78,7 +78,7 @@ Make sure you have modified the correct files by issuing the following commands:
     $ git diff
 
 Then add and commit the patch. You may want to add a tag to the commit comments.
-For example for a document with only patches you should add the tag **DOCS:**.
+For example for a document with only patches you should add the tag **docs:**.
 
 .. code-block:: console
 
@@ -133,17 +133,46 @@ To modify an existing patch, make sure you modified the correct files, and apply
     $ git commit --amend
     $ git review
 
-When you're done viewing or modifying a branch, get back to the master branch with:
+When you're done viewing or modifying a branch, get back to the master branch by entering:
 
 .. code-block:: console
 
     $ git reset --hard origin/master
     $ git checkout master
 
-Resolving a Conflict
---------------------------------
+Patch Conflict Resolution
+-------------------------
 
-If a change has a conflict it should be resolved with the following:git-review -d <Gerrit change #>
+Two different patch conflict scenarios arise from time to
+time. Sometime after uploading a patch to https://gerrit.fd.io, the
+gerrit UI may show a patch status of "Merge Conflict."
+
+Or, you may attempt to upload a new patch-set via "git review," only to
+discover that the gerrit server won't allow the upload due to an upstream
+merge conflict.
+
+In both cases, it's [usually] fairly simple to fix the problem. You
+need to rebase the patch onto master/latest. Details vary from case to
+case.
+
+Here's how to rebase a patch previously uploaded to the Gerrit server
+which now has a merge conflict. In a fresh workspace cloned from
+master/latest, do the following:
+
+.. code-block:: console
+
+    $ git-review -d <*Gerrit change #*>
+    $ git rebase origin/master
+       while (conflicts)
+          <fix conflicts>
+          $ git rebase --continue
+    $ git review
+
+In the upload-failure case, use caution: carefully **save your work**
+before you do anything else! 
+
+Rebase your patch and try again. Please **do not** re-download ["git
+review -d"] the patch from the gerrit server...:
 
 .. code-block:: console
 
@@ -152,6 +181,4 @@ If a change has a conflict it should be resolved with the following:git-review -
           <fix conflicts>
           $ git rebase --continue
     $ git review
-
-
 

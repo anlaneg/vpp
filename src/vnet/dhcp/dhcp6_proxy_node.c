@@ -179,7 +179,6 @@ dhcpv6_proxy_to_server_input (vlib_main_t * vm,
 	  dhcpv6_client_mac_t *cmac;	// client mac
 	  ethernet_header_t *e_h0;
 	  u8 client_src_mac[6];
-	  vlib_buffer_free_list_t *fl;
 	  dhcp_vss_t *vss;
 	  u8 is_solicit = 0;
 
@@ -315,12 +314,9 @@ dhcpv6_proxy_to_server_input (vlib_main_t * vm,
 	  copy_ip6_address (&r1->link_addr, ia0);
 
 	link_address_set:
-	  fl =
-	    vlib_buffer_get_free_list (vm,
-				       vlib_buffer_get_free_list_index (b0));
 
 	  if ((b0->current_length + sizeof (*id1) + sizeof (*vss1) +
-	       sizeof (*cmac)) > fl->n_data_bytes)
+	       sizeof (*cmac)) > vlib_buffer_get_default_data_size (vm))
 	    {
 	      error0 = DHCPV6_PROXY_ERROR_PKT_TOO_BIG;
 	      next0 = DHCPV6_PROXY_TO_SERVER_INPUT_NEXT_DROP;
@@ -389,7 +385,7 @@ dhcpv6_proxy_to_server_input (vlib_main_t * vm,
 				  sizeof (*r1) + sizeof (*fwd_opt) +
 				  sizeof (*u1) + sizeof (*id1) + u1->length);
 
-	  memset (ip1, 0, sizeof (*ip1));
+	  clib_memset (ip1, 0, sizeof (*ip1));
 	  ip1->ip_version_traffic_class_and_flow_label = 0x60;
 	  ip1->payload_length = u1->length;
 	  ip1->protocol = PROTO_UDP;
@@ -440,6 +436,8 @@ dhcpv6_proxy_to_server_input (vlib_main_t * vm,
 		  u32 ci0;
 
 		  c0 = vlib_buffer_copy (vm, b0);
+		  vlib_buffer_copy_trace_flag (vm, c0, bi0);
+		  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (c0);
 		  ci0 = vlib_get_buffer_index (vm, c0);
 		  server = &proxy->dhcp_servers[ii];
 
@@ -739,7 +737,7 @@ dhcpv6_proxy_to_client_input (vlib_main_t * vm,
 	}
 
       len = clib_net_to_host_u16 (r0->length);
-      memset (ip1, 0, sizeof (*ip1));
+      clib_memset (ip1, 0, sizeof (*ip1));
       copy_ip6_address (&ip1->dst_address, &client_address);
       u1->checksum = 0;
       u1->src_port = clib_net_to_host_u16 (UDP_DST_PORT_dhcpv6_to_server);
@@ -767,7 +765,7 @@ dhcpv6_proxy_to_client_input (vlib_main_t * vm,
       hi0 = vnet_get_sup_hw_interface (vnm, original_sw_if_index);
       ei0 = pool_elt_at_index (em->interfaces, hi0->hw_instance);
       clib_memcpy (mac0->src_address, ei0->address, sizeof (ei0->address));
-      memset (&mac0->dst_address, 0xff, sizeof (mac0->dst_address));
+      clib_memset (&mac0->dst_address, 0xff, sizeof (mac0->dst_address));
       mac0->type = (si0->type == VNET_SW_INTERFACE_TYPE_SUB) ?
 	clib_net_to_host_u16 (0x8100) : clib_net_to_host_u16 (0x86dd);
 

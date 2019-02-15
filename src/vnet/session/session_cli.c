@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Cisco and/or its affiliates.
+ * Copyright (c) 2017-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -16,29 +16,27 @@
 #include <vnet/session/session.h>
 
 u8 *
-format_stream_session_fifos (u8 * s, va_list * args)
+format_session_fifos (u8 * s, va_list * args)
 {
-  stream_session_t *ss = va_arg (*args, stream_session_t *);
+  session_t *ss = va_arg (*args, session_t *);
   int verbose = va_arg (*args, int);
   session_event_t _e, *e = &_e;
   u8 found;
 
-  if (!ss->server_rx_fifo || !ss->server_tx_fifo)
+  if (!ss->rx_fifo || !ss->tx_fifo)
     return s;
 
-  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->server_rx_fifo,
-	      verbose);
-  if (verbose > 2 && ss->server_rx_fifo->has_event)
+  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->rx_fifo, verbose);
+  if (verbose > 2 && ss->rx_fifo->has_event)
     {
-      found = session_node_lookup_fifo_event (ss->server_rx_fifo, e);
+      found = session_node_lookup_fifo_event (ss->rx_fifo, e);
       s = format (s, " session node event: %s\n",
 		  found ? "found" : "not found");
     }
-  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->server_tx_fifo,
-	      verbose);
-  if (verbose > 2 && ss->server_tx_fifo->has_event)
+  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->tx_fifo, verbose);
+  if (verbose > 2 && ss->tx_fifo->has_event)
     {
-      found = session_node_lookup_fifo_event (ss->server_tx_fifo, e);
+      found = session_node_lookup_fifo_event (ss->tx_fifo, e);
       s = format (s, " session node event: %s\n",
 		  found ? "found" : "not found");
     }
@@ -56,38 +54,48 @@ format_stream_session_fifos (u8 * s, va_list * args)
 u8 *
 format_stream_session (u8 * s, va_list * args)
 {
-  stream_session_t *ss = va_arg (*args, stream_session_t *);
+  session_t *ss = va_arg (*args, session_t *);
   int verbose = va_arg (*args, int);
-  transport_proto_vft_t *tp_vft;
+  u32 tp = session_get_transport_proto (ss);
   u8 *str = 0;
-  tp_vft = transport_protocol_get_vft (session_get_transport_proto (ss));
 
-  if (verbose == 1 && ss->session_state >= SESSION_STATE_ACCEPTING)
-    str = format (0, "%-10u%-10u%-10lld",
-		  svm_fifo_max_dequeue (ss->server_rx_fifo),
-		  svm_fifo_max_enqueue (ss->server_tx_fifo),
-		  session_get_index (ss));
+  if (ss->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
+    {
+      s = format (s, "[%u:%u] CLOSED", ss->thread_index, ss->session_index);
+      return s;
+    }
+
+  if (verbose == 1)
+    {
+      u8 post_accept = ss->session_state >= SESSION_STATE_ACCEPTING;
+      u8 hasf = post_accept | session_tx_is_dgram (ss);
+      u32 rxf, txf;
+
+      rxf = hasf ? svm_fifo_max_dequeue (ss->rx_fifo) : 0;
+      txf = hasf ? svm_fifo_max_dequeue (ss->tx_fifo) : 0;
+      str = format (0, "%-10u%-10u", rxf, txf);
+    }
 
   if (ss->session_state >= SESSION_STATE_ACCEPTING)
     {
-      s = format (s, "%U", tp_vft->format_connection, ss->connection_index,
-		  ss->thread_index, verbose);
+      s = format (s, "%U", format_transport_connection, tp,
+		  ss->connection_index, ss->thread_index, verbose);
       if (verbose == 1)
 	s = format (s, "%v", str);
       if (verbose > 1)
-	s = format (s, "%U", format_stream_session_fifos, ss, verbose);
+	s = format (s, "%U", format_session_fifos, ss, verbose);
     }
   else if (ss->session_state == SESSION_STATE_LISTENING)
     {
-      s = format (s, "%-40U%v", tp_vft->format_listener, ss->connection_index,
-		  str);
+      s = format (s, "%U%v", format_transport_listen_connection,
+		  tp, ss->connection_index, verbose, str);
       if (verbose > 1)
-	s = format (s, "\n%U", format_stream_session_fifos, ss, verbose);
+	s = format (s, "\n%U", format_session_fifos, ss, verbose);
     }
   else if (ss->session_state == SESSION_STATE_CONNECTING)
     {
-      s = format (s, "%-40U%v", tp_vft->format_half_open,
-		  ss->connection_index, str);
+      s = format (s, "%-40U%v", format_transport_half_open_connection,
+		  tp, ss->connection_index, str);
     }
   else
     {
@@ -102,24 +110,32 @@ uword
 unformat_stream_session_id (unformat_input_t * input, va_list * args)
 {
   u8 *proto = va_arg (*args, u8 *);
+  u32 *fib_index = va_arg (*args, u32 *);
   ip46_address_t *lcl = va_arg (*args, ip46_address_t *);
   ip46_address_t *rmt = va_arg (*args, ip46_address_t *);
   u16 *lcl_port = va_arg (*args, u16 *);
   u16 *rmt_port = va_arg (*args, u16 *);
   u8 *is_ip4 = va_arg (*args, u8 *);
   u8 tuple_is_set = 0;
+  u32 vrf = ~0;
 
-  memset (lcl, 0, sizeof (*lcl));
-  memset (rmt, 0, sizeof (*rmt));
+  clib_memset (lcl, 0, sizeof (*lcl));
+  clib_memset (rmt, 0, sizeof (*rmt));
 
   if (unformat (input, "tcp"))
     {
       *proto = TRANSPORT_PROTO_TCP;
     }
-  if (unformat (input, "udp"))
+  else if (unformat (input, "udp"))
     {
       *proto = TRANSPORT_PROTO_UDP;
     }
+  else
+    return 0;
+
+  if (unformat (input, "vrf %u", &vrf))
+    ;
+
   if (unformat (input, "%U:%d->%U:%d", unformat_ip4_address, &lcl->ip4,
 		lcl_port, unformat_ip4_address, &rmt->ip4, rmt_port))
     {
@@ -133,21 +149,28 @@ unformat_stream_session_id (unformat_input_t * input, va_list * args)
       tuple_is_set = 1;
     }
 
+  if (vrf != ~0)
+    {
+      fib_protocol_t fib_proto;
+      fib_proto = *is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
+      *fib_index = fib_table_find (fib_proto, vrf);
+    }
+
   return tuple_is_set;
 }
 
 uword
 unformat_stream_session (unformat_input_t * input, va_list * args)
 {
-  stream_session_t **result = va_arg (*args, stream_session_t **);
-  stream_session_t *s;
-  u8 proto = ~0;
-  ip46_address_t lcl, rmt;
+  session_t **result = va_arg (*args, session_t **);
   u32 lcl_port = 0, rmt_port = 0, fib_index = 0;
+  ip46_address_t lcl, rmt;
+  session_t *s;
+  u8 proto = ~0;
   u8 is_ip4 = 0;
 
-  if (!unformat (input, "%U", unformat_stream_session_id, &proto, &lcl, &rmt,
-		 &lcl_port, &rmt_port, &is_ip4))
+  if (!unformat (input, "%U", unformat_stream_session_id, &proto, &fib_index,
+		 &lcl, &rmt, &lcl_port, &rmt_port, &is_ip4))
     return 0;
 
   if (is_ip4)
@@ -178,8 +201,8 @@ unformat_transport_connection (unformat_input_t * input, va_list * args)
   u32 lcl_port = 0, rmt_port = 0, fib_index = 0;
   u8 is_ip4 = 0;
 
-  if (!unformat (input, "%U", unformat_stream_session_id, &proto, &lcl, &rmt,
-		 &lcl_port, &rmt_port, &is_ip4))
+  if (!unformat (input, "%U", unformat_stream_session_id, &fib_index, &proto,
+		 &lcl, &rmt, &lcl_port, &rmt_port, &is_ip4))
     return 0;
 
   proto = (proto == (u8) ~ 0) ? suggested_proto : proto;
@@ -206,11 +229,14 @@ static clib_error_t *
 show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 			 vlib_cli_command_t * cmd)
 {
+  u8 one_session = 0, do_listeners = 0, sst, do_elog = 0;
   session_manager_main_t *smm = &session_manager_main;
-  u8 *str = 0, one_session = 0, do_listeners = 0, sst, *app_name;
+  u32 transport_proto = ~0, track_index;
+  session_t *pool, *s;
+  transport_connection_t *tc;
+  app_worker_t *app_wrk;
   int verbose = 0, i;
-  stream_session_t *pool, *s;
-  u32 transport_proto = ~0;
+  const u8 *app_name;
 
   if (!smm->is_enabled)
     {
@@ -230,6 +256,8 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	{
 	  one_session = 1;
 	}
+      else if (unformat (input, "elog"))
+	do_elog = 1;
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);
@@ -237,67 +265,85 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 
   if (one_session)
     {
-      vlib_cli_output (vm, "%U", format_stream_session, s, 3);
+      u8 *str = format (0, "%U", format_stream_session, s, 3);
+      if (do_elog && s->session_state != SESSION_STATE_LISTENING)
+	{
+	  elog_main_t *em = &vm->elog_main;
+	  f64 dt;
+
+	  tc = session_get_transport (s);
+	  track_index = transport_elog_track_index (tc);
+	  dt = (em->init_time.cpu - vm->clib_time.init_cpu_time)
+	    * vm->clib_time.seconds_per_clock;
+	  if (track_index != ~0)
+	    str = format (str, " session elog:\n%U", format_elog_track, em,
+			  dt, track_index);
+	}
+      vlib_cli_output (vm, "%v", str);
+      vec_free (str);
       return 0;
     }
 
   if (do_listeners)
     {
       sst = session_type_from_proto_and_ip (transport_proto, 1);
-      vlib_cli_output (vm, "%-40s%-24s%-10s", "Listener", "App", "S-idx");
+      vlib_cli_output (vm, "%-50s%-24s", "Listener", "App");
       /* *INDENT-OFF* */
-      pool_foreach (s, smm->sessions[0], ({
+      pool_foreach (s, smm->wrk[0].sessions, ({
 	if (s->session_state != SESSION_STATE_LISTENING
 	    || s->session_type != sst)
 	  continue;
-	app_name = application_name_from_index (s->app_index);
-	vlib_cli_output (vm, "%U%-25v%-10u", format_stream_session, s, 1,
-			 app_name, s->session_index);
-	vec_free (app_name);
+	app_wrk = app_worker_get (s->app_wrk_index);
+	app_name = application_name_from_index (app_wrk->app_index);
+	vlib_cli_output (vm, "%U%-25v%", format_stream_session, s, 0,
+			 app_name);
       }));
       /* *INDENT-ON* */
       return 0;
     }
 
-  for (i = 0; i < vec_len (smm->sessions); i++)
+  for (i = 0; i < vec_len (smm->wrk); i++)
     {
-      u32 once_per_pool;
-      pool = smm->sessions[i];
+      u32 once_per_pool = 1, n_closed = 0;
 
-      once_per_pool = 1;
-
-      if (pool_elts (pool))
+      pool = smm->wrk[i].sessions;
+      if (!pool_elts (pool))
 	{
-
-	  vlib_cli_output (vm, "Thread %d: %d active sessions",
-			   i, pool_elts (pool));
-	  if (verbose)
-	    {
-	      if (once_per_pool && verbose == 1)
-		{
-		  str = format (str, "%-50s%-15s%-10s%-10s%-10s",
-				"Connection", "State", "Rx-f", "Tx-f",
-				"S-idx");
-		  vlib_cli_output (vm, "%v", str);
-		  vec_reset_length (str);
-		  once_per_pool = 0;
-		}
-
-              /* *INDENT-OFF* */
-              pool_foreach (s, pool,
-              ({
-        	vec_reset_length (str);
-                str = format (str, "%U", format_stream_session, s, verbose);
-                vlib_cli_output (vm, "%v", str);
-              }));
-              /* *INDENT-ON* */
-	    }
+	  vlib_cli_output (vm, "Thread %d: no sessions", i);
+	  continue;
 	}
+
+      if (!verbose)
+	{
+	  vlib_cli_output (vm, "Thread %d: %d sessions", i, pool_elts (pool));
+	  continue;
+	}
+
+      if (once_per_pool && verbose == 1)
+	{
+	  vlib_cli_output (vm, "%s%-50s%-15s%-10s%-10s", i ? "\n" : "",
+			   "Connection", "State", "Rx-f", "Tx-f");
+	  once_per_pool = 0;
+	}
+
+      /* *INDENT-OFF* */
+      pool_foreach (s, pool, ({
+        if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
+          {
+            n_closed += 1;
+            continue;
+          }
+        vlib_cli_output (vm, "%U", format_stream_session, s, verbose);
+      }));
+      /* *INDENT-ON* */
+
+      if (!n_closed)
+	vlib_cli_output (vm, "Thread %d: active sessions %u", i,
+			 pool_elts (pool) - n_closed);
       else
-	vlib_cli_output (vm, "Thread %d: no active sessions", i);
-      vec_reset_length (str);
+	vlib_cli_output (vm, "Thread %d: active sessions %u closed %u", i,
+			 pool_elts (pool) - n_closed, n_closed);
     }
-  vec_free (str);
 
   return 0;
 }
@@ -306,15 +352,17 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 VLIB_CLI_COMMAND (vlib_cli_show_session_command) =
 {
   .path = "show session",
-  .short_help = "show session [verbose [nnn]]",
+  .short_help = "show session [verbose [n]] [listeners <proto>] "
+		"[<session-id> [elog]]",
   .function = show_session_command_fn,
 };
 /* *INDENT-ON* */
 
 static int
-clear_session (stream_session_t * s)
+clear_session (session_t * s)
 {
-  application_t *server = application_get (s->app_index);
+  app_worker_t *server_wrk = app_worker_get (s->app_wrk_index);
+  application_t *server = application_get (server_wrk->app_index);
   server->cb_fns.session_disconnect_callback (s);
   return 0;
 }
@@ -325,8 +373,9 @@ clear_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 {
   session_manager_main_t *smm = &session_manager_main;
   u32 thread_index = 0, clear_all = 0;
+  session_manager_worker_t *wrk;
   u32 session_index = ~0;
-  stream_session_t **pool, *session;
+  session_t *session;
 
   if (!smm->is_enabled)
     {
@@ -361,9 +410,9 @@ clear_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (clear_all)
     {
       /* *INDENT-OFF* */
-      vec_foreach (pool, smm->sessions)
+      vec_foreach (wrk, smm->wrk)
 	{
-	  pool_foreach(session, *pool, ({
+	  pool_foreach(session, wrk->sessions, ({
 	    clear_session (session);
 	  }));
 	};
@@ -387,7 +436,7 @@ show_session_fifo_trace_command_fn (vlib_main_t * vm,
 				    unformat_input_t * input,
 				    vlib_cli_command_t * cmd)
 {
-  stream_session_t *s = 0;
+  session_t *s = 0;
   u8 is_rx = 0, *str = 0;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -416,8 +465,8 @@ show_session_fifo_trace_command_fn (vlib_main_t * vm,
     }
 
   str = is_rx ?
-    svm_fifo_dump_trace (str, s->server_rx_fifo) :
-    svm_fifo_dump_trace (str, s->server_tx_fifo);
+    svm_fifo_dump_trace (str, s->rx_fifo) :
+    svm_fifo_dump_trace (str, s->tx_fifo);
 
   vlib_cli_output (vm, "%v", str);
   return 0;
@@ -436,7 +485,7 @@ static clib_error_t *
 session_replay_fifo_command_fn (vlib_main_t * vm, unformat_input_t * input,
 				vlib_cli_command_t * cmd)
 {
-  stream_session_t *s = 0;
+  session_t *s = 0;
   u8 is_rx = 0, *str = 0;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -463,8 +512,8 @@ session_replay_fifo_command_fn (vlib_main_t * vm, unformat_input_t * input,
     }
 
   str = is_rx ?
-    svm_fifo_replay (str, s->server_rx_fifo, 0, 1) :
-    svm_fifo_replay (str, s->server_tx_fifo, 0, 1);
+    svm_fifo_replay (str, s->rx_fifo, 0, 1) :
+    svm_fifo_replay (str, s->tx_fifo, 0, 1);
 
   vlib_cli_output (vm, "%v", str);
   return 0;

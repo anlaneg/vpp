@@ -339,6 +339,15 @@ ikev2_calc_integr (ikev2_sa_transform_t * tr, v8 * key, u8 * data, int len)
 
   r = vec_new (u8, tr->key_len);
 
+  if (tr->md == EVP_sha1 ())
+    {
+      clib_warning ("integrity checking with sha1");
+    }
+  else if (tr->md == EVP_sha256 ())
+    {
+      clib_warning ("integrity checking with sha256");
+    }
+
   /* verify integrity of data */
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
   hctx = HMAC_CTX_new ();
@@ -524,16 +533,20 @@ ikev2_generate_dh (ikev2_sa_t * sa, ikev2_sa_transform_t * t)
       y = BN_new ();
       len = t->key_len / 2;
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+      EC_POINT_get_affine_coordinates (group, r_point, x, y, bn_ctx);
+#else
       EC_POINT_get_affine_coordinates_GFp (group, r_point, x, y, bn_ctx);
+#endif
 
       if (sa->is_initiator)
 	{
 	  sa->i_dh_data = vec_new (u8, t->key_len);
 	  x_off = len - BN_num_bytes (x);
-	  memset (sa->i_dh_data, 0, x_off);
+	  clib_memset (sa->i_dh_data, 0, x_off);
 	  BN_bn2bin (x, sa->i_dh_data + x_off);
 	  y_off = t->key_len - BN_num_bytes (y);
-	  memset (sa->i_dh_data + len, 0, y_off - len);
+	  clib_memset (sa->i_dh_data + len, 0, y_off - len);
 	  BN_bn2bin (y, sa->i_dh_data + y_off);
 
 	  const BIGNUM *prv = EC_KEY_get0_private_key (ec);
@@ -545,25 +558,33 @@ ikev2_generate_dh (ikev2_sa_t * sa, ikev2_sa_transform_t * t)
 	{
 	  sa->r_dh_data = vec_new (u8, t->key_len);
 	  x_off = len - BN_num_bytes (x);
-	  memset (sa->r_dh_data, 0, x_off);
+	  clib_memset (sa->r_dh_data, 0, x_off);
 	  BN_bn2bin (x, sa->r_dh_data + x_off);
 	  y_off = t->key_len - BN_num_bytes (y);
-	  memset (sa->r_dh_data + len, 0, y_off - len);
+	  clib_memset (sa->r_dh_data + len, 0, y_off - len);
 	  BN_bn2bin (y, sa->r_dh_data + y_off);
 
 	  x = BN_bin2bn (sa->i_dh_data, len, x);
 	  y = BN_bin2bn (sa->i_dh_data + len, len, y);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	  EC_POINT_set_affine_coordinates (group, i_point, x, y, bn_ctx);
+#else
 	  EC_POINT_set_affine_coordinates_GFp (group, i_point, x, y, bn_ctx);
+#endif
 	  sa->dh_shared_key = vec_new (u8, t->key_len);
 	  EC_POINT_mul (group, shared_point, NULL, i_point,
 			EC_KEY_get0_private_key (ec), NULL);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	  EC_POINT_get_affine_coordinates (group, shared_point, x, y, bn_ctx);
+#else
 	  EC_POINT_get_affine_coordinates_GFp (group, shared_point, x, y,
 					       bn_ctx);
+#endif
 	  x_off = len - BN_num_bytes (x);
-	  memset (sa->dh_shared_key, 0, x_off);
+	  clib_memset (sa->dh_shared_key, 0, x_off);
 	  BN_bn2bin (x, sa->dh_shared_key + x_off);
 	  y_off = t->key_len - BN_num_bytes (y);
-	  memset (sa->dh_shared_key + len, 0, y_off - len);
+	  clib_memset (sa->dh_shared_key + len, 0, y_off - len);
 	  BN_bn2bin (y, sa->dh_shared_key + y_off);
 	}
 
@@ -635,7 +656,11 @@ ikev2_complete_dh (ikev2_sa_t * sa, ikev2_sa_transform_t * t)
       x = BN_bin2bn (sa->r_dh_data, len, x);
       y = BN_bin2bn (sa->r_dh_data + len, len, y);
       EC_POINT *r_point = EC_POINT_new (group);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+      EC_POINT_set_affine_coordinates (group, r_point, x, y, bn_ctx);
+#else
       EC_POINT_set_affine_coordinates_GFp (group, r_point, x, y, bn_ctx);
+#endif
       EC_KEY_set_public_key (ec, r_point);
 
       EC_POINT *i_point = EC_POINT_new (group);
@@ -643,16 +668,24 @@ ikev2_complete_dh (ikev2_sa_t * sa, ikev2_sa_transform_t * t)
 
       x = BN_bin2bn (sa->i_dh_data, len, x);
       y = BN_bin2bn (sa->i_dh_data + len, len, y);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+      EC_POINT_set_affine_coordinates (group, i_point, x, y, bn_ctx);
+#else
       EC_POINT_set_affine_coordinates_GFp (group, i_point, x, y, bn_ctx);
+#endif
       EC_POINT_mul (group, shared_point, NULL, r_point,
 		    EC_KEY_get0_private_key (ec), NULL);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+      EC_POINT_get_affine_coordinates (group, shared_point, x, y, bn_ctx);
+#else
       EC_POINT_get_affine_coordinates_GFp (group, shared_point, x, y, bn_ctx);
+#endif
       sa->dh_shared_key = vec_new (u8, t->key_len);
       x_off = len - BN_num_bytes (x);
-      memset (sa->dh_shared_key, 0, x_off);
+      clib_memset (sa->dh_shared_key, 0, x_off);
       BN_bn2bin (x, sa->dh_shared_key + x_off);
       y_off = t->key_len - BN_num_bytes (y);
-      memset (sa->dh_shared_key + len, 0, y_off - len);
+      clib_memset (sa->dh_shared_key + len, 0, y_off - len);
       BN_bn2bin (y, sa->dh_shared_key + y_off);
 
       EC_KEY_free (ec);
@@ -780,6 +813,9 @@ ikev2_crypto_init (ikev2_main_t * km)
   ikev2_sa_transform_t *tr;
 
   /* vector of supported transforms - in order of preference */
+
+  //Encryption
+
   vec_add2 (km->supported_transforms, tr, 1);
   tr->type = IKEV2_TRANSFORM_TYPE_ENCR;
   tr->encr_type = IKEV2_TRANSFORM_ENCR_TYPE_AES_CBC;
@@ -801,9 +837,60 @@ ikev2_crypto_init (ikev2_main_t * km)
   tr->block_size = 128 / 8;
   tr->cipher = EVP_aes_128_cbc ();
 
+  //PRF
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_PRF;
+  tr->prf_type = IKEV2_TRANSFORM_PRF_TYPE_PRF_HMAC_SHA2_256;
+  tr->key_len = 256 / 8;
+  tr->key_trunc = 256 / 8;
+  tr->md = EVP_sha256 ();
+
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_PRF;
+  tr->prf_type = IKEV2_TRANSFORM_PRF_TYPE_PRF_HMAC_SHA2_384;
+  tr->key_len = 384 / 8;
+  tr->key_trunc = 384 / 8;
+  tr->md = EVP_sha384 ();
+
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_PRF;
+  tr->prf_type = IKEV2_TRANSFORM_PRF_TYPE_PRF_HMAC_SHA2_512;
+  tr->key_len = 512 / 8;
+  tr->key_trunc = 512 / 8;
+  tr->md = EVP_sha512 ();
+
   vec_add2 (km->supported_transforms, tr, 1);
   tr->type = IKEV2_TRANSFORM_TYPE_PRF;
   tr->prf_type = IKEV2_TRANSFORM_PRF_TYPE_PRF_HMAC_SHA1;
+  tr->key_len = 160 / 8;
+  tr->key_trunc = 160 / 8;
+  tr->md = EVP_sha1 ();
+
+  //Integrity
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_INTEG;
+  tr->integ_type = IKEV2_TRANSFORM_INTEG_TYPE_AUTH_HMAC_SHA2_256_128;
+  tr->key_len = 256 / 8;
+  tr->key_trunc = 128 / 8;
+  tr->md = EVP_sha256 ();
+
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_INTEG;
+  tr->integ_type = IKEV2_TRANSFORM_INTEG_TYPE_AUTH_HMAC_SHA2_384_192;
+  tr->key_len = 384 / 8;
+  tr->key_trunc = 192 / 8;
+  tr->md = EVP_sha384 ();
+
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_INTEG;
+  tr->integ_type = IKEV2_TRANSFORM_INTEG_TYPE_AUTH_HMAC_SHA2_512_256;
+  tr->key_len = 512 / 8;
+  tr->key_trunc = 256 / 8;
+  tr->md = EVP_sha512 ();
+
+  vec_add2 (km->supported_transforms, tr, 1);
+  tr->type = IKEV2_TRANSFORM_TYPE_INTEG;
+  tr->integ_type = IKEV2_TRANSFORM_INTEG_TYPE_AUTH_HMAC_SHA1_160;
   tr->key_len = 160 / 8;
   tr->key_trunc = 160 / 8;
   tr->md = EVP_sha1 ();
@@ -814,6 +901,7 @@ ikev2_crypto_init (ikev2_main_t * km)
   tr->key_len = 160 / 8;
   tr->key_trunc = 96 / 8;
   tr->md = EVP_sha1 ();
+
 
 #if defined(OPENSSL_NO_CISCO_FECDH)
   vec_add2 (km->supported_transforms, tr, 1);

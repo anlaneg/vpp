@@ -18,6 +18,8 @@
 #ifndef included_ethernet_arp_packet_h
 #define included_ethernet_arp_packet_h
 
+#include <vnet/ethernet/mac_address.h>
+
 #define foreach_ethernet_arp_hardware_type	\
   _ (0, reserved)				\
   _ (1, ethernet)				\
@@ -109,20 +111,23 @@ typedef enum
 
 typedef enum
 {
-  IP4_ARP_ERROR_DROP,
+  IP4_ARP_ERROR_THROTTLED,
+  IP4_ARP_ERROR_RESOLVED,
+  IP4_ARP_ERROR_NO_BUFFERS,
   IP4_ARP_ERROR_REQUEST_SENT,
   IP4_ARP_ERROR_NON_ARP_ADJ,
-  IP4_ARP_ERROR_REPLICATE_DROP,
-  IP4_ARP_ERROR_REPLICATE_FAIL,
   IP4_ARP_ERROR_NO_SOURCE_ADDRESS,
 } ip4_arp_error_t;
 
 /* *INDENT-OFF* */
 typedef CLIB_PACKED (struct {
-  u8 ethernet[6];
+  mac_address_t mac;
   ip4_address_t ip4;
 }) ethernet_arp_ip4_over_ethernet_address_t;
 /* *INDENT-ON* */
+
+STATIC_ASSERT (sizeof (ethernet_arp_ip4_over_ethernet_address_t) == 10,
+	       "Packet ethernet address and IP4 address too big");
 
 typedef struct
 {
@@ -139,34 +144,6 @@ typedef struct
     u8 data[0];
   };
 } ethernet_arp_header_t;
-
-typedef enum ethernet_arp_entry_flags_t_
-{
-  ETHERNET_ARP_IP4_ENTRY_FLAG_STATIC = (1 << 0),
-  ETHERNET_ARP_IP4_ENTRY_FLAG_DYNAMIC = (1 << 1),
-  ETHERNET_ARP_IP4_ENTRY_FLAG_NO_FIB_ENTRY = (1 << 2),
-} __attribute__ ((packed)) ethernet_arp_entry_flags_t;
-
-typedef struct
-{
-  u32 sw_if_index;
-  ip4_address_t ip4_address;
-
-  u8 ethernet_address[6];
-
-  ethernet_arp_entry_flags_t flags;
-
-  f64 time_last_updated;
-
-  /**
-   * The index of the adj-fib entry created
-   */
-  fib_node_index_t fib_entry_index;
-} ethernet_arp_ip4_entry_t;
-
-ethernet_arp_ip4_entry_t *ip4_neighbors_pool (void);
-ethernet_arp_ip4_entry_t *ip4_neighbor_entries (u32 sw_if_index);
-u8 *format_ethernet_arp_ip4_entry (u8 * s, va_list * va);
 
 void send_ip4_garp (vlib_main_t * vm, u32 sw_if_index);
 void send_ip4_garp_w_addr (vlib_main_t * vm,

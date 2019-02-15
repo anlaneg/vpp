@@ -53,7 +53,7 @@ _(INVALID_SRC_ADDRESS, -57, "Invalid src address")                      \
 _(INVALID_DST_ADDRESS, -58, "Invalid dst address")                      \
 _(ADDRESS_LENGTH_MISMATCH, -59, "Address length mismatch")              \
 _(ADDRESS_NOT_FOUND_FOR_INTERFACE, -60, "Address not found for interface") \
-_(ADDRESS_NOT_LINK_LOCAL, -61, "Address not link-local")                \
+_(ADDRESS_NOT_DELETABLE, -61, "Address not deletable")                  \
 _(IP6_NOT_ENABLED, -62, "ip6 not enabled")				\
 _(IN_PROGRESS, 10, "Operation in progress")				\
 _(NO_SUCH_NODE, -63, "No such graph node")				\
@@ -143,6 +143,9 @@ _(BIER_BSL_UNSUP, -146, "BIER bit-string-length unsupported")		\
 _(INSTANCE_IN_USE, -147, "Instance in use")				\
 _(INVALID_SESSION_ID, -148, "session ID out of range")			\
 _(ACL_IN_USE_BY_LOOKUP_CONTEXT, -149, "ACL in use by a lookup context")	\
+_(INVALID_VALUE_3, -150, "Invalid value #3")                            \
+_(NON_ETHERNET, -151, "Interface is not an Ethernet interface")         \
+_(BD_ALREADY_HAS_BVI, -152, "Bridge domain already has a BVI interface")
 
 typedef enum
 {

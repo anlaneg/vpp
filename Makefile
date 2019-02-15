@@ -68,7 +68,8 @@ DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6 check
-DEB_DEPENDS += libboost-all-dev libffi-dev python-ply libmbedtls-dev
+DEB_DEPENDS += libboost-all-dev libffi-dev python3-ply libmbedtls-dev
+DEB_DEPENDS += cmake ninja-build uuid-dev
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
 	DEB_DEPENDS += libssl-dev
@@ -84,31 +85,31 @@ else
 	DEB_DEPENDS += libssl-dev
 endif
 
-RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel yum-utils
+RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel
 RPM_DEPENDS += apr-devel
 RPM_DEPENDS += numactl-devel
 RPM_DEPENDS += check check-devel
 RPM_DEPENDS += boost boost-devel
 RPM_DEPENDS += selinux-policy selinux-policy-devel
+RPM_DEPENDS += ninja-build
+RPM_DEPENDS += libuuid-devel
 
-ifeq ($(OS_ID)-$(OS_VERSION_ID),fedora-25)
-	RPM_DEPENDS += subunit subunit-devel
-	RPM_DEPENDS += openssl-devel
-	RPM_DEPENDS += python-devel python2-ply
-	RPM_DEPENDS += python2-virtualenv
-	RPM_DEPENDS += mbedtls-devel
-	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
-else ifeq ($(shell if [ "$(OS_ID)" = "fedora" ]; then test $(OS_VERSION_ID) -gt 25; echo $$?; fi),0)
+ifeq ($(OS_ID),fedora)
+	RPM_DEPENDS += dnf-utils
 	RPM_DEPENDS += subunit subunit-devel
 	RPM_DEPENDS += compat-openssl10-devel
-	RPM_DEPENDS += python2-devel python2-ply
+	RPM_DEPENDS += python2-devel python34-ply
 	RPM_DEPENDS += python2-virtualenv
 	RPM_DEPENDS += mbedtls-devel
+	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else
+	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
-	RPM_DEPENDS += python-devel python-ply
+	RPM_DEPENDS += python-devel python34-ply
 	RPM_DEPENDS += python-virtualenv
+	RPM_DEPENDS += devtoolset-7
+	RPM_DEPENDS += cmake3
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 endif
 
@@ -119,10 +120,10 @@ RPM_DEPENDS += chrpath libffi-devel rpm-build
 SUSE_NAME= $(shell grep '^NAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
 SUSE_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
 RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
-RPM_SUSE_BUILDTOOLS_DEPS += clang indent libtool make python-ply
+RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static java-1_8_0-openjdk-devel libnuma-devel
-RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel libuuid-devel
 
 RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
 RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
@@ -131,14 +132,14 @@ RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
 
 ifeq ($(OS_ID),opensuse)
 ifeq ($(SUSE_NAME),Tumbleweed)
-	RPM_SUSE_DEVEL_DEPS = libboost_headers-devel libboost_thread-devel gcc
-	RPM_SUSE_PYTHON_DEPS += python2-ply python2-virtualenv
+	RPM_SUSE_DEVEL_DEPS = libboost_headers1_68_0-devel-1.68.0  libboost_thread1_68_0-devel-1.68.0 gcc
+	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
 endif
 ifeq ($(SUSE_ID),15.0)
-	RPM_SUSE_DEVEL_DEPS = libboost_headers-devel libboost_thread-devel gcc6
-	RPM_SUSE_PYTHON_DEPS += python2-ply python2-virtualenv
+	RPM_SUSE_DEVEL_DEPS = libboost_headers1_68_0-devel-1.68.0  libboost_thread1_68_0-devel-1.68.0 gcc6
+	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
 else
-	RPM_SUSE_DEVEL_DEPS += boost_1_61-devel gcc6
+	RPM_SUSE_DEVEL_DEPS += libboost_headers1_68_0-devel-1.68.0 gcc6
 	RPM_SUSE_PYTHON_DEPS += python-virtualenv
 endif
 endif
@@ -146,7 +147,7 @@ endif
 ifeq ($(OS_ID),opensuse-leap)
 ifeq ($(SUSE_ID),15.0)
 	RPM_SUSE_DEVEL_DEPS = libboost_headers-devel libboost_thread-devel gcc6
-	RPM_SUSE_PYTHON_DEPS += python2-ply python2-virtualenv
+	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
 endif
 endif
 
@@ -174,6 +175,13 @@ endif
 .PHONY: test test-debug retest retest-debug test-doc test-wipe-doc test-help test-wipe
 .PHONY: test-cov test-wipe-cov
 
+define banner
+	@echo "========================================================================"
+	@echo " $(1)"
+	@echo "========================================================================"
+	@echo " "
+endef
+
 #显示makefile帮助
 help:
 	@echo "Make Targets:"
@@ -193,7 +201,6 @@ help:
 	@echo " test-debug          - build and run (basic) functional tests (debug build)"
 	@echo " test-all            - build and run (all) functional tests"
 	@echo " test-all-debug      - build and run (all) functional tests (debug build)"
-	@echo " test-ext            - build and run 'extras' functional tests"
 	@echo " test-shell          - enter shell with test environment"
 	@echo " test-shell-debug    - enter shell with test environment (debug build)"
 	@echo " test-wipe           - wipe files generated by unit tests"
@@ -202,8 +209,9 @@ help:
 	@echo " test-help           - show help on test framework"
 	@echo " run-vat             - run vpp-api-test tool"
 	@echo " pkg-deb             - build DEB packages"
+	@echo " vom-pkg-deb         - build vom DEB packages"
 	@echo " pkg-rpm             - build RPM packages"
-	@echo " dpdk-install-dev    - install DPDK development packages"
+	@echo " install-ext-deps    - install external development dependencies"
 	@echo " ctags               - (re)generate ctags database"
 	@echo " gtags               - (re)generate gtags database"
 	@echo " cscope              - (re)generate cscope database"
@@ -212,6 +220,9 @@ help:
 	@echo " doxygen             - (re)generate documentation"
 	@echo " bootstrap-doxygen   - setup Doxygen dependencies"
 	@echo " wipe-doxygen        - wipe all generated documentation"
+	@echo " docs                 - Build the Sphinx documentation"
+	@echo " docs-venv         - Build the virtual environment for the Sphinx docs"
+	@echo " docs-clean        - Remove the generated files from the Sphinx docs"
 	@echo " test-doc            - generate documentation for test framework"
 	@echo " test-wipe-doc       - wipe documentation for test framework"
 	@echo " test-cov            - generate code coverage report for test framework"
@@ -291,17 +302,32 @@ endif
 	@sudo -E apt-get update
 	@sudo -E apt-get $(APT_ARGS) $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
 else ifneq ("$(wildcard /etc/redhat-release)","")
+ifeq ($(OS_ID),rhel)
+	@sudo -E yum-config-manager --enable rhel-server-rhscl-7-rpms
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
-else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
+else ifeq ($(OS_ID),centos)
+	@sudo -E yum install $(CONFIRM) centos-release-scl-rh epel-release
+	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+else ifeq ($(OS_ID),fedora)
+	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+endif
+else ifeq ($(filter opensuse-tumbleweed,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else ifeq ($(filter opensuse-leap,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
+	@sudo -E zypper install  -y $(RPM_SUSE_DEPENDS)
+else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
+	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else
-	$(error "This option currently works only on Ubuntu, Debian, Centos or openSUSE systems")
+	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS or openSUSE systems")
 endif
 
 #定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TAG=argv1
@@ -348,6 +374,7 @@ wipedist:
 
 wipe: wipedist test-wipe $(BR)/.deps.ok
 	$(call make,$(PLATFORM)_debug,$(addsuffix -wipe,$(TARGETS)))
+	@find . -type f -name "*.api.json" ! -path "./test/*" -exec rm {} \;
 
 rebuild: wipe build
 
@@ -359,19 +386,18 @@ wipe-release: test-wipe $(BR)/.deps.ok
 
 rebuild-release: wipe-release build-release
 
-export VPP_PYTHON_PREFIX ?= $(BR)/python
-
 libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
+
+export TEST_DIR ?= $(WS_ROOT)/test
 
 define test
 	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=$(1) TAG=$(2) vpp-install,)
 	$(eval libs:=lib lib64)
 	make -C test \
-	  TEST_DIR=$(WS_ROOT)/test \
-	  VPP_TEST_BUILD_DIR=$(BR)/build-$(2)-native \
-	  VPP_TEST_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
-	  VPP_TEST_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
-	  VPP_TEST_INSTALL_PATH=$(BR)/install-$(2)-native/ \
+	  VPP_BUILD_DIR=$(BR)/build-$(2)-native \
+	  VPP_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
+	  VPP_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
+	  VPP_INSTALL_PATH=$(BR)/install-$(2)-native/ \
 	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
@@ -387,15 +413,12 @@ test-debug:
 	$(call test,vpp,vpp_debug,test)
 
 test-all:
+	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=vpp TAG=vpp vom-install japi-install,)
 	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp,test)
 
-test-ext:
-	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=vpp TAG=vpp_debug vom-install japi-install,)
-	$(eval EXTENDED_TESTS=yes)
-	$(call test,vpp,vpp_debug,test-ext)
-
 test-all-debug:
+	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=vpp TAG=vpp_debug vom-install japi-install,)
 	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp_debug,test)
 
@@ -421,6 +444,7 @@ test-wipe-doc:
 	@make -C test wipe-doc
 
 test-cov:
+	@make -C $(BR) PLATFORM=vpp TAG=vpp_gcov vom-install japi-install
 	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp_gcov,cov)
 
@@ -480,7 +504,18 @@ run-vat:
 
 #由make函数知，此处将走$(BR) 的install-deb目标
 pkg-deb:
-	$(call make,$(PLATFORM),install-deb)
+	$(call make,$(PLATFORM),vpp-package-deb)
+
+vom-pkg-deb:
+	$(call make,$(PLATFORM),vpp-package-deb)
+	$(call make,$(PLATFORM),vom-package-deb)
+
+pkg-deb-debug:
+	$(call make,$(PLATFORM)_debug,vpp-package-deb)
+
+vom-pkg-deb-debug:
+	$(call make,$(PLATFORM)_debug,vpp-package-deb)
+	$(call make,$(PLATFORM)_debug,vom-package-deb)
 
 pkg-rpm: dist
 	make -C extras/rpm
@@ -489,7 +524,11 @@ pkg-srpm: dist
 	make -C extras/rpm srpm
 
 dpdk-install-dev:
-	make -C dpdk install-$(PKG)
+	$(call banner,"This command is deprecated. Please use 'make install-ext-deps'")
+	make -C build/external install-$(PKG)
+
+install-ext-deps:
+	make -C build/external install-$(PKG)
 
 ctags: ctags.files
 	@ctags --totals --tag-relative -L $<
@@ -529,14 +568,23 @@ doxygen:
 wipe-doxygen:
 	$(call make-doxy)
 
-define banner
-	@echo "========================================================================"
-	@echo " $(1)"
-	@echo "========================================================================"
-	@echo " "
-endef
+# Sphinx Documents
+export DOCS_DIR = $(WS_ROOT)/docs
+export VENV_DIR = $(WS_ROOT)/sphinx_venv
+export SPHINX_SCRIPTS_DIR = $(WS_ROOT)/docs/scripts
 
-verify: install-dep $(BR)/.deps.ok dpdk-install-dev
+.PHONY: docs-venv docs docs-clean
+
+docs-venv:
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh venv)
+
+docs: $(DOCS_DIR)
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh html)
+
+docs-clean:
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh clean)
+
+verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building for PLATFORM=vpp using gcc")
 	@make -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")
@@ -549,8 +597,7 @@ verify: install-dep $(BR)/.deps.ok dpdk-install-dev
 	@make -C build-root PLATFORM=vpp TAG=vpp vom-install
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
-ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-16.04)
+ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-18.04)
+	$(call banner,"Running tests")
 	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
 endif
-
-

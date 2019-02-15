@@ -114,11 +114,17 @@ clib_sysfs_link_to_name (char *link)
 }
 
 clib_error_t *
-clib_sysfs_set_nr_hugepages (int numa_node, int page_size, int nr)
+clib_sysfs_set_nr_hugepages (int numa_node, int log2_page_size, int nr)
 {
   clib_error_t *error = 0;
   struct stat sb;
   u8 *p = 0;
+  uword page_size;
+
+  if (log2_page_size == 0)
+    log2_page_size = min_log2 (clib_mem_get_default_hugepage_size ());
+
+  page_size = 1ULL << (log2_page_size - 10);
 
   p = format (p, "/sys/devices/system/node/node%u%c", numa_node, 0);
 
@@ -159,11 +165,19 @@ done:
 
 static clib_error_t *
 clib_sysfs_get_xxx_hugepages (char *type, int numa_node,
-			      int page_size, int *val)
+			      int log2_page_size, int *val)
 {
   clib_error_t *error = 0;
   struct stat sb;
   u8 *p = 0;
+
+  uword page_size;
+
+  if (log2_page_size == 0)
+    log2_page_size = min_log2 (clib_mem_get_default_hugepage_size ());
+
+  page_size = 1ULL << (log2_page_size - 10);
+
 
   p = format (p, "/sys/devices/system/node/node%u%c", numa_node, 0);
 
@@ -203,41 +217,49 @@ done:
 }
 
 clib_error_t *
-clib_sysfs_get_free_hugepages (int numa_node, int page_size, int *v)
+clib_sysfs_get_free_hugepages (int numa_node, int log2_page_size, int *v)
 {
-  return clib_sysfs_get_xxx_hugepages ("free", numa_node, page_size, v);
+  return clib_sysfs_get_xxx_hugepages ("free", numa_node, log2_page_size, v);
 }
 
 clib_error_t *
-clib_sysfs_get_nr_hugepages (int numa_node, int page_size, int *v)
+clib_sysfs_get_nr_hugepages (int numa_node, int log2_page_size, int *v)
 {
-  return clib_sysfs_get_xxx_hugepages ("nr", numa_node, page_size, v);
+  return clib_sysfs_get_xxx_hugepages ("nr", numa_node, log2_page_size, v);
 }
 
 clib_error_t *
-clib_sysfs_get_surplus_hugepages (int numa_node, int page_size, int *v)
+clib_sysfs_get_surplus_hugepages (int numa_node, int log2_page_size, int *v)
 {
-  return clib_sysfs_get_xxx_hugepages ("surplus", numa_node, page_size, v);
+  return clib_sysfs_get_xxx_hugepages ("surplus", numa_node, log2_page_size,
+				       v);
 }
 
 clib_error_t *
-clib_sysfs_prealloc_hugepages (int numa_node, int page_size, int nr)
+clib_sysfs_prealloc_hugepages (int numa_node, int log2_page_size, int nr)
 {
   clib_error_t *error = 0;
   int n, needed;
-  error = clib_sysfs_get_free_hugepages (numa_node, page_size, &n);
+  uword page_size;
+
+  if (log2_page_size == 0)
+    log2_page_size = min_log2 (clib_mem_get_default_hugepage_size ());
+
+  page_size = 1ULL << (log2_page_size - 10);
+
+  error = clib_sysfs_get_free_hugepages (numa_node, log2_page_size, &n);
   if (error)
     return error;
   needed = nr - n;
   if (needed <= 0)
     return 0;
 
-  error = clib_sysfs_get_nr_hugepages (numa_node, page_size, &n);
+  error = clib_sysfs_get_nr_hugepages (numa_node, log2_page_size, &n);
   if (error)
     return error;
   clib_warning ("pre-allocating %u additional %uK hugepages on numa node %u",
 		needed, page_size, numa_node);
-  return clib_sysfs_set_nr_hugepages (numa_node, page_size, n + needed);
+  return clib_sysfs_set_nr_hugepages (numa_node, log2_page_size, n + needed);
 }
 
 

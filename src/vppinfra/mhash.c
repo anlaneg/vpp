@@ -202,7 +202,7 @@ mhash_init (mhash_t * h, uword n_value_bytes, uword n_key_bytes)
   vec_free (h->key_tmps);
   hash_free (h->hash);
 
-  memset (h, 0, sizeof (h[0]));
+  clib_memset (h, 0, sizeof (h[0]));
   h->n_key_bytes = n_key_bytes;
 
 #if 0
@@ -263,7 +263,7 @@ typedef struct
 {
   u32 heap_handle;
 
-  /* Must conincide with vec_header. */
+  /* Must coincide with vec_header. */
   vec_header_t vec;
 } mhash_string_key_t;
 
@@ -289,7 +289,7 @@ mhash_set_mem (mhash_t * h, void *key, uword * new_value, uword * old_value)
       sk = (void *) (h->key_vector_or_heap + i);
       sk->heap_handle = handle;
       sk->vec.len = n_key_bytes;
-      clib_memcpy (sk->vec.vector_data, key, n_key_bytes);
+      clib_memcpy_fast (sk->vec.vector_data, key, n_key_bytes);
 
       /* Advance key past vector header. */
       i += sizeof (sk[0]);
@@ -311,7 +311,7 @@ mhash_set_mem (mhash_t * h, void *key, uword * new_value, uword * old_value)
 	}
 
       n_key_bytes = h->n_key_bytes;
-      clib_memcpy (k, key, n_key_bytes);
+      clib_memcpy_fast (k, key, n_key_bytes);
     }
   ikey = i;
 

@@ -40,7 +40,7 @@ openssl_ctx_alloc (void)
   if (!(*ctx))
     *ctx = clib_mem_alloc (sizeof (openssl_ctx_t));
 
-  memset (*ctx, 0, sizeof (openssl_ctx_t));
+  clib_memset (*ctx, 0, sizeof (openssl_ctx_t));
   (*ctx)->ctx.c_thread_index = thread_index;
   (*ctx)->ctx.tls_ctx_engine = TLS_ENGINE_OPENSSL;
   (*ctx)->ctx.app_session_handle = SESSION_INVALID_HANDLE;
@@ -56,11 +56,6 @@ openssl_ctx_free (tls_ctx_t * ctx)
   if (SSL_is_init_finished (oc->ssl) && !ctx->is_passive_close)
     SSL_shutdown (oc->ssl);
 
-  if (SSL_is_server (oc->ssl))
-    {
-      X509_free (oc->srvcert);
-      EVP_PKEY_free (oc->pkey);
-    }
   SSL_free (oc->ssl);
 
   pool_put_index (openssl_main.ctx_pool[ctx->c_thread_index],
@@ -84,15 +79,39 @@ openssl_ctx_get_w_thread (u32 ctx_index, u8 thread_index)
   return &(*ctx)->ctx;
 }
 
+static u32
+openssl_listen_ctx_alloc (void)
+{
+  openssl_main_t *om = &openssl_main;
+  openssl_listen_ctx_t *lctx;
+
+  pool_get (om->lctx_pool, lctx);
+
+  clib_memset (lctx, 0, sizeof (openssl_listen_ctx_t));
+  lctx->openssl_lctx_index = lctx - om->lctx_pool;
+  return lctx->openssl_lctx_index;
+}
+
+static void
+openssl_listen_ctx_free (openssl_listen_ctx_t * lctx)
+{
+  pool_put_index (openssl_main.lctx_pool, lctx->openssl_lctx_index);
+}
+
+openssl_listen_ctx_t *
+openssl_lctx_get (u32 lctx_index)
+{
+  return pool_elt_at_index (openssl_main.lctx_pool, lctx_index);
+}
+
 static int
-openssl_try_handshake_read (openssl_ctx_t * oc,
-			    stream_session_t * tls_session)
+openssl_try_handshake_read (openssl_ctx_t * oc, session_t * tls_session)
 {
   u32 deq_max, deq_now;
   svm_fifo_t *f;
   int wrote, rv;
 
-  f = tls_session->server_rx_fifo;
+  f = tls_session->rx_fifo;
   deq_max = svm_fifo_max_dequeue (f);
   if (!deq_max)
     return 0;
@@ -117,8 +136,7 @@ openssl_try_handshake_read (openssl_ctx_t * oc,
 }
 
 static int
-openssl_try_handshake_write (openssl_ctx_t * oc,
-			     stream_session_t * tls_session)
+openssl_try_handshake_write (openssl_ctx_t * oc, session_t * tls_session)
 {
   u32 enq_max, deq_now;
   svm_fifo_t *f;
@@ -127,7 +145,7 @@ openssl_try_handshake_write (openssl_ctx_t * oc,
   if (BIO_ctrl_pending (oc->rbio) <= 0)
     return 0;
 
-  f = tls_session->server_tx_fifo;
+  f = tls_session->tx_fifo;
   enq_max = svm_fifo_max_enqueue (f);
   if (!enq_max)
     return 0;
@@ -138,7 +156,7 @@ openssl_try_handshake_write (openssl_ctx_t * oc,
     return 0;
 
   svm_fifo_enqueue_nocopy (f, read);
-  tls_add_vpp_q_evt (f, FIFO_EVENT_APP_TX);
+  tls_add_vpp_q_tx_evt (tls_session);
 
   if (read < enq_max)
     {
@@ -165,8 +183,7 @@ vpp_ssl_async_process_event (tls_ctx_t * ctx,
   engine_cb = vpp_add_async_pending_event (ctx, handler);
   if (engine_cb)
     {
-      SSL_set_async_callback (oc->ssl, (void *) engine_cb->callback,
-			      (void *) engine_cb->arg);
+      SSL_set_async_callback_arg (oc->ssl, (void *) engine_cb->arg);
       TLS_DBG (2, "set callback to engine %p\n", engine_cb->callback);
     }
   return 0;
@@ -177,12 +194,10 @@ vpp_ssl_async_process_event (tls_ctx_t * ctx,
 static int
 vpp_ssl_async_retry_func (tls_ctx_t * ctx, openssl_resume_handler * handler)
 {
-  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
 
   if (vpp_add_async_run_event (ctx, handler))
-    {
-      SSL_set_async_estatus (oc->ssl, 0);
-    }
+    return 1;
+
   return 0;
 
 }
@@ -190,7 +205,7 @@ vpp_ssl_async_retry_func (tls_ctx_t * ctx, openssl_resume_handler * handler)
 #endif
 
 int
-openssl_ctx_handshake_rx (tls_ctx_t * ctx, stream_session_t * tls_session)
+openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   int rv = 0, err;
@@ -210,19 +225,23 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, stream_session_t * tls_session)
 	  break;
 	}
 
+#ifdef HAVE_OPENSSL_ASYNC
+      myself = openssl_ctx_handshake_rx;
+      vpp_ssl_async_process_event (ctx, myself);
+#endif
+
       rv = SSL_do_handshake (oc->ssl);
       err = SSL_get_error (oc->ssl, rv);
       openssl_try_handshake_write (oc, tls_session);
 #ifdef HAVE_OPENSSL_ASYNC
-      myself = openssl_ctx_handshake_rx;
-      if (SSL_get_async_estatus (oc->ssl, &estatus)
-	  && (estatus == ENGINE_STATUS_RETRY))
+      if (err == SSL_ERROR_WANT_ASYNC)
 	{
-	  vpp_ssl_async_retry_func (ctx, myself);
-	}
-      else if (err == SSL_ERROR_WANT_ASYNC)
-	{
-	  vpp_ssl_async_process_event (ctx, myself);
+	  SSL_get_async_status (oc->ssl, &estatus);
+
+	  if (estatus == ASYNC_STATUS_EAGAIN)
+	    {
+	      vpp_ssl_async_retry_func (ctx, myself);
+	    }
 	}
 #endif
 
@@ -278,15 +297,15 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, stream_session_t * tls_session)
 }
 
 static inline int
-openssl_ctx_write (tls_ctx_t * ctx, stream_session_t * app_session)
+openssl_ctx_write (tls_ctx_t * ctx, session_t * app_session)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   int wrote = 0, rv, read, max_buf = 100 * TLS_CHUNK_SIZE, max_space;
   u32 enq_max, deq_max, deq_now, to_write;
-  stream_session_t *tls_session;
+  session_t *tls_session;
   svm_fifo_t *f;
 
-  f = app_session->server_tx_fifo;
+  f = app_session->tx_fifo;
   deq_max = svm_fifo_max_dequeue (f);
   if (!deq_max)
     goto check_tls_fifo;
@@ -298,23 +317,23 @@ openssl_ctx_write (tls_ctx_t * ctx, stream_session_t * app_session)
   wrote = SSL_write (oc->ssl, svm_fifo_head (f), to_write);
   if (wrote <= 0)
     {
-      tls_add_vpp_q_evt (app_session->server_tx_fifo, FIFO_EVENT_APP_TX);
+      tls_add_vpp_q_builtin_tx_evt (app_session);
       goto check_tls_fifo;
     }
-  svm_fifo_dequeue_drop (app_session->server_tx_fifo, wrote);
+  svm_fifo_dequeue_drop (app_session->tx_fifo, wrote);
   if (wrote < deq_now)
     {
       to_write = clib_min (svm_fifo_max_read_chunk (f), deq_now - wrote);
       rv = SSL_write (oc->ssl, svm_fifo_head (f), to_write);
       if (rv > 0)
 	{
-	  svm_fifo_dequeue_drop (app_session->server_tx_fifo, rv);
+	  svm_fifo_dequeue_drop (app_session->tx_fifo, rv);
 	  wrote += rv;
 	}
     }
 
-  if (deq_now < deq_max)
-    tls_add_vpp_q_evt (app_session->server_tx_fifo, FIFO_EVENT_APP_TX);
+  if (wrote < deq_max)
+    tls_add_vpp_q_builtin_tx_evt (app_session);
 
 check_tls_fifo:
 
@@ -322,11 +341,11 @@ check_tls_fifo:
     return wrote;
 
   tls_session = session_get_from_handle (ctx->tls_session_handle);
-  f = tls_session->server_tx_fifo;
+  f = tls_session->tx_fifo;
   enq_max = svm_fifo_max_enqueue (f);
   if (!enq_max)
     {
-      tls_add_vpp_q_evt (app_session->server_tx_fifo, FIFO_EVENT_APP_TX);
+      tls_add_vpp_q_builtin_tx_evt (app_session);
       return wrote;
     }
 
@@ -334,12 +353,12 @@ check_tls_fifo:
   read = BIO_read (oc->rbio, svm_fifo_tail (f), deq_now);
   if (read <= 0)
     {
-      tls_add_vpp_q_evt (app_session->server_tx_fifo, FIFO_EVENT_APP_TX);
+      tls_add_vpp_q_builtin_tx_evt (app_session);
       return wrote;
     }
 
   svm_fifo_enqueue_nocopy (f, read);
-  tls_add_vpp_q_evt (f, FIFO_EVENT_APP_TX);
+  tls_add_vpp_q_tx_evt (tls_session);
 
   if (read < enq_max && BIO_ctrl_pending (oc->rbio) > 0)
     {
@@ -350,18 +369,18 @@ check_tls_fifo:
     }
 
   if (BIO_ctrl_pending (oc->rbio) > 0)
-    tls_add_vpp_q_evt (app_session->server_tx_fifo, FIFO_EVENT_APP_TX);
+    tls_add_vpp_q_builtin_tx_evt (app_session);
 
   return wrote;
 }
 
 static inline int
-openssl_ctx_read (tls_ctx_t * ctx, stream_session_t * tls_session)
+openssl_ctx_read (tls_ctx_t * ctx, session_t * tls_session)
 {
   int read, wrote = 0, max_space, max_buf = 100 * TLS_CHUNK_SIZE, rv;
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   u32 deq_max, enq_max, deq_now, to_read;
-  stream_session_t *app_session;
+  session_t *app_session;
   svm_fifo_t *f;
 
   if (PREDICT_FALSE (SSL_in_init (oc->ssl)))
@@ -370,7 +389,7 @@ openssl_ctx_read (tls_ctx_t * ctx, stream_session_t * tls_session)
       return 0;
     }
 
-  f = tls_session->server_rx_fifo;
+  f = tls_session->rx_fifo;
   deq_max = svm_fifo_max_dequeue (f);
   max_space = max_buf - BIO_ctrl_pending (oc->wbio);
   max_space = max_space < 0 ? 0 : max_space;
@@ -382,7 +401,7 @@ openssl_ctx_read (tls_ctx_t * ctx, stream_session_t * tls_session)
   wrote = BIO_write (oc->wbio, svm_fifo_head (f), to_read);
   if (wrote <= 0)
     {
-      tls_add_vpp_q_evt (tls_session->server_rx_fifo, FIFO_EVENT_BUILTIN_RX);
+      tls_add_vpp_q_builtin_rx_evt (tls_session);
       goto check_app_fifo;
     }
   svm_fifo_dequeue_drop (f, wrote);
@@ -397,7 +416,7 @@ openssl_ctx_read (tls_ctx_t * ctx, stream_session_t * tls_session)
 	}
     }
   if (svm_fifo_max_dequeue (f))
-    tls_add_vpp_q_evt (tls_session->server_rx_fifo, FIFO_EVENT_BUILTIN_RX);
+    tls_add_vpp_q_builtin_rx_evt (tls_session);
 
 check_app_fifo:
 
@@ -405,11 +424,11 @@ check_app_fifo:
     return wrote;
 
   app_session = session_get_from_handle (ctx->app_session_handle);
-  f = app_session->server_rx_fifo;
+  f = app_session->rx_fifo;
   enq_max = svm_fifo_max_enqueue (f);
   if (!enq_max)
     {
-      tls_add_vpp_q_evt (tls_session->server_rx_fifo, FIFO_EVENT_BUILTIN_RX);
+      tls_add_vpp_q_builtin_rx_evt (tls_session);
       return wrote;
     }
 
@@ -417,7 +436,7 @@ check_app_fifo:
   read = SSL_read (oc->ssl, svm_fifo_tail (f), deq_now);
   if (read <= 0)
     {
-      tls_add_vpp_q_evt (tls_session->server_rx_fifo, FIFO_EVENT_BUILTIN_RX);
+      tls_add_vpp_q_builtin_rx_evt (tls_session);
       return wrote;
     }
   svm_fifo_enqueue_nocopy (f, read);
@@ -431,7 +450,7 @@ check_app_fifo:
 
   tls_notify_app_enqueue (ctx, app_session);
   if (BIO_ctrl_pending (oc->wbio) > 0)
-    tls_add_vpp_q_evt (tls_session->server_rx_fifo, FIFO_EVENT_BUILTIN_RX);
+    tls_add_vpp_q_builtin_rx_evt (tls_session);
 
   return wrote;
 }
@@ -439,11 +458,10 @@ check_app_fifo:
 static int
 openssl_ctx_init_client (tls_ctx_t * ctx)
 {
-  char *ciphers = "ALL:!ADH:!LOW:!EXP:!MD5:!RC4-SHA:!DES-CBC3-SHA:@STRENGTH";
   long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   openssl_main_t *om = &openssl_main;
-  stream_session_t *tls_session;
+  session_t *tls_session;
   const SSL_METHOD *method;
   int rv, err;
 #ifdef HAVE_OPENSSL_ASYNC
@@ -470,7 +488,7 @@ openssl_ctx_init_client (tls_ctx_t * ctx)
   if (om->async)
     SSL_CTX_set_mode (oc->ssl_ctx, SSL_MODE_ASYNC);
 #endif
-  rv = SSL_CTX_set_cipher_list (oc->ssl_ctx, (const char *) ciphers);
+  rv = SSL_CTX_set_cipher_list (oc->ssl_ctx, (const char *) om->ciphers);
   if (rv != 1)
     {
       TLS_DBG (1, "Couldn't set cipher");
@@ -533,46 +551,47 @@ openssl_ctx_init_client (tls_ctx_t * ctx)
 }
 
 static int
-openssl_ctx_init_server (tls_ctx_t * ctx)
+openssl_start_listen (tls_ctx_t * lctx)
 {
-  char *ciphers = "ALL:!ADH:!LOW:!EXP:!MD5:!RC4-SHA:!DES-CBC3-SHA:@STRENGTH";
-  long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
-  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
-  stream_session_t *tls_session;
-  const SSL_METHOD *method;
   application_t *app;
-  int rv, err;
+  const SSL_METHOD *method;
+  SSL_CTX *ssl_ctx;
+  int rv;
   BIO *cert_bio;
-#ifdef HAVE_OPENSSL_ASYNC
-  openssl_main_t *om = &openssl_main;
-  openssl_resume_handler *handler;
-#endif
+  X509 *srvcert;
+  EVP_PKEY *pkey;
+  u32 olc_index;
+  openssl_listen_ctx_t *olc;
 
-  app = application_get (ctx->parent_app_index);
+  long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
+  openssl_main_t *om = &openssl_main;
+
+  app = application_get (lctx->parent_app_index);
   if (!app->tls_cert || !app->tls_key)
     {
       TLS_DBG (1, "tls cert and/or key not configured %d",
-	       ctx->parent_app_index);
+	       lctx->parent_app_index);
       return -1;
     }
 
   method = SSLv23_method ();
-  oc->ssl_ctx = SSL_CTX_new (method);
-  if (!oc->ssl_ctx)
+  ssl_ctx = SSL_CTX_new (method);
+  if (!ssl_ctx)
     {
       clib_warning ("Unable to create SSL context");
       return -1;
     }
 
-  SSL_CTX_set_mode (oc->ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+  SSL_CTX_set_mode (ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
 #ifdef HAVE_OPENSSL_ASYNC
   if (om->async)
-    SSL_CTX_set_mode (oc->ssl_ctx, SSL_MODE_ASYNC);
+    SSL_CTX_set_mode (ssl_ctx, SSL_MODE_ASYNC);
+  SSL_CTX_set_async_callback (ssl_ctx, tls_async_openssl_callback);
 #endif
-  SSL_CTX_set_options (oc->ssl_ctx, flags);
-  SSL_CTX_set_ecdh_auto (oc->ssl_ctx, 1);
+  SSL_CTX_set_options (ssl_ctx, flags);
+  SSL_CTX_set_ecdh_auto (ssl_ctx, 1);
 
-  rv = SSL_CTX_set_cipher_list (oc->ssl_ctx, (const char *) ciphers);
+  rv = SSL_CTX_set_cipher_list (ssl_ctx, (const char *) om->ciphers);
   if (rv != 1)
     {
       TLS_DBG (1, "Couldn't set cipher");
@@ -584,32 +603,73 @@ openssl_ctx_init_server (tls_ctx_t * ctx)
    */
   cert_bio = BIO_new (BIO_s_mem ());
   BIO_write (cert_bio, app->tls_cert, vec_len (app->tls_cert));
-  oc->srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
-  if (!oc->srvcert)
+  srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
+  if (!srvcert)
     {
       clib_warning ("unable to parse certificate");
       return -1;
     }
-  SSL_CTX_use_certificate (oc->ssl_ctx, oc->srvcert);
+  SSL_CTX_use_certificate (ssl_ctx, srvcert);
   BIO_free (cert_bio);
-
 
   cert_bio = BIO_new (BIO_s_mem ());
   BIO_write (cert_bio, app->tls_key, vec_len (app->tls_key));
-  oc->pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
-  if (!oc->pkey)
+  pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
+  if (!pkey)
     {
       clib_warning ("unable to parse pkey");
       return -1;
     }
-  SSL_CTX_use_PrivateKey (oc->ssl_ctx, oc->pkey);
-
-  SSL_CTX_use_PrivateKey (oc->ssl_ctx, oc->pkey);
+  SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
   BIO_free (cert_bio);
+
+  olc_index = openssl_listen_ctx_alloc ();
+  olc = openssl_lctx_get (olc_index);
+  olc->ssl_ctx = ssl_ctx;
+  olc->srvcert = srvcert;
+  olc->pkey = pkey;
+
+  /* store SSL_CTX into TLS level structure */
+  lctx->tls_ssl_ctx = olc_index;
+
+  return 0;
+
+}
+
+static int
+openssl_stop_listen (tls_ctx_t * lctx)
+{
+  u32 olc_index;
+  openssl_listen_ctx_t *olc;
+
+  olc_index = lctx->tls_ssl_ctx;
+  olc = openssl_lctx_get (olc_index);
+
+  X509_free (olc->srvcert);
+  EVP_PKEY_free (olc->pkey);
+
+  SSL_CTX_free (olc->ssl_ctx);
+  openssl_listen_ctx_free (olc);
+
+  return 0;
+}
+
+static int
+openssl_ctx_init_server (tls_ctx_t * ctx)
+{
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  u32 olc_index = ctx->tls_ssl_ctx;
+  openssl_listen_ctx_t *olc;
+  session_t *tls_session;
+  int rv, err;
+#ifdef HAVE_OPENSSL_ASYNC
+  openssl_resume_handler *handler;
+#endif
 
   /* Start a new connection */
 
-  oc->ssl = SSL_new (oc->ssl_ctx);
+  olc = openssl_lctx_get (olc_index);
+  oc->ssl = SSL_new (olc->ssl_ctx);
   if (oc->ssl == NULL)
     {
       TLS_DBG (1, "Couldn't initialize ssl struct");
@@ -670,6 +730,8 @@ const static tls_engine_vft_t openssl_engine = {
   .ctx_write = openssl_ctx_write,
   .ctx_read = openssl_ctx_read,
   .ctx_handshake_is_over = openssl_handshake_is_over,
+  .ctx_start_listen = openssl_start_listen,
+  .ctx_stop_listen = openssl_stop_listen,
 };
 
 int
@@ -715,6 +777,27 @@ tls_init_ca_chain (void)
   return (rv < 0 ? -1 : 0);
 }
 
+static int
+tls_openssl_set_ciphers (char *ciphers)
+{
+  openssl_main_t *om = &openssl_main;
+  int i;
+
+  if (!ciphers)
+    {
+      return -1;
+    }
+
+  vec_validate (om->ciphers, strlen (ciphers) - 1);
+  for (i = 0; i < vec_len (om->ciphers); i++)
+    {
+      om->ciphers[i] = toupper (ciphers[i]);
+    }
+
+  return 0;
+
+}
+
 static clib_error_t *
 tls_openssl_init (vlib_main_t * vm)
 {
@@ -743,6 +826,10 @@ tls_openssl_init (vlib_main_t * vm)
 
   om->engine_init = 0;
 
+  /* default ciphers */
+  tls_openssl_set_ciphers
+    ("ALL:!ADH:!LOW:!EXP:!MD5:!RC4-SHA:!DES-CBC3-SHA:@STRENGTH");
+
   return 0;
 }
 
@@ -754,6 +841,7 @@ tls_openssl_set_command_fn (vlib_main_t * vm, unformat_input_t * input,
   openssl_main_t *om = &openssl_main;
   char *engine_name = NULL;
   char *engine_alg = NULL;
+  char *ciphers = NULL;
   u8 engine_name_set = 0;
   int i;
 
@@ -780,6 +868,10 @@ tls_openssl_set_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	{
 	  for (i = 0; i < strnlen (engine_alg, MAX_CRYPTO_LEN); i++)
 	    engine_alg[i] = toupper (engine_alg[i]);
+	}
+      else if (unformat (input, "ciphers %s", &ciphers))
+	{
+	  tls_openssl_set_ciphers (ciphers);
 	}
       else
 	return clib_error_return (0, "failed: unknown input `%U'",

@@ -17,14 +17,14 @@
 #define included_vnet_flow_flow_h
 
 #include <vppinfra/clib.h>
-#include <vnet/unix/pcap.h>
+#include <vppinfra/pcap.h>
 #include <vnet/l3_types.h>
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/ip6_packet.h>
 
 #define foreach_flow_type \
   _(IP4_N_TUPLE, ip4_n_tuple, "ipv4-n-tuple") \
-  _(IP6_N_TUPLE, ip6_n_tuple, "ipv4-n-tuple") \
+  _(IP6_N_TUPLE, ip6_n_tuple, "ipv6-n-tuple") \
   _(IP4_VXLAN, ip4_vxlan, "ipv4-vxlan") \
   _(IP6_VXLAN, ip6_vxlan, "ipv6-vxlan")
 

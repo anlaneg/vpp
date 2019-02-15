@@ -549,6 +549,22 @@ udp_unregister_dst_port (vlib_main_t * vm, udp_dst_port_t dst_port, u8 is_ip4)
   n[0] = SPARSE_VEC_INVALID_INDEX;
 }
 
+bool
+udp_is_valid_dst_port (udp_dst_port_t dst_port, u8 is_ip4)
+{
+  udp_main_t *um = &udp_main;
+  u16 *n;
+
+  if (is_ip4)
+    n = sparse_vec_validate (um->next_by_dst_port4,
+			     clib_host_to_net_u16 (dst_port));
+  else
+    n = sparse_vec_validate (um->next_by_dst_port6,
+			     clib_host_to_net_u16 (dst_port));
+
+  return (n[0] != SPARSE_VEC_INVALID_INDEX);
+}
+
 void
 udp_punt_unknown (vlib_main_t * vm, u8 is_ip4, u8 is_add)
 {
@@ -583,7 +599,7 @@ unformat_udp_header (unformat_input_t * input, va_list * args)
     udp = p;
   }
 
-  memset (udp, 0, sizeof (udp[0]));
+  clib_memset (udp, 0, sizeof (udp[0]));
   if (unformat (input, "src-port %d dst-port %d", &src_port, &dst_port))
     {
       udp->src_port = clib_host_to_net_u16 (src_port);

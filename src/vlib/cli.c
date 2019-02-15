@@ -40,6 +40,7 @@
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
 #include <vppinfra/cpu.h>
+#include <vppinfra/elog.h>
 #include <unistd.h>
 #include <ctype.h>
 
@@ -583,6 +584,23 @@ vlib_cli_dispatch_sub_commands (vlib_main_t * vm,
 	    }
 	  else
 	    {
+	      if (PREDICT_FALSE (vm->elog_trace_cli_commands))
+		{
+                  /* *INDENT-OFF* */
+                  ELOG_TYPE_DECLARE (e) =
+                    {
+                      .format = "cli-cmd: %s",
+                      .format_args = "T4",
+                    };
+                  /* *INDENT-ON* */
+		  struct
+		  {
+		    u32 c;
+		  } *ed;
+		  ed = ELOG_DATA (&vm->elog_main, e);
+		  ed->c = elog_global_id_for_msg_name (c->path);
+		}
+
 	      if (!c->is_mp_safe)
 		vlib_worker_thread_barrier_sync (vm);
 
@@ -590,6 +608,32 @@ vlib_cli_dispatch_sub_commands (vlib_main_t * vm,
 
 	      if (!c->is_mp_safe)
 		vlib_worker_thread_barrier_release (vm);
+
+	      if (PREDICT_FALSE (vm->elog_trace_cli_commands))
+		{
+                  /* *INDENT-OFF* */
+                  ELOG_TYPE_DECLARE (e) =
+                    {
+                      .format = "cli-cmd: %s %s",
+                      .format_args = "T4T4",
+                    };
+                  /* *INDENT-ON* */
+		  struct
+		  {
+		    u32 c, err;
+		  } *ed;
+		  ed = ELOG_DATA (&vm->elog_main, e);
+		  ed->c = elog_global_id_for_msg_name (c->path);
+		  if (c_error)
+		    {
+		      vec_add1 (c_error->what, 0);
+		      ed->err = elog_global_id_for_msg_name
+			((const char *) c_error->what);
+		      _vec_len (c_error->what) -= 1;
+		    }
+		  else
+		    ed->err = elog_global_id_for_msg_name ("OK");
+		}
 
 	      if (c_error)
 		{
@@ -771,7 +815,7 @@ show_memory_usage (vlib_main_t * vm,
     /* *INDENT-OFF* */
     foreach_vlib_main (
     ({
-      struct mallinfo mi;
+      struct dlmallinfo mi;
       void *mspace;
       mspace = clib_per_cpu_mheaps[index];
 
@@ -808,7 +852,7 @@ show_cpu (vlib_main_t * vm, unformat_input_t * input,
 {
 #define _(a,b,c) vlib_cli_output (vm, "%-25s " b, a ":", c);
   _("Model name", "%U", format_cpu_model_name);
-  _("Microarchitecture", "%U", format_cpu_uarch);
+  _("Microarch model (family)", "%U", format_cpu_uarch);
   _("Flags", "%U", format_cpu_flags);
   _("Base frequency", "%.2f GHz",
     ((f64) vm->clib_time.clocks_per_second) * 1e-9);
@@ -1412,6 +1456,114 @@ VLIB_CLI_COMMAND (show_cli_command, static) = {
   .path = "show cli",
   .short_help = "Show cli commands",
   .function = show_cli_cmd_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+elog_trace_command_fn (vlib_main_t * vm,
+		       unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  int enable = 1;
+  int api = 0, cli = 0, barrier = 0, dispatch = 0, circuit = 0;
+  u32 circuit_node_index;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    goto print_status;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "api"))
+	api = 1;
+      else if (unformat (line_input, "dispatch"))
+	dispatch = 1;
+      else if (unformat (line_input, "circuit-node %U",
+			 unformat_vlib_node, vm, &circuit_node_index))
+	circuit = 1;
+      else if (unformat (line_input, "cli"))
+	cli = 1;
+      else if (unformat (line_input, "barrier"))
+	barrier = 1;
+      else if (unformat (line_input, "disable"))
+	enable = 0;
+      else if (unformat (line_input, "enable"))
+	enable = 1;
+      else
+	break;
+    }
+  unformat_free (line_input);
+
+  vm->elog_trace_api_messages = api ? enable : vm->elog_trace_api_messages;
+  vm->elog_trace_cli_commands = cli ? enable : vm->elog_trace_cli_commands;
+  vm->elog_trace_graph_dispatch = dispatch ?
+    enable : vm->elog_trace_graph_dispatch;
+  vm->elog_trace_graph_circuit = circuit ?
+    enable : vm->elog_trace_graph_circuit;
+  vlib_worker_threads->barrier_elog_enabled =
+    barrier ? enable : vlib_worker_threads->barrier_elog_enabled;
+  vm->elog_trace_graph_circuit_node_index = circuit_node_index;
+
+  /*
+   * Set up start-of-buffer logic-analyzer trigger
+   * for main loop event logs, which are fairly heavyweight.
+   * See src/vlib/main/vlib_elog_main_loop_event(...), which
+   * will fully disable the scheme when the elog buffer fills.
+   */
+  if (dispatch || circuit)
+    {
+      elog_main_t *em = &vm->elog_main;
+
+      em->n_total_events_disable_limit =
+	em->n_total_events + vec_len (em->event_ring);
+    }
+
+
+print_status:
+  vlib_cli_output (vm, "Current status:");
+
+  vlib_cli_output
+    (vm, "    Event log API message trace: %s\n    CLI command trace: %s",
+     vm->elog_trace_api_messages ? "on" : "off",
+     vm->elog_trace_cli_commands ? "on" : "off");
+  vlib_cli_output
+    (vm, "    Barrier sync trace: %s",
+     vlib_worker_threads->barrier_elog_enabled ? "on" : "off");
+  vlib_cli_output
+    (vm, "    Graph Dispatch: %s",
+     vm->elog_trace_graph_dispatch ? "on" : "off");
+  vlib_cli_output
+    (vm, "    Graph Circuit: %s",
+     vm->elog_trace_graph_circuit ? "on" : "off");
+  if (vm->elog_trace_graph_circuit)
+    vlib_cli_output
+      (vm, "                   node %U",
+       format_vlib_node_name, vm, vm->elog_trace_graph_circuit_node_index);
+
+  return 0;
+}
+
+/*?
+ * Control event logging of api, cli, and thread barrier events
+ * With no arguments, displays the current trace status.
+ * Name the event groups you wish to trace or stop tracing.
+ *
+ * @cliexpar
+ * @clistart
+ * elog trace api cli barrier
+ * elog trace api cli barrier disable
+ * elog trace dispatch
+ * elog trace circuit-node ethernet-input
+ * elog trace
+ * @cliend
+ * @cliexcmd{elog trace [api][cli][barrier][disable]}
+?*/
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (elog_trace_command, static) =
+{
+  .path = "elog trace",
+  .short_help = "elog trace [api][cli][barrier][dispatch]\n"
+  "[circuit-node <name> e.g. ethernet-input][disable]",
+  .function = elog_trace_command_fn,
 };
 /* *INDENT-ON* */
 

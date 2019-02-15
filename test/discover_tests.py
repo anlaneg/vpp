@@ -7,12 +7,14 @@ import importlib
 import argparse
 
 
-def discover_tests(directory, callback):
+def discover_tests(directory, callback, ignore_path):
     do_insert = True
     for _f in os.listdir(directory):
         f = "%s/%s" % (directory, _f)
         if os.path.isdir(f):
-            discover_tests(f, callback)
+            if ignore_path is not None and f.startswith(ignore_path):
+                continue
+            discover_tests(f, callback, ignore_path)
             continue
         if not os.path.isfile(f):
             continue
@@ -22,8 +24,6 @@ def discover_tests(directory, callback):
         if not _f.startswith("test_") or not _f.endswith(".py"):
             continue
         name = "".join(f.split("/")[-1].split(".")[:-1])
-        if name in sys.modules:
-            raise Exception("Duplicate test module `%s' found!" % name)
         module = importlib.import_module(name)
         for name, cls in module.__dict__.items():
             if not isinstance(cls, type):
@@ -52,6 +52,7 @@ if __name__ == '__main__':
     if args.dir is None:
         args.dir = "."
 
+    ignore_path = os.getenv("VENV_PATH", "")
     suite = unittest.TestSuite()
     for d in args.dir:
-        discover_tests(d, print_callback)
+        discover_tests(d, print_callback, ignore_path)

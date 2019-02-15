@@ -54,7 +54,7 @@ typedef struct
 
 #ifndef CLIB_MARCH_VARIANT
 static u8 *
-format_mac_address (u8 * s, va_list * args)
+my_format_mac_address (u8 * s, va_list * args)
 {
   u8 *a = va_arg (*args, u8 *);
   return format (s, \"%02x:%02x:%02x:%02x:%02x:%02x\",
@@ -71,13 +71,14 @@ static u8 * format_" plugin-name "_trace (u8 * s, va_list * args)
   s = format (s, \"" PLUGIN-NAME ": sw_if_index %d, next index %d\\n\",
               t->sw_if_index, t->next_index);
   s = format (s, \"  new src %U -> new dst %U\",
-              format_mac_address, t->new_src_mac, 
-              format_mac_address, t->new_dst_mac);
+              my_format_mac_address, t->new_src_mac, 
+              my_format_mac_address, t->new_dst_mac);
   return s;
 }
-#endif /* CLIB_MARCH_VARIANT */
 
 vlib_node_registration_t " plugin-name "_node;
+
+#endif /* CLIB_MARCH_VARIANT */
 
 #define foreach_" plugin-name "_error \\
 _(SWAPPED, \"Mac swap packets processed\")

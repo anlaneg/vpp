@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Cisco and/or its affiliates.
+ * Copyright (c) 2017-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -270,8 +270,10 @@ session_rules_table_init_rule_40 (mma_rule_40_t * rule,
   fib_pref_normalize (lcl);
   fib_pref_normalize (rmt);
   match = (session_mask_or_match_6_t *) & rule->match;
-  clib_memcpy (&match->lcl_ip, &lcl->fp_addr.ip6, sizeof (match->lcl_ip));
-  clib_memcpy (&match->rmt_ip, &rmt->fp_addr.ip6, sizeof (match->rmt_ip));
+  clib_memcpy_fast (&match->lcl_ip, &lcl->fp_addr.ip6,
+		    sizeof (match->lcl_ip));
+  clib_memcpy_fast (&match->rmt_ip, &rmt->fp_addr.ip6,
+		    sizeof (match->rmt_ip));
   match->lcl_port = lcl_port;
   match->rmt_port = rmt_port;
   mask = (session_mask_or_match_6_t *) & rule->mask;
@@ -355,8 +357,8 @@ session_rules_table_lookup_rule6 (session_rules_table_t * srt,
     .lcl_port = lcl_port,
     .rmt_port = rmt_port,
   };
-  clib_memcpy (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
-  clib_memcpy (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
+  clib_memcpy_fast (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
+  clib_memcpy_fast (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
   return mma_rules_table_lookup_rule_40 (srt6,
 					 (mma_mask_or_match_40_t *) & key,
 					 srt6->root_index);
@@ -372,8 +374,8 @@ session_rules_table_lookup6 (session_rules_table_t * srt,
     .lcl_port = lcl_port,
     .rmt_port = rmt_port,
   };
-  clib_memcpy (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
-  clib_memcpy (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
+  clib_memcpy_fast (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
+  clib_memcpy_fast (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
   return mma_rules_table_lookup_40 (srt6, (mma_mask_or_match_40_t *) & key,
 				    srt6->root_index);
 }
@@ -386,7 +388,7 @@ session_rules_table_lookup6 (session_rules_table_t * srt,
  *
  * @return 0 if success, clib_error_t error otherwise
  */
-clib_error_t *
+int
 session_rules_table_add_del (session_rules_table_t * srt,
 			     session_rule_table_add_del_args_t * args)
 {
@@ -396,8 +398,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 
   ri_from_tag = session_rules_table_rule_for_tag (srt, args->tag);
   if (args->is_add && ri_from_tag != SESSION_RULES_TABLE_INVALID_INDEX)
-    return clib_error_return_code (0, VNET_API_ERROR_INVALID_VALUE, 0,
-				   "tag exists");
+    return VNET_API_ERROR_INVALID_VALUE;
 
   if (fib_proto == FIB_PROTOCOL_IP4)
     {
@@ -445,7 +446,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 	    {
 	      mma_rule_16_t _rule;
 	      rule = &_rule;
-	      memset (rule, 0, sizeof (*rule));
+	      clib_memset (rule, 0, sizeof (*rule));
 	      session_rules_table_init_rule_16 (rule, &args->lcl,
 						args->lcl_port, &args->rmt,
 						args->rmt_port);
@@ -499,7 +500,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 	    {
 	      mma_rule_40_t _rule;
 	      rule = &_rule;
-	      memset (rule, 0, sizeof (*rule));
+	      clib_memset (rule, 0, sizeof (*rule));
 	      session_rules_table_init_rule_40 (rule, &args->lcl,
 						args->lcl_port, &args->rmt,
 						args->rmt_port);
@@ -508,8 +509,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 	}
     }
   else
-    return clib_error_return_code (0, VNET_API_ERROR_INVALID_VALUE_2, 0,
-				   "invalid fib proto");
+    return VNET_API_ERROR_INVALID_VALUE_2;
   return 0;
 }
 
@@ -522,7 +522,7 @@ session_rules_table_init (session_rules_table_t * srt)
   mma_rule_40_t *rule6;
   fib_prefix_t null_prefix;
 
-  memset (&null_prefix, 0, sizeof (null_prefix));
+  clib_memset (&null_prefix, 0, sizeof (null_prefix));
 
   srt4 = &srt->session_rules_tables_16;
   rule4 = session_rules_table_alloc_rule_16 (srt4, &null_prefix, 0,
@@ -577,8 +577,8 @@ session_rules_table_show_rule (vlib_main_t * vm, session_rules_table_t * srt,
 	.lcl_port = lcl_port,
 	.rmt_port = rmt_port,
       };
-      clib_memcpy (&key.lcl_ip, &lcl_ip->ip6, sizeof (lcl_ip->ip6));
-      clib_memcpy (&key.rmt_ip, &rmt_ip->ip6, sizeof (rmt_ip->ip6));
+      clib_memcpy_fast (&key.lcl_ip, &lcl_ip->ip6, sizeof (lcl_ip->ip6));
+      clib_memcpy_fast (&key.rmt_ip, &rmt_ip->ip6, sizeof (rmt_ip->ip6));
       ri = mma_rules_table_lookup_rule_40 (srt6,
 					   (mma_mask_or_match_40_t *) & key,
 					   srt6->root_index);

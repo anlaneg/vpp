@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Cisco and/or its affiliates.
+ * Copyright (c) 2016-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -15,51 +15,76 @@
 #ifndef __included_uri_h__
 #define __included_uri_h__
 
+#include <vlibmemory/api.h>
+#include <svm/message_queue.h>
 #include <svm/svm_fifo_segment.h>
-#include <vnet/session/session.h>
-#include <vnet/session/application.h>
-#include <vnet/session/transport.h>
-#include <vnet/tls/tls.h>
+#include <vnet/session/session_types.h>
+#include <vnet/tls/tls_test.h>
+
+typedef struct _stream_session_cb_vft
+{
+  /** Notify server of new segment */
+  int (*add_segment_callback) (u32 api_client_index, u64 segment_handle);
+
+  /** Notify server of new segment */
+  int (*del_segment_callback) (u32 api_client_index, u64 segment_handle);
+
+  /** Notify server of newly accepted session */
+  int (*session_accept_callback) (session_t * new_session);
+
+  /** Connection request callback */
+  int (*session_connected_callback) (u32 app_wrk_index, u32 opaque,
+				     session_t * s, u8 code);
+
+  /** Notify app that session is closing */
+  void (*session_disconnect_callback) (session_t * s);
+
+  /** Notify app that session was reset */
+  void (*session_reset_callback) (session_t * s);
+
+  /** Direct RX callback for built-in application */
+  int (*builtin_app_rx_callback) (session_t * session);
+
+  /** Direct TX callback for built-in application */
+  int (*builtin_app_tx_callback) (session_t * session);
+
+} session_cb_vft_t;
+
+#define foreach_app_init_args			\
+  _(u32, api_client_index)			\
+  _(u8 *, name)					\
+  _(u64 *, options)				\
+  _(u8 *, namespace_id)				\
+  _(session_cb_vft_t *, session_cb_vft)		\
+  _(u32, app_index)				\
 
 typedef struct _vnet_app_attach_args_t
 {
-  /** Binary API client index */
-  u32 api_client_index;
-
-  /** Application name. Used by builtin apps */
-  u8 *name;
-
-  /** Application and segment manager options */
-  u64 *options;
-
-  /** ID of the namespace the app has access to */
-  u8 *namespace_id;
-
-  /** Session to application callback functions */
-  session_cb_vft_t *session_cb_vft;
-
-  /*
-   * Results
-   */
-  ssvm_private_t *segment;
+#define _(_type, _name) _type _name;
+  foreach_app_init_args
+#undef _
+  ssvm_private_t * segment;
   svm_msg_q_t *app_evt_q;
-  u32 app_index;
+  u64 segment_handle;
 } vnet_app_attach_args_t;
 
 typedef struct _vnet_app_detach_args_t
 {
   u32 app_index;
+  u32 api_client_index;
 } vnet_app_detach_args_t;
 
 typedef struct _vnet_bind_args_t
 {
   union
   {
-    char *uri;
+    session_endpoint_cfg_t sep_ext;
     session_endpoint_t sep;
+    char *uri;
   };
 
   u32 app_index;
+  u32 wrk_map_index;
 
   /*
    * Results
@@ -68,26 +93,29 @@ typedef struct _vnet_bind_args_t
   u32 segment_name_length;
   u64 server_event_queue_address;
   u64 handle;
-} vnet_bind_args_t;
+} vnet_listen_args_t;
 
 typedef struct _vnet_unbind_args_t
 {
   union
   {
     char *uri;
-    u64 handle;
+    u64 handle;			/**< Session handle */
   };
-  u32 app_index;
-} vnet_unbind_args_t;
+  u32 app_index;		/**< Owning application index */
+  u32 wrk_map_index;		/**< App's local pool worker index */
+} vnet_unlisten_args_t;
 
 typedef struct _vnet_connect_args
 {
   union
   {
+    session_endpoint_cfg_t sep_ext;
+    session_endpoint_t sep;
     char *uri;
-    session_endpoint_extended_t sep;
   };
   u32 app_index;
+  u32 wrk_map_index;
   u32 api_context;
 
   session_handle_t session_handle;
@@ -110,6 +138,14 @@ typedef struct _vnet_application_add_tls_key_args_t
   u32 app_index;
   u8 *key;
 } vnet_app_add_tls_key_args_t;
+
+typedef enum tls_engine_type_
+{
+  TLS_ENGINE_NONE,
+  TLS_ENGINE_MBEDTLS,
+  TLS_ENGINE_OPENSSL,
+  TLS_N_ENGINES
+} tls_engine_type_t;
 
 /* Application attach options */
 typedef enum
@@ -134,6 +170,7 @@ typedef enum
   _(ACCEPT_REDIRECT, "Use FIFO with redirects")			\
   _(ADD_SEGMENT, "Add segment and signal app if needed")	\
   _(IS_BUILTIN, "Application is builtin")			\
+  _(IS_TRANSPORT_APP, "Application is a transport proto")	\
   _(IS_PROXY, "Application is proxying")			\
   _(USE_GLOBAL_SCOPE, "App can use global session scope")	\
   _(USE_LOCAL_SCOPE, "App can use local session scope")		\
@@ -175,24 +212,19 @@ typedef enum session_fd_flag_
 #undef _
 } session_fd_flag_t;
 
-int vnet_bind_uri (vnet_bind_args_t *);
-int vnet_unbind_uri (vnet_unbind_args_t * a);
-clib_error_t *vnet_connect_uri (vnet_connect_args_t * a);
+int vnet_bind_uri (vnet_listen_args_t *);
+int vnet_unbind_uri (vnet_unlisten_args_t * a);
+int vnet_connect_uri (vnet_connect_args_t * a);
 
-clib_error_t *vnet_application_attach (vnet_app_attach_args_t * a);
-clib_error_t *vnet_bind (vnet_bind_args_t * a);
-clib_error_t *vnet_connect (vnet_connect_args_t * a);
-clib_error_t *vnet_unbind (vnet_unbind_args_t * a);
+int vnet_application_attach (vnet_app_attach_args_t * a);
 int vnet_application_detach (vnet_app_detach_args_t * a);
+int vnet_listen (vnet_listen_args_t * a);
+int vnet_connect (vnet_connect_args_t * a);
+int vnet_unlisten (vnet_unlisten_args_t * a);
 int vnet_disconnect_session (vnet_disconnect_args_t * a);
 
 clib_error_t *vnet_app_add_tls_cert (vnet_app_add_tls_cert_args_t * a);
 clib_error_t *vnet_app_add_tls_key (vnet_app_add_tls_key_args_t * a);
-
-extern const char test_srv_crt_rsa[];
-extern const u32 test_srv_crt_rsa_len;
-extern const char test_srv_key_rsa[];
-extern const u32 test_srv_key_rsa_len;
 
 typedef struct app_session_transport_
 {
@@ -220,16 +252,33 @@ typedef struct
 #undef _
 } app_session_t;
 
+typedef struct session_bound_msg_
+{
+  u32 context;
+  u64 handle;
+  i32 retval;
+  u8 lcl_is_ip4;
+  u8 lcl_ip[16];
+  u16 lcl_port;
+  uword rx_fifo;
+  uword tx_fifo;
+  uword vpp_evt_q;
+  u32 segment_size;
+  u8 segment_name_length;
+  u8 segment_name[128];
+} __clib_packed session_bound_msg_t;
+
 typedef struct session_accepted_msg_
 {
   u32 context;
   u64 listener_handle;
   u64 handle;
-  u64 server_rx_fifo;
-  u64 server_tx_fifo;
-  u64 vpp_event_queue_address;
-  u64 server_event_queue_address;
-  u64 client_event_queue_address;
+  uword server_rx_fifo;
+  uword server_tx_fifo;
+  u64 segment_handle;
+  uword vpp_event_queue_address;
+  uword server_event_queue_address;
+  uword client_event_queue_address;
   u16 port;
   u8 is_ip4;
   u8 ip[16];
@@ -251,11 +300,12 @@ typedef struct session_connected_msg_
   u32 context;
   i32 retval;
   u64 handle;
-  u64 server_rx_fifo;
-  u64 server_tx_fifo;
-  u64 vpp_event_queue_address;
-  u64 client_event_queue_address;
-  u64 server_event_queue_address;
+  uword server_rx_fifo;
+  uword server_tx_fifo;
+  u64 segment_handle;
+  uword vpp_event_queue_address;
+  uword client_event_queue_address;
+  uword server_event_queue_address;
   u32 segment_size;
   u8 segment_name_length;
   u8 segment_name[64];
@@ -287,11 +337,32 @@ typedef struct session_reset_msg_
 
 typedef struct session_reset_reply_msg_
 {
-  u32 client_index;
   u32 context;
   i32 retval;
   u64 handle;
 } __clib_packed session_reset_reply_msg_t;
+
+typedef struct session_req_worker_update_msg_
+{
+  u64 session_handle;
+} __clib_packed session_req_worker_update_msg_t;
+
+/* NOTE: using u16 for wrk indices because message needs to fit in 18B */
+typedef struct session_worker_update_msg_
+{
+  u32 client_index;
+  u16 wrk_index;
+  u16 req_wrk_index;
+  u64 handle;
+} __clib_packed session_worker_update_msg_t;
+
+typedef struct session_worker_update_reply_msg_
+{
+  u64 handle;
+  uword rx_fifo;
+  uword tx_fifo;
+  u64 segment_handle;
+} __clib_packed session_worker_update_reply_msg_t;
 
 typedef struct app_session_event_
 {
@@ -308,7 +379,7 @@ app_alloc_ctrl_evt_to_vpp (svm_msg_q_t * mq, app_session_evt_t * app_evt,
 				       SVM_Q_WAIT, &app_evt->msg);
   svm_msg_q_unlock (mq);
   app_evt->evt = svm_msg_q_msg_data (mq, &app_evt->msg);
-  memset (app_evt->evt, 0, sizeof (*app_evt->evt));
+  clib_memset (app_evt->evt, 0, sizeof (*app_evt->evt));
   app_evt->evt->event_type = evt_type;
 }
 
@@ -391,10 +462,10 @@ app_send_dgram_raw (svm_fifo_t * f, app_session_transport_t * at,
   actual_write = clib_min (len, max_enqueue);
   hdr.data_length = actual_write;
   hdr.data_offset = 0;
-  clib_memcpy (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
+  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
   hdr.is_ip4 = at->is_ip4;
   hdr.rmt_port = at->rmt_port;
-  clib_memcpy (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
+  clib_memcpy_fast (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
   hdr.lcl_port = at->lcl_port;
   rv = svm_fifo_enqueue_nowait (f, sizeof (hdr), (u8 *) & hdr);
   ASSERT (rv == sizeof (hdr));

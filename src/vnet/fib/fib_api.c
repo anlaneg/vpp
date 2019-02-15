@@ -17,6 +17,7 @@
 #include <vlibmemory/api.h>
 #include <vnet/fib/fib_api.h>
 #include <vnet/fib/fib_table.h>
+#include <vnet/mfib/mfib_table.h>
 #include <vnet/bier/bier_disp_table.h>
 #include <vnet/dpo/ip_null_dpo.h>
 
@@ -49,7 +50,7 @@ fib_path_api_parse (const vl_api_fib_path_t *in,
 
     path_flags = FIB_ROUTE_PATH_FLAG_NONE;
     next_hop_via_label = ntohl (in->via_label);
-    memset(out, 0, sizeof(*out));
+    clib_memset(out, 0, sizeof(*out));
     out->frp_sw_if_index = ~0;
 
     out->frp_proto = in->afi;
@@ -207,7 +208,9 @@ void
 fib_api_path_encode (const fib_route_path_encode_t * api_rpath,
                      vl_api_fib_path_t *out)
 {
-    memset (out, 0, sizeof (*out));
+    int ii;
+
+    clib_memset (out, 0, sizeof (*out));
     switch (api_rpath->dpo.dpoi_type)
     {
     case DPO_RECEIVE:
@@ -246,12 +249,20 @@ fib_api_path_encode (const fib_route_path_encode_t * api_rpath,
         if ((DPO_PROTO_IP6 == api_rpath->rpath.frp_proto) ||
             (DPO_PROTO_IP4 == api_rpath->rpath.frp_proto))
         {
-            fib_table_t *fib;
-
-            fib = fib_table_get (api_rpath->rpath.frp_fib_index,
-                                 dpo_proto_to_fib(api_rpath->rpath.frp_proto));
-
-            out->table_id = htonl (fib->ft_table_id);
+            if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_RPF_ID)
+            {
+                out->table_id =
+                    htonl(mfib_table_get_table_id(
+                              api_rpath->rpath.frp_fib_index,
+                              dpo_proto_to_fib(api_rpath->rpath.frp_proto)));
+            }
+            else
+            {
+                out->table_id =
+                    htonl(fib_table_get_table_id(
+                              api_rpath->rpath.frp_fib_index,
+                              dpo_proto_to_fib(api_rpath->rpath.frp_proto)));
+            }
         }
     }
 
@@ -264,5 +275,71 @@ fib_api_path_encode (const fib_route_path_encode_t * api_rpath,
         out->is_udp_encap = 1;
         out->next_hop_id = api_rpath->rpath.frp_udp_encap_id;
     }
+    if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_INTF_RX)
+    {
+        out->is_interface_rx = 1;
+    }
+    if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_LOCAL)
+    {
+        out->is_local = 1;
+    }
+    if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_RESOLVE_VIA_HOST)
+    {
+        out->is_resolve_host = 1;
+    }
+    if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_RESOLVE_VIA_ATTACHED)
+    {
+        out->is_resolve_attached = 1;
+    }
+    /* if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_ATTACHED) { */
+    /*     out->is_attached = 1; */
+    /* } */
+    /* if (api_rpath->rpath.frp_flags & FIB_ROUTE_PATH_CONNECTED) { */
+    /*     out->is_connected = 1; */
+    /* } */
+    if (api_rpath->rpath.frp_label_stack)
+    {
+        for (ii = 0; ii < vec_len(api_rpath->rpath.frp_label_stack); ii++)
+        {
+            out->label_stack[ii].label =
+                htonl(api_rpath->rpath.frp_label_stack[ii].fml_value);
+            out->label_stack[ii].ttl =
+                api_rpath->rpath.frp_label_stack[ii].fml_ttl;
+            out->label_stack[ii].exp =
+                api_rpath->rpath.frp_label_stack[ii].fml_exp;
+        }
+        out->n_labels = ii;
+    }
 }
 
+fib_protocol_t
+fib_proto_from_api_address_family (int af)
+{
+    switch (clib_net_to_host_u32 (af))
+    {
+    case ADDRESS_IP4:
+        return (FIB_PROTOCOL_IP4);
+    case ADDRESS_IP6:
+        return (FIB_PROTOCOL_IP6);
+    }
+
+    ASSERT(0);
+    return (FIB_PROTOCOL_IP4);
+}
+
+int
+fib_proto_to_api_address_family (fib_protocol_t fproto)
+{
+    switch (fproto)
+    {
+    case FIB_PROTOCOL_IP4:
+        return (clib_net_to_host_u32 (ADDRESS_IP4));
+    case FIB_PROTOCOL_IP6:
+        return (clib_net_to_host_u32 (ADDRESS_IP6));
+    default:
+        break;
+    }
+
+    ASSERT(0);
+    return (clib_net_to_host_u32 (ADDRESS_IP4));
+}

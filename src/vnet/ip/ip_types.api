@@ -14,13 +14,8 @@
  * limitations under the License.
  */
 
-typedef ip4_address {
-  u8 address[4];
-};
-
-typedef ip6_address {
-  u8 address[16];
-};
+typedef u8 ip4_address[4];
+typedef u8 ip6_address[16];
 
 enum address_family {
   ADDRESS_IP4 = 0,
@@ -47,4 +42,14 @@ typedef mprefix {
   u16 grp_address_length;
   vl_api_address_union_t grp_address;
   vl_api_address_union_t src_address;
+};
+
+typedef ip6_prefix {
+  vl_api_ip6_address_t prefix;
+  u8 len;
+};
+
+typedef ip4_prefix {
+  vl_api_ip4_address_t prefix;
+  u8 len;
 };

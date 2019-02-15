@@ -36,7 +36,7 @@ typedef void (*igmp_timer_function_t) (u32 obj, void *data);
 
 /**
  * @brief
- *  Scehdule a timer to expire in 'when' seconds
+ *  Schedule a timer to expire in 'when' seconds
  *
  */
 extern igmp_timer_id_t igmp_timer_schedule (f64 when,
@@ -50,6 +50,8 @@ extern int igmp_timer_is_running (igmp_timer_id_t tid);
 extern f64 igmp_timer_get_expiry_time (igmp_timer_id_t t);
 extern void *igmp_timer_get_data (igmp_timer_id_t t);
 extern void igmp_timer_set_data (igmp_timer_id_t t, void *data);
+
+extern u8 *format_igmp_timer_id (u8 * s, va_list * args);
 
 /**
  * IGMP timer types and their values

@@ -23,6 +23,7 @@
 #include "vom/logger.hpp"
 #include "vom/prefix.hpp"
 #include "vom/singular_db_funcs.hpp"
+#include "vom/stat_reader.hpp"
 #include "vom/tap_interface_cmds.hpp"
 
 namespace VOM {
@@ -39,6 +40,11 @@ std::map<handle_t, std::weak_ptr<interface>> interface::m_hdl_db;
 interface::event_handler interface::m_evh;
 
 /**
+ * the event enable command.
+ */
+std::shared_ptr<interface_cmds::events_cmd> interface::m_events_cmd;
+
+/**
  * Construct a new object matching the desried state
  */
 interface::interface(const std::string& name,
@@ -52,6 +58,8 @@ interface::interface(const std::string& name,
   , m_table_id(route::DEFAULT_TABLE)
   , m_l2_address(l2_address_t::ZERO, rc_t::UNSET)
   , m_stats_type(stats_type_t::NORMAL)
+  , m_stats({})
+  , m_listener(nullptr)
   , m_oper(oper_state_t::DOWN)
   , m_tag(tag)
 {
@@ -70,6 +78,8 @@ interface::interface(const std::string& name,
   , m_table_id(m_rd->table_id())
   , m_l2_address(l2_address_t::ZERO, rc_t::UNSET)
   , m_stats_type(stats_type_t::NORMAL)
+  , m_stats({})
+  , m_listener(nullptr)
   , m_oper(oper_state_t::DOWN)
   , m_tag(tag)
 {
@@ -84,6 +94,8 @@ interface::interface(const interface& o)
   , m_table_id(o.m_table_id)
   , m_l2_address(o.m_l2_address)
   , m_stats_type(o.m_stats_type)
+  , m_stats(o.m_stats)
+  , m_listener(o.m_listener)
   , m_oper(o.m_oper)
   , m_tag(o.m_tag)
 {
@@ -170,13 +182,8 @@ interface::sweep()
       new interface_cmds::set_table_cmd(m_table_id, l3_proto_t::IPV6, m_hdl));
   }
 
-  if (m_stats) {
-    if (stats_type_t::DETAILED == m_stats_type) {
-      HW::enqueue(new interface_cmds::collect_detail_stats_change_cmd(
-        m_stats_type, handle_i(), false));
-    }
-    HW::enqueue(new interface_cmds::stats_disable_cmd(m_hdl.data()));
-    m_stats.reset();
+  if (m_listener) {
+    disable_stats_i();
   }
 
   // If the interface is up, bring it down
@@ -204,16 +211,8 @@ interface::replay()
     HW::enqueue(new interface_cmds::state_change_cmd(m_state, m_hdl));
   }
 
-  if (m_stats) {
-    if (stats_type_t::DETAILED == m_stats_type) {
-      m_stats_type.set(rc_t::NOOP);
-      HW::enqueue(new interface_cmds::collect_detail_stats_change_cmd(
-        m_stats_type, handle_i(), true));
-    }
-    stat_listener& listener = m_stats->listener();
-    listener.status().set(rc_t::NOOP);
-    m_stats.reset(new interface_cmds::stats_enable_cmd(listener, handle_i()));
-    HW::enqueue(m_stats);
+  if (m_listener) {
+    enable_stats(m_listener, m_stats_type.data());
   }
 
   if (m_table_id && (m_table_id.data() != route::DEFAULT_TABLE)) {
@@ -287,7 +286,7 @@ interface::mk_create_cmd(std::queue<cmd*>& q)
     q.push(new interface_cmds::af_packet_create_cmd(m_hdl, m_name));
     if (!m_tag.empty())
       q.push(new interface_cmds::set_tag(m_hdl, m_tag));
-  } else if (type_t::TAP == m_type || type_t::TAPV2 == m_type) {
+  } else if (type_t::TAPV2 == m_type) {
     if (!m_tag.empty())
       q.push(new interface_cmds::set_tag(m_hdl, m_tag));
   } else if (type_t::VHOST == m_type) {
@@ -419,24 +418,91 @@ interface::set(const std::string& tag)
 }
 
 void
-interface::enable_stats_i(interface::stat_listener& el, const stats_type_t& st)
+interface::set(const counter_t& count, const std::string& stat_type)
 {
-  if (!m_stats) {
+  if ("rx" == stat_type)
+    m_stats.m_rx = count;
+  else if ("tx" == stat_type)
+    m_stats.m_tx = count;
+  else if ("drops" == stat_type)
+    m_stats.m_drop = count;
+  else if ("rx-unicast" == stat_type)
+    m_stats.m_rx_unicast = count;
+  else if ("tx-unicast" == stat_type)
+    m_stats.m_tx_unicast = count;
+  else if ("rx-multicast" == stat_type)
+    m_stats.m_rx_multicast = count;
+  else if ("tx-multicast" == stat_type)
+    m_stats.m_tx_multicast = count;
+  else if ("rx-broadcast" == stat_type)
+    m_stats.m_rx_broadcast = count;
+  else if ("tx-broadcast" == stat_type)
+    m_stats.m_rx_broadcast = count;
+}
+
+const interface::stats_t&
+interface::get_stats(void) const
+{
+  return m_stats;
+}
+
+void
+interface::publish_stats()
+{
+  m_listener->handle_interface_stat(*this);
+}
+
+std::ostream&
+operator<<(std::ostream& os, const interface::stats_t& stats)
+{
+  os << "["
+     << "rx " << stats.m_rx << " rx-unicast " << stats.m_rx_unicast
+     << " rx-multicast " << stats.m_rx_multicast << " rx-broadcast "
+     << stats.m_rx_broadcast << " tx " << stats.m_tx << " tx-unicast "
+     << stats.m_tx_unicast << " tx-multicast " << stats.m_tx_multicast
+     << " tx-broadcast " << stats.m_tx_broadcast << " drops " << stats.m_drop
+     << "]" << std::endl;
+
+  return (os);
+}
+
+void
+interface::enable_stats_i(interface::stat_listener* el, const stats_type_t& st)
+{
+  if (el != NULL) {
     if (stats_type_t::DETAILED == st) {
-      m_stats_type = st;
+      m_stats_type.set(rc_t::NOOP);
       HW::enqueue(new interface_cmds::collect_detail_stats_change_cmd(
         m_stats_type, handle_i(), true));
     }
-    m_stats.reset(new interface_cmds::stats_enable_cmd(el, handle_i()));
-    HW::enqueue(m_stats);
-    HW::write();
+    stat_reader::registers(*this);
+    m_listener = el;
   }
 }
 
 void
-interface::enable_stats(interface::stat_listener& el, const stats_type_t& st)
+interface::enable_stats(interface::stat_listener* el, const stats_type_t& st)
 {
   singular()->enable_stats_i(el, st);
+}
+
+void
+interface::disable_stats_i()
+{
+  if (m_listener != NULL) {
+    if (stats_type_t::DETAILED == m_stats_type) {
+      HW::enqueue(new interface_cmds::collect_detail_stats_change_cmd(
+        m_stats_type, handle_i(), false));
+    }
+    stat_reader::unregisters(*this);
+    m_listener = NULL;
+  }
+}
+
+void
+interface::disable_stats()
+{
+  singular()->disable_stats_i();
 }
 
 std::shared_ptr<interface>
@@ -486,6 +552,20 @@ interface::dump(std::ostream& os)
 }
 
 void
+interface::enable_events(interface::event_listener& el)
+{
+  m_events_cmd = std::make_shared<interface_cmds::events_cmd>(el);
+  HW::enqueue(m_events_cmd);
+  HW::write();
+}
+
+void
+interface::disable_events()
+{
+  m_events_cmd.reset();
+}
+
+void
 interface::event_handler::handle_populate(const client_db::key_t& key)
 {
   /*
@@ -523,28 +603,6 @@ interface::event_handler::handle_populate(const client_db::key_t& key)
   }
 
   /*
-   * dump VPP tap interfaces
-   */
-  std::shared_ptr<tap_interface_cmds::tap_dump_cmd> tapcmd =
-    std::make_shared<tap_interface_cmds::tap_dump_cmd>();
-
-  HW::enqueue(tapcmd);
-  HW::write();
-
-  for (auto& tap_record : *tapcmd) {
-    std::shared_ptr<tap_interface> tapitf =
-      interface_factory::new_tap_interface(tap_record.get_payload());
-    VOM_LOG(log_level_t::DEBUG) << "tap-dump: " << tapitf->to_string();
-
-    /*
-     * Write each of the discovered interfaces into the OM,
-     * but disable the HW Command q whilst we do, so that no
-     * commands are sent to VPP
-     */
-    OM::commit(key, *tapitf);
-  }
-
-  /*
    * dump VPP tapv2 interfaces
    */
   std::shared_ptr<tap_interface_cmds::tapv2_dump_cmd> tapv2cmd =
@@ -555,7 +613,7 @@ interface::event_handler::handle_populate(const client_db::key_t& key)
 
   for (auto& tapv2_record : *tapv2cmd) {
     std::shared_ptr<tap_interface> tapv2itf =
-      interface_factory::new_tap_v2_interface(tapv2_record.get_payload());
+      interface_factory::new_tap_interface(tapv2_record.get_payload());
     VOM_LOG(log_level_t::DEBUG) << "tapv2-dump: " << tapv2itf->to_string();
 
     /*

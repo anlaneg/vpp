@@ -60,24 +60,25 @@
   _ (BFD_UDP_AUTH_ACTIVATE, bfd_udp_auth_activate)         \
   _ (BFD_UDP_AUTH_DEACTIVATE, bfd_udp_auth_deactivate)     \
   _ (BFD_UDP_SET_ECHO_SOURCE, bfd_udp_set_echo_source)     \
-  _ (BFD_UDP_DEL_ECHO_SOURCE, bfd_udp_del_echo_source)
+  _ (BFD_UDP_DEL_ECHO_SOURCE, bfd_udp_del_echo_source)     \
+  _ (BFD_UDP_GET_ECHO_SOURCE, bfd_udp_get_echo_source)
 
 pub_sub_handler (bfd_events, BFD_EVENTS);
 
 #define BFD_UDP_API_PARAM_COMMON_CODE                                         \
   ip46_address_t local_addr;                                                  \
-  memset (&local_addr, 0, sizeof (local_addr));                               \
+  clib_memset (&local_addr, 0, sizeof (local_addr));                               \
   ip46_address_t peer_addr;                                                   \
-  memset (&peer_addr, 0, sizeof (peer_addr));                                 \
+  clib_memset (&peer_addr, 0, sizeof (peer_addr));                                 \
   if (mp->is_ipv6)                                                            \
     {                                                                         \
-      clib_memcpy (&local_addr.ip6, mp->local_addr, sizeof (local_addr.ip6)); \
-      clib_memcpy (&peer_addr.ip6, mp->peer_addr, sizeof (peer_addr.ip6));    \
+      clib_memcpy_fast (&local_addr.ip6, mp->local_addr, sizeof (local_addr.ip6)); \
+      clib_memcpy_fast (&peer_addr.ip6, mp->peer_addr, sizeof (peer_addr.ip6));    \
     }                                                                         \
   else                                                                        \
     {                                                                         \
-      clib_memcpy (&local_addr.ip4, mp->local_addr, sizeof (local_addr.ip4)); \
-      clib_memcpy (&peer_addr.ip4, mp->peer_addr, sizeof (peer_addr.ip4));    \
+      clib_memcpy_fast (&local_addr.ip4, mp->local_addr, sizeof (local_addr.ip4)); \
+      clib_memcpy_fast (&peer_addr.ip4, mp->peer_addr, sizeof (peer_addr.ip4));    \
     }
 
 #define BFD_UDP_API_PARAM_FROM_MP(mp) \
@@ -150,7 +151,7 @@ send_bfd_udp_session_details (vl_api_registration_t * reg, u32 context,
     }
 
   vl_api_bfd_udp_session_details_t *mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_BFD_UDP_SESSION_DETAILS);
   mp->context = context;
   mp->state = bs->local_state;
@@ -175,16 +176,17 @@ send_bfd_udp_session_details (vl_api_registration_t * reg, u32 context,
     }
   if (mp->is_ipv6)
     {
-      clib_memcpy (mp->local_addr, &key->local_addr,
-		   sizeof (key->local_addr));
-      clib_memcpy (mp->peer_addr, &key->peer_addr, sizeof (key->peer_addr));
+      clib_memcpy_fast (mp->local_addr, &key->local_addr,
+			sizeof (key->local_addr));
+      clib_memcpy_fast (mp->peer_addr, &key->peer_addr,
+			sizeof (key->peer_addr));
     }
   else
     {
-      clib_memcpy (mp->local_addr, key->local_addr.ip4.data,
-		   sizeof (key->local_addr.ip4.data));
-      clib_memcpy (mp->peer_addr, key->peer_addr.ip4.data,
-		   sizeof (key->peer_addr.ip4.data));
+      clib_memcpy_fast (mp->local_addr, key->local_addr.ip4.data,
+			sizeof (key->local_addr.ip4.data));
+      clib_memcpy_fast (mp->peer_addr, key->peer_addr.ip4.data,
+			sizeof (key->peer_addr.ip4.data));
     }
 
   mp->required_min_rx =
@@ -285,7 +287,7 @@ vl_api_bfd_auth_keys_dump_t_handler (vl_api_bfd_auth_keys_dump_t * mp)
   /* *INDENT-OFF* */
   pool_foreach (key, bfd_main.auth_keys, ({
     rmp = vl_msg_api_alloc (sizeof (*rmp));
-    memset (rmp, 0, sizeof (*rmp));
+    clib_memset (rmp, 0, sizeof (*rmp));
     rmp->_vl_msg_id = ntohs (VL_API_BFD_AUTH_KEYS_DETAILS);
     rmp->context = mp->context;
     rmp->conf_key_id = clib_host_to_net_u32 (key->conf_key_id);
@@ -357,6 +359,59 @@ vl_api_bfd_udp_del_echo_source_t_handler (vl_api_bfd_udp_del_echo_source_t *
   rv = bfd_udp_del_echo_source ();
 
   REPLY_MACRO (VL_API_BFD_UDP_DEL_ECHO_SOURCE_REPLY);
+}
+
+static void
+vl_api_bfd_udp_get_echo_source_t_handler (vl_api_bfd_udp_get_echo_source_t *
+					  mp)
+{
+  vl_api_bfd_udp_get_echo_source_reply_t *rmp;
+  int rv = 0;
+  int is_set;
+  u32 sw_if_index;
+  int have_usable_ip4;
+  ip4_address_t ip4;
+  int have_usable_ip6;
+  ip6_address_t ip6;
+
+  bfd_udp_get_echo_source (&is_set, &sw_if_index, &have_usable_ip4, &ip4,
+			   &have_usable_ip6, &ip6);
+
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_BFD_UDP_GET_ECHO_SOURCE_REPLY,
+  ({
+    rmp->sw_if_index = ntohl (sw_if_index);
+    if (is_set)
+      {
+        rmp->is_set = 1;
+        rmp->sw_if_index = clib_host_to_net_u32 (sw_if_index);
+        if (have_usable_ip4)
+          {
+            rmp->have_usable_ip4 = 1;
+            clib_memcpy_fast (rmp->ip4_addr, &ip4, sizeof (ip4));
+          }
+        else
+          {
+            rmp->have_usable_ip4 = 0;
+          }
+        if (have_usable_ip6)
+          {
+            rmp->have_usable_ip6 = 1;
+            clib_memcpy_fast (rmp->ip6_addr, &ip6, sizeof (ip6));
+          }
+        else
+          {
+            rmp->have_usable_ip6 = 0;
+          }
+      }
+    else
+      {
+        rmp->is_set = 0;
+        rmp->have_usable_ip4 = 0;
+        rmp->have_usable_ip6 = 0;
+      }
+  }))
+  /* *INDENT-ON* */
 }
 
 /*

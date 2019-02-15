@@ -28,37 +28,43 @@ typedef struct gpb_endpoint_group_t_
   /**
    * ID
    */
-  epg_id_t gepg_id;
+  epg_id_t gg_id;
+
+  /**
+   * Sclass. Could be unset => ~0
+   */
+  u16 gg_sclass;
 
   /**
    * Bridge-domain ID the EPG is in
    */
-  u32 gepg_bd;
+  index_t gg_gbd;
+  index_t gg_bd_index;
 
   /**
    * route-domain/IP-table ID the EPG is in
    */
-  u32 gepg_rd[FIB_PROTOCOL_IP_MAX];
-
-  /**
-   * resulting FIB indices
-   */
-  u32 gepg_fib_index[FIB_PROTOCOL_IP_MAX];
+  index_t gg_rd;
 
   /**
    * Is the EPG an external/NAT
    */
-  u8 gepg_is_ext;
+  u8 gg_is_ext;
 
   /**
    * the uplink interface dedicated to the EPG
    */
-  u32 gepg_uplink_sw_if_index;
+  u32 gg_uplink_sw_if_index;
 
   /**
    * The DPO used in the L3 path for forwarding internal subnets
    */
-  dpo_id_t gepg_dpo[FIB_PROTOCOL_IP_MAX];
+  dpo_id_t gg_dpo[FIB_PROTOCOL_IP_MAX];
+
+  /**
+   * Locks/references to this EPG
+   */
+  u32 gg_locks;
 } gbp_endpoint_group_t;
 
 /**
@@ -66,42 +72,79 @@ typedef struct gpb_endpoint_group_t_
  */
 typedef struct gbp_endpoint_group_db_t_
 {
-  uword *gepg_hash;
+  uword *gg_hash;
 } gbp_endpoint_group_db_t;
 
-extern int gbp_endpoint_group_add (epg_id_t epg_id,
-				   u32 bd_id,
-				   u32 ip4_table_id,
-				   u32 ip6_table_id, u32 uplink_sw_if_index);
-extern void gbp_endpoint_group_delete (epg_id_t epg_id);
+extern int gbp_endpoint_group_add_and_lock (epg_id_t epg_id,
+					    u16 sclass,
+					    u32 bd_id,
+					    u32 rd_id,
+					    u32 uplink_sw_if_index);
+extern index_t gbp_endpoint_group_find (epg_id_t epg_id);
+extern int gbp_endpoint_group_delete (epg_id_t epg_id);
+extern void gbp_endpoint_group_unlock (index_t index);
+extern void gbp_endpoint_group_lock (index_t index);
+extern u32 gbp_endpoint_group_get_bd_id (const gbp_endpoint_group_t *);
+
+extern gbp_endpoint_group_t *gbp_endpoint_group_get (index_t i);
+extern index_t gbp_endpoint_group_get_fib_index (const gbp_endpoint_group_t *
+						 gg, fib_protocol_t fproto);
 
 typedef int (*gbp_endpoint_group_cb_t) (gbp_endpoint_group_t * gbpe,
 					void *ctx);
 extern void gbp_endpoint_group_walk (gbp_endpoint_group_cb_t bgpe, void *ctx);
 
-extern gbp_endpoint_group_t *gbp_endpoint_group_find (epg_id_t epg_id);
+
+extern u8 *format_gbp_endpoint_group (u8 * s, va_list * args);
 
 /**
  * DP functions and databases
  */
 extern gbp_endpoint_group_db_t gbp_endpoint_group_db;
 extern gbp_endpoint_group_t *gbp_endpoint_group_pool;
+extern uword *gbp_epg_sclass_db;
+
+always_inline gbp_endpoint_group_t *
+gbp_epg_get (epg_id_t epg)
+{
+  uword *p;
+
+  p = hash_get (gbp_endpoint_group_db.gg_hash, epg);
+
+  if (NULL != p)
+    return (pool_elt_at_index (gbp_endpoint_group_pool, p[0]));
+  return (NULL);
+}
 
 always_inline u32
 gbp_epg_itf_lookup (epg_id_t epg)
 {
   uword *p;
 
-  p = hash_get (gbp_endpoint_group_db.gepg_hash, epg);
+  p = hash_get (gbp_endpoint_group_db.gg_hash, epg);
 
   if (NULL != p)
     {
-      gbp_endpoint_group_t *gepg;
+      gbp_endpoint_group_t *gg;
 
-      gepg = pool_elt_at_index (gbp_endpoint_group_pool, p[0]);
-      return (gepg->gepg_uplink_sw_if_index);
+      gg = pool_elt_at_index (gbp_endpoint_group_pool, p[0]);
+      return (gg->gg_uplink_sw_if_index);
     }
   return (~0);
+}
+
+always_inline epg_id_t
+gbp_epg_sclass_2_id (u16 sclass)
+{
+  uword *p;
+
+  p = hash_get (gbp_epg_sclass_db, sclass);
+
+  if (NULL != p)
+    {
+      return (p[0]);
+    }
+  return (EPG_INVALID);
 }
 
 always_inline const dpo_id_t *
@@ -109,14 +152,14 @@ gbp_epg_dpo_lookup (epg_id_t epg, fib_protocol_t fproto)
 {
   uword *p;
 
-  p = hash_get (gbp_endpoint_group_db.gepg_hash, epg);
+  p = hash_get (gbp_endpoint_group_db.gg_hash, epg);
 
   if (NULL != p)
     {
-      gbp_endpoint_group_t *gepg;
+      gbp_endpoint_group_t *gg;
 
-      gepg = pool_elt_at_index (gbp_endpoint_group_pool, p[0]);
-      return (&gepg->gepg_dpo[fproto]);
+      gg = pool_elt_at_index (gbp_endpoint_group_pool, p[0]);
+      return (&gg->gg_dpo[fproto]);
     }
   return (NULL);
 }

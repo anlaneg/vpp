@@ -55,7 +55,7 @@ typedef struct
   /* delay between event scans, default to 100 msec */
   f64 event_scan_delay;
 
-  /* max macs in evet message, default to 100 entries */
+  /* max macs in event message, default to 100 entries */
   u32 max_macs_in_event;
 
   /* convenience variables */
@@ -102,24 +102,46 @@ typedef struct
   };
 } l2fib_seq_num_t;
 
+/**
+ * Flags associated with an L2 Fib Entry
+ *   - static mac, no MAC move
+ *   - not subject to age
+ *   - mac is for a bridged virtual interface
+ *   - drop packets to/from this mac
+ *   - MAC learned to be sent in L2 MAC event
+ *   -MAC learned is a MAC move
+ */
+#define foreach_l2fib_entry_result_attr       \
+  _(STATIC,  0, "static")                     \
+  _(AGE_NOT, 1, "age-not")                    \
+  _(BVI,     2, "bvi")                        \
+  _(FILTER,  3, "filter")                     \
+  _(LRN_EVT, 4, "learn-event")                \
+  _(LRN_MOV, 5, "learn-move")
+
+typedef enum l2fib_entry_result_flags_t_
+{
+  L2FIB_ENTRY_RESULT_FLAG_NONE = 0,
+#define _(a,v,s) L2FIB_ENTRY_RESULT_FLAG_##a = (1 << v),
+  foreach_l2fib_entry_result_attr
+#undef _
+} __attribute__ ((packed)) l2fib_entry_result_flags_t;
+
+STATIC_ASSERT_SIZEOF (l2fib_entry_result_flags_t, 1);
+
+extern u8 *format_l2fib_entry_result_flags (u8 * s, va_list * args);
+
 /*
  * The l2fib entry results
  */
-typedef struct
+typedef struct l2fib_entry_result_t_
 {
   union
   {
     struct
     {
       u32 sw_if_index;		/* output sw_if_index (L3 intf if bvi==1) */
-
-      u8 static_mac:1;		/* static mac, no MAC move */
-      u8 age_not:1;		/* not subject to age */
-      u8 bvi:1;			/* mac is for a bridged virtual interface */
-      u8 filter:1;		/* drop packets to/from this mac */
-      u8 lrn_evt:1;		/* MAC learned to be sent in L2 MAC event */
-      u8 lrn_mov:1;		/* MAC learned is a MAC move */
-      u8 unused:2;
+      l2fib_entry_result_flags_t flags;
 
       u8 timestamp;		/* timestamp for aging */
       l2fib_seq_num_t sn;	/* bd/int seq num */
@@ -129,6 +151,41 @@ typedef struct
 } l2fib_entry_result_t;
 
 STATIC_ASSERT_SIZEOF (l2fib_entry_result_t, 8);
+
+#define _(a,v,s)                                                        \
+  always_inline int                                                     \
+  l2fib_entry_result_is_set_##a (const l2fib_entry_result_t *r) {       \
+    return (r->fields.flags & L2FIB_ENTRY_RESULT_FLAG_##a);             \
+  }
+foreach_l2fib_entry_result_attr
+#undef _
+#define _(a,v,s)                                                        \
+  always_inline void                                                    \
+  l2fib_entry_result_set_##a (l2fib_entry_result_t *r) {       \
+    r->fields.flags |= L2FIB_ENTRY_RESULT_FLAG_##a;             \
+  }
+  foreach_l2fib_entry_result_attr
+#undef _
+#define _(a,v,s)                                                        \
+  always_inline void                                                    \
+  l2fib_entry_result_clear_##a (l2fib_entry_result_t *r) {       \
+    r->fields.flags &= ~L2FIB_ENTRY_RESULT_FLAG_##a;             \
+  }
+  foreach_l2fib_entry_result_attr
+#undef _
+  static inline void
+l2fib_entry_result_set_bits (l2fib_entry_result_t * r,
+			     l2fib_entry_result_flags_t bits)
+{
+  r->fields.flags |= bits;
+}
+
+static inline void
+l2fib_entry_result_clear_bits (l2fib_entry_result_t * r,
+			       l2fib_entry_result_flags_t bits)
+{
+  r->fields.flags &= ~bits;
+}
 
 /* L2 MAC event entry action enums (see mac_entry definition in l2.api) */
 typedef enum
@@ -164,7 +221,7 @@ l2fib_compute_hash_bucket (l2fib_entry_key_t * key)
  */
 //将mac与u16合并成一个u64
 always_inline u64 __attribute__ ((no_sanitize_address))
-l2fib_make_key (u8 * mac_address, u16 bd_index)
+l2fib_make_key (const u8 * mac_address, u16 bd_index)
 {
   u64 temp;
 
@@ -201,9 +258,8 @@ l2fib_make_key (u8 * mac_address, u16 bd_index)
  * mac0 and bd_index0 are the keys. The entry is written to result0.
  * If the entry was not found, result0 is set to ~0.
  *
- * key0 and bucket0 return with the computed key and hash bucket,
- * convenient if the entry needs to be updated afterward.
- * If the cached_result was used, bucket0 is set to ~0.
+ * key0 return with the computed key, convenient if the entry needs,
+ * to be updated afterward.
  */
 
 static_always_inline void
@@ -212,12 +268,10 @@ l2fib_lookup_1 (BVT (clib_bihash) * mac_table,
 		l2fib_entry_result_t * cached_result,
 		u8 * mac0,
 		u16 bd_index0,
-		l2fib_entry_key_t * key0,
-		u32 * bucket0, l2fib_entry_result_t * result0)
+		l2fib_entry_key_t * key0, l2fib_entry_result_t * result0)
 {
   /* set up key */
   key0->raw = l2fib_make_key (mac0, bd_index0);
-  *bucket0 = ~0;
 
   if (key0->raw == cached_key->raw)
     {
@@ -262,8 +316,6 @@ l2fib_lookup_2 (BVT (clib_bihash) * mac_table,
 		u16 bd_index1,
 		l2fib_entry_key_t * key0,
 		l2fib_entry_key_t * key1,
-		u32 * bucket0,
-		u32 * bucket1,
 		l2fib_entry_result_t * result0,
 		l2fib_entry_result_t * result1)
 {
@@ -276,9 +328,6 @@ l2fib_lookup_2 (BVT (clib_bihash) * mac_table,
       /* Both hit in the one-entry cache */
       result0->raw = cached_result->raw;
       result1->raw = cached_result->raw;
-      *bucket0 = ~0;
-      *bucket1 = ~0;
-
     }
   else
     {
@@ -309,10 +358,10 @@ static_always_inline void
 l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
 		l2fib_entry_key_t * cached_key,
 		l2fib_entry_result_t * cached_result,
-		u8 * mac0,
-		u8 * mac1,
-		u8 * mac2,
-		u8 * mac3,
+		const u8 * mac0,
+		const u8 * mac1,
+		const u8 * mac2,
+		const u8 * mac3,
 		u16 bd_index0,
 		u16 bd_index1,
 		u16 bd_index2,
@@ -321,10 +370,6 @@ l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
 		l2fib_entry_key_t * key1,
 		l2fib_entry_key_t * key2,
 		l2fib_entry_key_t * key3,
-		u32 * bucket0,
-		u32 * bucket1,
-		u32 * bucket2,
-		u32 * bucket3,
 		l2fib_entry_result_t * result0,
 		l2fib_entry_result_t * result1,
 		l2fib_entry_result_t * result2,
@@ -344,11 +389,6 @@ l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
       result1->raw = cached_result->raw;
       result2->raw = cached_result->raw;
       result3->raw = cached_result->raw;
-      *bucket0 = ~0;
-      *bucket1 = ~0;
-      *bucket2 = ~0;
-      *bucket3 = ~0;
-
     }
   else
     {
@@ -386,24 +426,19 @@ l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
 void l2fib_clear_table (void);
 
 void
-l2fib_add_entry (u8 * mac,
+l2fib_add_entry (const u8 * mac,
 		 u32 bd_index,
-		 u32 sw_if_index, u8 static_mac, u8 drop_mac, u8 bvi_mac);
+		 u32 sw_if_index, l2fib_entry_result_flags_t flags);
 
 static inline void
-l2fib_add_fwd_entry (u8 * mac, u32 bd_index, u32 sw_if_index, u8 static_mac,
-		     u8 bvi_mac)
+l2fib_add_filter_entry (const u8 * mac, u32 bd_index)
 {
-  l2fib_add_entry (mac, bd_index, sw_if_index, static_mac, 0, bvi_mac);
+  l2fib_add_entry (mac, bd_index, ~0,
+		   (L2FIB_ENTRY_RESULT_FLAG_FILTER |
+		    L2FIB_ENTRY_RESULT_FLAG_STATIC));
 }
 
-static inline void
-l2fib_add_filter_entry (u8 * mac, u32 bd_index)
-{
-  l2fib_add_entry (mac, bd_index, ~0, 1, 1, 0);
-}
-
-u32 l2fib_del_entry (u8 * mac, u32 bd_index, u32 sw_if_index);
+u32 l2fib_del_entry (const u8 * mac, u32 bd_index, u32 sw_if_index);
 
 void l2fib_start_ager_scan (vlib_main_t * vm);
 

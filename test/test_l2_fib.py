@@ -69,6 +69,7 @@ from scapy.layers.inet import IP, UDP
 
 from framework import VppTestCase, VppTestRunner
 from util import Host, ppp
+from vpp_papi import mac_pton
 
 # from src/vnet/l2/l2_fib.h
 MAC_EVENT_ACTION_ADD = 0
@@ -81,7 +82,8 @@ class TestL2fib(VppTestCase):
 
     @classmethod
     def bd_ifs(cls, bd_id):
-        return range((bd_id - 1) * cls.n_ifs_per_bd, bd_id * cls.n_ifs_per_bd)
+        return range((bd_id - 1) * cls.n_ifs_per_bd,
+                     bd_id * cls.n_ifs_per_bd - 1)
 
     @classmethod
     def setUpClass(cls):
@@ -98,7 +100,7 @@ class TestL2fib(VppTestCase):
             n_brs = cls.n_brs = range(1, 3)
             cls.n_ifs_per_bd = 4
             n_ifs = range(cls.n_ifs_per_bd * len(cls.n_brs))
-            # Create 4 pg interfaces
+            # Create pg interfaces
             cls.create_pg_interfaces(n_ifs)
 
             cls.flows = dict()
@@ -204,7 +206,7 @@ class TestL2fib(VppTestCase):
             swif = pg_if.sw_if_index
             for host in hosts[swif]:
                 self.vapi.l2fib_add_del(
-                    host.mac, bd_id, swif, static_mac=1)
+                    mac_pton(host.mac), bd_id, swif, static_mac=1)
 
     def delete_l2_fib_entry(self, bd_id, hosts):
         """
@@ -217,7 +219,7 @@ class TestL2fib(VppTestCase):
             swif = pg_if.sw_if_index
             for host in hosts[swif]:
                 self.vapi.l2fib_add_del(
-                    host.mac, bd_id, swif, is_add=0)
+                    mac_pton(host.mac), bd_id, swif, is_add=0)
 
     def flush_int(self, swif, learned_hosts):
         """
@@ -390,8 +392,8 @@ class TestL2fib(VppTestCase):
         self.config_l2_fib_entries(bd_id, hosts)
         self.run_verify_test(bd_id, hosts, hosts)
 
-    def test_l2_fib_delete12(self):
-        """ L2 FIB - program 100 + delete 12 MACs
+    def test_l2_fib_program100_delete12(self):
+        """ L2 FIB - program 100, delete 12 MACs
         """
         bd_id = 1
         hosts = self.create_hosts(100, subnet=17)
@@ -402,8 +404,8 @@ class TestL2fib(VppTestCase):
         self.run_verify_test(bd_id, hosts, hosts)
         self.run_verify_negat_test(bd_id, hosts, del_hosts)
 
-    def test_l2_fib_add100_add100(self):
-        """ L2 FIB - program 100 + 100 MACs
+    def test_l2_fib_program100_add100(self):
+        """ L2 FIB - program 100, add 100 MACs
         """
         bd_id = 1
         hosts = self.create_hosts(100, subnet=17)
@@ -413,7 +415,7 @@ class TestL2fib(VppTestCase):
         self.run_verify_test(bd_id, hosts, hosts2)
 
     def test_l2_fib_program10_learn10(self):
-        """ L2 FIB - Program 10 MACs, learn 10
+        """ L2 FIB - program 10 MACs, learn 10
         """
         hosts = self.create_hosts(20, subnet=35)
         lhosts = self.split_hosts(hosts, 10)

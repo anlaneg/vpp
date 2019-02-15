@@ -71,7 +71,7 @@ static void vl_api_sr_localsid_add_del_t_handler
 
   ip46_address_t prefix;
 
-  memset (&prefix, 0, sizeof (ip46_address_t));
+  clib_memset (&prefix, 0, sizeof (ip46_address_t));
   if ((mp->nh_addr4[0] | mp->nh_addr4[1] | mp->
        nh_addr4[2] | mp->nh_addr4[3]) != 0)
     memcpy (&prefix.ip4, mp->nh_addr4, sizeof (prefix.ip4));
@@ -114,6 +114,7 @@ vl_api_sr_policy_add_t_handler (vl_api_sr_policy_add_t * mp)
 		      segments,
 		      ntohl (mp->sids.weight),
 		      mp->type, ntohl (mp->fib_table), mp->is_encap);
+  vec_free (segments);
 
   REPLY_MACRO (VL_API_SR_POLICY_ADD_REPLY);
 }
@@ -147,6 +148,7 @@ vl_api_sr_policy_mod_t_handler (vl_api_sr_policy_mod_t * mp)
 		      mp->operation,
 		      segments, ntohl (mp->sl_index),
 		      ntohl (mp->sids.weight));
+  vec_free (segments);
 
   REPLY_MACRO (VL_API_SR_POLICY_MOD_REPLY);
 }
@@ -208,7 +210,7 @@ static void send_sr_localsid_details
   vl_api_sr_localsids_details_t *rmp;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  memset (rmp, 0, sizeof (*rmp));
+  clib_memset (rmp, 0, sizeof (*rmp));
   rmp->_vl_msg_id = ntohs (VL_API_SR_LOCALSIDS_DETAILS);
   clib_memcpy (rmp->addr.addr, &t->localsid, sizeof (ip6_address_t));
   rmp->end_psp = t->end_psp;
@@ -259,9 +261,10 @@ static void send_sr_policies_details
   rmp = vl_msg_api_alloc (sizeof (*rmp) +
 			  vec_len (t->segments_lists) *
 			  sizeof (vl_api_srv6_sid_list_t));
-  memset (rmp, 0,
-	  (sizeof (*rmp) +
-	   vec_len (t->segments_lists) * sizeof (vl_api_srv6_sid_list_t)));
+  clib_memset (rmp, 0,
+	       (sizeof (*rmp) +
+		vec_len (t->segments_lists) *
+		sizeof (vl_api_srv6_sid_list_t)));
 
   rmp->_vl_msg_id = ntohs (VL_API_SR_POLICIES_DETAILS);
   clib_memcpy (rmp->bsid.addr, &t->bsid, sizeof (ip6_address_t));
@@ -311,7 +314,7 @@ static void send_sr_steering_pol_details
   ip6_sr_main_t *sm = &sr_main;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  memset (rmp, 0, sizeof (*rmp));
+  clib_memset (rmp, 0, sizeof (*rmp));
   rmp->_vl_msg_id = ntohs (VL_API_SR_STEERING_POL_DETAILS);
 
   //Get the SR policy BSID

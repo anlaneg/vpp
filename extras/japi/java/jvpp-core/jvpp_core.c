@@ -14,7 +14,7 @@
  */
 
 #include <vnet/vnet.h>
-
+#include <jvpp-common/jvpp_common.h>
 #include <vpp/api/vpe_msg_enum.h>
 #define vl_typedefs             /* define message structures */
 #include <vpp/api/vpe_all_api_h.h>
@@ -24,8 +24,8 @@
 #include <vlibapi/api.h>
 #include <vlibmemory/api.h>
 #include <jni.h>
+#include <jvpp_core.h>
 
-#include <jvpp-common/jvpp_common.h>
 
 // TODO: generate jvpp_plugin_name.c files (or at least reuse plugin's main structure)
 typedef struct {
@@ -108,4 +108,29 @@ void JNI_OnUnload(JavaVM *vm, void *reserved) {
 }
 
 
+static void _host_to_net_string(JNIEnv * env, jstring javaString, vl_api_string_t * vl_api_string)
+{
+    const char *nativeString;
+    // prevent null, which causes jni to crash
+    if (NULL != javaString) {
+        nativeString = (*env)->GetStringUTFChars(env, javaString, 0);
+    } else{
+        nativeString = "";
+    }
 
+    vl_api_to_api_string(jstr_length(env, javaString), nativeString, vl_api_string);
+
+    (*env)->ReleaseStringUTFChars(env, javaString, nativeString);
+}
+
+
+static jstring _net_to_host_string(JNIEnv * env, const vl_api_string_t * _net)
+{
+    return (*env)->NewStringUTF(env, (char *)_net->buf);
+}
+
+
+static size_t jstr_length(JNIEnv *env, jstring string)
+{
+    return ((int) (*env)->GetStringUTFLength(env, string));
+}

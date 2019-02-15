@@ -1,10 +1,10 @@
-.PHONY: verify-python-path
+.PHONY: verify-test-dir
 
-VPP_TEST_FAILED_DIR=/tmp/vpp-failed-unittests/
+FAILED_DIR=/tmp/vpp-failed-unittests/
 
-verify-python-path:
-ifndef VPP_PYTHON_PREFIX
-	$(error VPP_PYTHON_PREFIX is not set)
+verify-test-dir:
+ifndef TEST_DIR
+	$(error TEST_DIR is not set)
 endif
 
 .PHONY: verify-no-running-vpp
@@ -20,6 +20,12 @@ FORCE_FOREGROUND=1
 else ifeq ($(DEBUG),gdbserver)
 FORCE_FOREGROUND=1
 else ifeq ($(DEBUG),core)
+FORCE_FOREGROUND=1
+else ifeq ($(STEP),yes)
+FORCE_FOREGROUND=1
+else ifeq ($(STEP),y)
+FORCE_FOREGROUND=1
+else ifeq ($(STEP),1)
 FORCE_FOREGROUND=1
 else
 FORCE_FOREGROUND=0
@@ -59,22 +65,24 @@ ifneq ($(EXTERN_TESTS),)
 UNITTEST_EXTRA_OPTS=$(UNITTEST_FAILFAST_OPTS) -d $(EXTERN_TESTS)
 endif
 
+VENV_PATH=$(TEST_DIR)/run/venv
+
 ifeq ($(TEST_DEBUG),1)
-VPP_PYTHON_PREFIX:=$(VPP_PYTHON_PREFIX)/debug
+TEST_RUN_DIR:=$(VENV_PATH)/run-debug
 PYTHON_EXTRA_DEPENDS=objgraph pympler
 else
+TEST_RUN_DIR:=$(VENV_PATH)/run
 PYTHON_EXTRA_DEPENDS=
 endif
 
-PYTHON_VENV_PATH=$(VPP_PYTHON_PREFIX)/virtualenv
-PYTHON_DEPENDS=$(PYTHON_EXTRA_DEPENDS) faulthandler six scapy==2.4.0 pexpect cryptography subprocess32 cffi git+https://github.com/vpp-dev/py-lispnetworking
-SCAPY_SOURCE=$(shell find $(PYTHON_VENV_PATH) -name site-packages)
-BUILD_COV_DIR=$(BR)/test-cov
+PYTHON_DEPENDS=$(PYTHON_EXTRA_DEPENDS) -r requirements.txt
+SCAPY_SOURCE=$(shell find $(VENV_PATH)/lib/$(PYTHON) -name site-packages)
+BUILD_COV_DIR=$(TEST_DIR)/coverage
 
-GET_PIP_SCRIPT=$(VPP_PYTHON_PREFIX)/get-pip.py
-PIP_INSTALL_DONE=$(VPP_PYTHON_PREFIX)/pip-install.done
-PIP_PATCH_DONE=$(VPP_PYTHON_PREFIX)/pip-patch.done
-PAPI_INSTALL_DONE=$(VPP_PYTHON_PREFIX)/papi-install.done
+GET_PIP_SCRIPT=$(TEST_RUN_DIR)/get-pip.py
+PIP_INSTALL_DONE=$(TEST_RUN_DIR)/pip-install.done
+PIP_PATCH_DONE=$(TEST_RUN_DIR)/pip-patch.done
+PAPI_INSTALL_DONE=$(TEST_RUN_DIR)/papi-install.done
 
 PAPI_INSTALL_FLAGS=$(PIP_INSTALL_DONE) $(PIP_PATCH_DONE) $(PAPI_INSTALL_DONE)
 
@@ -85,13 +93,12 @@ PYTHON_INTERP=$(PYTHON)
 endif
 
 $(GET_PIP_SCRIPT):
-	@mkdir -p $(VPP_PYTHON_PREFIX)
-	@bash -c "cd $(VPP_PYTHON_PREFIX) && curl -O https://bootstrap.pypa.io/get-pip.py"
+	@mkdir -p $(TEST_RUN_DIR)
+	@bash -c "cd $(TEST_RUN_DIR) && curl -O https://bootstrap.pypa.io/get-pip.py"
 
 $(PIP_INSTALL_DONE): $(GET_PIP_SCRIPT)
-	@virtualenv $(PYTHON_VENV_PATH) -p $(PYTHON_INTERP)
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python $(GET_PIP_SCRIPT)"
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install $(PYTHON_DEPENDS)"
+	@virtualenv $(VENV_PATH) -p $(PYTHON_INTERP)
+	@bash -c "source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) -m pip install $(PYTHON_DEPENDS)"
 	@touch $@
 
 $(PIP_PATCH_DONE): $(PIP_INSTALL_DONE)
@@ -104,11 +111,11 @@ $(PIP_PATCH_DONE): $(PIP_INSTALL_DONE)
 	@touch $@
 
 $(PAPI_INSTALL_DONE): $(PIP_PATCH_DONE)
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && cd $(WS_ROOT)/src/vpp-api/python && python setup.py install"
+	@bash -c "source $(VENV_PATH)/bin/activate && cd $(WS_ROOT)/src/vpp-api/python && $(PYTHON_INTERP) setup.py install"
 	@touch $@
 
 define retest-func
-@env FORCE_FOREGROUND=$(FORCE_FOREGROUND) VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(PYTHON_VENV_PATH)/bin/activate python $(PYTHON_PROFILE_OPTS) run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env VPP_TEST_FAILED_DIR=$(VPP_TEST_FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
+@env FORCE_FOREGROUND=$(FORCE_FOREGROUND) FAILED_DIR=$(FAILED_DIR) VENV_PATH=$(VENV_PATH) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(VENV_PATH)/bin/activate $(PYTHON_INTERP) $(PYTHON_PROFILE_OPTS) run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env FAILED_DIR=$(FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
 endef
 
 .PHONY: sanity
@@ -117,12 +124,29 @@ ifeq ($(SANITY),no)
 SANITY_IMPORT_VPP_PAPI_CMD=true
 SANITY_RUN_VPP_CMD=true
 else
-SANITY_IMPORT_VPP_PAPI_CMD=source $(PYTHON_VENV_PATH)/bin/activate && python sanity_import_vpp_papi.py
-SANITY_RUN_VPP_CMD=source $(PYTHON_VENV_PATH)/bin/activate && python sanity_run_vpp.py
+SANITY_IMPORT_VPP_PAPI_CMD=source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) sanity_import_vpp_papi.py
+SANITY_RUN_VPP_CMD=source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) sanity_run_vpp.py
+endif
+
+ifndef TEST_JOBS
+PARALLEL_ILLEGAL=0
+else ifeq ($(FORCE_FOREGROUND),0)
+PARALLEL_ILLEGAL=0
+else ifeq ($(TEST_JOBS),auto)
+PARALLEL_ILLEGAL=0
+else ifeq ($(TEST_JOBS),1)
+PARALLEL_ILLEGAL=0
+else
+PARALLEL_ILLEGAL=1
 endif
 
 sanity: verify-no-running-vpp
 	@sys_req/dev_shm_size.sh
+	@bash -c "test $(PARALLEL_ILLEGAL) -eq 0 ||\
+	    (echo \"*******************************************************************\" &&\
+		 echo \"* Sanity check failed, TEST_JOBS is not 1 or 'auto' and DEBUG, STEP or PROFILE is set\" &&\
+	         echo \"*******************************************************************\" &&\
+		 false)"
 	@bash -c "$(SANITY_IMPORT_VPP_PAPI_CMD) ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Sanity check failed, cannot import vpp_papi\" &&\
@@ -139,26 +163,25 @@ sanity: verify-no-running-vpp
 
 .PHONY: ext
 ext:
-	make -C ext
+	@if [ "$(EXTENDED_TESTS)" = "yes" ]; then\
+		make -C ext;\
+	fi
 
-test-dep: verify-python-path $(PAPI_INSTALL_DONE)
+test-dep: verify-test-dir $(PAPI_INSTALL_DONE)
 
-test: verify-python-path $(PAPI_INSTALL_DONE) sanity reset
+test: verify-test-dir $(PAPI_INSTALL_DONE) ext sanity reset
 	$(call retest-func)
 
-test-ext: verify-python-path $(PAPI_INSTALL_DONE) ext sanity reset
+retest: verify-test-dir sanity reset
 	$(call retest-func)
 
-retest: verify-python-path sanity reset
-	$(call retest-func)
-
-shell: verify-python-path $(PAPI_INSTALL_DONE)
-	@echo "source $(PYTHON_VENV_PATH)/bin/activate;\
+shell: verify-test-dir $(PAPI_INSTALL_DONE)
+	@echo "source $(VENV_PATH)/bin/activate;\
 		echo '***';\
-		echo VPP_TEST_BUILD_DIR=$(VPP_TEST_BUILD_DIR);\
-		echo VPP_TEST_BIN=$(VPP_TEST_BIN);\
-		echo VPP_TEST_PLUGIN_PATH=$(VPP_TEST_PLUGIN_PATH);\
-		echo VPP_TEST_INSTALL_PATH=$(VPP_TEST_INSTALL_PATH);\
+		echo VPP_BUILD_DIR=$(VPP_BUILD_DIR);\
+		echo VPP_BIN=$(VPP_BIN);\
+		echo VPP_PLUGIN_PATH=$(VPP_PLUGIN_PATH);\
+		echo VPP_INSTALL_PATH=$(VPP_INSTALL_PATH);\
 		echo EXTERN_TESTS=$(EXTERN_TESTS);\
 		echo EXTERN_PLUGINS=$(EXTERN_PLUGINS);\
                 echo EXTERN_COV_DIR=$(EXTERN_COV_DIR);\
@@ -171,30 +194,30 @@ shell: verify-python-path $(PAPI_INSTALL_DONE)
 reset:
 	@rm -f /dev/shm/vpp-unittest-*
 	@rm -rf /tmp/vpp-unittest-*
-	@rm -rf $(VPP_TEST_FAILED_DIR)
-	@mkdir $(VPP_TEST_FAILED_DIR)
+	@rm -rf $(FAILED_DIR)
+	@mkdir $(FAILED_DIR)
 
 wipe: reset
 	@make -C ext clean
-	@rm -rf $(PYTHON_VENV_PATH)
+	@rm -rf $(VENV_PATH)
 	@rm -f $(PAPI_INSTALL_FLAGS)
 
-doc: verify-python-path $(PIP_PATCH_DONE)
-	@virtualenv $(PYTHON_VENV_PATH) -p $(PYTHON_INTERP)
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install sphinx sphinx-rtd-theme"
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && make -C doc WS_ROOT=$(WS_ROOT) BR=$(BR) NO_VPP_PAPI=1 html"
+doc: verify-test-dir $(PIP_PATCH_DONE)
+	@virtualenv $(VENV_PATH) -p python3
+	@bash -c "source $(VENV_PATH)/bin/activate && python3 -m pip install sphinx sphinx-rtd-theme"
+	@bash -c "source $(VENV_PATH)/bin/activate && make -C doc WS_ROOT=$(WS_ROOT) BR=$(BR) html"
 
 .PHONY: wipe-doc
 
 wipe-doc:
 	@make -C doc wipe BR=$(BR)
 
-cov: wipe-cov reset ext verify-python-path $(PAPI_INSTALL_DONE)
-	@lcov --zerocounters --directory $(VPP_TEST_BUILD_DIR)
+cov: wipe-cov reset ext verify-test-dir $(PAPI_INSTALL_DONE)
+	@lcov --zerocounters --directory $(VPP_BUILD_DIR)
 	@test -z "$(EXTERN_COV_DIR)" || lcov --zerocounters --directory $(EXTERN_COV_DIR)
 	$(call retest-func)
 	@mkdir $(BUILD_COV_DIR)
-	@lcov --capture --directory $(VPP_TEST_BUILD_DIR) --output-file $(BUILD_COV_DIR)/coverage.info
+	@lcov --capture --directory $(VPP_BUILD_DIR) --output-file $(BUILD_COV_DIR)/coverage.info
 	@test -z "$(EXTERN_COV_DIR)" || lcov --capture --directory $(EXTERN_COV_DIR) --output-file $(BUILD_COV_DIR)/extern-coverage.info
 	@genhtml $(BUILD_COV_DIR)/coverage.info --output-directory $(BUILD_COV_DIR)/html
 	@test -z "$(EXTERN_COV_DIR)" || genhtml $(BUILD_COV_DIR)/extern-coverage.info --output-directory $(BUILD_COV_DIR)/extern-html
@@ -208,11 +231,11 @@ wipe-cov: wipe
 	@rm -rf $(BUILD_COV_DIR)
 
 .PHONY: checkstyle
-checkstyle: verify-python-path
-	@virtualenv $(PYTHON_VENV_PATH) -p $(PYTHON_INTERP)
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && pip install pycodestyle"
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate &&\
-		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 -v $(WS_ROOT)/test/*.py ||\
+checkstyle: verify-test-dir
+	@virtualenv $(VENV_PATH) -p python3
+	@bash -c "source $(VENV_PATH)/bin/activate && python3 -m pip install pycodestyle"
+	@bash -c "source $(VENV_PATH)/bin/activate &&\
+		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 --exclude=$(WS_ROOT)/test/_*.py -v $(WS_ROOT)/test/*.py ||\
 		(echo \"*******************************************************************\" &&\
 		 echo \"* Test framework PEP8 compliance check FAILED \" &&\
 	         echo \"*******************************************************************\" &&\
@@ -236,18 +259,20 @@ help:
 	@echo ""
 	@echo "Arguments controlling test runs:"
 	@echo " V=[0|1|2]            - set test verbosity level"
+	@echo "                        0=ERROR, 1=INFO, 2=DEBUG"
+	@echo " TEST_JOBS=[<n>|auto] - use <n> parallel processes for test execution or automatic discovery of maximum acceptable processes (default: 1)"
 	@echo " CACHE_OUTPUT=[0|1]   - cache VPP stdout/stderr and log as one block after test finishes (default: 1)"
 	@echo " FAILFAST=[0|1]       - fail fast if 1, complete all tests if 0"
-	@echo " TIMEOUT=<timeout>    - fail test suite if any single test takes longer than <timeout> (in seconds) to finish"
+	@echo " TIMEOUT=<timeout>    - fail test suite if any single test takes longer than <timeout> (in seconds) to finish (default: 600)"
 	@echo " RETRIES=<n>          - retry failed tests <n> times"
 	@echo " DEBUG=<type>         - set VPP debugging kind"
 	@echo "    DEBUG=core        - detect coredump and load it in gdb on crash"
-	@echo "    DEBUG=gdb         - allow easy debugging by printing VPP PID "
-	@echo "                        and waiting for user input before running "
+	@echo "    DEBUG=gdb         - allow easy debugging by printing VPP PID"
+	@echo "                        and waiting for user input before running"
 	@echo "                        and tearing down a testcase"
-	@echo "    DEBUG=gdbserver   - run gdb inside a gdb server, otherwise "
+	@echo "    DEBUG=gdbserver   - run gdb inside a gdb server, otherwise"
 	@echo "                        same as above"
-	@echo " STEP=[yes|no]        - ease debugging by stepping through a testcase "
+	@echo " STEP=[yes|no]        - ease debugging by stepping through a testcase"
 	@echo " SANITY=[yes|no]      - perform sanity import of vpp-api/sanity vpp run before running tests (default: yes)"
 	@echo " EXTENDED_TESTS=[1|y] - run extended tests"
 	@echo " TEST=<filter>        - filter the set of tests:"
@@ -273,6 +298,8 @@ help:
 	@echo " PROFILE_OUTPUT=file  - output profiling info to file - use absolute path (default: stdout)"
 	@echo ""
 	@echo " TEST_DEBUG=1         - turn on debugging of the test framework itself (expert)"
+	@echo ""
+	@echo " SKIP_AARCH64=1       - skip tests that are failing on the ARM platorm in FD.io CI"
 	@echo ""
 	@echo "Creating test documentation"
 	@echo " test-doc            - generate documentation for test framework"

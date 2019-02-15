@@ -3,18 +3,18 @@
 # socket_test.sh -- script to run socket tests.
 #
 script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-vpp_dir="$WS_ROOT/build-root/install-vpp-native/vpp/bin/"
-vpp_debug_dir="$WS_ROOT/build-root/install-vpp_debug-native/vpp/bin/"
+vpp_dir="$WS_ROOT/build-root/build-vpp-native/vpp/bin/"
+vpp_debug_dir="$WS_ROOT/build-root/build-vpp_debug-native/vpp/bin/"
 vpp_shm_dir="/dev/shm/"
 vpp_run_dir="/run/vpp"
-lib64_dir="$WS_ROOT/build-root/install-vpp-native/vpp/lib64/"
-lib64_debug_dir="$WS_ROOT/build-root/install-vpp_debug-native/vpp/lib64/"
-dpdk_devbind="/usr/share/dpdk/usertools/dpdk-devbind.py"
+lib_dir="$WS_ROOT/build-root/install-vpp-native/vpp/lib/"
+lib_debug_dir="$WS_ROOT/build-root/install-vpp_debug-native/vpp/lib/"
+dpdk_devbind="$WS_ROOT/extras/vpp_config/scripts/dpdk-devbind.py"
 docker_vpp_dir="/vpp/"
 docker_app_dir="/vpp/"
-docker_lib64_dir="/vpp-lib64/"
+docker_lib_dir="/vpp-lib/"
 docker_os="ubuntu"
-vcl_ldpreload_lib="libvcl_ldpreload.so.0.0.0"
+vcl_ldpreload_lib="libvcl_ldpreload.so"
 user_gid="$(id -g)"
 vpp_app="vpp"
 sock_srvr_app="sock_test_server"
@@ -144,7 +144,7 @@ while getopts ":hitlbcd6fn:m:e:g:p:E:I:N:P:R:S:T:UBVXD" opt; do
            ;;
         d) title_dbg="-DEBUG"
            vpp_dir=$vpp_debug_dir
-           lib64_dir=$lib64_debug_dir
+           lib_dir=$lib_debug_dir
            ;;
         e) if [ $OPTARG = "a" ] || [ $OPTARG = "all" ] ; then
                emacs_client=1
@@ -162,7 +162,7 @@ while getopts ":hitlbcd6fn:m:e:g:p:E:I:N:P:R:S:T:UBVXD" opt; do
            fi
            title_dbg="-DEBUG"
            vpp_dir=$vpp_debug_dir
-           lib64_dir=$lib64_debug_dir
+           lib_dir=$lib_debug_dir
            ;;
         n) vpp_eth_name="$OPTARG"
            ;;
@@ -262,7 +262,7 @@ if [ -z "$VCL_DEBUG" ] ; then
     fi
 fi
 
-VCL_LDPRELOAD_LIB_DIR="${VCL_LDPRELOAD_LIB_DIR:-$lib64_dir}"
+VCL_LDPRELOAD_LIB_DIR="${VCL_LDPRELOAD_LIB_DIR:-$lib_dir}"
 
 if [ -z "$WS_ROOT" ] ; then
     echo "ERROR: WS_ROOT environment variable not set!" >&2
@@ -270,9 +270,12 @@ if [ -z "$WS_ROOT" ] ; then
     exit 1
 fi
 
-if [[ "$(grep bin_PROGRAMS $WS_ROOT/src/vcl.am)" = "" ]] ; then
-    $WS_ROOT/extras/vagrant/vcl_test.sh $WS_ROOT $USER
-    (cd $WS_ROOT; make build)
+if [ ! -d $vpp_dir ] ; then
+    if [ -z "$title_dbg" ] ; then
+        (cd $WS_ROOT; make build-release)
+    else
+        (cd $WS_ROOT; make build)
+    fi
 fi
 
 if [ ! -d $vpp_dir ] ; then
@@ -282,9 +285,9 @@ if [ ! -d $vpp_dir ] ; then
 fi
 
 if [[ $run_test =~ .*"_preload" ]] ; then
-   if [ ! -d $lib64_dir ] ; then
-       echo "ERROR: Missing VPP$title_dbg lib64 directory!" >&2
-       echo "       $lib64_dir" >&2
+   if [ ! -d $lib_dir ] ; then
+       echo "ERROR: Missing VPP$title_dbg lib directory!" >&2
+       echo "       $lib_dir" >&2
    elif [ ! -d $VCL_LDPRELOAD_LIB_DIR ] ; then
        echo "ERROR: Missing VCL LD_PRELOAD Library directory!" >&2
        echo "       $VCL_LDPRELOAD_LIB_DIR" >&2
@@ -303,13 +306,13 @@ if [ ! -f $vpp_dir$vpp_app ] ; then
 fi
 
 if [ ! -f $vpp_dir$sock_srvr_app ] && [ ! $iperf3 -eq 1 ] ; then
-    echo "ERROR: Missing$title_dbg Socket Server Application!" >&2
+    echo "ERROR: Missing SERVER$title_dbg Socket Server Application!" >&2
     echo "       $vpp_dir$sock_srvr_app" >&2
     env_test_failed="true"
 fi
 
 if [ ! -f $vpp_dir$sock_clnt_app ] && [ ! $iperf3 -eq 1 ] ; then
-    echo "ERROR: Missing$title_dbg Socket Client Application!" >&2
+    echo "ERROR: Missing CLIENT$title_dbg Socket Client Application!" >&2
     echo "       $vpp_dir$sock_clnt_app" >&2
     env_test_failed="true"
 fi
@@ -334,7 +337,7 @@ fi
 
 if [ -n "$multi_host"] && [ ! -f "$dpdk_devbind" ] ; then
     echo "ERROR: Can't find dpdk-devbind.py!"
-    echo "       Run \"cd \$WS_ROOT; make dpdk-install-dev\" to install it."
+    echo "       Run \"cd \$WS_ROOT; make install-ext-deps\" to install it."
     echo
     env_test_failed="true"
 fi
@@ -499,7 +502,7 @@ EOF
             echo "ERROR: No inet6 address configured for $vpp_eth_name!"
             usage
         fi
-        vpp_args="$vpp_args plugins { path ${lib64_dir}vpp_plugins } dpdk { dev $vpp_eth_pci_id }"
+        vpp_args="$vpp_args plugins { path ${lib_dir}vpp_plugins } dpdk { dev $vpp_eth_pci_id }"
                 
         sudo ifconfig $vpp_eth_name down 2> /dev/null
         echo "Configuring VPP to use $vpp_eth_name ($vpp_eth_pci_id), inet addr $vpp_eth_ip4_addr"
@@ -519,6 +522,8 @@ EOF
     fi
     
     cat <<EOF >> $tmp_vpp_exec_file
+create tap id 0
+set int ip addr tap0 172.17.0.2/24
 show version
 show version verbose
 show cpu
@@ -724,7 +729,7 @@ native_preload() {
             namespace_secret="$server_namespace_secret"
         fi
         write_script_header $cmd2_file $tmp_gdb_cmdfile "$title2" "sleep 3"
-        echo "export LD_LIBRARY_PATH=\"$lib64_dir:$VCL_LDPRELOAD_LIB_DIR:$LD_LIBRARY_PATH\"" >> $cmd2_file
+        echo "export LD_LIBRARY_PATH=\"$lib_dir:$VCL_LDPRELOAD_LIB_DIR:$LD_LIBRARY_PATH\"" >> $cmd2_file
         echo "${pre_cmd}${app_dir}${srvr_app}" >> $cmd2_file
         write_script_footer $cmd2_file $perf_server
         chmod +x $cmd2_file
@@ -740,7 +745,7 @@ native_preload() {
             namespace_secret="$client_namespace_secret"
         fi
         write_script_header $cmd3_file $tmp_gdb_cmdfile "$title3" "sleep 4"
-        echo "export LD_LIBRARY_PATH=\"$lib64_dir:$VCL_LDPRELOAD_LIB_DIR:$LD_LIBRARY_PATH\"" >> $cmd3_file
+        echo "export LD_LIBRARY_PATH=\"$lib_dir:$VCL_LDPRELOAD_LIB_DIR:$LD_LIBRARY_PATH\"" >> $cmd3_file
         echo "srvr_addr=\"$sock_srvr_addr\"" >> $cmd3_file
         echo "${pre_cmd}${app_dir}${clnt_app}" >> $cmd3_file
         write_script_footer $cmd3_file $perf_client
@@ -779,7 +784,7 @@ native_vcl() {
             namespace_secret="$server_namespace_secret"
         fi
         write_script_header $cmd2_file $tmp_gdb_cmdfile "$title2" "$delay"
-        echo "export LD_LIBRARY_PATH=\"$lib64_dir:$LD_LIBRARY_PATH\"" >> $cmd2_file
+        echo "export LD_LIBRARY_PATH=\"$lib_dir:$LD_LIBRARY_PATH\"" >> $cmd2_file
         echo "${pre_cmd}${app_dir}${srvr_app}" >> $cmd2_file
         write_script_footer $cmd2_file $perf_server
         chmod +x $cmd2_file
@@ -800,7 +805,7 @@ native_vcl() {
             namespace_secret="$client_namespace_secret"
         fi
         write_script_header $cmd3_file $tmp_gdb_cmdfile "$title3" "$delay"
-        echo "export LD_LIBRARY_PATH=\"$lib64_dir:$LD_LIBRARY_PATH\"" >> $cmd3_file
+        echo "export LD_LIBRARY_PATH=\"$lib_dir:$LD_LIBRARY_PATH\"" >> $cmd3_file
         echo "srvr_addr=\"$sock_srvr_addr\"" >> $cmd3_file
         echo "${pre_cmd}${app_dir}${clnt_app}" >> $cmd3_file
         write_script_footer $cmd3_file $perf_client
@@ -867,7 +872,7 @@ docker_preload() {
             namespace_secret="$server_namespace_secret"
         fi
         write_script_header $cmd2_file $tmp_gdb_cmdfile "$title2" "sleep 2"
-        echo "docker run -it -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib64_dir:$docker_lib64_dir -v $ld_preload_dir:$docker_ld_preload_dir -v $vcl_config_dir:$docker_vcl_config_dir -p $sock_srvr_port:$sock_srvr_port -e VCL_DEBUG=$VCL_DEBUG -e VCL_CONFIG=${docker_vcl_config_dir}$vcl_config -e LD_LIBRARY_PATH=$docker_lib64_dir:$docker_ld_preload_dir ${docker_ld_preload}$docker_os ${docker_app_dir}${srvr_app}" >> $cmd2_file
+        echo "docker run -it -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib_dir:$docker_lib_dir -v $ld_preload_dir:$docker_ld_preload_dir -v $vcl_config_dir:$docker_vcl_config_dir -p $sock_srvr_port:$sock_srvr_port -e VCL_DEBUG=$VCL_DEBUG -e VCL_CONFIG=${docker_vcl_config_dir}$vcl_config -e LD_LIBRARY_PATH=$docker_lib_dir:$docker_ld_preload_dir ${docker_ld_preload}$docker_os ${docker_app_dir}${srvr_app}" >> $cmd2_file
         write_script_footer $cmd2_file $perf_server
         chmod +x $cmd2_file
     fi
@@ -883,7 +888,7 @@ docker_preload() {
         fi
         write_script_header $cmd3_file $tmp_gdb_cmdfile "$title3" "sleep 4"
         echo "$get_docker_server_ip4addr" >> $cmd3_file
-        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib64_dir:$docker_lib64_dir  -v $ld_preload_dir:$docker_ld_preload_dir -v $vcl_config_dir:$docker_vcl_config_dir -e VCL_DEBUG=$VCL_DEBUG -e VCL_CONFIG=${docker_vcl_config_dir}$vcl_config -e LD_LIBRARY_PATH=$docker_lib64_dir ${docker_ld_preload}$docker_os ${docker_app_dir}${clnt_app}" >> $cmd3_file
+        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib_dir:$docker_lib_dir  -v $ld_preload_dir:$docker_ld_preload_dir -v $vcl_config_dir:$docker_vcl_config_dir -e VCL_DEBUG=$VCL_DEBUG -e VCL_CONFIG=${docker_vcl_config_dir}$vcl_config -e LD_LIBRARY_PATH=$docker_lib_dir ${docker_ld_preload}$docker_os ${docker_app_dir}${clnt_app}" >> $cmd3_file
         write_script_footer $cmd3_file $perf_client
         chmod +x $cmd3_file
     fi
@@ -916,7 +921,7 @@ docker_vcl() {
             namespace_secret="$server_namespace_secret"
         fi
         write_script_header $cmd2_file $tmp_gdb_cmdfile "$title2" "sleep 2"
-        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib64_dir:$docker_lib64_dir -v $vcl_config_dir:$docker_vcl_config_dir -p $sock_srvr_port:$sock_srvr_port -e VCL_CONFIG=${docker_vcl_config_dir}/$vcl_config -e LD_LIBRARY_PATH=$docker_lib64_dir $docker_os ${docker_app_dir}${srvr_app}" >> $cmd2_file
+        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib_dir:$docker_lib_dir -v $vcl_config_dir:$docker_vcl_config_dir -p $sock_srvr_port:$sock_srvr_port -e VCL_CONFIG=${docker_vcl_config_dir}/$vcl_config -e LD_LIBRARY_PATH=$docker_lib_dir $docker_os ${docker_app_dir}${srvr_app}" >> $cmd2_file
         write_script_footer $cmd2_file $perf_server
         chmod +x $cmd2_file
     fi
@@ -932,7 +937,7 @@ docker_vcl() {
         fi
         write_script_header $cmd3_file $tmp_gdb_cmdfile "$title3" "sleep 3"
         echo "$get_docker_server_ip4addr" >> $cmd3_file
-        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib64_dir:$docker_lib64_dir -v $vcl_config_dir:$docker_vcl_config_dir -e VCL_CONFIG=${docker_vcl_config_dir}/$vcl_config -e LD_LIBRARY_PATH=$docker_lib64_dir $docker_os ${docker_app_dir}${clnt_app}" >> $cmd3_file
+        echo "docker run -it --cpuset-cpus='4-7' -v $vpp_shm_dir:$vpp_shm_dir -v $vpp_dir:$docker_vpp_dir -v $lib_dir:$docker_lib_dir -v $vcl_config_dir:$docker_vcl_config_dir -e VCL_CONFIG=${docker_vcl_config_dir}/$vcl_config -e LD_LIBRARY_PATH=$docker_lib_dir $docker_os ${docker_app_dir}${clnt_app}" >> $cmd3_file
         write_script_footer $cmd3_file $perf_client
         chmod +x $cmd3_file
     fi

@@ -22,6 +22,8 @@
 #include <vnet/ip/ip.h>
 #include <vnet/classify/policer_classify.h>
 #include <vnet/classify/vnet_classify.h>
+#include <vnet/l2/feat_bitmap.h>
+#include <vnet/l2/l2_input.h>
 
 
 /* Dispatch functions meant to be instantiated elsewhere */
@@ -490,7 +492,7 @@ format_policer_classify_trace (u8 * s, va_list * args)
 #define foreach_policer_classify_error                 \
 _(MISS, "Policer classify misses")                     \
 _(HIT, "Policer classify hits")                        \
-_(CHAIN_HIT, "Polcier classify hits after chain walk") \
+_(CHAIN_HIT, "Policer classify hits after chain walk") \
 _(DROP, "Policer classify action drop")
 
 typedef enum
@@ -521,7 +523,6 @@ policer_classify_inline (vlib_main_t * vm,
   u32 hits = 0;
   u32 misses = 0;
   u32 chain_hits = 0;
-  u32 drop = 0;
   u32 n_next_nodes;
   u64 time_in_policer_periods;
 
@@ -707,7 +708,6 @@ policer_classify_inline (vlib_main_t * vm,
 		    {
 		      next0 = POLICER_CLASSIFY_NEXT_INDEX_DROP;
 		      b0->error = node->errors[POLICER_CLASSIFY_ERROR_DROP];
-		      drop++;
 		    }
 		  hits++;
 		}
@@ -743,7 +743,6 @@ policer_classify_inline (vlib_main_t * vm,
 			      next0 = POLICER_CLASSIFY_NEXT_INDEX_DROP;
 			      b0->error =
 				node->errors[POLICER_CLASSIFY_ERROR_DROP];
-			      drop++;
 			    }
 			  hits++;
 			  chain_hits++;
@@ -778,8 +777,6 @@ policer_classify_inline (vlib_main_t * vm,
 			       POLICER_CLASSIFY_ERROR_HIT, hits);
   vlib_node_increment_counter (vm, node->node_index,
 			       POLICER_CLASSIFY_ERROR_CHAIN_HIT, chain_hits);
-  vlib_node_increment_counter (vm, node->node_index,
-			       POLICER_CLASSIFY_ERROR_DROP, drop);
 
   return frame->n_vectors;
 }

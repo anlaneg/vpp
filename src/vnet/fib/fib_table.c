@@ -885,6 +885,14 @@ fib_table_entry_delete_index (fib_node_index_t fib_entry_index,
                              fib_entry_index, prefix, source);
 }
 
+u32
+fib_table_entry_get_stats_index (u32 fib_index,
+                                 const fib_prefix_t *prefix)
+{
+    return (fib_entry_get_stats_index(
+                fib_table_lookup_exact_match(fib_index, prefix)));
+}
+
 fib_node_index_t
 fib_table_entry_local_label_add (u32 fib_index,
 				 const fib_prefix_t *prefix,
@@ -1140,7 +1148,6 @@ fib_table_create_and_lock (fib_protocol_t proto,
     fib_node_index_t fi;
     va_list ap;
 
-    va_start(ap, fmt);
 
     switch (proto)
     {
@@ -1158,6 +1165,8 @@ fib_table_create_and_lock (fib_protocol_t proto,
     }
 
     fib_table = fib_table_get(fi, proto);
+
+    va_start(ap, fmt);
 
     fib_table->ft_desc = va_format(fib_table->ft_desc, fmt, &ap);
 
@@ -1261,6 +1270,9 @@ fib_table_lock (u32 fib_index,
     fib_table_t *fib_table;
 
     fib_table = fib_table_get(fib_index, proto);
+
+    ASSERT(fib_table->ft_locks[source] < (0xffff - 1));
+
     fib_table->ft_locks[source]++;
     fib_table->ft_locks[FIB_TABLE_TOTAL_LOCKS]++;
 }

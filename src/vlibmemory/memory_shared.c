@@ -176,6 +176,7 @@ vl_msg_api_alloc_internal (int nbytes, int pool, int may_return_null)
     rv = clib_mem_alloc (nbytes);
 
   rv->q = 0;
+  rv->gc_mark_timestamp = 0;
   svm_pop_heap (oldheap);
   pthread_mutex_unlock (&am->vlib_rp->mutex);
 
@@ -518,7 +519,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
   struct timespec ts, tsrem;
   char *vpe_api_region_suffix = "-vpe-api";
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
 
   if (strstr (region_name, vpe_api_region_suffix))
     {
@@ -532,6 +533,35 @@ vl_map_shmem (const char *region_name, int is_vlib)
 
   if (is_vlib == 0)
     {
+      int tfd;
+      u8 *api_name;
+      /*
+       * Clients wait for vpp to set up the root / API regioins
+       */
+      if (am->root_path)
+	api_name = format (0, "/dev/shm/%s-%s%c", am->root_path,
+			   region_name + 1, 0);
+      else
+	api_name = format (0, "/dev/shm%s%c", region_name, 0);
+
+      /* Wait up to 100 seconds... */
+      for (i = 0; i < 10000; i++)
+	{
+	  ts.tv_sec = 0;
+	  ts.tv_nsec = 10000 * 1000;	/* 10 ms */
+	  while (nanosleep (&ts, &tsrem) < 0)
+	    ts = tsrem;
+	  tfd = open ((char *) api_name, O_RDWR);
+	  if (tfd > 0)
+	    break;
+	}
+      vec_free (api_name);
+      if (tfd < 0)
+	{
+	  clib_warning ("region init fail");
+	  return -2;
+	}
+      close (tfd);
       rv = svm_region_init_chroot (am->root_path);
       if (rv)
 	return rv;
@@ -590,7 +620,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
 		ts = tsrem;
 	    }
 	  /* Mutex buggered, "fix" it */
-	  memset (&q->mutex, 0, sizeof (q->mutex));
+	  clib_memset (&q->mutex, 0, sizeof (q->mutex));
 	  clib_warning ("forcibly release main input queue mutex");
 
 	mutex_ok:
@@ -709,6 +739,14 @@ vl_msg_api_send_shmem (svm_queue_t * q, u8 * elem)
   if (am->tx_trace && am->tx_trace->enabled)
     vl_msg_api_trace (am, am->tx_trace, (void *) trace[0]);
 
+  /*
+   * Announce a probable binary API client bug:
+   * some client's input queue is stuffed.
+   * The situation may be recoverable, or not.
+   */
+  if (PREDICT_FALSE
+      (am->vl_clients /* vpp side */  && (q->cursize == q->maxsize)))
+    clib_warning ("WARNING: client input queue at %llx is stuffed...", q);
   (void) svm_queue_add (q, elem, 0 /* nowait */ );
 }
 

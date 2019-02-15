@@ -84,10 +84,10 @@ dpdk_flow_add (dpdk_device_t * xd, vnet_flow_t * f, dpdk_flow_entry_t * fe)
   if (f->type == VNET_FLOW_TYPE_IP6_N_TUPLE)
     {
       vnet_flow_ip6_n_tuple_t *t6 = &f->ip6_n_tuple;
-      clib_memcpy (ip6[0].hdr.src_addr, &t6->src_addr.addr, 16);
-      clib_memcpy (ip6[1].hdr.src_addr, &t6->src_addr.mask, 16);
-      clib_memcpy (ip6[0].hdr.dst_addr, &t6->dst_addr.addr, 16);
-      clib_memcpy (ip6[1].hdr.dst_addr, &t6->dst_addr.mask, 16);
+      clib_memcpy_fast (ip6[0].hdr.src_addr, &t6->src_addr.addr, 16);
+      clib_memcpy_fast (ip6[1].hdr.src_addr, &t6->src_addr.mask, 16);
+      clib_memcpy_fast (ip6[0].hdr.dst_addr, &t6->dst_addr.addr, 16);
+      clib_memcpy_fast (ip6[1].hdr.dst_addr, &t6->dst_addr.mask, 16);
       item->type = RTE_FLOW_ITEM_TYPE_IPV6;
       item->spec = ip6;
       item->mask = ip6 + 1;
@@ -179,13 +179,13 @@ dpdk_flow_add (dpdk_device_t * xd, vnet_flow_t * f, dpdk_flow_entry_t * fe)
 	.vni_reserved = clib_host_to_net_u32 (((u32) - 1) << 8)
       };
 
-      memset (raw, 0, sizeof raw);
+      clib_memset (raw, 0, sizeof raw);
       raw[0].item.relative = 1;
       raw[0].item.length = vxlan_hdr_sz;
 
-      clib_memcpy (raw[0].val + raw_sz, &spec_hdr, vxlan_hdr_sz);
+      clib_memcpy_fast (raw[0].val + raw_sz, &spec_hdr, vxlan_hdr_sz);
       raw[0].item.pattern = raw[0].val + raw_sz;
-      clib_memcpy (raw[1].val + raw_sz, &mask_hdr, vxlan_hdr_sz);
+      clib_memcpy_fast (raw[1].val + raw_sz, &mask_hdr, vxlan_hdr_sz);
       raw[1].item.pattern = raw[1].val + raw_sz;
 
       vec_add2 (items, item, 1);
@@ -258,12 +258,12 @@ dpdk_flow_ops_fn (vnet_main_t * vnm, vnet_flow_dev_op_t op, u32 dev_instance,
 	{
 	  /* make sure no action is taken for in-flight (marked) packets */
 	  fle = pool_elt_at_index (xd->flow_lookup_entries, fe->mark);
-	  memset (fle, -1, sizeof (*fle));
+	  clib_memset (fle, -1, sizeof (*fle));
 	  vec_add1 (xd->parked_lookup_indexes, fe->mark);
 	  xd->parked_loop_count = dm->vlib_main->main_loop_count;
 	}
 
-      memset (fe, 0, sizeof (*fe));
+      clib_memset (fe, 0, sizeof (*fe));
       pool_put (xd->flow_entries, fe);
 
       goto disable_rx_offload;
@@ -294,7 +294,7 @@ dpdk_flow_ops_fn (vnet_main_t * vnm, vnet_flow_dev_op_t op, u32 dev_instance,
       fe->mark = fle - xd->flow_lookup_entries;
 
       /* install entry in the lookup table */
-      memset (fle, -1, sizeof (*fle));
+      clib_memset (fle, -1, sizeof (*fle));
       if (flow->actions & VNET_FLOW_ACTION_MARK)
 	fle->flow_id = flow->mark_flow_id;
       if (flow->actions & VNET_FLOW_ACTION_REDIRECT_TO_NODE)
@@ -329,11 +329,11 @@ dpdk_flow_ops_fn (vnet_main_t * vnm, vnet_flow_dev_op_t op, u32 dev_instance,
 done:
   if (rv)
     {
-      memset (fe, 0, sizeof (*fe));
+      clib_memset (fe, 0, sizeof (*fe));
       pool_put (xd->flow_entries, fe);
       if (fle)
 	{
-	  memset (fle, -1, sizeof (*fle));
+	  clib_memset (fle, -1, sizeof (*fle));
 	  pool_put (xd->flow_lookup_entries, fle);
 	}
     }

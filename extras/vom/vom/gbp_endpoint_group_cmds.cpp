@@ -20,11 +20,13 @@ namespace gbp_endpoint_group_cmds {
 
 create_cmd::create_cmd(HW::item<bool>& item,
                        epg_id_t epg_id,
+                       uint16_t sclass,
                        uint32_t bd_id,
                        route::table_id_t rd_id,
                        const handle_t& itf)
   : rpc_cmd(item)
   , m_epg_id(epg_id)
+  , m_sclass(sclass)
   , m_bd_id(bd_id)
   , m_rd_id(rd_id)
   , m_itf(itf)
@@ -44,12 +46,11 @@ create_cmd::issue(connection& con)
   msg_t req(con.ctx(), std::ref(*this));
 
   auto& payload = req.get_request().get_payload();
-  payload.is_add = 1;
   payload.epg.uplink_sw_if_index = m_itf.value();
   payload.epg.epg_id = m_epg_id;
+  payload.epg.sclass = m_sclass;
   payload.epg.bd_id = m_bd_id;
-  payload.epg.ip4_table_id = m_rd_id;
-  payload.epg.ip6_table_id = m_rd_id;
+  payload.epg.rd_id = m_rd_id;
 
   VAPI_CALL(req.execute());
 
@@ -85,8 +86,7 @@ delete_cmd::issue(connection& con)
   msg_t req(con.ctx(), std::ref(*this));
 
   auto& payload = req.get_request().get_payload();
-  payload.is_add = 0;
-  payload.epg.epg_id = m_epg_id;
+  payload.epg_id = m_epg_id;
 
   VAPI_CALL(req.execute());
 

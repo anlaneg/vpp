@@ -67,6 +67,7 @@ vl_api_sr_mpls_policy_add_t_handler (vl_api_sr_mpls_policy_add_t * mp)
   int rv = 0;
   rv = sr_mpls_policy_add (ntohl (mp->bsid),
 			   segments, mp->type, ntohl (mp->weight));
+  vec_free (segments);
 
   REPLY_MACRO (VL_API_SR_MPLS_POLICY_ADD_REPLY);
 }
@@ -91,6 +92,7 @@ vl_api_sr_mpls_policy_mod_t_handler (vl_api_sr_mpls_policy_mod_t * mp)
   rv = sr_mpls_policy_mod (ntohl (mp->bsid),
 			   mp->operation, segments, ntohl (mp->sl_index),
 			   ntohl (mp->weight));
+  vec_free (segments);
 
   REPLY_MACRO (VL_API_SR_MPLS_POLICY_MOD_REPLY);
 }
@@ -110,7 +112,7 @@ static void vl_api_sr_mpls_steering_add_del_t_handler
 {
   vl_api_sr_mpls_steering_add_del_reply_t *rmp;
   ip46_address_t prefix;
-  memset (&prefix, 0, sizeof (ip46_address_t));
+  clib_memset (&prefix, 0, sizeof (ip46_address_t));
   if (mp->traffic_type == SR_STEER_IPV4)
     memcpy (&prefix.ip4, mp->prefix_addr, sizeof (prefix.ip4));
   else
@@ -144,7 +146,7 @@ static void vl_api_sr_mpls_policy_assign_endpoint_color_t_handler
   int rv = 0;
 
   ip46_address_t endpoint;
-  memset (&endpoint, 0, sizeof (ip46_address_t));
+  clib_memset (&endpoint, 0, sizeof (ip46_address_t));
   if (mp->endpoint_type == SR_STEER_IPV4)
     memcpy (&endpoint.ip4, mp->endpoint, sizeof (endpoint.ip4));
   else

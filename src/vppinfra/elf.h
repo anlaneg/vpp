@@ -120,7 +120,7 @@
   _ (68HC12, 53)		/* Motorola M68HC12 */			\
   _ (MMA, 54)			/* Fujitsu MMA Multimedia Accel. */	\
   _ (PCP, 55)			/* Siemens PCP */			\
-  _ (NCPU, 56)			/* Sony nCPU embeeded RISC */		\
+  _ (NCPU, 56)			/* Sony nCPU embedded RISC */		\
   _ (NDR1, 57)			/* Denso NDR1 microprocessor */		\
   _ (STARCORE, 58)		/* Motorola Start*Core processor */	\
   _ (ME16, 59)			/* Toyota ME16 processor */		\
@@ -919,7 +919,7 @@ typedef struct
 always_inline void
 elf_main_init (elf_main_t * em)
 {
-  memset (em, 0, sizeof (em[0]));
+  clib_memset (em, 0, sizeof (em[0]));
 }
 
 always_inline void

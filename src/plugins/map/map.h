@@ -20,10 +20,17 @@
 #include <vnet/fib/fib_types.h>
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/adj/adj.h>
-#include <map/map_dpo.h>
 #include <vnet/dpo/load_balance.h>
+#include "lpm.h"
 
 #define MAP_SKIP_IP6_LOOKUP 1
+
+#define MAP_ERR_GOOD			0
+#define MAP_ERR_BAD_POOL_SIZE		-1
+#define MAP_ERR_BAD_HT_RATIO		-2
+#define MAP_ERR_BAD_LIFETIME		-3
+#define MAP_ERR_BAD_BUFFERS		-4
+#define MAP_ERR_BAD_BUFFERS_TOO_LARGE	-5
 
 int map_create_domain (ip4_address_t * ip4_prefix, u8 ip4_prefix_len,
 		       ip6_address_t * ip6_prefix, u8 ip6_prefix_len,
@@ -32,8 +39,22 @@ int map_create_domain (ip4_address_t * ip4_prefix, u8 ip4_prefix_len,
 		       u32 * map_domain_index, u16 mtu, u8 flags);
 int map_delete_domain (u32 map_domain_index);
 int map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
-		      u8 is_add);
+		      bool is_add);
+int map_if_enable_disable (bool is_enable, u32 sw_if_index,
+			   bool is_translation);
 u8 *format_map_trace (u8 * s, va_list * args);
+
+int map_param_set_fragmentation (bool inner, bool ignore_df);
+int map_param_set_icmp (ip4_address_t * ip4_err_relay_src);
+int map_param_set_icmp6 (u8 enable_unreachable);
+void map_pre_resolve (ip4_address_t * ip4, ip6_address_t * ip6, bool is_del);
+int map_param_set_reassembly (bool is_ipv6, u16 lifetime_ms,
+			      u16 pool_size, u32 buffers, f64 ht_ratio,
+			      u32 * reass, u32 * packets);
+int map_param_set_security_check (bool enable, bool fragments);
+int map_param_set_traffic_class (bool copy, u8 tc);
+int map_param_set_tcp (u16 tcp_mss);
+
 
 typedef enum
 {
@@ -247,7 +268,7 @@ typedef struct {
   bool sec_check_frag;		/* Inbound security check for (subsequent) fragments */
   bool icmp6_enabled;		/* Send destination unreachable for security check failure */
 
-  bool is_ce;                   /* If this MAP node is a Customer Edge router*/
+  u16 tcp_mss;			/* TCP MSS clamp value */
 
   /* ICMPv6 -> ICMPv4 relay parameters */
   ip4_address_t icmp4_src_address;
@@ -300,6 +321,14 @@ typedef struct {
   /* Counters */
   u32 ip6_reass_buffered_counter;
 
+  /* Graph node state */
+  uword *bm_trans_enabled_by_sw_if;
+  uword *bm_encap_enabled_by_sw_if;
+
+  /* Lookup tables */
+  lpm_t *ip4_prefix_tbl;
+  lpm_t *ip6_prefix_tbl;
+  lpm_t *ip6_src_prefix_tbl;
 } map_main_t;
 
 /*
@@ -391,7 +420,7 @@ map_get_sfx (map_domain_t *d, u32 addr, u16 port)
   if (d->ip6_prefix_len == 128)
     return clib_net_to_host_u64(d->ip6_prefix.as_u64[1]);
 
-  if (d->flags & MAP_DOMAIN_RFC6052)
+  if (d->ip6_src_len == 96)
     return (clib_net_to_host_u64(d->ip6_prefix.as_u64[1]) | addr);
 
   /* IPv4 prefix */
@@ -410,62 +439,48 @@ map_get_sfx_net (map_domain_t *d, u32 addr, u16 port)
 }
 
 static_always_inline u32
-map_get_ip4 (ip6_address_t *addr, map_domain_flags_e flags)
+map_get_ip4 (ip6_address_t *addr, u16 prefix_len)
 {
-  if (flags & MAP_DOMAIN_RFC6052)
+  ASSERT(prefix_len == 64 || prefix_len == 96);
+  if (prefix_len == 96)
     return clib_host_to_net_u32(clib_net_to_host_u64(addr->as_u64[1]));
   else
     return clib_host_to_net_u32(clib_net_to_host_u64(addr->as_u64[1]) >> 16);
 }
 
-/*
- * Get the MAP domain from an IPv4 lookup adjacency.
- */
 static_always_inline map_domain_t *
-ip4_map_get_domain (u32 mdi)
+ip4_map_get_domain (ip4_address_t *addr, u32 *map_domain_index, u8 *error)
 {
   map_main_t *mm = &map_main;
 
+  u32 mdi = mm->ip4_prefix_tbl->lookup(mm->ip4_prefix_tbl, addr, 32);
+  if (mdi == ~0) {
+    *error = MAP_ERROR_NO_DOMAIN;
+    return 0;
+  }
+  *map_domain_index = mdi;
   return pool_elt_at_index(mm->domains, mdi);
 }
 
 /*
- * Get the MAP domain from an IPv6 lookup adjacency.
- * If the IPv6 address or prefix is not shared, no lookup is required.
- * The IPv4 address is used otherwise.
+ * Get the MAP domain from an IPv6 address.
+ * If the IPv6 address or
+ * prefix is shared the IPv4 address must be used.
  */
 static_always_inline map_domain_t *
-ip6_map_get_domain (u32 mdi,
-                    ip4_address_t *addr,
+ip6_map_get_domain (ip6_address_t *addr,
                     u32 *map_domain_index,
                     u8 *error)
 {
   map_main_t *mm = &map_main;
-
-#ifdef TODO
-  /*
-   * Disable direct MAP domain lookup on decap, until the security check is updated to verify IPv4 SA.
-   * (That's done implicitly when MAP domain is looked up in the IPv4 FIB)
-   */
-  //#ifdef MAP_NONSHARED_DOMAIN_ENABLED
-  //#error "How can you be sure this domain is not shared?"
-#endif
+  u32 mdi = mm->ip6_src_prefix_tbl->lookup(mm->ip6_src_prefix_tbl, addr, 128);
+  if (mdi == ~0) {
+    *error = MAP_ERROR_NO_DOMAIN;
+    return 0;
+  }
 
   *map_domain_index = mdi;
   return pool_elt_at_index(mm->domains, mdi);
-
-#ifdef TODO
-  u32 lbi = ip4_fib_forwarding_lookup(0, addr);
-  const dpo_id_t *dpo = load_balance_get_bucket(lbi, 0);
-  if (PREDICT_TRUE(dpo->dpoi_type == map_dpo_type ||
-		   dpo->dpoi_type == map_t_dpo_type))
-    {
-      *map_domain_index = dpo->dpoi_index;
-      return pool_elt_at_index(mm->domains, *map_domain_index);
-    }
-  *error = MAP_ERROR_NO_DOMAIN;
-  return NULL;
-#endif
 }
 
 map_ip4_reass_t *
@@ -474,7 +489,7 @@ map_ip4_reass_get(u32 src, u32 dst, u16 fragment_id,
 void
 map_ip4_reass_free(map_ip4_reass_t *r, u32 **pi_to_drop);
 
-#define map_ip4_reass_lock() while (__sync_lock_test_and_set(map_main.ip4_reass_lock, 1)) {}
+#define map_ip4_reass_lock() while (clib_atomic_test_and_set (map_main.ip4_reass_lock)) {}
 #define map_ip4_reass_unlock() do {CLIB_MEMORY_BARRIER(); *map_main.ip4_reass_lock = 0;} while(0)
 
 static_always_inline void
@@ -499,7 +514,7 @@ map_ip6_reass_get(ip6_address_t *src, ip6_address_t *dst, u32 fragment_id,
 void
 map_ip6_reass_free(map_ip6_reass_t *r, u32 **pi_to_drop);
 
-#define map_ip6_reass_lock() while (__sync_lock_test_and_set(map_main.ip6_reass_lock, 1)) {}
+#define map_ip6_reass_lock() while (clib_atomic_test_and_set (map_main.ip6_reass_lock)) {}
 #define map_ip6_reass_unlock() do {CLIB_MEMORY_BARRIER(); *map_main.ip6_reass_lock = 0;} while(0)
 
 int
@@ -530,35 +545,42 @@ int map_ip6_reass_conf_lifetime(u16 lifetime_ms);
 int map_ip6_reass_conf_buffers(u32 buffers);
 #define MAP_IP6_REASS_CONF_BUFFERS_MAX (0xffffffff)
 
+/*
+ * Supports prefix of 96 or 64 (with u-octet)
+ */
 static_always_inline void
 ip4_map_t_embedded_address (map_domain_t *d,
-                                ip6_address_t *ip6, const ip4_address_t *ip4)
+			    ip6_address_t *ip6, const ip4_address_t *ip4)
 {
-  ASSERT(d->ip6_src_len == 96); //No support for other lengths for now
+  ASSERT(d->ip6_src_len == 96 || d->ip6_src_len == 64); //No support for other lengths for now
+  u8 offset = d->ip6_src_len == 64 ? 9 : 12;
   ip6->as_u64[0] = d->ip6_src.as_u64[0];
-  ip6->as_u32[2] = d->ip6_src.as_u32[2];
-  ip6->as_u32[3] = ip4->as_u32;
+  ip6->as_u64[1] = d->ip6_src.as_u64[1];
+  clib_memcpy_fast(&ip6->as_u8[offset], ip4, 4);
 }
 
 static_always_inline u32
 ip6_map_t_embedded_address (map_domain_t *d, ip6_address_t *addr)
 {
-  ASSERT(d->ip6_src_len == 96); //No support for other lengths for now
-  return addr->as_u32[3];
+  ASSERT(d->ip6_src_len == 64 || d->ip6_src_len == 96);
+  u32 x;
+  u8 offset = d->ip6_src_len == 64 ? 9 : 12;
+  clib_memcpy(&x, &addr->as_u8[offset], 4);
+  return x;
 }
 
 static inline void
 map_domain_counter_lock (map_main_t *mm)
 {
   if (mm->counter_lock)
-    while (__sync_lock_test_and_set(mm->counter_lock, 1))
+    while (clib_atomic_test_and_set (mm->counter_lock))
       /* zzzz */ ;
 }
 static inline void
 map_domain_counter_unlock (map_main_t *mm)
 {
   if (mm->counter_lock)
-    *mm->counter_lock = 0;
+    clib_atomic_release (mm->counter_lock);
 }
 
 
@@ -586,6 +608,55 @@ map_send_all_to_node(vlib_main_t *vm, u32 *pi_vector,
     }
     vlib_put_next_frame(vm, node, next_index, n_left_to_next);
   }
+}
+
+static_always_inline void
+map_mss_clamping (tcp_header_t * tcp, ip_csum_t * sum, u16 mss_clamping)
+{
+  u8 *data;
+  u8 opt_len, opts_len, kind;
+  u16 mss;
+  u16 mss_value_net = clib_host_to_net_u16(mss_clamping);
+
+  if (!tcp_syn (tcp))
+    return;
+
+  opts_len = (tcp_doff (tcp) << 2) - sizeof (tcp_header_t);
+  data = (u8 *) (tcp + 1);
+  for (; opts_len > 0; opts_len -= opt_len, data += opt_len)
+    {
+      kind = data[0];
+
+      if (kind == TCP_OPTION_EOL)
+        break;
+      else if (kind == TCP_OPTION_NOOP)
+        {
+          opt_len = 1;
+          continue;
+        }
+      else
+        {
+          if (opts_len < 2)
+            return;
+          opt_len = data[1];
+
+          if (opt_len < 2 || opt_len > opts_len)
+            return;
+        }
+
+      if (kind == TCP_OPTION_MSS)
+        {
+          mss = *(u16 *) (data + 2);
+          if (clib_net_to_host_u16 (mss) > mss_clamping)
+            {
+              *sum =
+                ip_csum_update (*sum, mss, mss_value_net, ip4_header_t,
+                                length);
+              clib_memcpy (data + 2, &mss_value_net, 2);
+            }
+          return;
+        }
+    }
 }
 
 /*

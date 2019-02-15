@@ -244,8 +244,7 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	       && clib_net_to_host_u16 (ip60->payload_length) > 20))
 	    {
 	      d0 =
-		ip6_map_get_domain (vnet_buffer (p0)->ip.adj_index[VLIB_TX],
-				    (ip4_address_t *) & ip40->
+		ip4_map_get_domain ((ip4_address_t *) & ip40->
 				    src_address.as_u32, &map_domain_index0,
 				    &error0);
 	    }
@@ -272,8 +271,7 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	       && clib_net_to_host_u16 (ip61->payload_length) > 20))
 	    {
 	      d1 =
-		ip6_map_get_domain (vnet_buffer (p1)->ip.adj_index[VLIB_TX],
-				    (ip4_address_t *) & ip41->
+		ip4_map_get_domain ((ip4_address_t *) & ip41->
 				    src_address.as_u32, &map_domain_index1,
 				    &error1);
 	    }
@@ -308,7 +306,6 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 		      (d0->mtu
 		       && (clib_host_to_net_u16 (ip40->length) > d0->mtu)))
 		    {
-		      vnet_buffer (p0)->ip_frag.header_offset = 0;
 		      vnet_buffer (p0)->ip_frag.flags = 0;
 		      vnet_buffer (p0)->ip_frag.next_index =
 			IP4_FRAG_NEXT_IP4_LOOKUP;
@@ -341,7 +338,6 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 		      (d1->mtu
 		       && (clib_host_to_net_u16 (ip41->length) > d1->mtu)))
 		    {
-		      vnet_buffer (p1)->ip_frag.header_offset = 0;
 		      vnet_buffer (p1)->ip_frag.flags = 0;
 		      vnet_buffer (p1)->ip_frag.next_index =
 			IP4_FRAG_NEXT_IP4_LOOKUP;
@@ -457,8 +453,7 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	       && clib_net_to_host_u16 (ip60->payload_length) > 20))
 	    {
 	      d0 =
-		ip6_map_get_domain (vnet_buffer (p0)->ip.adj_index[VLIB_TX],
-				    (ip4_address_t *) & ip40->
+		ip4_map_get_domain ((ip4_address_t *) & ip40->
 				    src_address.as_u32, &map_domain_index0,
 				    &error0);
 	    }
@@ -480,7 +475,10 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	    }
 	  else
 	    {
-	      error0 = MAP_ERROR_BAD_PROTOCOL;
+	      /* XXX: Move get_domain to ip6_get_domain lookup on source */
+	      //error0 = MAP_ERROR_BAD_PROTOCOL;
+	      vlib_buffer_advance (p0, -sizeof (ip6_header_t));
+	      vnet_feature_next (&next0, p0);
 	    }
 
 	  if (d0)
@@ -495,7 +493,6 @@ ip6_map (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 		      (d0->mtu
 		       && (clib_host_to_net_u16 (ip40->length) > d0->mtu)))
 		    {
-		      vnet_buffer (p0)->ip_frag.header_offset = 0;
 		      vnet_buffer (p0)->ip_frag.flags = 0;
 		      vnet_buffer (p0)->ip_frag.next_index =
 			IP4_FRAG_NEXT_IP4_LOOKUP;
@@ -586,7 +583,7 @@ ip6_map_ip6_reass_prepare (vlib_main_t * vm, vlib_node_runtime_t * node,
       if (ip6_frag_hdr_offset (frag0))
 	{
 	  //Not first fragment, add the IPv4 header
-	  clib_memcpy (ip40, &r->ip4_header, 20);
+	  clib_memcpy_fast (ip40, &r->ip4_header, 20);
 	}
 
 #ifdef MAP_IP6_REASS_COUNT_BYTES
@@ -597,8 +594,8 @@ ip6_map_ip6_reass_prepare (vlib_main_t * vm, vlib_node_runtime_t * node,
       if (ip6_frag_hdr_more (frag0))
 	{
 	  //Not last fragment, we copy end of next
-	  clib_memcpy (u8_ptr_add (ip60, p0->current_length),
-		       r->fragments[i].next_data, 20);
+	  clib_memcpy_fast (u8_ptr_add (ip60, p0->current_length),
+			    r->fragments[i].next_data, 20);
 	  p0->current_length += 20;
 	  ip60->payload_length = u16_net_add (ip60->payload_length, 20);
 	}
@@ -814,7 +811,7 @@ ip6_map_ip6_reass (vlib_main_t * vm,
 }
 
 /*
- * ip6_ip4_virt_reass
+ * ip6_map_ip4_reass
  */
 static uword
 ip6_map_ip4_reass (vlib_main_t * vm,
@@ -861,8 +858,7 @@ ip6_map_ip4_reass (vlib_main_t * vm,
 	  ip60 = ((ip6_header_t *) ip40) - 1;
 
 	  d0 =
-	    ip6_map_get_domain (vnet_buffer (p0)->ip.adj_index[VLIB_TX],
-				(ip4_address_t *) & ip40->src_address.as_u32,
+	    ip4_map_get_domain ((ip4_address_t *) & ip40->src_address.as_u32,
 				&map_domain_index0, &error0);
 
 	  map_ip4_reass_lock ();
@@ -935,7 +931,6 @@ ip6_map_ip4_reass (vlib_main_t * vm,
 	      (d0->mtu && (clib_host_to_net_u16 (ip40->length) > d0->mtu)
 	       && error0 == MAP_ERROR_NONE && !cached))
 	    {
-	      vnet_buffer (p0)->ip_frag.header_offset = 0;
 	      vnet_buffer (p0)->ip_frag.flags = 0;
 	      vnet_buffer (p0)->ip_frag.next_index = IP4_FRAG_NEXT_IP4_LOOKUP;
 	      vnet_buffer (p0)->ip_frag.mtu = d0->mtu;
@@ -980,17 +975,16 @@ ip6_map_ip4_reass (vlib_main_t * vm,
 	      u32 len = vec_len (fragments_to_loopback);
 	      if (len <= VLIB_FRAME_SIZE)
 		{
-		  clib_memcpy (from, fragments_to_loopback,
-			       sizeof (u32) * len);
+		  clib_memcpy_fast (from, fragments_to_loopback,
+				    sizeof (u32) * len);
 		  n_left_from = len;
 		  vec_reset_length (fragments_to_loopback);
 		}
 	      else
 		{
-		  clib_memcpy (from,
-			       fragments_to_loopback + (len -
-							VLIB_FRAME_SIZE),
-			       sizeof (u32) * VLIB_FRAME_SIZE);
+		  clib_memcpy_fast (from, fragments_to_loopback +
+				    (len - VLIB_FRAME_SIZE),
+				    sizeof (u32) * VLIB_FRAME_SIZE);
 		  n_left_from = VLIB_FRAME_SIZE;
 		  _vec_len (fragments_to_loopback) = len - VLIB_FRAME_SIZE;
 		}
@@ -1177,6 +1171,13 @@ static char *map_error_strings[] = {
 };
 
 /* *INDENT-OFF* */
+VNET_FEATURE_INIT (ip6_map_feature, static) =
+{
+  .arc_name = "ip6-unicast",
+  .node_name = "ip6-map",
+  .runs_before = VNET_FEATURES ("ip6-flow-classify"),
+};
+
 VLIB_REGISTER_NODE(ip6_map_node) = {
   .function = ip6_map,
   .name = "ip6-map",

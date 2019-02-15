@@ -28,7 +28,6 @@
 #include <vapi/bond.api.vapi.hpp>
 #include <vapi/interface.api.vapi.hpp>
 #include <vapi/pipe.api.vapi.hpp>
-#include <vapi/tap.api.vapi.hpp>
 #include <vapi/tapv2.api.vapi.hpp>
 #include <vapi/vhost_user.api.vapi.hpp>
 
@@ -50,9 +49,6 @@ public:
     const vapi_payload_af_packet_details& vd);
 
   static std::shared_ptr<tap_interface> new_tap_interface(
-    const vapi_payload_sw_interface_tap_details& vd);
-
-  static std::shared_ptr<tap_interface> new_tap_v2_interface(
     const vapi_payload_sw_interface_tap_v2_details& vd);
 
   static std::shared_ptr<bond_interface> new_bond_interface(

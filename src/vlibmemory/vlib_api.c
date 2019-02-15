@@ -143,7 +143,7 @@ vl_api_api_versions_t_handler (vl_api_api_versions_t * mp)
     return;
 
   rmp = vl_msg_api_alloc (msg_size);
-  memset (rmp, 0, msg_size);
+  clib_memset (rmp, 0, msg_size);
   rmp->_vl_msg_id = ntohs (VL_API_API_VERSIONS_REPLY);
 
   /* fill in the message */
@@ -165,8 +165,8 @@ vl_api_api_versions_t_handler (vl_api_api_versions_t * mp)
   vl_api_send_msg (reg, (u8 *) rmp);
 }
 
-#define foreach_vlib_api_msg                            \
-_(GET_FIRST_MSG_ID, get_first_msg_id)                   \
+#define foreach_vlib_api_msg				\
+_(GET_FIRST_MSG_ID, get_first_msg_id)			\
 _(API_VERSIONS, api_versions)
 
 /*
@@ -178,7 +178,7 @@ vlib_api_init (void)
   vl_msg_api_msg_config_t cfg;
   vl_msg_api_msg_config_t *c = &cfg;
 
-  memset (c, 0, sizeof (*c));
+  clib_memset (c, 0, sizeof (*c));
 
 #define _(N,n) do {                                             \
     c->id = VL_API_##N;                                         \
@@ -213,7 +213,7 @@ send_one_plugin_msg_ids_msg (u8 * name, u16 first_msg_id, u16 last_msg_id)
   svm_queue_t *q;
 
   mp = vl_msg_api_alloc_as_if_client (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
 
   mp->_vl_msg_id = clib_host_to_net_u16 (VL_API_TRACE_PLUGIN_MSG_IDS);
   strncpy ((char *) mp->plugin_name, (char *) name,
@@ -346,7 +346,8 @@ vl_api_clnt_process (vlib_main_t * vm, vlib_node_runtime_t * node,
       start_time = vlib_time_now (vm);
       while (1)
 	{
-	  if (vl_mem_api_handle_msg_main (vm, node))
+	  if (vl_mem_api_handle_rpc (vm, node)
+	      || vl_mem_api_handle_msg_main (vm, node))
 	    {
 	      vm->api_queue_nonempty = 0;
 	      VL_MEM_API_LOG_Q_LEN ("q-underflow: len %d", 0);
@@ -387,9 +388,9 @@ vl_api_clnt_process (vlib_main_t * vm, vlib_node_runtime_t * node,
        */
       if (PREDICT_FALSE (vec_len (am->vlib_private_rps)))
 	{
-	  vl_mem_api_handle_msg_private (vm, node, private_segment_rotor++);
 	  if (private_segment_rotor >= vec_len (am->vlib_private_rps))
 	    private_segment_rotor = 0;
+	  vl_mem_api_handle_msg_private (vm, node, private_segment_rotor++);
 	}
 
       vlib_process_wait_for_event_or_clock (vm, sleep_time);
@@ -463,7 +464,7 @@ api_rx_from_node (vlib_main_t * vm,
 
   vec_validate (long_msg, 4095);
   n_left_from = frame->n_vectors;
-  from = vlib_frame_args (frame);
+  from = vlib_frame_vector_args (frame);
 
   while (n_left_from > 0)
     {
@@ -497,7 +498,7 @@ api_rx_from_node (vlib_main_t * vm,
     }
 
   /* Free what we've been given. */
-  vlib_buffer_free (vm, vlib_frame_args (frame), n_packets);
+  vlib_buffer_free (vm, vlib_frame_vector_args (frame), n_packets);
 
   return n_packets;
 }
@@ -564,36 +565,14 @@ vl_api_rpc_call_reply_t_handler (vl_api_rpc_call_reply_t * mp)
 void
 vl_api_send_pending_rpc_requests (vlib_main_t * vm)
 {
-  api_main_t *am = &api_main;
-  vl_shmem_hdr_t *shmem_hdr = am->shmem_hdr;
-  svm_queue_t *q;
-  int i;
+  vlib_main_t *vm_global = &vlib_global_main;
 
-  /*
-   * Use the "normal" control-plane mechanism for the main thread.
-   * Well, almost. if the main input queue is full, we cannot
-   * block. Otherwise, we can expect a barrier sync timeout.
-   */
-  q = shmem_hdr->vl_input_queue;
+  ASSERT (vm != vm_global);
 
-  for (i = 0; i < vec_len (vm->pending_rpc_requests); i++)
-    {
-      while (pthread_mutex_trylock (&q->mutex))
-	vlib_worker_thread_barrier_check ();
-
-      while (PREDICT_FALSE (svm_queue_is_full (q)))
-	{
-	  pthread_mutex_unlock (&q->mutex);
-	  vlib_worker_thread_barrier_check ();
-	  while (pthread_mutex_trylock (&q->mutex))
-	    vlib_worker_thread_barrier_check ();
-	}
-
-      vl_msg_api_send_shmem_nolock (q, (u8 *) (vm->pending_rpc_requests + i));
-
-      pthread_mutex_unlock (&q->mutex);
-    }
-  _vec_len (vm->pending_rpc_requests) = 0;
+  clib_spinlock_lock_if_init (&vm_global->pending_rpc_lock);
+  vec_append (vm_global->pending_rpc_requests, vm->pending_rpc_requests);
+  vec_reset_length (vm->pending_rpc_requests);
+  clib_spinlock_unlock_if_init (&vm_global->pending_rpc_lock);
 }
 
 always_inline void
@@ -601,6 +580,7 @@ vl_api_rpc_call_main_thread_inline (void *fp, u8 * data, u32 data_length,
 				    u8 force_rpc)
 {
   vl_api_rpc_call_t *mp;
+  vlib_main_t *vm_global = &vlib_global_main;
   vlib_main_t *vm = vlib_get_main ();
 
   /* Main thread and not a forced RPC: call the function directly */
@@ -620,13 +600,18 @@ vl_api_rpc_call_main_thread_inline (void *fp, u8 * data, u32 data_length,
   /* Otherwise, actually do an RPC */
   mp = vl_msg_api_alloc_as_if_client (sizeof (*mp) + data_length);
 
-  memset (mp, 0, sizeof (*mp));
-  clib_memcpy (mp->data, data, data_length);
+  clib_memset (mp, 0, sizeof (*mp));
+  clib_memcpy_fast (mp->data, data, data_length);
   mp->_vl_msg_id = ntohs (VL_API_RPC_CALL);
   mp->function = pointer_to_uword (fp);
   mp->need_barrier_sync = 1;
 
+  /* Add to the pending vector. Thread 0 requires locking. */
+  if (vm == vm_global)
+    clib_spinlock_lock_if_init (&vm_global->pending_rpc_lock);
   vec_add1 (vm->pending_rpc_requests, (uword) mp);
+  if (vm == vm_global)
+    clib_spinlock_unlock_if_init (&vm_global->pending_rpc_lock);
 }
 
 /*

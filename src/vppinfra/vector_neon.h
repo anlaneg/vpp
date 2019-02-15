@@ -20,64 +20,23 @@
 /* Arithmetic */
 #define u16x8_sub_saturate(a,b) vsubq_u16(a,b)
 #define i16x8_sub_saturate(a,b) vsubq_s16(a,b)
+/* Dummy. Aid making uniform macros */
+#define vreinterpretq_u8_u8(a)  a
 
 /* Converts all ones/zeros compare mask to bitmap. */
 always_inline u32
-u8x16_compare_byte_mask (u8x16 x)
+u8x16_compare_byte_mask (u8x16 v)
 {
-  uint8x16_t mask_shift =
-    { -7, -6, -5, -4, -3, -2, -1, 0, -7, -6, -5, -4, -3, -2, -1, 0 };
-  uint8x16_t mask_and = vdupq_n_u8 (0x80);
-  x = vandq_u8 (x, mask_and);
-  x = vshlq_u8 (x, vreinterpretq_s8_u8 (mask_shift));
-  x = vpaddq_u8 (x, x);
-  x = vpaddq_u8 (x, x);
-  x = vpaddq_u8 (x, x);
-  return vgetq_lane_u8 (x, 0) | (vgetq_lane_u8 (x, 1) << 8);
-}
-
-always_inline u32
-u16x8_zero_byte_mask (u16x8 input)
-{
-  u8x16 vall_one = vdupq_n_u8 (0x0);
-  u8x16 res_values = { 0x01, 0x02, 0x04, 0x08,
-    0x10, 0x20, 0x40, 0x80,
-    0x01, 0x02, 0x04, 0x08,
-    0x10, 0x20, 0x40, 0x80
+  uint8x16_t mask = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
   };
-
-  /* input --> [0x80, 0x40, 0x01, 0xf0, ... ] */
-  u8x16 test_result =
-    vreinterpretq_u8_u16 (vceqq_u16 (input, vreinterpretq_u16_u8 (vall_one)));
-  u8x16 before_merge = vminq_u8 (test_result, res_values);
-  /*before_merge--> [0x80, 0x00, 0x00, 0x10, ... ] */
-  /* u8x16 --> [a,b,c,d, e,f,g,h, i,j,k,l, m,n,o,p] */
-  /* pair add until we have 2 uint64_t  */
-  u16x8 merge1 = vpaddlq_u8 (before_merge);
-  /* u16x8-->  [a+b,c+d, e+f,g+h, i+j,k+l, m+n,o+p] */
-  u32x4 merge2 = vpaddlq_u16 (merge1);
-  /* u32x4-->  [a+b+c+d, e+f+g+h, i+j+k+l, m+n+o+p] */
-  u64x2 merge3 = vpaddlq_u32 (merge2);
-  /* u64x2-->  [a+b+c+d+e+f+g+h,  i+j+k+l+m+n+o+p]  */
-  return (u32) (vgetq_lane_u64 (merge3, 1) << 8) + vgetq_lane_u64 (merge3, 0);
-}
-
-always_inline u32
-u8x16_zero_byte_mask (u8x16 input)
-{
-  return u16x8_zero_byte_mask ((u16x8) input);
-}
-
-always_inline u32
-u32x4_zero_byte_mask (u32x4 input)
-{
-  return u16x8_zero_byte_mask ((u16x8) input);
-}
-
-always_inline u32
-u64x2_zero_byte_mask (u64x2 input)
-{
-  return u16x8_zero_byte_mask ((u16x8) input);
+  /* v --> [0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0x00, ... ] */
+  uint8x16_t x = vandq_u8 (v, mask);
+  /* after v & mask,
+   * x --> [0x01, 0x00, 0x04, 0x08, 0x10, 0x00, 0x40, 0x00, ... ] */
+  uint64x2_t x64 = vpaddlq_u32 (vpaddlq_u16 (vpaddlq_u8 (x)));
+  /* after merge, x64 --> [0x5D, 0x.. ] */
+  return (u32) (vgetq_lane_u64 (x64, 0) + (vgetq_lane_u64 (x64, 1) << 8));
 }
 
 /* *INDENT-OFF* */
@@ -112,6 +71,11 @@ t##s##x##c##_is_equal (t##s##x##c a, t##s##x##c b)			\
 static_always_inline int						\
 t##s##x##c##_is_all_equal (t##s##x##c v, t##s x)			\
 { return t##s##x##c##_is_equal (v, t##s##x##c##_splat (x)); };		\
+\
+static_always_inline u32						\
+t##s##x##c##_zero_byte_mask (t##s##x##c x)			\
+{ uint8x16_t v = vreinterpretq_u8_u##s (vceqq_##i (vdupq_n_##i(0), x));  \
+  return u8x16_compare_byte_mask (v); } \
 
 foreach_neon_vec128i foreach_neon_vec128u
 
@@ -121,11 +85,7 @@ foreach_neon_vec128i foreach_neon_vec128u
 static_always_inline u16x8
 u16x8_byte_swap (u16x8 v)
 {
-  const u8 swap_pattern[] = {
-    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14,
-  };
-  u8x16 swap = vld1q_u8 (swap_pattern);
-  return (u16x8) vqtbl1q_u8 ((u8x16) v, swap);
+  return (u16x8) vrev16q_u8 ((u8x16) v);
 }
 
 static_always_inline u8x16
@@ -133,6 +93,41 @@ u8x16_shuffle (u8x16 v, u8x16 m)
 {
   return (u8x16) vqtbl1q_u8 (v, m);
 }
+
+static_always_inline u32x4
+u32x4_hadd (u32x4 v1, u32x4 v2)
+{
+  return (u32x4) vpaddq_u32 (v1, v2);
+}
+
+static_always_inline u64x2
+u32x4_extend_to_u64x2 (u32x4 v)
+{
+  return vmovl_u32 (vget_low_u32 (v));
+}
+
+static_always_inline u64x2
+u32x4_extend_to_u64x2_high (u32x4 v)
+{
+  return vmovl_high_u32 (v);
+}
+
+/* Creates a mask made up of the MSB of each byte of the source vector */
+static_always_inline u16
+u8x16_msb_mask (u8x16 v)
+{
+  int8x16_t shift =
+    { -7, -6, -5, -4, -3, -2, -1, 0, -7, -6, -5, -4, -3, -2, -1, 0 };
+  /* v --> [0x80, 0x7F, 0xF0, 0xAF, 0xF0, 0x00, 0xF2, 0x00, ... ] */
+  uint8x16_t x = vshlq_u8 (vandq_u8 (v, vdupq_n_u8 (0x80)), shift);
+  /* after (v & 0x80) >> shift,
+   * x --> [0x01, 0x00, 0x04, 0x08, 0x10, 0x00, 0x40, 0x00, ... ] */
+  uint64x2_t x64 = vpaddlq_u32 (vpaddlq_u16 (vpaddlq_u8 (x)));
+  /* after merge, x64 --> [0x5D, 0x.. ] */
+  return (u16) (vgetq_lane_u64 (x64, 0) + (vgetq_lane_u64 (x64, 1) << 8));
+}
+
+#define CLIB_HAVE_VEC128_MSB_MASK
 
 #define CLIB_HAVE_VEC128_UNALIGNED_LOAD_STORE
 #define CLIB_VEC128_SPLAT_DEFINED

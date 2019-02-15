@@ -37,15 +37,7 @@ newreno_rcv_ack (tcp_connection_t * tc)
   else
     {
       /* tc->cwnd += clib_max ((tc->snd_mss * tc->snd_mss) / tc->cwnd, 1); */
-      tc->cwnd_acc_bytes += tc->bytes_acked;
-      if (tc->cwnd_acc_bytes >= tc->cwnd)
-	{
-	  u32 inc = tc->cwnd_acc_bytes / tc->cwnd;
-	  tc->cwnd_acc_bytes -= inc * tc->cwnd;
-	  tc->cwnd += inc * tc->snd_mss;
-	}
-      tc->cwnd = clib_min (tc->cwnd,
-			   transport_tx_fifo_size (&tc->connection));
+      tcp_cwnd_accumulate (tc, tc->cwnd, tc->bytes_acked);
     }
 }
 
@@ -87,6 +79,7 @@ newreno_conn_init (tcp_connection_t * tc)
 }
 
 const static tcp_cc_algorithm_t tcp_newreno = {
+  .name = "newreno",
   .congestion = newreno_congestion,
   .recovered = newreno_recovered,
   .rcv_ack = newreno_rcv_ack,

@@ -185,7 +185,7 @@ pool_free_elts (void *v)
 
    First search free list.  If nothing is free extend vector of objects.
 */
-#define pool_get_aligned(P,E,A)                                         \
+#define _pool_get_aligned_internal(P,E,A,Z)                             \
 do {                                                                    \
   pool_header_t * _pool_var (p) = pool_header (P);                      \
   uword _pool_var (l);                                                  \
@@ -222,11 +222,22 @@ do {                                                                    \
 		       /* align */ (A));                                \
       E = vec_end (P) - 1;                                              \
     }									\
+  if (Z)                                                                \
+    memset(E, 0, sizeof(*E));						\
 } while (0)
+
+/** Allocate an object E from a pool P with alignment A */
+#define pool_get_aligned(P,E,A) _pool_get_aligned_internal(P,E,A,0)
+
+/** Allocate an object E from a pool P with alignment A and zero it */
+#define pool_get_aligned_zero(P,E,A) _pool_get_aligned_internal(P,E,A,1)
 
 /** Allocate an object E from a pool P (unspecified alignment). */
 //自pool中获取一个元素
 #define pool_get(P,E) pool_get_aligned(P,E,0)
+
+/** Allocate an object E from a pool P and zero it */
+#define pool_get_zero(P,E) pool_get_aligned_zero(P,E,0)
 
 /** See if pool_get will expand the pool or not */
 #define pool_get_aligned_will_expand(P,YESNO,A)                         \
@@ -258,6 +269,7 @@ do {                                                                    \
     }                                                                   \
 } while (0)
 
+/** Tell the caller if pool get will expand the pool */
 #define pool_get_will_expand(P,YESNO) pool_get_aligned_will_expand(P,YESNO,0)
 
 /** Use free bitmap to query whether given element is free. */
@@ -328,6 +340,44 @@ do {									\
 
 /** Allocate N more free elements to pool (unspecified alignment). */
 #define pool_alloc(P,N) pool_alloc_aligned(P,N,0)
+
+/**
+ * Return copy of pool with alignment
+ *
+ * @param P pool to copy
+ * @param A alignment (may be zero)
+ * @return copy of pool
+ */
+#define pool_dup_aligned(P,A)						\
+({									\
+  typeof (P) _pool_var (new) = 0;					\
+  pool_header_t * _pool_var (ph), * _pool_var (new_ph);			\
+  u32 _pool_var (n) = pool_len (P);					\
+  if ((P))								\
+    {									\
+      _pool_var (new) = _vec_resize (_pool_var (new), _pool_var (n),	\
+                                     _pool_var (n) * sizeof ((P)[0]), 	\
+                                     pool_aligned_header_bytes, (A));	\
+      clib_memcpy_fast (_pool_var (new), (P), 				\
+                        _pool_var (n) * sizeof ((P)[0]));		\
+      _pool_var (ph) = pool_header (P);					\
+      _pool_var (new_ph) = pool_header (_pool_var (new));		\
+      _pool_var (new_ph)->free_bitmap = 				\
+        clib_bitmap_dup (_pool_var (ph)->free_bitmap);			\
+      _pool_var (new_ph)->free_indices = 				\
+        vec_dup (_pool_var (ph)->free_indices);				\
+      _pool_var (new_ph)->max_elts = _pool_var (ph)->max_elts;		\
+    }									\
+  _pool_var (new);							\
+})
+
+/**
+ * Return copy of pool without alignment
+ *
+ * @param P pool to copy
+ * @return copy of pool
+ */
+#define pool_dup(P) pool_dup_aligned(P,0)
 
 /** Low-level free pool operator (do not call directly). */
 always_inline void *
@@ -494,7 +544,7 @@ do {									\
     }
 
 /**
- * @brief Remove all elemenets from a pool in a safe way
+ * @brief Remove all elements from a pool in a safe way
  *
  * @param VAR each element in the pool
  * @param POOL The pool to flush

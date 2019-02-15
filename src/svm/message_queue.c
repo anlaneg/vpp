@@ -108,7 +108,7 @@ svm_msg_q_alloc_msg_w_ring (svm_msg_q_t * mq, u32 ring_index)
   msg.ring_index = ring - mq->rings;
   msg.elt_index = ring->tail;
   ring->tail = (ring->tail + 1) % ring->nitems;
-  __sync_fetch_and_add (&ring->cursize, 1);
+  clib_atomic_fetch_add (&ring->cursize, 1);
   return msg;
 }
 
@@ -155,7 +155,7 @@ svm_msg_q_alloc_msg (svm_msg_q_t * mq, u32 nbytes)
     msg.ring_index = ring - mq->rings;
     msg.elt_index = ring->tail;
     ring->tail = (ring->tail + 1) % ring->nitems;
-    __sync_fetch_and_add (&ring->cursize, 1);
+    clib_atomic_fetch_add (&ring->cursize, 1);
     break;
   }
   return msg;
@@ -173,8 +173,7 @@ svm_msg_q_free_msg (svm_msg_q_t * mq, svm_msg_q_msg_t * msg)
 {
   svm_msg_q_ring_t *ring;
 
-  if (vec_len (mq->rings) <= msg->ring_index)
-    return;
+  ASSERT (vec_len (mq->rings) > msg->ring_index);
   ring = &mq->rings[msg->ring_index];
   if (msg->elt_index == ring->head)
     {
@@ -182,10 +181,11 @@ svm_msg_q_free_msg (svm_msg_q_t * mq, svm_msg_q_msg_t * msg)
     }
   else
     {
+      clib_warning ("message out of order");
       /* for now, expect messages to be processed in order */
       ASSERT (0);
     }
-  __sync_fetch_and_sub (&ring->cursize, 1);
+  clib_atomic_fetch_sub (&ring->cursize, 1);
 }
 
 static int

@@ -71,6 +71,7 @@ format_l2_input_features (u8 * s, va_list * args)
 #undef _
   };
   u32 feature_bitmap = va_arg (*args, u32);
+  u32 verbose = va_arg (*args, u32);
 
   if (feature_bitmap == 0)
     {
@@ -81,8 +82,16 @@ format_l2_input_features (u8 * s, va_list * args)
   feature_bitmap &= ~L2INPUT_FEAT_DROP;	/* Not a feature */
   int i;
   for (i = L2INPUT_N_FEAT; i >= 0; i--)
-    if (feature_bitmap & (1 << i))
-      s = format (s, "%10s (%s)\n", display_names[i], l2input_feat_names[i]);
+    {
+      if (feature_bitmap & (1 << i))
+	{
+	  if (verbose)
+	    s = format (s, "%17s (%s)\n",
+			display_names[i], l2input_feat_names[i]);
+	  else
+	    s = format (s, "%s ", l2input_feat_names[i]);
+	}
+    }
   return s;
 }
 
@@ -177,7 +186,8 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
 
       /* Disable bridge forwarding (flooding will execute instead if not xconnect) */
       feat_mask &= ~(L2INPUT_FEAT_FWD |
-		     L2INPUT_FEAT_UU_FLOOD | L2INPUT_FEAT_GBP_FWD);
+		     L2INPUT_FEAT_UU_FLOOD |
+		     L2INPUT_FEAT_UU_FWD | L2INPUT_FEAT_GBP_FWD);
 
       /* Disable ARP-term for non-ARP and non-ICMP6 packet */
       if (ethertype != ETHERNET_TYPE_ARP &&
@@ -356,8 +366,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b0, sizeof (*t));
 		  t->sw_if_index = sw_if_index0;
-		  clib_memcpy (t->src, h0->src_address, 6);
-		  clib_memcpy (t->dst, h0->dst_address, 6);
+		  clib_memcpy_fast (t->src, h0->src_address, 6);
+		  clib_memcpy_fast (t->dst, h0->dst_address, 6);
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -365,8 +375,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b1, sizeof (*t));
 		  t->sw_if_index = sw_if_index1;
-		  clib_memcpy (t->src, h1->src_address, 6);
-		  clib_memcpy (t->dst, h1->dst_address, 6);
+		  clib_memcpy_fast (t->src, h1->src_address, 6);
+		  clib_memcpy_fast (t->dst, h1->dst_address, 6);
 		}
 	      if (b2->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -374,8 +384,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b2, sizeof (*t));
 		  t->sw_if_index = sw_if_index2;
-		  clib_memcpy (t->src, h2->src_address, 6);
-		  clib_memcpy (t->dst, h2->dst_address, 6);
+		  clib_memcpy_fast (t->src, h2->src_address, 6);
+		  clib_memcpy_fast (t->dst, h2->dst_address, 6);
 		}
 	      if (b3->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -383,8 +393,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b3, sizeof (*t));
 		  t->sw_if_index = sw_if_index3;
-		  clib_memcpy (t->src, h3->src_address, 6);
-		  clib_memcpy (t->dst, h3->dst_address, 6);
+		  clib_memcpy_fast (t->src, h3->src_address, 6);
+		  clib_memcpy_fast (t->dst, h3->dst_address, 6);
 		}
 	    }
 
@@ -424,8 +434,8 @@ l2input_node_inline (vlib_main_t * vm,
 	      l2input_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
 	      sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 	      t->sw_if_index = sw_if_index0;
-	      clib_memcpy (t->src, h0->src_address, 6);
-	      clib_memcpy (t->dst, h0->dst_address, 6);
+	      clib_memcpy_fast (t->src, h0->src_address, 6);
+	      clib_memcpy_fast (t->dst, h0->dst_address, 6);
 	    }
 
 	  classify_and_dispatch (msm, b0, &next0);
@@ -517,7 +527,8 @@ l2input_intf_config (u32 sw_if_index)
 
 /** Enable (or disable) the feature in the bitmap for the given interface. */
 u32
-l2input_intf_bitmap_enable (u32 sw_if_index, u32 feature_bitmap, u32 enable)
+l2input_intf_bitmap_enable (u32 sw_if_index,
+			    l2input_feat_masks_t feature_bitmap, u32 enable)
 {
   l2_input_config_t *config = l2input_intf_config (sw_if_index);
 
@@ -539,6 +550,27 @@ l2input_set_bridge_features (u32 bd_index, u32 feat_mask, u32 feat_value)
   return bd_config->feature_bitmap;
 }
 
+void
+l2input_interface_mac_change (u32 sw_if_index,
+			      const u8 * old_address, const u8 * new_address)
+{
+  /* check if the sw_if_index passed is a BVI in a BD */
+  l2_input_config_t *intf_config;
+
+  intf_config = l2input_intf_config (sw_if_index);
+
+  if (intf_config->bridge && intf_config->bvi)
+    {
+      /* delete and re-add l2fib entry for the bvi interface */
+      l2fib_del_entry (old_address, intf_config->bd_index, sw_if_index);
+      l2fib_add_entry (new_address,
+		       intf_config->bd_index,
+		       sw_if_index,
+		       L2FIB_ENTRY_RESULT_FLAG_BVI |
+		       L2FIB_ENTRY_RESULT_FLAG_STATIC);
+    }
+}
+
 /**
  * Set the subinterface to run in l2 or l3 mode.
  * For L3 mode, just the sw_if_index is specified.
@@ -552,7 +584,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 		 u32 mode,	/* One of L2 modes or back to L3 mode        */
 		 u32 sw_if_index,	/* sw interface index                */
 		 u32 bd_index,	/* for bridged interface                     */
-		 u32 bvi,	/* the bridged interface is the BVI          */
+		 l2_bd_port_type_t port_type,	/* port_type */
 		 u32 shg,	/* the bridged interface split horizon group */
 		 u32 xc_sw_if_index)	/* peer interface for xconnect       */
 {
@@ -592,6 +624,11 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  si = vnet_get_sw_interface (vnm, sw_if_index);
 	  si->flood_class = VNET_FLOOD_CLASS_NO_FLOOD;
 	}
+      if (bd_config->uu_fwd_sw_if_index == sw_if_index)
+	{
+	  bd_config->uu_fwd_sw_if_index = ~0;
+	  bd_config->feature_bitmap &= ~L2INPUT_FEAT_UU_FWD;
+	}
 
       /* Clear MACs learned on the interface */
       if ((config->feature_bitmap & L2INPUT_FEAT_LEARN) ||
@@ -622,7 +659,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
       /* Clear L2 output config */
       out_config = l2output_intf_config (sw_if_index);
-      memset (out_config, 0, sizeof (l2_output_config_t));
+      clib_memset (out_config, 0, sizeof (l2_output_config_t));
 
       /* Make sure any L2-output packet to this interface now in L3 mode is
        * dropped. This may happen if L2 FIB MAC entry is stale */
@@ -636,6 +673,8 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
       if (mode == MODE_L2_BRIDGE)
 	{
+	  u8 member_flags;
+
 	  /*
 	   * Remove a check that the interface must be an Ethernet.
 	   * Specifically so we can bridge to L3 tunnel interfaces.
@@ -655,8 +694,12 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	   * Enable forwarding, flooding, learning and ARP termination by default
 	   * (note that ARP term is disabled on BD feature bitmap by default)
 	   */
-	  config->feature_bitmap |= L2INPUT_FEAT_FWD | L2INPUT_FEAT_UU_FLOOD |
-	    L2INPUT_FEAT_FLOOD | L2INPUT_FEAT_LEARN | L2INPUT_FEAT_ARP_TERM;
+	  config->feature_bitmap |= (L2INPUT_FEAT_FWD |
+				     L2INPUT_FEAT_UU_FLOOD |
+				     L2INPUT_FEAT_UU_FWD |
+				     L2INPUT_FEAT_FLOOD |
+				     L2INPUT_FEAT_LEARN |
+				     L2INPUT_FEAT_ARP_TERM);
 
 	  /* Make sure last-chance drop is configured */
 	  config->feature_bitmap |= L2INPUT_FEAT_DROP;
@@ -671,7 +714,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  /* TODO: think: add l2fib entry even for non-bvi interface? */
 
 	  /* Do BVI interface initializations */
-	  if (bvi)
+	  if (L2_BD_PORT_TYPE_BVI == port_type)
 	    {
 	      vnet_sw_interface_t *si;
 
@@ -684,7 +727,9 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	      config->bvi = 1;
 
 	      /* create the l2fib entry for the bvi interface */
-	      l2fib_add_fwd_entry (hi->hw_address, bd_index, sw_if_index, 1, 1);	/* static + bvi */
+	      l2fib_add_entry (hi->hw_address, bd_index, sw_if_index,
+			       L2FIB_ENTRY_RESULT_FLAG_BVI |
+			       L2FIB_ENTRY_RESULT_FLAG_STATIC);
 
 	      /* Disable learning by default. no use since l2fib entry is static. */
 	      config->feature_bitmap &= ~L2INPUT_FEAT_LEARN;
@@ -692,16 +737,29 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	      /* since this is a BVI interface we want to flood to it */
 	      si = vnet_get_sw_interface (vnm, sw_if_index);
 	      si->flood_class = VNET_FLOOD_CLASS_BVI;
+	      member_flags = L2_FLOOD_MEMBER_BVI;
+	    }
+	  else if (L2_BD_PORT_TYPE_UU_FWD == port_type)
+	    {
+	      bd_config->uu_fwd_sw_if_index = sw_if_index;
+	      bd_config->feature_bitmap |= L2INPUT_FEAT_UU_FWD;
+	    }
+	  else
+	    {
+	      member_flags = L2_FLOOD_MEMBER_NORMAL;
 	    }
 
-	  /* Add interface to bridge-domain flood vector */
-	  l2_flood_member_t member = {
-	    .sw_if_index = sw_if_index,
-	    .flags = bvi ? L2_FLOOD_MEMBER_BVI : L2_FLOOD_MEMBER_NORMAL,
-	    .shg = shg,
-	  };
-	  bd_add_member (bd_config, &member);
-
+	  if (L2_BD_PORT_TYPE_NORMAL == port_type ||
+	      L2_BD_PORT_TYPE_BVI == port_type)
+	    {
+	      /* Add interface to bridge-domain flood vector */
+	      l2_flood_member_t member = {
+		.sw_if_index = sw_if_index,
+		.flags = member_flags,
+		.shg = shg,
+	      };
+	      bd_add_member (bd_config, &member);
+	    }
 	}
       else if (mode == MODE_L2_XC)
 	{
@@ -804,10 +862,10 @@ int_l2_bridge (vlib_main_t * vm,
 	       unformat_input_t * input, vlib_cli_command_t * cmd)
 {
   vnet_main_t *vnm = vnet_get_main ();
+  l2_bd_port_type_t port_type;
   clib_error_t *error = 0;
   u32 bd_index, bd_id;
   u32 sw_if_index;
-  u32 bvi;
   u32 rc;
   u32 shg;
 
@@ -834,7 +892,11 @@ int_l2_bridge (vlib_main_t * vm,
   bd_index = bd_find_or_add_bd_index (&bd_main, bd_id);
 
   /* optional bvi  */
-  bvi = unformat (input, "bvi");
+  port_type = L2_BD_PORT_TYPE_NORMAL;
+  if (unformat (input, "bvi"))
+    port_type = L2_BD_PORT_TYPE_BVI;
+  if (unformat (input, "uu-fwd"))
+    port_type = L2_BD_PORT_TYPE_UU_FWD;
 
   /* optional split horizon group */
   shg = 0;
@@ -842,8 +904,8 @@ int_l2_bridge (vlib_main_t * vm,
 
   /* set the interface mode */
   if ((rc =
-       set_int_l2_mode (vm, vnm, MODE_L2_BRIDGE, sw_if_index, bd_index, bvi,
-			shg, 0)))
+       set_int_l2_mode (vm, vnm, MODE_L2_BRIDGE, sw_if_index, bd_index,
+			port_type, shg, 0)))
     {
       if (rc == MODE_ERROR_ETH)
 	{
@@ -897,7 +959,7 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (int_l2_bridge_cli, static) = {
   .path = "set interface l2 bridge",
-  .short_help = "set interface l2 bridge <interface> <bridge-domain-id> [bvi] [shg]",
+  .short_help = "set interface l2 bridge <interface> <bridge-domain-id> [bvi|uu-fwd] [shg]",
   .function = int_l2_bridge,
 };
 /* *INDENT-ON* */
@@ -933,7 +995,8 @@ int_l2_xc (vlib_main_t * vm,
 
   /* set the interface mode */
   if (set_int_l2_mode
-      (vm, vnm, MODE_L2_XC, sw_if_index, 0, 0, 0, xc_sw_if_index))
+      (vm, vnm, MODE_L2_XC, sw_if_index, 0, L2_BD_PORT_TYPE_NORMAL,
+       0, xc_sw_if_index))
     {
       error = clib_error_return (0, "invalid configuration for interface",
 				 format_unformat_error, input);
@@ -946,7 +1009,7 @@ done:
 
 /*?
  * Use this command put an interface into Layer 2 cross-connect mode.
- * Both interfaces must be in this mode for bi-directioal traffic. All
+ * Both interfaces must be in this mode for bi-directional traffic. All
  * packets received on one interface will be transmitted to the other.
  * To remove the Layer 2 cross-connect, put the interface in a different
  * mode, for example Layer 3 mode.
@@ -987,7 +1050,8 @@ int_l3 (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
     }
 
   /* set the interface mode */
-  if (set_int_l2_mode (vm, vnm, MODE_L3, sw_if_index, 0, 0, 0, 0))
+  if (set_int_l2_mode (vm, vnm, MODE_L3, sw_if_index, 0,
+		       L2_BD_PORT_TYPE_NORMAL, 0, 0))
     {
       error = clib_error_return (0, "invalid configuration for interface",
 				 format_unformat_error, input);
@@ -1099,11 +1163,11 @@ done:
 }
 
 /*?
- * Show the packet processing mode (Layer2 xcross-onnect, Layer 2 bridge,
+ * Show the packet processing mode (Layer2 cross-connect, Layer 2 bridge,
  * Layer 3 routed) of all interfaces and sub-interfaces, or limit the
  * output to just the provided list of interfaces and sub-interfaces.
  * The output shows the mode, the interface, and if the interface is
- * a member of a bridge, the bridge-domain-id and the split horizen group (shg).
+ * a member of a bridge, the bridge-domain-id and the split horizon group (shg).
  *
  * @cliexpar
  * Example of displaying the mode of all interfaces:
@@ -1118,7 +1182,7 @@ done:
  * l2 xconnect GigabitEthernet0/8/0.300 GigabitEthernet0/9/0.300
  * l2 xconnect GigabitEthernet0/9/0.300 GigabitEthernet0/8/0.300
  * @cliexend
- * Example of displaying the mode of a seleted list of interfaces:
+ * Example of displaying the mode of a selected list of interfaces:
  * @cliexstart{show mode GigabitEthernet0/8/0 GigabitEthernet0/8/0.200}
  * l3 GigabitEthernet0/8/0
  * l2 bridge GigabitEthernet0/8/0.200 bd_id 200 shg 0

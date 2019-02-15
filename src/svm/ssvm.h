@@ -64,9 +64,9 @@ typedef struct
   void *heap;
 
   /* Segment must be mapped at this address, or no supper */
-  u64 ssvm_va;
+  uword ssvm_va;
   /* The actual mmap size */
-  u64 ssvm_size;
+  uword ssvm_size;
   u32 master_pid;
   u32 slave_pid;
   u8 *name;
@@ -103,7 +103,7 @@ ssvm_lock (ssvm_shared_header_t * h, u32 my_pid, u32 tag)
       return;
     }
 
-  while (__sync_lock_test_and_set (&h->lock, 1))
+  while (clib_atomic_test_and_set (&h->lock))
     ;
 
   h->owner_pid = my_pid;
@@ -114,7 +114,7 @@ ssvm_lock (ssvm_shared_header_t * h, u32 my_pid, u32 tag)
 always_inline void
 ssvm_lock_non_recursive (ssvm_shared_header_t * h, u32 tag)
 {
-  while (__sync_lock_test_and_set (&h->lock, 1))
+  while (clib_atomic_test_and_set (&h->lock))
     ;
 
   h->tag = tag;
