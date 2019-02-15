@@ -260,10 +260,12 @@ hash_uword (uword x)
 
 /* Call sum function.  Hash code will be sum function value
    modulo the prime length of the hash table. */
+//检查key_sum，并回调其对应的hash函数
 always_inline uword
 key_sum (hash_t * h, uword key)
 {
   uword sum;
+  //检查是否为常用hashcode函数
   switch (pointer_to_uword ((void *) h->key_sum))
     {
     case KEY_FUNC_NONE:
@@ -287,6 +289,7 @@ key_sum (hash_t * h, uword key)
       break;
 
     default:
+        //回调用户自定义的hash函数
       sum = h->key_sum (h, key);
       break;
     }
@@ -502,6 +505,7 @@ lookup (void *v, uword key, enum lookup_opcode op,
   if (!v)
     return 0;
 
+  //计算hashcode
   i = key_sum (h, key) & (_vec_len (v) - 1);
   p = get_pair (v, i);
 
@@ -580,10 +584,12 @@ lookup (void *v, uword key, enum lookup_opcode op,
 uword *
 _hash_get (void *v, uword key)
 {
+    //拿到v对应的hash表
   hash_t *h = hash_header (v);
   hash_pair_t *p;
 
   /* Don't even search table if its empty. */
+  //元素为空，直接返回０
   if (!v || h->elts == 0)
     return 0;
 
@@ -677,6 +683,7 @@ _hash_unset (void *v, uword key, void *old_value)
   return v;
 }
 
+//通过h_user创建hash表
 void *
 _hash_create (uword elts, hash_t * h_user)
 {
@@ -806,13 +813,17 @@ _hash_set3 (void *v, uword key, void *value, void *old_value)
   return v;
 }
 
+//vector对应的hashcode计算方法
 uword
 vec_key_sum (hash_t * h, uword key)
 {
+    //key为一个vector
   void *v = uword_to_pointer (key, void *);
+  //对vector对应的一段内存做hash
   return hash_memory (v, vec_len (v) * h->user, 0);
 }
 
+//vector对应的比对方式
 uword
 vec_key_equal (hash_t * h, uword key1, uword key2)
 {
@@ -823,12 +834,15 @@ vec_key_equal (hash_t * h, uword key1, uword key2)
   return l1 == l2 && 0 == memcmp (v1, v2, l1 * h->user);
 }
 
+//格式化key,value值队，并将其输出到s
 u8 *
 vec_key_format_pair (u8 * s, va_list * args)
 {
+    //对args对应的三个指针
   void *CLIB_UNUSED (user_arg) = va_arg (*args, void *);
   void *v = va_arg (*args, void *);
   hash_pair_t *p = va_arg (*args, hash_pair_t *);
+
   hash_t *h = hash_header (v);
   void *u = uword_to_pointer (p->key, void *);
   int i;

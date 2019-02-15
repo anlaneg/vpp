@@ -144,7 +144,10 @@ always_inline uword
 min_log2 (uword x)
 {
   uword n;
+  //计算前导的０数目
   n = count_leading_zeros (x);
+  //自高位开始自０起编号，则返回第１个‘１’所在位号＋１
+  //换言之，返回值为小于x的２的最大N次方
   return BITS (uword) - n - 1;
 }
 #else
@@ -187,6 +190,7 @@ min_log2 (uword x)
 }
 #endif
 
+//返回最小的大于第于x的数，这个数必须为２的N次方
 always_inline uword
 max_log2 (uword x)
 {

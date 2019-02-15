@@ -274,13 +274,17 @@ static void __vlib_rm_config_function_##x (void)                \
 /* Call given init function: used for init function dependencies. */
 #define vlib_call_init_function(vm, x)					\
   ({									\
+    /*声明x对应的符号*/\
     extern vlib_init_function_t * VLIB_INIT_FUNCTION_SYMBOL (x);	\
+    /*定义_f引用此符号*/\
     vlib_init_function_t * _f = VLIB_INIT_FUNCTION_SYMBOL (x);		\
     clib_error_t * _error = 0;						\
+    /*检查此函数是否已被调用*/\
     if (! hash_get (vm->init_functions_called, _f))			\
       {									\
-    	/*设置初始化函数*/\
+    	/*未被调用，将此函数加入*/\
 	hash_set1 (vm->init_functions_called, _f);			\
+	/*并直接调用此函数*/\
 	_error = _f (vm);						\
       }									\
     _error;								\

@@ -160,7 +160,9 @@ typedef struct
  * 最后一行，我们初始化定义的x
  */
 #define VLIB_CLI_COMMAND(x,...)                                         \
+    /*声明cli命令变量*/ 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　\
     __VA_ARGS__ vlib_cli_command_t x;                                   \
+    /*定义注册函数*/　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　\
 static void __vlib_cli_command_registration_##x (void)                  \
     __attribute__((__constructor__)) ;                                  \
 static void __vlib_cli_command_registration_##x (void)                  \
@@ -179,6 +181,7 @@ static void __vlib_cli_command_unregistration_##x (void)                \
     VLIB_REMOVE_FROM_LINKED_LIST (cm->cli_command_registrations, &x,    \
                                   next_cli_command);                    \
 }                                                                       \
+/*对定义的cli命令进行赋值*/                                                 \
 __VA_ARGS__ vlib_cli_command_t x
 #else
 /* create unused pointer to silence compiler warnings and get whole

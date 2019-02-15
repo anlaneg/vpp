@@ -128,12 +128,14 @@ typedef u32 clib_address_t;
    MIPS is currently the only machine that can have different sized
    pointers and machine words (but only when compiling with 64 bit
    registers and 32 bit pointers). */
+//将指定转换为uword类型
 static inline __attribute__ ((always_inline)) uword
 pointer_to_uword (const void *p)
 {
   return (uword) (clib_address_t) p;
 }
 
+//将u转为指针类型
 #define uword_to_pointer(u,type) ((type) (clib_address_t) (u))
 
 /* Any type: can be either word or pointer. */

@@ -1057,6 +1057,9 @@ VLIB_CLI_COMMAND (ping_command, static) = {
 /* *INDENT-ON* */
 #endif /* ifdef TEST_CODE */
 
+//分析input串，丢弃其前导的空格，尾部的空格，并将此字符串中中包含的多个连续空格压缩为一个空格。
+//result为出参，指向正规化后的字符串
+//返回值为到最后一个空格的偏移
 static uword
 vlib_cli_normalize_path (char *input, char **result)
 {
@@ -1075,6 +1078,7 @@ vlib_cli_normalize_path (char *input, char **result)
 	case '\t':
 	case '\n':
 	case '\r':
+	    //可丢弃前导的空格
 	  if (l > 0 && s[l - 1] != ' ')
 	    {
 	      vec_add1 (s, ' ');
@@ -1085,12 +1089,14 @@ vlib_cli_normalize_path (char *input, char **result)
 	default:
 	  if (l > 0 && s[l - 1] == ' ')
 	    index_of_last_space = vec_len (s);
+	  //向s中加入非空字符（首次在此数完成对s的赋值）
 	  vec_add1 (s, c);
 	  l++;
 	  break;
 	}
     }
 
+  //最后一个元素可能为空格
   /* Remove any extra space at end. */
   if (l > 0 && s[l - 1] == ' ')
     _vec_len (s) -= 1;
@@ -1266,6 +1272,7 @@ vlib_cli_command_is_empty (vlib_cli_command_t * c)
   return (c->long_help == 0 && c->short_help == 0 && c->function == 0);
 }
 
+//命令行注册
 clib_error_t *
 vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
 {
@@ -1274,17 +1281,22 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
   uword ci, *p;
   char *normalized_path;
 
+  //检查vlib_cli_init是否已被调用，如未被调用，则调用
+  //vlib_cli_init将完成所有已知cli command的注册
   if ((error = vlib_call_init_function (vm, vlib_cli_init)))
     return error;
 
+  //将c->path规范化处理成normalized_path
   (void) vlib_cli_normalize_path (c->path, &normalized_path);
 
+  //如果hash表未创建，则创建hash表（用于存储command)
   if (!cm->command_index_by_path)
     cm->command_index_by_path = hash_create_vec ( /* initial length */ 32,
 						 sizeof (c->path[0]),
 						 sizeof (uword));
 
   /* See if command already exists with given path. */
+  //检查command是否已存在
   p = hash_get_mem (cm->command_index_by_path, normalized_path);
   if (p)
     {
@@ -1323,6 +1335,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
   else
     {
       /* Command does not exist: create it. */
+      //命令不存在，创建它
 
       /* Add root command (index 0). */
       if (vec_len (cm->commands) == 0)
@@ -1567,6 +1580,7 @@ VLIB_CLI_COMMAND (elog_trace_command, static) =
 };
 /* *INDENT-ON* */
 
+//注册所有已知的cli命令
 static clib_error_t *
 vlib_cli_init (vlib_main_t * vm)
 {
@@ -1578,6 +1592,7 @@ vlib_cli_init (vlib_main_t * vm)
 
   while (cmd)
     {
+      //遍历cm对应的已注册command,将其采用vlib_cli_register注册进vm中
       error = vlib_cli_register (vm, cmd);
       if (error)
 	return error;

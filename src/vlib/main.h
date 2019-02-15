@@ -172,7 +172,7 @@ typedef struct vlib_main_t
   clib_random_buffer_t random_buffer;
 
   /* Hash table to record which init functions have been called. */
-  uword *init_functions_called;//设置初始化函数的指针
+  uword *init_functions_called;//hash表，用于保存已完成调用的初始化函数的指针
 
   /* thread, cpu and numa_node indices */
   u32 thread_index;

@@ -65,12 +65,13 @@ typedef struct hash_header
   /* Set when hash_next is in the process of iterating through this hash table. */
 #define HASH_FLAG_HASH_NEXT_IN_PROGRESS (1 << 2)
 
+  //键值对所需要内存大小的对数值，真实值为2^log2_pair_size
   u32 log2_pair_size;
 
   /* Function to compute the "sum" of a hash key.
      Hash function is this sum modulo the prime size of
      the hash table (vec_len (v)). */
-  hash_key_sum_function_t *key_sum;
+  hash_key_sum_function_t *key_sum;//计算hashcode函数
 
   /* Special values for key_sum "function". */
 #define KEY_FUNC_NONE		(0)	/*< sum = key */
@@ -80,15 +81,17 @@ typedef struct hash_header
 #define KEY_FUNC_MEM		(4)	/*< sum = mem_key_sum */
 
   /* key comparison function */
-  hash_key_equal_function_t *key_equal;
+  hash_key_equal_function_t *key_equal;//hash key比对函数
 
   /* Hook for user's data.  Used to parameterize sum/equal functions. */
   any user;
 
   /* Format a (k,v) pair */
+  //格式化函数，例如格式化为字符串
   format_function_t *format_pair;
 
   /* Format function arg */
+  //格式化函数所需要参数
   void *format_pair_arg;
 
   /* Bit i is set if pair i is a user object (as opposed to being
@@ -482,10 +485,12 @@ hash_pair_t *hash_next (void *v, hash_next_t * hn);
 
 void *_hash_create (uword elts, hash_t * h);
 
+//设置hash元素的字节数
 always_inline void
 hash_set_value_bytes (hash_t * h, uword value_bytes)
 {
   hash_pair_t *p;
+  //key＋value计算出所占内存大小，并将其针对key进行内存对齐，然后使其值为２的N次方
   h->log2_pair_size =
     max_log2 ((sizeof (p->key) + value_bytes + sizeof (p->key) -
 	       1) / sizeof (p->key));
@@ -495,6 +500,7 @@ hash_set_value_bytes (hash_t * h, uword value_bytes)
                      _key_sum,_key_equal,                    \
                      _format_pair,_format_pair_arg)          \
 ({							     \
+    /*采用临时变量hash_t构造hash表*/\
   hash_t _h;						     \
   clib_memset (&_h, 0, sizeof (_h));				     \
   _h.user = (_user);				             \
@@ -503,6 +509,7 @@ hash_set_value_bytes (hash_t * h, uword value_bytes)
   hash_set_value_bytes (&_h, (_value_bytes));		     \
   _h.format_pair = (format_function_t *) (_format_pair);     \
   _h.format_pair_arg = (_format_pair_arg);                   \
+  /*构造hash表*/\
   _hash_create ((_elts), &_h);				     \
 })
 
@@ -665,6 +672,7 @@ extern uword vec_key_sum (hash_t * h, uword key);
 extern uword vec_key_equal (hash_t * h, uword key1, uword key2);
 extern u8 *vec_key_format_pair (u8 * s, va_list * args);
 
+//hash表创建，实体数，key大小，value大小
 #define hash_create_vec(elts,key_bytes,value_bytes)	\
   hash_create2((elts),(key_bytes),(value_bytes),\
                vec_key_sum,vec_key_equal,vec_key_format_pair,0)

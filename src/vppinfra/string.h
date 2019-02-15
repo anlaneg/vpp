@@ -188,14 +188,17 @@ memset_s_inline (void *s, rsize_t smax, int c, rsize_t n)
 
   bad = (s == 0) + (n > smax);
 
+  //参数检查
   if (PREDICT_FALSE (bad != 0))
     {
+      //s不能为空
       if (s == 0)
 	clib_c11_violation ("s NULL");
       if (n > smax)
 	clib_c11_violation ("n > smax");
       return (EINVAL);
     }
+  //完成对s清０
   memset (s, c, n);
   return (EOK);
 }

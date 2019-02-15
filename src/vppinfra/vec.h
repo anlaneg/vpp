@@ -116,6 +116,7 @@ void *vec_resize_allocate_memory (void *v,
 #define _vec_resize(V,L,DB,HB,A) \
   _vec_resize_inline(V,L,DB,HB,clib_max((__alignof__((V)[0])),(A)))
 
+//调整vector的大小
 always_inline void *
 _vec_resize_inline (void *v,
 		    word length_increment,
