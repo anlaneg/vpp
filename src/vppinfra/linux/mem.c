@@ -47,6 +47,7 @@
 #endif
 
 
+//返回页大小
 uword
 clib_mem_get_page_size (void)
 {

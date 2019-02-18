@@ -129,6 +129,7 @@ vlib_register_errors (vlib_main_t * vm,
 		      u32 node_index, u32 n_errors, char *error_strings[])
 {
   vlib_error_main_t *em = &vm->error_main;
+  //通过指定index取相应的node
   vlib_node_t *n = vlib_get_node (vm, node_index);
   uword l;
   void *oldheap;
@@ -140,6 +141,7 @@ vlib_register_errors (vlib_main_t * vm,
   if (n->n_errors > 0)
     heap_dealloc (em->error_strings_heap, n->error_heap_handle);
 
+  //设置错误码及错误字符串
   n->n_errors = n_errors;
   n->error_strings = error_strings;
 

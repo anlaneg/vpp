@@ -663,11 +663,12 @@ format_elf_main (u8 * s, va_list * args)
   return s;
 }
 
+//解析segments
 static void
 elf_parse_segments (elf_main_t * em, void *data)
 {
   void *d = data + em->file_header.segment_header_file_offset;
-  uword n = em->file_header.segment_header_count;
+  uword n = em->file_header.segment_header_count;//segment数目
   uword i;
 
   vec_resize (em->segments, n);
@@ -749,6 +750,7 @@ elf_parse_sections (elf_main_t * em, void *data)
   }
 }
 
+//解析并构造符号
 static void
 add_symbol_table (elf_main_t * em, elf_section_t * s)
 {
@@ -764,6 +766,7 @@ add_symbol_table (elf_main_t * em, elf_section_t * s)
 
   tab->section_index = s->index;
 
+  //64位系统符号解析
   if (em->first_header.file_class == ELF_64BIT)
     {
       tab->symbols =
@@ -778,6 +781,7 @@ add_symbol_table (elf_main_t * em, elf_section_t * s)
     }
   else
     {
+      //32位系统符号表解析
       sym32 =
 	elf_get_section_contents (em, s - em->sections, sizeof (sym32[0]));
       vec_clone (tab->symbols, sym32);
@@ -789,9 +793,11 @@ add_symbol_table (elf_main_t * em, elf_section_t * s)
 	}
     }
 
+  //无符号名称信息，直接返回
   if (s->header.link == 0)
     return;
 
+  //构造符号名称表
   tab->string_table =
     elf_get_section_contents (em, s->header.link,
 			      sizeof (tab->string_table[0]));
@@ -819,6 +825,7 @@ add_relocation_table (elf_main_t * em, elf_section_t * s)
 
   if (em->first_header.file_class == ELF_64BIT)
     {
+      //64位类型文件
       elf64_relocation_t *r, *rs;
 
       rs = elf_get_section_contents (em, t->section_index,
@@ -865,6 +872,7 @@ add_relocation_table (elf_main_t * em, elf_section_t * s)
     }
 }
 
+//符号解析
 void
 elf_parse_symbols (elf_main_t * em)
 {
@@ -879,11 +887,13 @@ elf_parse_symbols (elf_main_t * em)
   {
     switch (s->header.type)
       {
+    //处理符号表及动态符号表 section
       case ELF_SECTION_SYMBOL_TABLE:
       case ELF_SECTION_DYNAMIC_SYMBOL_TABLE:
 	add_symbol_table (em, s);
 	break;
 
+	//处理重定向表
       case ELF_SECTION_RELOCATION_ADD:
       case ELF_SECTION_RELOCATION:
 	add_relocation_table (em, s);
@@ -974,6 +984,7 @@ elf_set_dynamic_entries (elf_main_t * em)
     }
 }
 
+//解析segment,section,标记segment与section之间的关联关系
 clib_error_t *
 elf_parse (elf_main_t * em, void *data, uword data_bytes)
 {
@@ -993,12 +1004,14 @@ elf_parse (elf_main_t * em, void *data, uword data_bytes)
 				ELF_TWOS_COMPLEMENT_BIG_ENDIAN);
   elf_swap_first_header (em, &em->first_header);
 
+  //确保载入的是elf文件
   if (!(h->magic[0] == 0x7f
 	&& h->magic[1] == 'E' && h->magic[2] == 'L' && h->magic[3] == 'F'))
     return clib_error_return (0, "`%s': bad magic", em->file_name);
 
   if (h->file_class == ELF_64BIT)
     {
+      //载入的是64位elf文件
       elf64_file_header_t *h64 = (void *) (h + 1);
 #define _(t,f) fh->f = elf_swap_##t (em, h64->f);
       foreach_elf64_file_header
@@ -1006,6 +1019,7 @@ elf_parse (elf_main_t * em, void *data, uword data_bytes)
     }
   else
     {
+      //载入的是32位elf文件
       elf32_file_header_t *h32 = (void *) (h + 1);
 
 #define _(t,f) fh->f = elf_swap_##t (em, h32->f);
@@ -1013,13 +1027,16 @@ elf_parse (elf_main_t * em, void *data, uword data_bytes)
 #undef _
     }
 
+  //解析elf文件的segment
   elf_parse_segments (em, data);
+  //解析elf文件的section
   elf_parse_sections (em, data);
 
   /* Figure which sections are contained in each segment. */
   {
     elf_segment_t *g;
     elf_section_t *s;
+    //遍历所有的segments
     vec_foreach (g, em->segments)
     {
       u64 g_lo, g_hi;
@@ -1028,14 +1045,19 @@ elf_parse (elf_main_t * em, void *data, uword data_bytes)
       if (g->header.memory_size == 0)
 	continue;
 
+      //此段首地址
       g_lo = g->header.virtual_address;
+      //此段尾地址
       g_hi = g_lo + g->header.memory_size;
 
+      //遍历所有sections,找出属于本segment的section
       vec_foreach (s, em->sections)
       {
+          //本section首地址，本section尾地址
 	s_lo = s->header.exec_address;
 	s_hi = s_lo + s->header.file_size;
 
+	//设置segment,section之间的关联关系
 	if (s_lo >= g_lo && s_hi <= g_hi)
 	  {
 	    g->section_index_bitmap =
@@ -1325,6 +1347,7 @@ elf_parse_dynamic (elf_main_t * em)
 #include <sys/stat.h>
 #include <fcntl.h>
 
+//读取并解析elf文件其内容
 clib_error_t *
 elf_read_file (elf_main_t * em, char *file_name)
 {
@@ -1374,6 +1397,7 @@ elf_read_file (elf_main_t * em, char *file_name)
   //确定解析器
   em->interpreter = elf_find_interpreter (em, data);
 
+  //释放掉map的elf文件
   munmap (data, mmap_length);
   close (fd);
 

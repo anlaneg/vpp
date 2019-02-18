@@ -325,6 +325,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
       ASSERT (VLIB_NODE_TYPE_INTERNAL == zero.type);
     }
 
+  //如果有node_fn_registrations，则r的function使用node_fn链上最大优先级的function
   if (r->node_fn_registrations)
     {
       vlib_node_fn_registration_t *fnr = r->node_fn_registrations;
@@ -334,6 +335,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
          CLIB_NODE_REGISTRATION() if using function function candidates */
       ASSERT (r->function == 0);
 
+      //使用最大优先级的function
       while (fnr)
 	{
 	  if (fnr->priority > priority)
@@ -351,7 +353,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   //申请vlib_node_t,并依据已有nodes数分配id号（递增）
   n = clib_mem_alloc_no_fail (sizeof (n[0]));
   clib_memset (n, 0, sizeof (n[0]));
-  n->index = vec_len (nm->nodes);
+  n->index = vec_len (nm->nodes);//为node分配索引
   n->node_fn_registrations = r->node_fn_registrations;
   n->protocol_hint = r->protocol_hint;
 
@@ -377,6 +379,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
       clib_error ("more than one node named `%v'", n->name);
   }
 
+  //存放按node名称索引node index
   hash_set (nm->node_by_name, n->name, n->index);
 
   r->index = n->index;		/* save index in registration */
@@ -529,6 +532,7 @@ vlib_register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   return r->index;
 }
 
+//将进入的报文全部释放掉
 static uword
 null_node_fn (vlib_main_t * vm,
 	      vlib_node_runtime_t * node, vlib_frame_t * frame)
@@ -542,6 +546,7 @@ null_node_fn (vlib_main_t * vm,
   return n_vectors;
 }
 
+//注册所有已提交挂载在node_main.node_registrations上的node
 void
 vlib_register_all_static_nodes (vlib_main_t * vm)
 {

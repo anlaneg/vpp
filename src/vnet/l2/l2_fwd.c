@@ -104,6 +104,7 @@ _(FILTER_DROP,   "Filter Mac Drop")			\
 _(REFLECT_DROP,  "Reflection Drop")			\
 _(STALE_DROP,    "Stale entry Drop")
 
+//定义错误号
 typedef enum
 {
 #define _(sym,str) L2FWD_ERROR_##sym,
@@ -112,6 +113,7 @@ typedef enum
     L2FWD_N_ERROR,
 } l2fwd_error_t;
 
+//定义错误号对应的字符串
 static char *l2fwd_error_strings[] = {
 #define _(sym,string) string,
   foreach_l2fwd_error
@@ -403,6 +405,8 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return frame->n_vectors;
 }
 
+//定义l2fwd_node函数，并将其赋值给extern vlib_node_registration_t node
+//负责node处理
 VLIB_NODE_FN (l2fwd_node) (vlib_main_t * vm,
 			   vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
@@ -412,6 +416,7 @@ VLIB_NODE_FN (l2fwd_node) (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//申明并初始化l2fwd_node
 VLIB_REGISTER_NODE (l2fwd_node,static) = {
   .name = "l2-fwd",
   .vector_size = sizeof (u32),

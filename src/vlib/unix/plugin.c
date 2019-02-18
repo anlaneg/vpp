@@ -73,21 +73,25 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   plugin_config_t *pc = 0;
   uword *p;
 
+  //解析elf文件
   if (elf_read_file (&em, (char *) pi->filename))
     return -1;
 
-  //取指定段
+  //取elf文件指定section
   error = elf_get_section_by_name (&em, ".vlib_plugin_registration",
 				   &section);
   if (error)
     {
+      //如果无此section，则认为非规范的插件
       clib_warning ("Not a plugin: %s\n", (char *) pi->name);
       return -1;
     }
 
+  //取section内容
   data = elf_get_section_contents (&em, section->index, 1);
   reg = (vlib_plugin_registration_t *) data;
 
+  //解析体长度检查
   if (vec_len (data) != sizeof (*reg))
     {
       clib_warning ("vlib_plugin_registration size mismatch in plugin %s\n",
@@ -98,6 +102,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (pm->plugins_default_disable)
     reg->default_disabled = 1;
 
+  //??通过插件名称找配置？
   p = hash_get_mem (pm->config_index_by_name, pi->name);
   if (p)
     {
@@ -122,6 +127,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   version_required = str_array_to_vec ((char *) &reg->version_required,
 				       sizeof (reg->version_required));
 
+  //检查插件要求的vpp版本(上面花大力气就搞了一个版本检查，但思路是可以用于支持其它自定义module)
   if ((strlen (version_required) > 0) &&
       (strncmp (vlib_plugin_app_version, version_required,
 		strlen (version_required))))
@@ -139,7 +145,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   vec_free (data);
   elf_main_free (&em);
 
-  //打开插件
+  //再通过dl库打开so
   handle = dlopen ((char *) pi->filename, RTLD_LAZY);
 
   if (handle == 0)
@@ -179,6 +185,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 	  error = (*ei) (pm->vlib_main);//调用初始化函数
 	  if (error)
 	    {
+	      //初始化失败
 	      clib_error_report (error);
 	      dlclose (pi->handle);
 	      goto error;
@@ -189,6 +196,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 		      (char *) pi->name, reg->early_init);
     }
 
+  //显示插件描述信息
   if (reg->description)
     clib_warning ("Loaded plugin: %s (%s)", pi->name, reg->description);
   else

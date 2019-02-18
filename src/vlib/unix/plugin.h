@@ -59,10 +59,10 @@
 /* *INDENT-OFF* */
 typedef CLIB_PACKED(struct {
   u8 default_disabled;
-  const char version[32];
-  const char version_required[32];
+  const char version[32];//自身版本
+  const char version_required[32];//要求的vpp版本
   const char *early_init;//初始化函数名称
-  const char *description;
+  const char *description;//插件描述信息
 }) vlib_plugin_registration_t;
 /* *INDENT-ON* */
 
@@ -115,6 +115,7 @@ int vlib_load_new_plugins (plugin_main_t * pm, int from_early_init);
 void *vlib_get_plugin_symbol (char *plugin_name, char *symbol_name);
 u8 *vlib_get_vat_plugin_path (void);
 
+//定义plugin注册器，并置入相应section
 #define VLIB_PLUGIN_REGISTER() \
   vlib_plugin_registration_t vlib_plugin_registration \
   __attribute__((__section__(".vlib_plugin_registration")))

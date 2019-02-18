@@ -857,6 +857,7 @@ typedef struct
   u32 index;
 
   /* Index of segments containing this section. */
+  //标明此section属于哪此segment
   uword *segment_index_bitmap;
 
   /* Aligned size (included padding not included in
@@ -873,6 +874,7 @@ typedef struct
   elf64_segment_header_t header;
 
   /* Sections contained in this segment. */
+  //标明此segment中有哪些section
   uword *section_index_bitmap;
 
   u32 index;

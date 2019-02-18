@@ -69,19 +69,19 @@ typedef enum
 typedef enum
 {
   /* An internal node on the call graph (could be output). */
-  VLIB_NODE_TYPE_INTERNAL,
+  VLIB_NODE_TYPE_INTERNAL,//内部节点
 
   /* Nodes which input data into the processing graph.
      Input nodes are called for each iteration of main loop. */
-  VLIB_NODE_TYPE_INPUT,
+  VLIB_NODE_TYPE_INPUT,//输入节点
 
   /* Nodes to be called before all input nodes.
      Used, for example, to clean out driver TX rings before
      processing input. */
-  VLIB_NODE_TYPE_PRE_INPUT,
+  VLIB_NODE_TYPE_PRE_INPUT,//输入前节点（例如处理tx缓冲区清空）
 
   /* "Process" nodes which can be suspended and later resumed. */
-  VLIB_NODE_TYPE_PROCESS,
+  VLIB_NODE_TYPE_PROCESS,//可被挂起的节点
 
   VLIB_N_NODE_TYPE,
 } vlib_node_type_t;
@@ -109,7 +109,7 @@ typedef struct _vlib_node_registration
   char *sibling_of;
 
   /* Node index filled in by registration. */
-  u32 index;
+  u32 index;//node的索引号
 
   /* Type of this node. */
   vlib_node_type_t type;
@@ -209,12 +209,14 @@ static __clib_unused vlib_node_registration_t __clib_unused_##x
 #define CLIB_MARCH_VARIANT_STR _CLIB_MARCH_VARIANT_STR(CLIB_MARCH_VARIANT)
 #endif
 
+//声明函数node##_fn,定义node##_fun_registration变量
 #define VLIB_NODE_FN(node)						\
 uword CLIB_MARCH_SFX (node##_fn)();					\
 static vlib_node_fn_registration_t					\
   CLIB_MARCH_SFX(node##_fn_registration) =				\
   { .function = &CLIB_MARCH_SFX (node##_fn), };				\
 									\
+/*定义main之前运行函数，将node##_fn_registeration注册到变量node上*/\
 static void __clib_constructor						\
 CLIB_MARCH_SFX (node##_multiarch_register) (void)			\
 {									\
@@ -226,6 +228,7 @@ CLIB_MARCH_SFX (node##_multiarch_register) (void)			\
   r->next_registration = node.node_fn_registrations;			\
   node.node_fn_registrations = r;					\
 }									\
+    /*定义函数node##_fn*/\
 uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (node##_fn)
 
 
@@ -272,10 +275,10 @@ typedef enum
 typedef struct vlib_node_t
 {
   /* Vector processing function for this node. */
-  vlib_node_function_t *function;
+  vlib_node_function_t *function;//node对应的处理function
 
   /* Node name. */
-  u8 *name;
+  u8 *name;//node名称
 
   /* Node name index in elog string table. */
   u32 name_elog_string;
@@ -288,10 +291,10 @@ typedef struct vlib_node_t
   vlib_node_stats_t stats_last_clear;
 
   /* Type of this node. */
-  vlib_node_type_t type;
+  vlib_node_type_t type;//节点类型
 
   /* Node index. */
-  u32 index;
+  u32 index;//node编号
 
   /* Index of corresponding node runtime. */
   u32 runtime_index;
@@ -328,7 +331,7 @@ typedef struct vlib_node_t
   u8 protocol_hint;
 
   /* Number of error codes used by this node. */
-  u16 n_errors;
+  u16 n_errors;//node对应的错误号数目
 
   /* Size of scalar and vector arguments in bytes. */
   u16 scalar_size, vector_size;
@@ -338,7 +341,7 @@ typedef struct vlib_node_t
   u32 error_heap_index;
 
   /* Error strings indexed by error code for this node. */
-  char **error_strings;
+  char **error_strings;//node对应的错误号字符串
 
   /* Vector of next node names.
      Only used before next_nodes array is initialized. */

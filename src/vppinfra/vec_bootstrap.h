@@ -169,12 +169,15 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
 #define vec_max_len(v) (vec_capacity(v,0) / sizeof (v[0]))
 
 /** \brief End (last data address) of vector. */
+//vector尾部
 #define vec_end(v)	((v) + vec_len (v))
 
 /** \brief True if given pointer is within given vector. */
+//检查e是否为vec的一个元素
 #define vec_is_member(v,e) ((e) >= (v) && (e) < vec_end (v))
 
 /** \brief Get vector value at index i checking that i is in bounds. */
+//取出vector中第i个元素指针
 #define vec_elt_at_index(v,i)			\
 ({						\
   ASSERT ((i) < vec_len (v));			\
@@ -182,19 +185,24 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
 })
 
 /** \brief Get vector value at index i */
+//取第i个元素值
 #define vec_elt(v,i) (vec_elt_at_index(v,i))[0]
 
 /** \brief Vector iterator */
+//遍历vector
 #define vec_foreach(var,vec) for (var = (vec); var < vec_end (vec); var++)
 
 /** \brief Vector iterator (reverse) */
+//逆序遍历vector
 #define vec_foreach_backwards(var,vec) \
 for (var = vec_end (vec) - 1; var >= (vec); var--)
 
 /** \brief Iterate over vector indices. */
+//按索引遍历vector
 #define vec_foreach_index(var,v) for ((var) = 0; (var) < vec_len (v); (var)++)
 
 /** \brief Iterate over vector indices (reverse). */
+//按索引逆序遍历vector
 #define vec_foreach_index_backwards(var,v) \
   for ((var) = vec_len((v)) - 1; (var) >= 0; (var)--)
 

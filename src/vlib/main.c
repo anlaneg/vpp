@@ -1143,12 +1143,14 @@ dispatch_node (vlib_main_t * vm,
     }
 
   /* Only non-internal nodes may be disabled. */
+  //状态与预期不同，则直接返回（仅非internal状态检查）
   if (type != VLIB_NODE_TYPE_INTERNAL && node->state != dispatch_state)
     {
       ASSERT (type != VLIB_NODE_TYPE_INTERNAL);
       return last_time_stamp;
     }
 
+  //pre-input,input非interrupt时，每N次进入调用一次
   if ((type == VLIB_NODE_TYPE_PRE_INPUT || type == VLIB_NODE_TYPE_INPUT)
       && dispatch_state != VLIB_NODE_STATE_INTERRUPT)
     {
@@ -1156,6 +1158,7 @@ dispatch_node (vlib_main_t * vm,
       /* Only call node when count reaches zero. */
       if (c)
 	{
+          //未达到0，不进入下面处理，返回
 	  node->input_main_loops_per_call = c - 1;
 	  return last_time_stamp;
 	}
@@ -1736,6 +1739,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	}
 
       /* Process pre-input nodes. */
+      //处理pre-input类型的节点
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
 	cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_PRE_INPUT,

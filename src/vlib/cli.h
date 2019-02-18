@@ -160,9 +160,9 @@ typedef struct
  * 最后一行，我们初始化定义的x
  */
 #define VLIB_CLI_COMMAND(x,...)                                         \
-    /*声明cli命令变量*/ 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　\
+    /*声明cli命令变量*/\
     __VA_ARGS__ vlib_cli_command_t x;                                   \
-    /*定义注册函数*/　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　\
+    /*定义注册函数*/\
 static void __vlib_cli_command_registration_##x (void)                  \
     __attribute__((__constructor__)) ;                                  \
 static void __vlib_cli_command_registration_##x (void)                  \
