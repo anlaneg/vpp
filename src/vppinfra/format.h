@@ -172,6 +172,7 @@ unformat_check_input (unformat_input_t * i)
   /* Low level fill input function. */
   extern uword _unformat_fill_input (unformat_input_t * i);
 
+  //报文index大于buffer中内容长度
   if (i->index >= vec_len (i->buffer) && i->index != UNFORMAT_END_OF_INPUT)
     _unformat_fill_input (i);
 

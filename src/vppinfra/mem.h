@@ -255,6 +255,7 @@ clib_mem_size (void *p)
 #endif
 }
 
+//返回当前cpu所属heap的地址
 always_inline void *
 clib_mem_get_heap (void)
 {

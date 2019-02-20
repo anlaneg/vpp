@@ -110,7 +110,7 @@ typedef struct vlib_main_t
   void *heap_base;
 
   /* Truncated version, to create frame indices */
-  void *heap_aligned_base;
+  void *heap_aligned_base;//对齐后的heap地址
 
   /* Size of the heap */
   uword heap_size;
