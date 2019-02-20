@@ -190,79 +190,63 @@ int
 tls_notify_app_accept (tls_ctx_t * ctx)
 {
   session_t *app_listener, *app_session;
-  segment_manager_t *sm;
   app_worker_t *app_wrk;
-  application_t *app;
   tls_ctx_t *lctx;
   int rv;
 
-  app_wrk = app_worker_get_if_valid (ctx->parent_app_index);
-  if (!app_wrk)
-    {
-      tls_disconnect (ctx->tls_ctx_handle, vlib_get_thread_index ());
-      return -1;
-    }
-
-  app = application_get (app_wrk->app_index);
   lctx = tls_listener_ctx_get (ctx->listener_ctx_index);
+  app_listener = listen_session_get_from_handle (lctx->app_session_handle);
 
   app_session = session_get (ctx->c_s_index, ctx->c_thread_index);
-  app_session->app_wrk_index = ctx->parent_app_index;
+  app_session->app_wrk_index = ctx->parent_app_wrk_index;
   app_session->connection_index = ctx->tls_ctx_handle;
-
-  app_listener = listen_session_get_from_handle (lctx->app_session_handle);
   app_session->session_type = app_listener->session_type;
   app_session->listener_index = app_listener->session_index;
-  sm = app_worker_get_listen_segment_manager (app_wrk, app_listener);
   app_session->t_app_index = tls_main.app_index;
 
-  if ((rv = session_alloc_fifos (sm, app_session)))
+  if ((rv = app_worker_init_accepted (app_session)))
     {
       TLS_DBG (1, "failed to allocate fifos");
+      session_free (app_session);
       return rv;
     }
   ctx->app_session_handle = session_handle (app_session);
   session_lookup_add_connection (&ctx->connection,
 				 session_handle (app_session));
-  return app->cb_fns.session_accept_callback (app_session);
+  ctx->parent_app_wrk_index = app_session->app_wrk_index;
+  app_wrk = app_worker_get (app_session->app_wrk_index);
+  return app_worker_accept_notify (app_wrk, app_session);
 }
 
 int
 tls_notify_app_connected (tls_ctx_t * ctx, u8 is_failed)
 {
-  int (*cb_fn) (u32, u32, session_t *, u8);
   session_t *app_session;
-  segment_manager_t *sm;
   app_worker_t *app_wrk;
-  application_t *app;
 
-  app_wrk = app_worker_get_if_valid (ctx->parent_app_index);
+  app_wrk = app_worker_get_if_valid (ctx->parent_app_wrk_index);
   if (!app_wrk)
     {
       tls_disconnect_transport (ctx);
       return -1;
     }
 
-  app = application_get (app_wrk->app_index);
-  cb_fn = app->cb_fns.session_connected_callback;
-
   if (is_failed)
     goto failed;
 
-  sm = app_worker_get_connect_segment_manager (app_wrk);
   app_session = session_get (ctx->c_s_index, ctx->c_thread_index);
-  app_session->app_wrk_index = ctx->parent_app_index;
+  app_session->app_wrk_index = ctx->parent_app_wrk_index;
   app_session->connection_index = ctx->tls_ctx_handle;
   app_session->session_type =
     session_type_from_proto_and_ip (TRANSPORT_PROTO_TLS, ctx->tcp_is_ip4);
   app_session->t_app_index = tls_main.app_index;
 
-  if (session_alloc_fifos (sm, app_session))
+  if (app_worker_init_connected (app_wrk, app_session))
     goto failed;
 
   app_session->session_state = SESSION_STATE_CONNECTING;
-  if (cb_fn (ctx->parent_app_index, ctx->parent_app_api_context,
-	     app_session, 0 /* not failed */ ))
+  if (app_worker_connect_notify (app_wrk, app_session,
+				 ctx->parent_app_api_context))
     {
       TLS_DBG (1, "failed to notify app");
       tls_disconnect (ctx->tls_ctx_handle, vlib_get_thread_index ());
@@ -278,8 +262,7 @@ tls_notify_app_connected (tls_ctx_t * ctx, u8 is_failed)
 
 failed:
   tls_disconnect (ctx->tls_ctx_handle, vlib_get_thread_index ());
-  return cb_fn (ctx->parent_app_index, ctx->parent_app_api_context, 0,
-		1 /* failed */ );
+  return app_worker_connect_notify (app_wrk, 0, ctx->parent_app_api_context);
 }
 
 static inline void
@@ -392,7 +375,7 @@ tls_session_disconnect_callback (session_t * tls_session)
       return;
     }
   ctx->is_passive_close = 1;
-  app_wrk = app_worker_get (ctx->parent_app_index);
+  app_wrk = app_worker_get (ctx->parent_app_wrk_index);
   app = application_get (app_wrk->app_index);
   app_session = session_get_from_handle (ctx->app_session_handle);
   app->cb_fns.session_disconnect_callback (app_session);
@@ -468,8 +451,8 @@ tls_session_connected_callback (u32 tls_app_index, u32 ho_ctx_index,
       app_worker_t *app_wrk;
       application_t *app;
 
-      wrk_index = ho_ctx->parent_app_index;
-      app_wrk = app_worker_get_if_valid (ho_ctx->parent_app_index);
+      wrk_index = ho_ctx->parent_app_wrk_index;
+      app_wrk = app_worker_get_if_valid (ho_ctx->parent_app_wrk_index);
       if (app_wrk)
 	{
 	  api_context = ho_ctx->c_s_index;
@@ -546,7 +529,7 @@ tls_connect (transport_endpoint_cfg_t * tep)
 
   ctx_index = tls_ctx_half_open_alloc ();
   ctx = tls_ctx_half_open_get (ctx_index);
-  ctx->parent_app_index = sep->app_wrk_index;
+  ctx->parent_app_wrk_index = sep->app_wrk_index;
   ctx->parent_app_api_context = sep->opaque;
   ctx->tcp_is_ip4 = sep->is_ip4;
   if (sep->hostname)
@@ -589,12 +572,13 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
   vnet_listen_args_t _bargs, *args = &_bargs;
   app_worker_t *app_wrk;
   tls_main_t *tm = &tls_main;
-  session_handle_t tls_handle;
+  session_handle_t tls_al_handle;
   session_endpoint_cfg_t *sep;
   session_t *tls_listener;
   session_t *app_listener;
   tls_engine_type_t engine_type;
   application_t *app;
+  app_listener_t *al;
   tls_ctx_t *lctx;
   u32 lctx_index;
 
@@ -615,16 +599,17 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
   if (vnet_listen (args))
     return -1;
 
-  tls_handle = args->handle;
   lctx_index = tls_listener_ctx_alloc ();
-  tls_listener = listen_session_get_from_handle (tls_handle);
+  tls_al_handle = args->handle;
+  al = app_listener_get_w_handle (tls_al_handle);
+  tls_listener = app_listener_get_session (al);
   tls_listener->opaque = lctx_index;
 
   app_listener = listen_session_get (app_listener_index);
 
   lctx = tls_listener_ctx_get (lctx_index);
-  lctx->parent_app_index = sep->app_wrk_index;
-  lctx->tls_session_handle = tls_handle;
+  lctx->parent_app_wrk_index = sep->app_wrk_index;
+  lctx->tls_session_handle = tls_al_handle;
   lctx->app_session_handle = listen_session_get_handle (app_listener);
   lctx->tcp_is_ip4 = sep->is_ip4;
   lctx->tls_ctx_engine = engine_type;
@@ -687,7 +672,7 @@ format_tls_ctx (u8 * s, va_list * args)
     clib_warning ("app and tls sessions are on different threads!");
 
   s = format (s, "[#%d][TLS] app %u child %u", child_ti,
-	      ctx->parent_app_index, child_si);
+	      ctx->parent_app_wrk_index, child_si);
   return s;
 }
 
@@ -724,8 +709,8 @@ format_tls_listener (u8 * s, va_list * args)
 
   listen_session_parse_handle (ctx->tls_session_handle, &listener_index,
 			       &thread_index);
-  return format (s, "[TLS] listener app %u child %u", ctx->parent_app_index,
-		 listener_index);
+  return format (s, "[TLS] listener app %u child %u",
+		 ctx->parent_app_wrk_index, listener_index);
 }
 
 u8 *
@@ -733,7 +718,7 @@ format_tls_half_open (u8 * s, va_list * args)
 {
   u32 tc_index = va_arg (*args, u32);
   tls_ctx_t *ctx = tls_ctx_half_open_get (tc_index);
-  s = format (s, "[TLS] half-open app %u", ctx->parent_app_index);
+  s = format (s, "[TLS] half-open app %u", ctx->parent_app_wrk_index);
   tls_ctx_half_open_reader_unlock ();
   return s;
 }

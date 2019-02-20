@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Cisco and/or its affiliates.
+ * Copyright (c) 2016-2019 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -330,20 +330,54 @@ tcp_segment_validate (tcp_worker_ctx_t * wrk, tcp_connection_t * tc0,
   if (!tcp_segment_in_rcv_wnd (tc0, vnet_buffer (b0)->tcp.seq_number,
 			       vnet_buffer (b0)->tcp.seq_end))
     {
-      *error0 = TCP_ERROR_RCV_WND;
-      /* If our window is 0 and the packet is in sequence, let it pass
-       * through for ack processing. It should be dropped later. */
-      if (!(tc0->rcv_wnd == 0
-	    && tc0->rcv_nxt == vnet_buffer (b0)->tcp.seq_number))
+      /* SYN/SYN-ACK retransmit */
+      if (tcp_syn (th0)
+	  && vnet_buffer (b0)->tcp.seq_number == tc0->rcv_nxt - 1)
 	{
-	  /* If not RST, send dup ack */
-	  if (!tcp_rst (th0))
+	  tcp_options_parse (th0, &tc0->rcv_opts, 1);
+	  if (tc0->state == TCP_STATE_SYN_RCVD)
 	    {
-	      tcp_program_dupack (wrk, tc0);
-	      TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0, vnet_buffer (b0)->tcp);
+	      tcp_send_synack (tc0);
+	      TCP_EVT_DBG (TCP_EVT_SYN_RCVD, tc0, 0);
+	      *error0 = TCP_ERROR_SYNS_RCVD;
+	    }
+	  else
+	    {
+	      tcp_program_ack (wrk, tc0);
+	      TCP_EVT_DBG (TCP_EVT_SYNACK_RCVD, tc0);
+	      *error0 = TCP_ERROR_SYN_ACKS_RCVD;
 	    }
 	  goto error;
 	}
+
+      /* If our window is 0 and the packet is in sequence, let it pass
+       * through for ack processing. It should be dropped later. */
+      if (tc0->rcv_wnd == 0
+	  && tc0->rcv_nxt == vnet_buffer (b0)->tcp.seq_number)
+	goto check_reset;
+
+      /* If we entered recovery and peer did so as well, there's a chance that
+       * dup acks won't be acceptable on either end because seq_end may be less
+       * than rcv_las. This can happen if acks are lost in both directions. */
+      if (tcp_in_recovery (tc0)
+	  && seq_geq (vnet_buffer (b0)->tcp.seq_number,
+		      tc0->rcv_las - tc0->rcv_wnd)
+	  && seq_leq (vnet_buffer (b0)->tcp.seq_end,
+		      tc0->rcv_nxt + tc0->rcv_wnd))
+	goto check_reset;
+
+      *error0 = TCP_ERROR_RCV_WND;
+
+      /* If not RST, send dup ack */
+      if (!tcp_rst (th0))
+	{
+	  tcp_program_dupack (wrk, tc0);
+	  TCP_EVT_DBG (TCP_EVT_DUPACK_SENT, tc0, vnet_buffer (b0)->tcp);
+	}
+      goto error;
+
+    check_reset:
+      ;
     }
 
   /* 2nd: check the RST bit */
@@ -356,22 +390,11 @@ tcp_segment_validate (tcp_worker_ctx_t * wrk, tcp_connection_t * tc0,
 
   /* 3rd: check security and precedence (skip) */
 
-  /* 4th: check the SYN bit */
+  /* 4th: check the SYN bit (in window) */
   if (PREDICT_FALSE (tcp_syn (th0)))
     {
-      *error0 = tcp_ack (th0) ? TCP_ERROR_SYN_ACKS_RCVD : TCP_ERROR_SYNS_RCVD;
-      /* TODO implement RFC 5961 */
-      if (tc0->state == TCP_STATE_SYN_RCVD)
-	{
-	  tcp_options_parse (th0, &tc0->rcv_opts, 1);
-	  tcp_send_synack (tc0);
-	  TCP_EVT_DBG (TCP_EVT_SYN_RCVD, tc0, 0);
-	}
-      else
-	{
-	  tcp_program_ack (wrk, tc0);
-	  TCP_EVT_DBG (TCP_EVT_SYNACK_RCVD, tc0);
-	}
+      *error0 = TCP_ERROR_SPURIOUS_SYN;
+      tcp_send_reset (tc0);
       goto error;
     }
 
@@ -498,6 +521,7 @@ tcp_estimate_initial_rtt (tcp_connection_t * tc)
   if (tc->rtt_ts)
     {
       tc->mrtt_us = tcp_time_now_us (thread_index) - tc->rtt_ts;
+      tc->mrtt_us = clib_max (tc->mrtt_us, 0.0001);
       mrtt = clib_max ((u32) (tc->mrtt_us * THZ), 1);
       tc->rtt_ts = 0;
     }
@@ -505,6 +529,9 @@ tcp_estimate_initial_rtt (tcp_connection_t * tc)
     {
       mrtt = tcp_time_now_w_thread (thread_index) - tc->rcv_opts.tsecr;
       mrtt = clib_max (mrtt, 1);
+      /* Due to retransmits we don't know the initial mrtt */
+      if (tc->rto_boff && mrtt > 1 * THZ)
+	mrtt = 1 * THZ;
       tc->mrtt_us = (f64) mrtt *TCP_TICK;
     }
 
@@ -2351,6 +2378,7 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* Make sure the connection actually exists */
 	  ASSERT (tcp_lookup_connection (tc0->c_fib_index, b0,
 					 my_thread_index, is_ip4));
+	  error0 = TCP_ERROR_SPURIOUS_SYN_ACK;
 	  goto drop;
 	}
 
@@ -2432,7 +2460,6 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       /* No SYN flag. Drop. */
       if (!tcp_syn (tcp0))
 	{
-	  clib_warning ("not synack");
 	  error0 = TCP_ERROR_SEGMENT_INVALID;
 	  goto drop;
 	}
@@ -2440,7 +2467,6 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       /* Parse options */
       if (tcp_options_parse (tcp0, &tc0->rcv_opts, 1))
 	{
-	  clib_warning ("options parse fail");
 	  error0 = TCP_ERROR_OPTIONS;
 	  goto drop;
 	}
@@ -2737,7 +2763,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* Reset SYN-ACK retransmit and SYN_RCV establish timers */
 	  tcp_retransmit_timer_reset (tc0);
 	  tcp_timer_reset (tc0, TCP_TIMER_ESTABLISH);
-	  if (stream_session_accept_notify (&tc0->connection))
+	  if (session_stream_accept_notify (&tc0->connection))
 	    {
 	      error0 = TCP_ERROR_MSG_QUEUE_FULL;
 	      tcp_connection_reset (tc0);
@@ -3666,6 +3692,9 @@ do {                                                       	\
   _(SYN_SENT, TCP_FLAG_ACK, TCP_INPUT_NEXT_SYN_SENT, TCP_ERROR_NONE);
   _(SYN_SENT, TCP_FLAG_RST, TCP_INPUT_NEXT_SYN_SENT, TCP_ERROR_NONE);
   _(SYN_SENT, TCP_FLAG_RST | TCP_FLAG_ACK, TCP_INPUT_NEXT_SYN_SENT,
+    TCP_ERROR_NONE);
+  _(SYN_SENT, TCP_FLAG_FIN, TCP_INPUT_NEXT_SYN_SENT, TCP_ERROR_NONE);
+  _(SYN_SENT, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_SYN_SENT,
     TCP_ERROR_NONE);
   /* ACK for for established connection -> tcp-established. */
   _(ESTABLISHED, TCP_FLAG_ACK, TCP_INPUT_NEXT_ESTABLISHED, TCP_ERROR_NONE);

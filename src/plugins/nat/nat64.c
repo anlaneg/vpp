@@ -138,20 +138,35 @@ nat64_get_worker_out2in (ip4_header_t * ip)
       if (PREDICT_FALSE (nat_reass_is_drop_frag (0)))
 	return vlib_get_thread_index ();
 
-      if (PREDICT_TRUE (!ip4_is_first_fragment (ip)))
+      nat_reass_ip4_t *reass;
+      reass = nat_ip4_reass_find (ip->src_address, ip->dst_address,
+				  ip->fragment_id, ip->protocol);
+
+      if (reass && (reass->thread_index != (u32) ~ 0))
+	return reass->thread_index;
+
+      if (ip4_is_first_fragment (ip))
 	{
-	  nat_reass_ip4_t *reass;
+	  reass =
+	    nat_ip4_reass_create (ip->src_address, ip->dst_address,
+				  ip->fragment_id, ip->protocol);
+	  if (!reass)
+	    goto no_reass;
 
-	  reass = nat_ip4_reass_find (ip->src_address, ip->dst_address,
-				      ip->fragment_id, ip->protocol);
-
-	  if (reass && (reass->thread_index != (u32) ~ 0))
-	    return reass->thread_index;
+	  port = clib_net_to_host_u16 (port);
+	  if (port > 1024)
+	    reass->thread_index =
+	      nm->sm->first_worker_index +
+	      ((port - 1024) / sm->port_per_thread);
 	  else
-	    return vlib_get_thread_index ();
+	    reass->thread_index = vlib_get_thread_index ();
+	  return reass->thread_index;
 	}
+      else
+	return vlib_get_thread_index ();
     }
 
+no_reass:
   /* unknown protocol */
   if (PREDICT_FALSE (proto == ~0))
     {
@@ -217,16 +232,31 @@ nat64_init (vlib_main_t * vm)
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   ip4_add_del_interface_address_callback_t cb4;
   ip4_main_t *im = &ip4_main;
-  vlib_node_t *error_drop_node =
-    vlib_get_node_by_name (vm, (u8 *) "error-drop");
+  nm->sm = &snat_main;
+  vlib_node_t *node;
 
   vec_validate (nm->db, tm->n_vlib_mains - 1);
 
-  nm->sm = &snat_main;
-
   nm->fq_in2out_index = ~0;
   nm->fq_out2in_index = ~0;
-  nm->error_node_index = error_drop_node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
+  nm->error_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat64-in2out");
+  nm->in2out_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat64-in2out-slowpath");
+  nm->in2out_slowpath_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat64-in2out-reass");
+  nm->in2out_reass_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat64-out2in");
+  nm->out2in_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat64-out2in-reass");
+  nm->out2in_reass_node_index = node->index;
 
   /* set session timeouts to default values */
   nm->udp_timeout = SNAT_UDP_TIMEOUT;
