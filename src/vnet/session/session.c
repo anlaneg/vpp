@@ -156,6 +156,8 @@ session_alloc (u32 thread_index)
     {
       pool_get_aligned (wrk->sessions, s, CLIB_CACHE_LINE_BYTES);
     }
+
+  //将session清空
   clib_memset (s, 0, sizeof (*s));
   s->session_index = s - wrk->sessions;
   s->thread_index = thread_index;

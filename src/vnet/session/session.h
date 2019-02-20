@@ -47,7 +47,7 @@ typedef struct session_tx_context_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   session_t *s;
-  transport_proto_vft_t *transport_vft;
+  transport_proto_vft_t *transport_vft;//传输层virtual函数表
   transport_connection_t *tc;
   vlib_buffer_t *b;
   u32 max_dequeue;

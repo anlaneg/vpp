@@ -125,8 +125,10 @@ _vec_resize_inline (void *v,
   vec_header_t *vh = _vec_find (v);//取vector头部
   uword new_data_bytes, aligned_header_bytes;
 
+  //对齐后的头部长度
   aligned_header_bytes = vec_header_bytes (header_bytes);
 
+  //数据长度＋对齐后的头部长度
   new_data_bytes = data_bytes + aligned_header_bytes;
 
   if (PREDICT_TRUE (v != 0))
@@ -134,9 +136,11 @@ _vec_resize_inline (void *v,
       void *p = v - aligned_header_bytes;
 
       /* Vector header must start heap object. */
+      //p一定是堆分配的首地址
       ASSERT (clib_mem_is_heap_object (p));
 
       /* Typically we'll not need to resize. */
+      //检查我们当时为此对象分配的内存大小是否足够，如果恰好够，直接扩大
       if (new_data_bytes <= clib_mem_size (p))
 	{
 	  vh->len += length_increment;
@@ -145,6 +149,7 @@ _vec_resize_inline (void *v,
     }
 
   /* Slow path: call helper function. */
+  //为v生新分配扩大后的空间
   return vec_resize_allocate_memory (v, length_increment, data_bytes,
 				     header_bytes,
 				     clib_max (sizeof (vec_header_t),
@@ -339,6 +344,7 @@ do {						\
     @param V pointer to a vector
     @return V (value-result parameter, V=0)
 */
+//vector释放函数（头为０长度）
 #define vec_free(V) vec_free_h(V,0)
 
 /**\brief Free vector user header (syntactic sugar)

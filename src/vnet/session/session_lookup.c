@@ -1634,11 +1634,14 @@ session_lookup_init (void)
   /*
    * Allocate default table and map it to fib_index 0
    */
+  //申请ipv4 session表
   session_table_t *st = session_table_alloc ();
   vec_validate (fib_index_to_table_index[FIB_PROTOCOL_IP4], 0);
   fib_index_to_table_index[FIB_PROTOCOL_IP4][0] = session_table_index (st);
   st->active_fib_proto = FIB_PROTOCOL_IP4;
   session_table_init (st, FIB_PROTOCOL_IP4);
+
+  //申请ipv6 session表
   st = session_table_alloc ();
   vec_validate (fib_index_to_table_index[FIB_PROTOCOL_IP6], 0);
   fib_index_to_table_index[FIB_PROTOCOL_IP6][0] = session_table_index (st);

@@ -93,6 +93,7 @@ clib_mem_alloc_aligned_at_offset (uword size, uword align, uword align_offset,
 	align_offset = align;
     }
 
+  //取此cpu对应的heap
   cpu = os_get_thread_index ();
   heap = clib_per_cpu_mheaps[cpu];
 
@@ -179,6 +180,7 @@ clib_mem_alloc_aligned_or_null (uword size, uword align)
 /* Alias to stack allocator for naming consistency. */
 #define clib_mem_alloc_stack(bytes) __builtin_alloca(bytes)
 
+//检查所给指定是否为heap中一个对象
 always_inline uword
 clib_mem_is_heap_object (void *p)
 {
@@ -187,6 +189,7 @@ clib_mem_is_heap_object (void *p)
   uword offset = (uword) p - (uword) heap;//取出p与堆间的offset
   mheap_elt_t *e, *n;
 
+  //未分配此地址，直接返回０
   if (offset >= vec_len (heap))
     return 0;
 

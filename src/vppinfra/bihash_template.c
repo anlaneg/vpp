@@ -40,6 +40,7 @@ void BV (clib_bihash_init)
 
   nbuckets = 1 << (max_log2 (nbuckets));
 
+  //设置hash表
   h->name = (u8 *) name;
   h->nbuckets = nbuckets;
   h->log2_nbuckets = max_log2 (nbuckets);

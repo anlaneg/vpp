@@ -241,6 +241,7 @@ transport_register_protocol (transport_proto_t transport_proto,
   u8 is_ip4 = fib_proto == FIB_PROTOCOL_IP4;
 
   vec_validate (tp_vfts, transport_proto);
+  //注册此协议对应的vft
   tp_vfts[transport_proto] = *vft;
 
   session_register_transport (transport_proto, vft, is_ip4, output_node);

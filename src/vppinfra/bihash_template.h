@@ -122,6 +122,7 @@ typedef struct
   int *working_copy_lengths;
     BVT (clib_bihash_bucket) saved_bucket;
 
+  //hash表名称，桶数目，桶数目对数
   u32 nbuckets;
   u32 log2_nbuckets;
   u8 *name;

@@ -1527,6 +1527,7 @@ tcp_init (vlib_main_t * vm)
   pi->unformat_pg_edit = unformat_pg_tcp_header;
 
   /* Register as transport with session layer */
+  //注册tcp协议
   transport_register_protocol (TRANSPORT_PROTO_TCP, &tcp_proto,
 			       FIB_PROTOCOL_IP4, tcp4_output_node.index);
   transport_register_protocol (TRANSPORT_PROTO_TCP, &tcp_proto,
@@ -1538,6 +1539,7 @@ tcp_init (vlib_main_t * vm)
   return 0;
 }
 
+//定义在vm->init__function_registrations上
 VLIB_INIT_FUNCTION (tcp_init);
 
 uword

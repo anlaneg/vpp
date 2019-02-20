@@ -133,23 +133,28 @@ static void __vlib_add_##tag##_function_##x (void)              \
 {                                                               \
  vlib_main_t * vm = vlib_get_main();                            \
  static _vlib_init_function_list_elt_t _vlib_init_function;     \
+ /*使用vm原有注册函数，将v_lib_init_function加入到vm->tagxxx*/\
  _vlib_init_function.next_init_function                         \
     = vm->tag##_function_registrations;                         \
   vm->tag##_function_registrations = &_vlib_init_function;      \
+  /*设置初始化回调*/\
  _vlib_init_function.f = &x;                                    \
 }                                                               \
 static void __vlib_rm_##tag##_function_##x (void)               \
     __attribute__((__destructor__)) ;                           \
+    /*删除初始化回调*/\
 static void __vlib_rm_##tag##_function_##x (void)               \
 {                                                               \
   vlib_main_t * vm = vlib_get_main();                           \
   _vlib_init_function_list_elt_t *next;                         \
+  /*如果function与x相同，则将其自next中移除*/\
   if (vm->tag##_function_registrations->f == &x)                \
     {                                                           \
       vm->tag##_function_registrations =                        \
         vm->tag##_function_registrations->next_init_function;   \
       return;                                                   \
     }                                                           \
+    /*vm->tag##__与x不同，在中间部分检查，并将其移除*/\
   next = vm->tag##_function_registrations;                      \
   while (next->next_init_function)                              \
     {                                                           \
@@ -169,17 +174,17 @@ static void __vlib_rm_##tag##_function_##x (void)               \
 static __clib_unused void * __clib_unused_##tag##_##x = x;
 #endif
 
-//将x放在vm->init*链头部
+//将x放在vm->init_function_registrations链头部
 #define VLIB_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,init)
 
-//将x放在vm->worker_init*链头部
+//将x放在vm->worker_init_function_registrations链头部
 #define VLIB_WORKER_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,worker_init)
 
-//将x放在vm->main_loop_enter*链头部
+//将x放在vm->main_loop_enter_function_registrations链头部
 #define VLIB_MAIN_LOOP_ENTER_FUNCTION(x) \
   VLIB_DECLARE_INIT_FUNCTION(x,main_loop_enter)
 
-//将x放在vm->main_loop_exit*链头部
+//将x放在vm->main_loop_exit_function_registrations链头部
 #define VLIB_MAIN_LOOP_EXIT_FUNCTION(x) \
 VLIB_DECLARE_INIT_FUNCTION(x,main_loop_exit)
 

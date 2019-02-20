@@ -76,9 +76,11 @@ typedef struct
 #define _vec_round_size(s) \
   (((s) + sizeof (uword) - 1) &~ (sizeof (uword) - 1))
 
+//获得对齐后的header_bytes
 always_inline uword
 vec_header_bytes (uword header_bytes)
 {
+    //使header_tytes按sizeof(vec_header_t)对齐
   return round_pow2 (header_bytes + sizeof (vec_header_t),
 		     sizeof (vec_header_t));
 }
@@ -114,7 +116,7 @@ vec_aligned_header_bytes (uword header_bytes, uword align)
   return round_pow2 (header_bytes + sizeof (vec_header_t), align);
 }
 
-//返回v地址向前走一个偏移量
+//返回v地址向后走一个偏移量
 always_inline void *
 vec_aligned_header (void *v, uword header_bytes, uword align)
 {

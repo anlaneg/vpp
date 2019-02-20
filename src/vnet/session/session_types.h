@@ -148,12 +148,12 @@ typedef struct session_
   volatile u8 session_state;
 
   /** Session index in per_thread pool */
-  u32 session_index;
+  u32 session_index;//session编号
 
   /** App worker pool index */
   u32 app_wrk_index;
 
-  u8 thread_index;
+  u8 thread_index;//所属的线程索引
 
   /** To avoid n**2 "one event per frame" check */
   u64 enqueue_epoch;

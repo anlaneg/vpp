@@ -241,6 +241,7 @@ is_pow2 (uword x)
   return 0 == (x & (x - 1));
 }
 
+//数字x按pow2对齐，pow2是２的幂
 always_inline uword
 round_pow2 (uword x, uword pow2)
 {

@@ -63,6 +63,7 @@ typedef struct
   u32 max_elts;
 
   /** mmap segment info: base + length */
+  //采用mmap申请的内存（头指针，及mmap长度）
   u8 *mmap_base;
   u64 mmap_size;
 
@@ -187,34 +188,42 @@ pool_free_elts (void *v)
 */
 #define _pool_get_aligned_internal(P,E,A,Z)                             \
 do {                                                                    \
+    /*取pool头部*/\
   pool_header_t * _pool_var (p) = pool_header (P);                      \
   uword _pool_var (l);                                                  \
                                                                         \
   STATIC_ASSERT(A==0 || ((A % sizeof(P[0]))==0) || ((sizeof(P[0]) % A) == 0), \
                 "Pool aligned alloc of incorrectly sized object");      \
   _pool_var (l) = 0;                                                    \
+  /*如果pool存在，则取pool空闲数*/\
   if (P)                                                                \
     _pool_var (l) = vec_len (_pool_var (p)->free_indices);              \
                                                                         \
+  /*pool空闲数大于０，则直接自freelist上进行分配*/\
   if (_pool_var (l) > 0)                                                \
     {                                                                   \
       /* Return free element from free list. */                         \
+      /*返回最后一个空闲元素*/\
       uword _pool_var (i) = _pool_var (p)->free_indices[_pool_var (l) - 1]; \
       (E) = (P) + _pool_var (i);                                        \
+      /*标记此节点被占用*/\
       _pool_var (p)->free_bitmap =					\
 	clib_bitmap_andnoti_notrim (_pool_var (p)->free_bitmap,        \
 	                             _pool_var (i));	               	\
+	  /*空闲数量减少*/\
       _vec_len (_pool_var (p)->free_indices) = _pool_var (l) - 1;       \
     }                                                                   \
   else                                                                  \
     {                                                                   \
       /* fixed-size, preallocated pools cannot expand */                \
+      /*当前空闲节点已用完，尝试扩展*/\
       if ((P) && _pool_var(p)->max_elts)                                \
         {                                                               \
           clib_warning ("can't expand fixed-size pool");                \
           os_out_of_memory();                                           \
         }                                                               \
       /* Nothing on free list, make a new element and return it. */     \
+      /*扩大pool进行obj申请*/\
       P = _vec_resize (P,                                               \
 		       /* length_increment */ 1,                        \
 		       /* new size */ (vec_len (P) + 1) * sizeof (P[0]), \
@@ -273,6 +282,7 @@ do {                                                                    \
 #define pool_get_will_expand(P,YESNO) pool_get_aligned_will_expand(P,YESNO,0)
 
 /** Use free bitmap to query whether given element is free. */
+//检查free_bitmap元素E是否为空闲
 #define pool_is_free(P,E)						\
 ({									\
   pool_header_t * _pool_var (p) = pool_header (P);			\
@@ -388,6 +398,7 @@ _pool_free (void *v)
     return v;
   clib_bitmap_free (p->free_bitmap);
 
+  //如果有max_elts,则释放mmap申请的内存
   if (p->max_elts)
     {
       int rv;
@@ -398,6 +409,7 @@ _pool_free (void *v)
     }
   else
     {
+      //释放free_indices及v
       vec_free (p->free_indices);
       vec_free_h (v, pool_aligned_header_bytes);
     }
@@ -405,6 +417,7 @@ _pool_free (void *v)
 }
 
 /** Free a pool. */
+//释放pool
 #define pool_free(p) (p) = _pool_free(p)
 
 /** Optimized iteration through pool.
