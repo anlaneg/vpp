@@ -189,11 +189,13 @@ static __clib_unused void * __clib_unused_##tag##_##x = x;
 VLIB_DECLARE_INIT_FUNCTION(x,main_loop_exit)
 
 #ifndef CLIB_MARCH_VARIANT
+//注册配置函数（配置函数在插件加载后执行）
 #define VLIB_CONFIG_FUNCTION(x,n,...)                           \
     __VA_ARGS__ vlib_config_function_runtime_t                  \
     VLIB_CONFIG_FUNCTION_SYMBOL(x);                             \
 static void __vlib_add_config_function_##x (void)               \
     __attribute__((__constructor__)) ;                          \
+    /*添加config函数*/\
 static void __vlib_add_config_function_##x (void)               \
 {                                                               \
     vlib_main_t * vm = vlib_get_main();                         \
@@ -204,6 +206,7 @@ static void __vlib_add_config_function_##x (void)               \
 }                                                               \
 static void __vlib_rm_config_function_##x (void)                \
     __attribute__((__destructor__)) ;                           \
+    /*删除config函数*/\
 static void __vlib_rm_config_function_##x (void)                \
 {                                                               \
     vlib_main_t * vm = vlib_get_main();                         \
@@ -216,6 +219,7 @@ static void __vlib_rm_config_function_##x (void)                \
     VLIB_CONFIG_FUNCTION_SYMBOL (x)                             \
   = {                                                           \
     .name = n,                                                  \
+    /*指出配置函数名称*/\
     .function = x,                                              \
     .is_early = 0,						\
   }
@@ -236,6 +240,7 @@ static void __vlib_rm_config_function_##x (void)                \
 #define VLIB_EARLY_CONFIG_FUNCTION(x,n,...)                     \
     __VA_ARGS__ vlib_config_function_runtime_t                  \
     VLIB_CONFIG_FUNCTION_SYMBOL(x);                             \
+    /*配置函数添加*/\
 static void __vlib_add_config_function_##x (void)               \
     __attribute__((__constructor__)) ;                          \
 static void __vlib_add_config_function_##x (void)               \
@@ -246,6 +251,7 @@ static void __vlib_add_config_function_##x (void)               \
     vm->config_function_registrations                           \
        = &VLIB_CONFIG_FUNCTION_SYMBOL(x);                       \
 }                                                               \
+    /*配置函数移除*/\
 static void __vlib_rm_config_function_##x (void)                \
     __attribute__((__destructor__)) ;                           \
 static void __vlib_rm_config_function_##x (void)                \
@@ -260,6 +266,7 @@ static void __vlib_rm_config_function_##x (void)                \
     VLIB_CONFIG_FUNCTION_SYMBOL (x)                             \
   = {                                                           \
     .name = n,                                                  \
+    /*配置函数设置*/\
     .function = x,                                              \
     .is_early = 1,						\
   }
@@ -296,6 +303,7 @@ static void __vlib_rm_config_function_##x (void)                \
   })
 
 /* Don't call given init function: used to suppress parts of the netstack */
+    //标明函数x已被调用
 #define vlib_mark_init_function_complete(vm, x)				\
   ({									\
     extern vlib_init_function_t * VLIB_INIT_FUNCTION_SYMBOL (x);	\

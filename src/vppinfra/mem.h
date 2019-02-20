@@ -68,6 +68,7 @@ clib_mem_get_per_cpu_heap (void)
   return clib_per_cpu_mheaps[cpu];
 }
 
+//设置当前线程对应的堆地址为new_heap
 always_inline void *
 clib_mem_set_per_cpu_heap (u8 * new_heap)
 {

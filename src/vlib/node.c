@@ -468,6 +468,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	   pointer vector. */
 	n->runtime_index = vec_len (nm->processes);
 
+	//添加进进程组
 	vec_add1 (nm->processes, p);
 
 	/* Paint first stack word with magic number so we can at least
@@ -552,6 +553,7 @@ vlib_register_all_static_nodes (vlib_main_t * vm)
 {
   vlib_node_registration_t *r;
 
+  //错误字符串
   static char *null_node_error_strings[] = {
     "blackholed packets",
   };

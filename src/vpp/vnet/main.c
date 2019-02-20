@@ -29,9 +29,10 @@
 /*
  * Load plugins from /usr/lib/vpp_plugins by default
  */
-char *vlib_plugin_path = NULL;//vpp插件目录
+char *vlib_plugin_path = NULL;//vpp插件目录（vpp_find_plugin_path)
 char *vlib_plugin_app_version = VPP_BUILD_VER;
 
+//查找插件路径
 static void
 vpp_find_plugin_path ()
 {
@@ -41,6 +42,7 @@ vpp_find_plugin_path ()
   u8 *s;
 
   /* find executable path */
+  //取可执行文件路径
   if ((rv = readlink ("/proc/self/exe", path, PATH_MAX - 1)) == -1)
     return;
 
@@ -48,20 +50,24 @@ vpp_find_plugin_path ()
   path[rv] = 0;
 
   /* strip filename */
+  //没有找到目录名称,直接退
   if ((p = strrchr (path, '/')) == 0)
     return;
   *p = 0;
 
+  //跳出bin目录
   /* strip bin/ */
   if ((p = strrchr (path, '/')) == 0)
     return;
   *p = 0;
 
+  //格式化可能的vpp_plugins地址
   s = format (0, "%s/lib/" CLIB_TARGET_TRIPLET "/vpp_plugins:"
 	      "%s/lib/vpp_plugins", path, path);
   vec_add1 (s, 0);
   vlib_plugin_path = (char *) s;
 
+  //格式化vpp_api_test_plugins地址
   s = format (0, "%s/lib/" CLIB_TARGET_TRIPLET "/vpp_api_test_plugins:"
 	      "%s/lib/vpp_api_test_plugins", path, path);
   vec_add1 (s, 0);
@@ -73,6 +79,7 @@ vpe_main_init (vlib_main_t * vm)
 {
   void vat_plugin_hash_create (void);
 
+  //设置cli的提示符
   if (CLIB_DEBUG > 0)
     vlib_unix_cli_set_prompt ("DBGvpp# ");
   else
@@ -95,6 +102,7 @@ vpe_main_init (vlib_main_t * vm)
  */
 char *vlib_default_runtime_dir = "vpp";
 
+//vpp 入口函数
 int
 main (int argc, char *argv[])
 {
@@ -110,6 +118,7 @@ main (int argc, char *argv[])
 #if __x86_64__
   CLIB_UNUSED (const char *msg)
     = "ERROR: This binary requires CPU with %s extensions.\n";
+//当前cpu不支持对应的flag,则直接退出
 #define _(a,b)                                  \
     if (!clib_cpu_supports_ ## a ())            \
       {                                         \
@@ -141,6 +150,7 @@ main (int argc, char *argv[])
      * Load startup config from file.
      * usage: vpp -c /etc/vpp/startup.conf
      */
+    //自文件中加载配置
     if ((argc == 3) && !strncmp (argv[1], "-c", 2))
     {
       FILE *fp;
@@ -259,6 +269,7 @@ main (int argc, char *argv[])
 defaulted:
 
   /* set process affinity for main thread */
+  //将当前线程绑定到main_core上
   CPU_ZERO (&cpuset);
   CPU_SET (main_core, &cpuset);
   pthread_setaffinity_np (pthread_self (), sizeof (cpu_set_t), &cpuset);
@@ -275,6 +286,7 @@ defaulted:
     }
   else
     {
+      //申请heap失败
       {
 	int rv __attribute__ ((unused)) =
 	  write (2, "Main heap allocation failure!\r\n", 31);

@@ -900,6 +900,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
   if (!memory)
     {
       /* No memory given, try to VM allocate some. */
+      //没有给出memory,采用mmap申请memory_size
       memory = clib_mem_vm_alloc (memory_size);
       if (!memory)
 	return 0;//申请失败返回NULL
@@ -912,9 +913,10 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
   {
     uword am, av, ah;
 
-    am = pointer_to_uword (memory);
+    am = pointer_to_uword (memory);//将memory转为数字
     av = mheap_page_round (am);//将memory按页对齐
-    v = uword_to_pointer (av, void *);
+    v = uword_to_pointer (av, void *);//将对齐的地址转为指针
+
     //考虑在h指向的内存处存放一个mheap,并使得ah按页对齐
     h = mheap_header (v);
     ah = pointer_to_uword (h);
@@ -925,7 +927,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
     h = uword_to_pointer (ah, void *);
     v = mheap_vector (h);
 
-    //用户要求的内存太小了，不足以存放mheap
+    //用户要求的内存太小了，不足以存放mheap，释放memory并返回０
     if (PREDICT_FALSE (memory + memory_size < v))
       {
 	/*
@@ -936,7 +938,7 @@ mheap_alloc_with_flags (void *memory, uword memory_size, uword flags)
 	return 0;
       }
 
-    size = memory + memory_size - v;//实际申请的内存大小
+    size = memory + memory_size - v;//实际可使用的内存大小
   }
 
   /* VM map header so we can use memory. */

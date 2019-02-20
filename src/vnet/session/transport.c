@@ -255,6 +255,7 @@ transport_register_protocol (transport_proto_t transport_proto,
 transport_proto_vft_t *
 transport_protocol_get_vft (transport_proto_t transport_proto)
 {
+    //通过传输层协议找virtual函数表
   if (transport_proto >= vec_len (tp_vfts))
     return 0;
   return &tp_vfts[transport_proto];

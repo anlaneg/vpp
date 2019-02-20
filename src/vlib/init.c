@@ -110,6 +110,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
 
   c = vm->config_function_registrations;
 
+  //收集所有config_function的注册函数到all
   while (c)
     {
       hash_set_mem (hash, c->name, vec_len (all));
@@ -130,7 +131,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
 
       c = all[p[0]];
       if (vec_len (c->input.buffer) > 0)
-	vec_add1 (c->input.buffer, ' ');
+	  vec_add1 (c->input.buffer, ' ');
       vec_add (c->input.buffer, v, vec_len (v));
       vec_free (v);
       vec_free (s);
@@ -145,8 +146,10 @@ vlib_call_all_config_functions (vlib_main_t * vm,
 	continue;
 
       /* Already called? */
+      //检查function是否已调用过
       if (hash_get (vm->init_functions_called, c->function))
 	continue;
+      //指明已调用过，完成调用
       hash_set1 (vm->init_functions_called, c->function);
 
       error = c->function (vm, &c->input);
@@ -155,6 +158,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
     }
 
 done:
+    //释放input
   for (i = 0; i < vec_len (all); i++)
     {
       c = all[i];

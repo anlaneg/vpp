@@ -267,9 +267,11 @@ typedef struct
 } mheap_t;
 
 //跳一个mheap_t结构（考虑对齐）
+//mheadp_t结构后面是一个vec_header_t结构，然后是数据
 always_inline mheap_t *
 mheap_header (u8 * v)
 {
+    //sizeof (mheap_t)+sizeof (vec_header_t),并按16字节对齐
   return vec_aligned_header (v, sizeof (mheap_t), 16);
 }
 
@@ -277,6 +279,8 @@ mheap_header (u8 * v)
 always_inline u8 *
 mheap_vector (mheap_t * h)
 {
+    //h跳过
+    //sizeof(mheap_t)+sizeof(vec_header_t),并按16字节对齐
   return vec_aligned_header_end (h, sizeof (mheap_t), 16);
 }
 

@@ -455,7 +455,7 @@ typedef enum
 typedef struct
 {
   /** Prompt string for CLI. */
-  u8 *cli_prompt;
+  u8 *cli_prompt;//设置提示的cli字符串
 
   /** Vec pool of CLI sessions. */
   unix_cli_file_t *cli_file_pool;
@@ -3060,8 +3060,10 @@ VLIB_MAIN_LOOP_EXIT_FUNCTION (unix_cli_exit);
 void
 vlib_unix_cli_set_prompt (char *prompt)
 {
+  //在prompt后面加上一个空格
   char *fmt = (prompt[strlen (prompt) - 1] == ' ') ? "%s" : "%s ";
   unix_cli_main_t *cm = &unix_cli_main;
+  //释放掉cli_prompt,重定设置cli_prompt
   if (cm->cli_prompt)
     vec_free (cm->cli_prompt);
   cm->cli_prompt = format (0, fmt, prompt);

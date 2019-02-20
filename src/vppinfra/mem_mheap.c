@@ -101,11 +101,14 @@ clib_mem_init_thread_safe (void *memory, uword memory_size)
   mheap_t *h;
   u8 *heap;
 
+  //设置heap
   clib_mem_init (memory, memory_size);
 
+  //取当前thread对应的heap
   heap = clib_mem_get_per_cpu_heap ();
   ASSERT (heap);
 
+  //取出heap对应的header,并打上线程安全标记
   h = mheap_header (heap);
 
   /* make the main heap thread-safe */

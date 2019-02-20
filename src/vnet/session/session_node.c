@@ -321,6 +321,7 @@ typedef enum
     SESSION_QUEUE_N_ERROR,
 } session_queue_error_t;
 
+//session队列错误字符串
 static char *session_queue_error_strings[] = {
 #define _(sym,string) string,
   foreach_session_queue_error

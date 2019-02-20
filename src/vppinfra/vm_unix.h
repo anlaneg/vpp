@@ -47,10 +47,10 @@ always_inline void *
 clib_mem_vm_alloc (uword size)
 {
   void *mmap_addr;
-  uword flags = MAP_PRIVATE;
+  uword flags = MAP_PRIVATE;//使用copy-on-write方式
 
 #ifdef MAP_ANONYMOUS
-  flags |= MAP_ANONYMOUS;
+  flags |= MAP_ANONYMOUS;//不映射到fd文件
 #endif
 
   mmap_addr = mmap (0, size, PROT_READ | PROT_WRITE, flags, -1, 0);

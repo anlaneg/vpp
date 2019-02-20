@@ -297,7 +297,7 @@ typedef struct vlib_node_t
   u32 index;//node编号
 
   /* Index of corresponding node runtime. */
-  u32 runtime_index;
+  u32 runtime_index;//节点的运行索引
 
   /* Runtime data for this node. */
   void *runtime_data;
@@ -754,6 +754,7 @@ typedef struct
   vlib_process_t **processes;
 
   /* Current running process or ~0 if no process running. */
+  //记录当前正在运行的process
   u32 current_process_index;
 
   /* Pool of pending process frames. */

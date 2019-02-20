@@ -491,6 +491,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 	}
     }
 
+  //如果非交互模式，则依配置制做daemon
   if (!(um->flags & UNIX_FLAG_INTERACTIVE))
     {
       openlog (vm->name, LOG_CONS | LOG_PERROR | LOG_PID, LOG_DAEMON);
@@ -502,6 +503,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 	clib_error_return (0, "daemon () fails");
     }
 
+  //写入pid编号
   if (pidfd >= 0)
     {
       u8 *lv = format (0, "%d", getpid ());
@@ -581,6 +583,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * Limit pager buffer to @c nn lines of output.
  * A value of @c 0 disables the pager. Default value: @c 100000
 ?*/
+//注册unix配置
 VLIB_EARLY_CONFIG_FUNCTION (unix_config, "unix");
 
 static clib_error_t *
@@ -658,6 +661,7 @@ vlib_unix_main (int argc, char *argv[])
   unformat_init_command_line (&input, (char **) vm->argv);
   if (vm->init_functions_called == 0)
     vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+  //调用所有config_functions
   e = vlib_call_all_config_functions (vm, &input, 1 /* early */ );
   if (e != 0)
     {
@@ -674,6 +678,7 @@ vlib_unix_main (int argc, char *argv[])
   __os_thread_index = 0;
   vm->thread_index = 0;
 
+  //在栈上调用函数
   i = clib_calljmp (thread0, (uword) vm,
 		    (void *) (vlib_thread_stacks[0] +
 			      VLIB_THREAD_STACK_SIZE));

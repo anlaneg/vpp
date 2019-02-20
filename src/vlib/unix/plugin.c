@@ -60,6 +60,7 @@ str_array_to_vec (char *array, int len)
   return r;
 }
 
+//加载插件
 static int
 load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 {
@@ -259,27 +260,29 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
   u32 *load_fail_indices = 0;
   int i;
 
+  //split多个vector插件地址
   plugin_path = split_plugin_path (pm);
 
-  //遍历插件路径
+  //遍历插件路径，完成插件识别
   for (i = 0; i < vec_len (plugin_path); i++)
     {
       dp = opendir ((char *) plugin_path[i]);
 
+      //打开目录失败，继续
       if (dp == 0)
-	continue;//打开目录失败，继续
+          continue;
 
       while ((entry = readdir (dp)))
 	{
 	  u8 *plugin_name;
 	  u8 *filename;
 
-	  //跳过filter的插件名称
+	  //如果plugin_name_filter有值，则只加载plugin_name_filter指定的plugin
 	  if (pm->plugin_name_filter)
 	    {
 	      int j;
 	      for (j = 0; j < vec_len (pm->plugin_name_filter); j++)
-		if (entry->d_name[j] != pm->plugin_name_filter[j])//此段代码是错的（应为 ==,而非!=)
+		if (entry->d_name[j] != pm->plugin_name_filter[j])
 		  goto next;
 	    }
 
@@ -306,6 +309,7 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
 	  //取插件名称
 	  plugin_name = format (0, "%s%c", entry->d_name, 0);
 	  /* Have we seen this plugin already? */
+	  //查此名称对应的plguin是否存在
 	  p = hash_get_mem (pm->plugin_by_name_hash, plugin_name);
 	  if (p == 0)
 	    {
@@ -339,14 +343,17 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
   /*
    * Attempt to load the plugins
    */
+  //装载识别的所有插件
   for (i = 0; i < vec_len (pm->plugin_info); i++)
     {
 	  //取$i对应的插件配置
       pi = vec_elt_at_index (pm->plugin_info, i);
 
+      //加载插件
       if (load_one_plugin (pm, pi, from_early_init))
 	{
 	  /* Make a note of any which fail to load */
+          //记录装载失败的
 	  vec_add1 (load_fail_indices, i);
 	  hash_unset_mem (pm->plugin_by_name_hash, pi->name);
 	  vec_free (pi->name);
@@ -355,6 +362,7 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
     }
 
   /* Remove plugin info vector elements corresponding to load failures */
+  //删除装载失败的记录
   if (vec_len (load_fail_indices) > 0)
     {
       for (i = vec_len (load_fail_indices) - 1; i >= 0; i--)
@@ -367,12 +375,14 @@ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
     {
       pi = vec_elt_at_index (pm->plugin_info, i);
       hash_unset_mem (pm->plugin_by_name_hash, pi->name);
+      //添加插件名称到插件索引的映射
       hash_set_mem (pm->plugin_by_name_hash, pi->name, pi - pm->plugin_info);
     }
 
   return 0;
 }
 
+//装载插件
 int
 vlib_plugin_early_init (vlib_main_t * vm)
 {

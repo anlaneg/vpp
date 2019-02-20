@@ -1526,6 +1526,7 @@ dispatch_process (vlib_main_t * vm,
 			     f ? f->n_vectors : 0, /* is_after */ 0);
 
   /* Save away current process for suspend. */
+  //指出当前处理的进程index
   old_process_index = nm->current_process_index;
   nm->current_process_index = node->runtime_index;
 
@@ -1576,6 +1577,7 @@ dispatch_process (vlib_main_t * vm,
   return t;
 }
 
+//启动process
 void
 vlib_start_process (vlib_main_t * vm, uword process_index)
 {

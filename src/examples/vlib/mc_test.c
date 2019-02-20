@@ -373,6 +373,7 @@ mc_config (vlib_main_t * vm, unformat_input_t * input)
   return error;
 }
 
+//注册配置函数
 VLIB_CONFIG_FUNCTION (mc_config, "mc");
 
 /*

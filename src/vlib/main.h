@@ -122,7 +122,7 @@ typedef struct vlib_main_t
   vlib_physmem_main_t physmem_main;
 
   /* Node graph main structure. */
-  vlib_node_main_t node_main;//node相关的结构
+  vlib_node_main_t node_main;//node相关的结构（主node)
 
   /* Command line interface. */
   vlib_cli_main_t cli_main;//命令行相关
