@@ -74,6 +74,7 @@ typedef struct hash_header
   hash_key_sum_function_t *key_sum;//计算hashcode函数
 
   /* Special values for key_sum "function". */
+  //特别的几个hash函数
 #define KEY_FUNC_NONE		(0)	/*< sum = key */
 #define KEY_FUNC_POINTER_UWORD	(1)	/*< sum = *(uword *) key */
 #define KEY_FUNC_POINTER_U32	(2)	/*< sum = *(u32 *) key */
@@ -96,7 +97,7 @@ typedef struct hash_header
 
   /* Bit i is set if pair i is a user object (as opposed to being
      either zero or an indirect array of pairs). */
-  uword is_user[0];
+  uword is_user[0];//标记元素是否存在
 } hash_t;
 
 /* Hash header size in bytes */
@@ -132,6 +133,7 @@ hash_capacity (void *v)
 }
 
 /* Returns 1 if the hash pair contains user data */
+//检查i位置是否有元素
 always_inline uword
 hash_is_user (void *v, uword i)
 {

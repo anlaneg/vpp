@@ -505,17 +505,21 @@ lookup (void *v, uword key, enum lookup_opcode op,
   if (!v)
     return 0;
 
-  //计算hashcode
+  //计算hashcode，算到桶号
   i = key_sum (h, key) & (_vec_len (v) - 1);
+  //找到相应的桶
   p = get_pair (v, i);
 
   if (hash_is_user (v, i))
     {
+	  //检查key是否相等
       found_key = key_equal (h, p->direct.key, key);
       if (found_key)
 	{
+    	  //查找成功，则检查op，按op要求执行相应操作
 	  if (op == UNSET)
 	    {
+		  //移除对应元素
 	      set_is_user (v, i, 0);
 	      if (old_value)
 		clib_memcpy_fast (old_value, p->direct.value,
@@ -525,6 +529,7 @@ lookup (void *v, uword key, enum lookup_opcode op,
 	}
       else
 	{
+    	  //未与key匹配成功
 	  if (op == SET)
 	    p = set_indirect_is_user (v, i, p, key);
 	  else
@@ -533,6 +538,7 @@ lookup (void *v, uword key, enum lookup_opcode op,
     }
   else
     {
+	  //key所对应的桶上没有元素，则直接添加
       hash_pair_indirect_t *pi = &p->indirect;
 
       if (op == SET)
@@ -723,6 +729,7 @@ _hash_create (uword elts, hash_t * h_user)
 
   if (!h->format_pair)
     {
+	  //如果未指定format函数，则使用默认函数
       h->format_pair = hash_format_pair_default;
       h->format_pair_arg = 0;
     }
@@ -792,17 +799,20 @@ hash_dup (void *old)
   return hash_resize_internal (old, vec_len (old), 0);
 }
 
+//向hash表中添加key,value,并返回key对应的旧值
 void *
 _hash_set3 (void *v, uword key, void *value, void *old_value)
 {
   hash_t *h;
 
+  //如果hash表示存在，则创建
   if (!v)
     v = hash_create (0, sizeof (uword));
 
   h = hash_header (v);
   (void) lookup (v, key, SET, value, old_value);
 
+  //如果容许hash表增加，则增加hash表
   if (!(h->flags & HASH_FLAG_NO_AUTO_GROW))
     {
       /* Resize when 3/4 full. */

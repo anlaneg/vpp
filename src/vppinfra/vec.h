@@ -133,6 +133,7 @@ _vec_resize_inline (void *v,
 
   if (PREDICT_TRUE (v != 0))
     {
+	  //之前已存在vector,现在对其扩大。
       void *p = v - aligned_header_bytes;
 
       /* Vector header must start heap object. */

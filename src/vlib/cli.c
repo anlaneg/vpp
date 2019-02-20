@@ -449,6 +449,7 @@ vlib_cli_dispatch_sub_commands (vlib_main_t * vm,
   u8 *string;
   uword is_main_dispatch = cm == &vm->cli_main;
 
+  //取出父命令
   parent = vec_elt_at_index (cm->commands, parent_command_index);
   if (is_main_dispatch && unformat (input, "help"))
     {
@@ -1105,6 +1106,9 @@ vlib_cli_normalize_path (char *input, char **result)
   return index_of_last_space;
 }
 
+//取出path中最后一个空格（实际上是取倒数第二个命令字的结尾）
+//例如path="show interface stats"
+//则返回值为'stats'前的空格的索引
 always_inline uword
 parent_path_len (char *path)
 {
@@ -1130,9 +1134,12 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
 
   l = parent_path_len (c->path);
   if (l == ~0)
+	  //单命令字，复制其
     sub_name = vec_dup ((u8 *) c->path);
   else
     {
+	  //非单命令字，例如"show interface"
+	  //将“interface”加入到vector sub_name中,做为其一个元素
       ASSERT (l + 1 < vec_len (c->path));
       sub_name = 0;
       vec_add (sub_name, c->path + l + 1, vec_len (c->path) - (l + 1));
@@ -1187,6 +1194,7 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
       return;
     }
 
+  //在父命令下添加子命令
   vec_add2 (p->sub_commands, sub_c, 1);
   sub_c->index = child_index;
   sub_c->name = sub_name;
@@ -1228,10 +1236,13 @@ vlib_cli_make_parent (vlib_cli_main_t * cm, uword ci)
   /* Root command (index 0) should have already been added. */
   ASSERT (vec_len (cm->commands) > 0);
 
+  //取出命令索引(ci)指明的command
   c = vec_elt_at_index (cm->commands, ci);
+  //取出其父命令的长度
   p_len = parent_path_len (c->path);
 
   /* No space?  Parent is root command. */
+  //如果为~0,则此条命令是一个单命令，例如"exit"
   if (p_len == ~0)
     {
       add_sub_command (cm, 0, ci);
@@ -1292,7 +1303,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
   //如果hash表未创建，则创建hash表（用于存储command)
   if (!cm->command_index_by_path)
     cm->command_index_by_path = hash_create_vec ( /* initial length */ 32,
-						 sizeof (c->path[0]),
+						 sizeof (c->path[0]),//key为指针
 						 sizeof (uword));
 
   /* See if command already exists with given path. */
@@ -1335,7 +1346,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
   else
     {
       /* Command does not exist: create it. */
-      //命令不存在，创建它
+      //命令不存在，创建它并将其加入
 
       /* Add root command (index 0). */
       if (vec_len (cm->commands) == 0)
@@ -1345,18 +1356,23 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
 	}
 
       ci = vec_len (cm->commands);
+      //将normalized_path对应的commands索引（ci)加入到hash表中
       hash_set_mem (cm->command_index_by_path, normalized_path, ci);
+      //将command加入到cm->commands中
       vec_add1 (cm->commands, c[0]);
 
+      //取出刚刚添加进去的command(注意，其实际上是c[0]的副本），并填充它
       c = vec_elt_at_index (cm->commands, ci);
       c->path = normalized_path;
 
       /* Don't inherit from registration. */
+      //不使用c[0]中旧的这三个值，将其初始化为0
       c->sub_commands = 0;
       c->sub_command_index_by_name = 0;
       c->sub_command_positions = 0;
     }
 
+  //将命令按token拆开，合并到vector内（方便cli查找，说实话，这个实现特别丑)
   vlib_cli_make_parent (cm, ci);
   return 0;
 }

@@ -60,6 +60,7 @@ typedef struct
   u32 len; /**< Number of elements in vector (NOT its allocated length). */
   u32 dlmalloc_header_offset;	/**< offset to memory allocator offset  */
 #endif
+  //vector数据
   u8 vector_data[0];  /**< Vector data . */
 } vec_header_t;
 
