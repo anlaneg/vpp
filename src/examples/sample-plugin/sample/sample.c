@@ -56,6 +56,7 @@
 #define foreach_sample_plugin_api_msg                           \
 _(SAMPLE_MACSWAP_ENABLE_DISABLE, sample_macswap_enable_disable)
 
+//注册插件
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = SAMPLE_PLUGIN_BUILD_VER,
@@ -142,6 +143,7 @@ macswap_enable_disable_command_fn (vlib_main_t * vm,
 /**
  * @brief CLI command to enable/disable the sample macswap plugin.
  */
+//命令注册
 VLIB_CLI_COMMAND (sr_content_command, static) = {
     .path = "sample macswap",
     .short_help = 
@@ -226,6 +228,7 @@ static clib_error_t * sample_init (vlib_main_t * vm)
   return error;
 }
 
+//注册初始化函数
 VLIB_INIT_FUNCTION (sample_init);
 
 /**

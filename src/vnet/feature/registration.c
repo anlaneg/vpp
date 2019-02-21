@@ -79,12 +79,13 @@
     vnet_feature_next.
 */
 
-
+//按','号进行划分a用于保存分隔后的第一部分，b用于保存剩余部分，返回值为１时遍历结束，返回０则仍需要遍历
 static int
 comma_split (u8 * s, u8 ** a, u8 ** b)
 {
   *a = s;
 
+  //寻找‘，’或者s到达结尾
   while (*s && *s != ',')
     s++;
 
@@ -93,6 +94,7 @@ comma_split (u8 * s, u8 ** a, u8 ** b)
   else
     return 1;
 
+  //保存剩氽部分
   *b = (u8 *) (s + 1);
   return 0;
 }
@@ -122,7 +124,7 @@ vnet_feature_arc_init (vlib_main_t * vm,
 		       vnet_config_main_t * vcm,
 		       char **feature_start_nodes,
 		       int num_feature_start_nodes,
-		       vnet_feature_registration_t * first_reg,
+		       vnet_feature_registration_t * first_reg,//首个待注册的功能
 		       vnet_feature_constraint_registration_t *
 		       first_const_set, char ***in_feature_nodes)
 {
@@ -157,6 +159,7 @@ vnet_feature_arc_init (vlib_main_t * vm,
   /* pass 1, collect feature node names, construct a before b pairs */
   while (this_reg)
     {
+      //格式化node名称
       node_name = format (0, "%s%c", this_reg->node_name, 0);
       hash_set (reg_by_index, vec_len (node_names), (uword) this_reg);
 

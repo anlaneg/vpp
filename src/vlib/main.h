@@ -74,7 +74,7 @@ typedef struct vlib_main_t
   u32 main_loop_count;
 
   /* Count of vectors processed this main loop. */
-  u32 main_loop_vectors_processed;
+  u32 main_loop_vectors_processed;//已处理的统计计数
   u32 main_loop_nodes_processed;
 
   /* Circular buffer of input node vector counts.
@@ -94,7 +94,7 @@ typedef struct vlib_main_t
   u32 main_loop_exit_set;
   /* Set e.g. in the SIGTERM signal handler, checked in a safe place... */
   volatile u32 main_loop_exit_now;
-  clib_longjmp_t main_loop_exit;
+  clib_longjmp_t main_loop_exit;//用于跳转至main_loop
 #define VLIB_MAIN_LOOP_EXIT_NONE 0
 #define VLIB_MAIN_LOOP_EXIT_PANIC 1
   /* Exit via CLI. */
@@ -182,9 +182,12 @@ typedef struct vlib_main_t
   /* List of init functions to call, setup by constructors */
   _vlib_init_function_list_elt_t *init_function_registrations;
   _vlib_init_function_list_elt_t *worker_init_function_registrations;
+  //在main_loop函数进入前需要调用的注册函数
   _vlib_init_function_list_elt_t *main_loop_enter_function_registrations;
+  //在main_loop函数离开前注册的需要调用的函数
   _vlib_init_function_list_elt_t *main_loop_exit_function_registrations;
   _vlib_init_function_list_elt_t *api_init_function_registrations;
+  //注册的配置函数，在loop前调用，分两个阶段，早期配置及后期配置分开调用
   vlib_config_function_runtime_t *config_function_registrations;
 
   /* control-plane API queue signal pending, length indication */

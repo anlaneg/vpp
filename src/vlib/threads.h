@@ -33,7 +33,7 @@ typedef struct vlib_thread_registration_
   /* config parameters */
   char *name;
   char *short_name;
-  vlib_thread_function_t *function;
+  vlib_thread_function_t *function;//注册的线程函数
   uword mheap_size;
   int fixed_count;
   u32 count;
@@ -41,9 +41,9 @@ typedef struct vlib_thread_registration_
   u32 frame_queue_nelts;
 
   /* All threads of this type run on pthreads */
-  int use_pthreads;
+  int use_pthreads;//是否使用pthreads
   u32 first_index;
-  uword *coremask;
+  uword *coremask;//使用的coremask
 } vlib_thread_registration_t;
 
 /*
@@ -108,10 +108,10 @@ typedef struct
   volatile u32 *node_reforks_required;
 
   long lwp;
-  int cpu_id;
-  int core_id;
-  int socket_id;
-  pthread_t thread_id;
+  int cpu_id;//线程使用的cpu
+  int core_id;//cpu_id对应的core_id
+  int socket_id;//cpu_id对应的socket_id
+  pthread_t thread_id;//当前工作线程线程号
 } vlib_worker_thread_t;
 
 extern vlib_worker_thread_t *vlib_worker_threads;
@@ -272,15 +272,17 @@ typedef enum
 
 typedef struct
 {
+    //通过此回调，在指定线程上运行w工作（线程创建后通过此回调来执行工作）
   clib_error_t *(*vlib_launch_thread_cb) (void *fp, vlib_worker_thread_t * w,
 					  unsigned cpu_id);
+  //通过此回调，将指定线程绑定在指定cpu上
   clib_error_t *(*vlib_thread_set_lcore_cb) (u32 thread, u16 cpu);
 } vlib_thread_callbacks_t;
 
 typedef struct
 {
   /* Link list of registrations, built by constructors */
-  vlib_thread_registration_t *next;//注册thread对应的初始化
+  vlib_thread_registration_t *next;//注册thread对应的初始化，例如创建新的线程
 
   /* Vector of registrations, w/ non-data-structure clones at the top */
   vlib_thread_registration_t **registrations;
@@ -308,7 +310,7 @@ typedef struct
   u32 n_threads;
 
   /* Number of cores to skip, must match the core mask */
-  u32 skip_cores;//需要跳过的core数目，
+  u32 skip_cores;//需要跳过的core数目，将自第一个有效cpu开始跳过
 
   /* Thread prefix name */
   u8 *thread_prefix;
@@ -346,14 +348,17 @@ extern vlib_thread_main_t vlib_thread_main;
 //初始化x,并将x注册到vlib_thread_main对应的链表上
 #define VLIB_REGISTER_THREAD(x,...)                     \
   __VA_ARGS__ vlib_thread_registration_t x;             \
+  /*声明定义线程注册函数*/\
 static void __vlib_add_thread_registration_##x (void)   \
   __attribute__((__constructor__)) ;                    \
 static void __vlib_add_thread_registration_##x (void)   \
 {                                                       \
   vlib_thread_main_t * tm = &vlib_thread_main;          \
+  /*将函数注册在next链上*/\
   x.next = tm->next;                                    \
   tm->next = &x;                                        \
 }                                                       \
+    /*声明定义线程解注册函数*/\
 static void __vlib_rm_thread_registration_##x (void)    \
   __attribute__((__destructor__)) ;                     \
 static void __vlib_rm_thread_registration_##x (void)    \
@@ -361,6 +366,7 @@ static void __vlib_rm_thread_registration_##x (void)    \
   vlib_thread_main_t * tm = &vlib_thread_main;          \
   VLIB_REMOVE_FROM_LINKED_LIST (tm->next, &x, next);    \
 }                                                       \
+/*初始化注册线程*/\
 __VA_ARGS__ vlib_thread_registration_t x
 
 always_inline u32

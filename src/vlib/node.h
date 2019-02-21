@@ -593,7 +593,7 @@ typedef struct
   u32 suspended_process_frame_index;
 
   /* Number of times this process was suspended. */
-  u32 n_suspends;
+  u32 n_suspends;//被挂起数目
 
   /* Vectors of pending event data indexed by event type index. */
   void **pending_event_data_by_type_index;

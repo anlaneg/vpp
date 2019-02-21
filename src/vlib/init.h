@@ -181,6 +181,7 @@ static __clib_unused void * __clib_unused_##tag##_##x = x;
 #define VLIB_WORKER_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,worker_init)
 
 //将x放在vm->main_loop_enter_function_registrations链头部
+//这些函数将在main loop进入前执行
 #define VLIB_MAIN_LOOP_ENTER_FUNCTION(x) \
   VLIB_DECLARE_INIT_FUNCTION(x,main_loop_enter)
 

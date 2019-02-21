@@ -178,6 +178,7 @@ os_get_nthreads (void)
     return len;
 }
 
+//设置线程名称
 void
 vlib_set_thread_name (char *name)
 {
@@ -203,7 +204,7 @@ sort_registrations_by_no_clone (void *a0, void *a1)
 	  - ((i32) ((*tr1)->no_data_structure_clone)));
 }
 
-//读取文件，返回一个bitmap
+//读取文件，按其内容中给出的列表，返回一个bitmap
 static uword *
 clib_sysfs_list_to_bitmap (char *filename)
 {
@@ -254,37 +255,49 @@ vlib_thread_init (vlib_main_t * vm)
   tm->cpu_socket_bitmap =
     clib_sysfs_list_to_bitmap ("/sys/devices/system/node/online");
 
-  //产生一个新的幅本
+  //产生一个所有在线cpu的幅本
   avail_cpu = clib_bitmap_dup (tm->cpu_core_bitmap);
 
   /* skip cores */
+  //按顺序跳过tm->skip_cores个cpu(将其标为不占用）
   for (i = 0; i < tm->skip_cores; i++)
     {
+      //取第一个cpu序号
       uword c = clib_bitmap_first_set (avail_cpu);
+
+      //avail_cpu中无有效cpu,报错
       if (c == ~0)
 	return clib_error_return (0, "no available cpus to skip");
 
+      //将第一个cpu置为不占用
       avail_cpu = clib_bitmap_set (avail_cpu, c, 0);
     }
 
   /* grab cpu for main thread */
+  //如果未标记main_lcore,则为其默认分配第一个cpu
   if (tm->main_lcore == ~0)
     {
       /* if main-lcore is not set, we try to use lcore 1 */
       if (clib_bitmap_get (avail_cpu, 1))
-	tm->main_lcore = 1;
+	tm->main_lcore = 1;//尝试１可分配
       else
+          //如果１不可分配，尝试第一个有效cpu
 	tm->main_lcore = clib_bitmap_first_set (avail_cpu);
+
+      //如果无有效cpu可设置，报错
       if (tm->main_lcore == (u8) ~ 0)
 	return clib_error_return (0, "no available cpus to be used for the"
 				  " main thread");
     }
   else
     {
+      //如果指定了main_lcore,则检查其是否有效，否则报错
       if (clib_bitmap_get (avail_cpu, tm->main_lcore) == 0)
 	return clib_error_return (0, "cpu %u is not available to be used"
 				  " for the main thread", tm->main_lcore);
     }
+
+  //移除已被main_lcore占用的cpu
   avail_cpu = clib_bitmap_set (avail_cpu, tm->main_lcore, 0);
 
   /* assume that there is socket 0 only if there is no data from sysfs */
@@ -292,6 +305,7 @@ vlib_thread_init (vlib_main_t * vm)
     tm->cpu_socket_bitmap = clib_bitmap_set (0, 0, 1);
 
   /* pin main thread to main_lcore  */
+  //如果有回调，则采用回调绑定main_lcore,否则采用pthread_setaffinity_np进行绑定
   if (tm->cb.vlib_thread_set_lcore_cb)
     {
       tm->cb.vlib_thread_set_lcore_cb (0, tm->main_lcore);
@@ -330,6 +344,7 @@ vlib_thread_init (vlib_main_t * vm)
     }
 
   /* assign threads to cores and set n_vlib_mains */
+  //将注册的函数，收集到tm->registerations数组中
   tr = tm->next;
 
   while (tr)
@@ -338,6 +353,7 @@ vlib_thread_init (vlib_main_t * vm)
       tr = tr->next;
     }
 
+  //对注册的数组进行排序
   vec_sort_with_function (tm->registrations, sort_registrations_by_no_clone);
 
   for (i = 0; i < vec_len (tm->registrations); i++)
@@ -590,6 +606,7 @@ vlib_worker_thread_init (vlib_worker_thread_t * w)
     }
 }
 
+//完成对worker的线程函数的调用
 void *
 vlib_worker_thread_bootstrap_fn (void *arg)
 {
@@ -602,6 +619,7 @@ vlib_worker_thread_bootstrap_fn (void *arg)
   //设置自已是第几个线程
   __os_thread_index = w - vlib_worker_threads;
 
+  //调用注册的线程函数
   rv = (void *) clib_calljmp
     ((uword (*)(uword)) w->thread_function,
      (uword) arg, w->thread_stack + VLIB_THREAD_STACK_SIZE);
@@ -609,6 +627,7 @@ vlib_worker_thread_bootstrap_fn (void *arg)
   return rv;
 }
 
+//取cpu_id对应的core_id,socket_id
 static void
 vlib_get_thread_core_socket (vlib_worker_thread_t * w, unsigned cpu_id)
 {
@@ -629,6 +648,7 @@ vlib_get_thread_core_socket (vlib_worker_thread_t * w, unsigned cpu_id)
   w->socket_id = socket_id;
 }
 
+//在cpu_id上启动线程，并使之运行w工作，fp为线程的入口函数
 static clib_error_t *
 vlib_launch_thread_int (void *fp, vlib_worker_thread_t * w, unsigned cpu_id)
 {
@@ -637,18 +657,22 @@ vlib_launch_thread_int (void *fp, vlib_worker_thread_t * w, unsigned cpu_id)
 
   w->cpu_id = cpu_id;
   vlib_get_thread_core_socket (w, cpu_id);
+  //如果有cb，则执行此cb来完成线程工作
   if (tm->cb.vlib_launch_thread_cb && !w->registration->use_pthreads)
     return tm->cb.vlib_launch_thread_cb (fp, (void *) w, cpu_id);
   else
     {
+      //如果无对应cb,则创建线程并绑定后，交给fp_arg来执行线程工作
       pthread_t worker;
       cpu_set_t cpuset;
       CPU_ZERO (&cpuset);
       CPU_SET (cpu_id, &cpuset);
 
+      //创建线程
       if (pthread_create (&worker, NULL /* attr */ , fp_arg, (void *) w))
 	return clib_error_return_unix (0, "pthread_create");
 
+      //将线程worker绑定在cpuset上
       if (pthread_setaffinity_np (worker, sizeof (cpu_set_t), &cpuset))
 	return clib_error_return_unix (0, "pthread_setaffinity_np");
 
@@ -656,6 +680,7 @@ vlib_launch_thread_int (void *fp, vlib_worker_thread_t * w, unsigned cpu_id)
     }
 }
 
+//启动work线程
 static clib_error_t *
 start_workers (vlib_main_t * vm)
 {
@@ -670,6 +695,7 @@ start_workers (vlib_main_t * vm)
   u32 worker_thread_index;
   u8 *main_heap = clib_mem_get_per_cpu_heap ();
 
+  //设置vector长度为０
   vec_reset_length (vlib_worker_threads);
 
   /* Set up the main thread */
@@ -729,6 +755,7 @@ start_workers (vlib_main_t * vm)
 
 	  tr = tm->registrations[i];
 
+	  //跳过count==0的
 	  if (tr->count == 0)
 	    continue;
 
@@ -929,6 +956,7 @@ start_workers (vlib_main_t * vm)
 
   worker_thread_index = 1;
 
+  //针对每个registration,执行回调
   for (i = 0; i < vec_len (tm->registrations); i++)
     {
       clib_error_t *err;
@@ -940,7 +968,10 @@ start_workers (vlib_main_t * vm)
 	{
 	  for (j = 0; j < tr->count; j++)
 	    {
+	      //指定worker_threads
 	      w = vlib_worker_threads + worker_thread_index++;
+	      //经过vlib_worker_thread_bootstrap_fn来完成worker（内部实际上通过worker的thread_function来完成调用）
+	      //使用cpu0
 	      err = vlib_launch_thread_int (vlib_worker_thread_bootstrap_fn,
 					    w, 0);
 	      if (err)
@@ -951,6 +982,7 @@ start_workers (vlib_main_t * vm)
 	{
 	  uword c;
           /* *INDENT-OFF* */
+	      //遍历coremask,为每个core创建一个线程，并执行其相应回调
           clib_bitmap_foreach (c, tr->coremask, ({
             w = vlib_worker_threads + worker_thread_index++;
 	    err = vlib_launch_thread_int (vlib_worker_thread_bootstrap_fn,
@@ -966,6 +998,7 @@ start_workers (vlib_main_t * vm)
   return 0;
 }
 
+//将start_workers放在main_loop函数执行前执行
 VLIB_MAIN_LOOP_ENTER_FUNCTION (start_workers);
 
 

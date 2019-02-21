@@ -406,6 +406,7 @@ clib_bitmap_first_set (uword * ai)
     }
 #endif
 #endif
+  //ai是一个vector,每个元素为x
   for (; i < vec_len (ai); i++)
     {
       uword x = ai[i];

@@ -21,15 +21,16 @@
 #include <vnet/devices/devices.h>
 
 /** feature registration object */
+//arc 是一组feature使用的术语
 typedef struct _vnet_feature_arc_registration
 {
   /** next registration in list of all registrations*/
-  struct _vnet_feature_arc_registration *next;
+  struct _vnet_feature_arc_registration *next;//指向下一个注册对象
   /** Feature Arc name */
   char *arc_name;
   /** Start nodes */
-  char **start_nodes;
-  int n_start_nodes;
+  char **start_nodes;//start　nodes名称
+  int n_start_nodes;//start_nodes数组的数目
   /** End of the arc (optional, for consistency-checking) */
   char *last_in_arc;
   /* Feature arc index, assigned by init function */
@@ -86,8 +87,8 @@ typedef struct vnet_feature_config_main_t_
 typedef struct
 {
   /** feature arc configuration list */
-  vnet_feature_arc_registration_t *next_arc;
-  uword **arc_index_by_name;
+  vnet_feature_arc_registration_t *next_arc;//串连feature arc
+  uword **arc_index_by_name;//按名称索引vnet_feature_arc_registration_t结构的hashtable
 
   /** feature path configuration lists */
   vnet_feature_registration_t *next_feature;
@@ -119,8 +120,10 @@ typedef struct
 extern vnet_feature_main_t feature_main;
 
 #ifndef CLIB_MARCH_VARIANT
+//注册并初始化feature_arc
 #define VNET_FEATURE_ARC_INIT(x,...)				\
   __VA_ARGS__ vnet_feature_arc_registration_t vnet_feat_arc_##x;\
+  /*注册feature_arc*/\
 static void __vnet_add_feature_arc_registration_##x (void)	\
   __attribute__((__constructor__)) ;				\
 static void __vnet_add_feature_arc_registration_##x (void)	\
@@ -129,6 +132,7 @@ static void __vnet_add_feature_arc_registration_##x (void)	\
   vnet_feat_arc_##x.next = fm->next_arc;			\
   fm->next_arc = & vnet_feat_arc_##x;				\
 }								\
+    /*删除feature arc*/\
 static void __vnet_rm_feature_arc_registration_##x (void)	\
   __attribute__((__destructor__)) ;				\
 static void __vnet_rm_feature_arc_registration_##x (void)	\
@@ -137,10 +141,14 @@ static void __vnet_rm_feature_arc_registration_##x (void)	\
   vnet_feature_arc_registration_t *r = &vnet_feat_arc_##x;	\
   VLIB_REMOVE_FROM_LINKED_LIST (fm->next_arc, r, next);		\
 }								\
+/*初始化feature arc*/\
 __VA_ARGS__ vnet_feature_arc_registration_t vnet_feat_arc_##x
 
+
+//注册并初始化feature
 #define VNET_FEATURE_INIT(x,...)				\
   __VA_ARGS__ vnet_feature_registration_t vnet_feat_##x;	\
+  /*注册feature*/\
 static void __vnet_add_feature_registration_##x (void)		\
   __attribute__((__constructor__)) ;				\
 static void __vnet_add_feature_registration_##x (void)		\
@@ -149,6 +157,7 @@ static void __vnet_add_feature_registration_##x (void)		\
   vnet_feat_##x.next = fm->next_feature;			\
   fm->next_feature = & vnet_feat_##x;				\
 }								\
+    /*解注册指定feature*/\
 static void __vnet_rm_feature_registration_##x (void)		\
   __attribute__((__destructor__)) ;				\
 static void __vnet_rm_feature_registration_##x (void)		\
@@ -157,11 +166,14 @@ static void __vnet_rm_feature_registration_##x (void)		\
   vnet_feature_registration_t *r = &vnet_feat_##x;		\
   VLIB_REMOVE_FROM_LINKED_LIST (fm->next_feature, r, next);	\
 }								\
+/*初始化feature*/\
 __VA_ARGS__ vnet_feature_registration_t vnet_feat_##x
 
+//注册并初始化feature_arc constraint
 #define VNET_FEATURE_ARC_ORDER(x,...)                                   \
   __VA_ARGS__ vnet_feature_constraint_registration_t 			\
 vnet_feature_constraint_##x;                                            \
+    /*注册*/\
 static void __vnet_add_constraint_registration_##x (void)		\
   __attribute__((__constructor__)) ;                                    \
 static void __vnet_add_constraint_registration_##x (void)		\
@@ -170,6 +182,7 @@ static void __vnet_add_constraint_registration_##x (void)		\
   vnet_feature_constraint_##x.next = fm->next_constraint;               \
   fm->next_constraint = & vnet_feature_constraint_##x;                  \
 }                                                                       \
+    /*解注册*/\
 static void __vnet_rm_constraint_registration_##x (void)		\
   __attribute__((__destructor__)) ;                                     \
 static void __vnet_rm_constraint_registration_##x (void)		\
@@ -178,6 +191,7 @@ static void __vnet_rm_constraint_registration_##x (void)		\
   vnet_feature_constraint_registration_t *r = &vnet_feature_constraint_##x; \
   VLIB_REMOVE_FROM_LINKED_LIST (fm->next_constraint, r, next);          \
 }                                                                       \
+/*初始化*/\
 __VA_ARGS__ vnet_feature_constraint_registration_t vnet_feature_constraint_##x
 
 #else

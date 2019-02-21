@@ -151,7 +151,7 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
 /** \brief Reset vector length to zero
     NULL-pointer tolerant
 */
-
+//将vector长度设置为０
 #define vec_reset_length(v) do { if (v) _vec_len (v) = 0; } while (0)
 
 /** \brief Number of data bytes in vector. */

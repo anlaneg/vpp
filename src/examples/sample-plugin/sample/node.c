@@ -600,6 +600,7 @@ VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 #endif
 
 /* *INDENT-OFF* */
+//注册sample的node
 VLIB_REGISTER_NODE (sample_node) =
 {
   .name = "sample",

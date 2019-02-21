@@ -347,6 +347,7 @@ clib_mem_vm_ext_free (clib_mem_vm_alloc_t * a)
 u64 *
 clib_mem_vm_get_paddr (void *mem, int log2_page_size, int n_pages)
 {
+  //取页大小
   int pagesize = sysconf (_SC_PAGESIZE);
   int fd;
   int i;

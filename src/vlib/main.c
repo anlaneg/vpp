@@ -1196,6 +1196,7 @@ dispatch_node (vlib_main_t * vm,
 	}
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
 	dispatch_pcap_trace (vm, node, frame);
+      //走node的function调用
       n = node->function (vm, node, frame);
     }
   else
@@ -1258,6 +1259,7 @@ dispatch_node (vlib_main_t * vm,
 	  !(node->flags &
 	    VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE))
 	{
+      //取相应的node
 	  vlib_node_t *n = vlib_get_node (vm, node->node_index);
 	  n->state = VLIB_NODE_STATE_POLLING;
 	  node->state = VLIB_NODE_STATE_POLLING;
@@ -1445,6 +1447,7 @@ typedef struct
 } vlib_process_bootstrap_args_t;
 
 /* Called in process stack. */
+//完成指定node的function调用
 static uword
 vlib_process_bootstrap (uword _a)
 {
@@ -1462,10 +1465,12 @@ vlib_process_bootstrap (uword _a)
   f = a->frame;
   node = &p->node_runtime;
 
+  //执行node的function
   n = node->function (vm, node, f);
 
   ASSERT (vlib_process_stack_is_valid (p));
 
+  //函数执行完成，以结果n跳回return_longjmp
   clib_longjmp (&p->return_longjmp, n);
 
   return n;
@@ -1478,12 +1483,15 @@ vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
   vlib_process_bootstrap_args_t a;
   uword r;
 
+  //准备参数，完成调用
   a.vm = vm;
   a.process = p;
   a.frame = f;
 
+  //记录跳转点
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
+      //调用bootstrap函数，完成node的function调用
     r = clib_calljmp (vlib_process_bootstrap, pointer_to_uword (&a),
 		      (void *) p->stack + (1 << p->log2_n_stack_bytes));
 
@@ -1535,12 +1543,14 @@ dispatch_process (vlib_main_t * vm,
   nm->current_process_index = old_process_index;
 
   ASSERT (n_vectors != VLIB_PROCESS_RETURN_LONGJMP_RETURN);
+  //node挂起处理
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
   if (is_suspend)
     {
       vlib_pending_frame_t *pf;
 
       n_vectors = 0;
+      //将process记录在suspended集合中
       pool_get (nm->suspended_process_frames, pf);
       pf->node_runtime_index = node->runtime_index;
       pf->frame_index = f ? vlib_frame_index (vm, f) : ~0;
@@ -1549,6 +1559,7 @@ dispatch_process (vlib_main_t * vm,
       p->n_suspends += 1;
       p->suspended_process_frame_index = pf - nm->suspended_process_frames;
 
+      //process为等待clock而挂起
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
 	{
 	  TWT (tw_timer_wheel) * tw =
@@ -1670,7 +1681,7 @@ vl_api_send_pending_rpc_requests (vlib_main_t * vm)
 
 //主或者从的loop处理
 static_always_inline void
-vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
+vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
@@ -1711,6 +1722,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   vm->numa_node = clib_get_current_numa_node ();
 
   /* Start all processes. */
+  //如果为主线程，则启动所有其它process
   if (is_main)
     {
       uword i;
@@ -2048,6 +2060,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   //初始化init函数查找的hash表
   if (vm->init_functions_called == 0)
     vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+
   //调用所有初始化函数
   if ((error = vlib_call_all_init_functions (vm)))
     goto done;
@@ -2069,6 +2082,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vec_validate (vm->processing_rpc_requests, 0);
   _vec_len (vm->processing_rpc_requests) = 0;
 
+  //记录退出点
   switch (clib_setjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_NONE))
     {
     case VLIB_MAIN_LOOP_EXIT_NONE:
@@ -2083,11 +2097,13 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
     }
 
+  //调用其它非早期配置函数
   if ((error = vlib_call_all_config_functions (vm, input, 0 /* is_early */ )))
     goto done;
 
   /* Call all main loop enter functions. */
   {
+    //触发main loop进入前钩子函数
     clib_error_t *sub_error;
     sub_error = vlib_call_all_main_loop_enter_functions (vm);
     if (sub_error)
@@ -2100,6 +2116,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 done:
   /* Call all exit functions. */
   {
+      //触发main_loop离开前钩子函数
     clib_error_t *sub_error;
     sub_error = vlib_call_all_main_loop_exit_functions (vm);
     if (sub_error)

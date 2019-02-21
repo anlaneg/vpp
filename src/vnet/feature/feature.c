@@ -18,6 +18,7 @@
 
 vnet_feature_main_t feature_main;
 
+//初始化feature
 static clib_error_t *
 vnet_feature_init (vlib_main_t * vm)
 {
@@ -27,20 +28,24 @@ vnet_feature_init (vlib_main_t * vm)
   vnet_feature_constraint_registration_t *creg;
   u32 arc_index = 0;
 
+  //创建hash表
   fm->arc_index_by_name = hash_create_string (0, sizeof (uword));
   areg = fm->next_arc;
 
   /* process feature arc registrations */
+  //将areg插入到hash表，计算其对应的start_nodes数目
   while (areg)
     {
       char *s;
       int i = 0;
+      //将arc_name按名称插入到hash表
       areg->feature_arc_index = arc_index;
       if (areg->arc_index_ptr)
 	*areg->arc_index_ptr = arc_index;
       hash_set_mem (fm->arc_index_by_name, areg->arc_name,
 		    pointer_to_uword (areg));
 
+      //计算start_nodes数目
       /* process start nodes */
       while ((s = areg->start_nodes[i]))
 	{
@@ -50,7 +55,7 @@ vnet_feature_init (vlib_main_t * vm)
 
       /* next */
       areg = areg->next;
-      arc_index++;
+      arc_index++;//增加索引
     }
 
   vec_validate (fm->next_feature_by_arc, arc_index - 1);
@@ -61,18 +66,22 @@ vnet_feature_init (vlib_main_t * vm)
   vec_validate (fm->feature_count_by_sw_if_index, arc_index - 1);
   vec_validate (fm->next_constraint_by_arc, arc_index - 1);
 
+  //校验功能的体系结构
   freg = fm->next_feature;
   while (freg)
     {
+      //通过名称查找结构体
       vnet_feature_registration_t *next;
       uword *p = hash_get_mem (fm->arc_index_by_name, freg->arc_name);
       if (p == 0)
 	{
+          //未找到对应的体系结构
 	  /* Don't start vpp with broken features arcs */
 	  clib_warning ("Unknown feature arc '%s'", freg->arc_name);
 	  os_exit (1);
 	}
 
+      //hashtable中保存的为vnet_feature_arc_registration_t类型
       areg = uword_to_pointer (p[0], vnet_feature_arc_registration_t *);
       arc_index = areg->feature_arc_index;
 

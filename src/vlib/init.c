@@ -39,7 +39,7 @@
 
 #include <vlib/vlib.h>
 
-//注，当call_once为false时，没有函数会被调用
+//注，当call_once为false时，没有函数会被调用（这个参数是多余的）
 //遍历head并调用其对应的函数（如果call_once为true,则每个调用均会被记录是否已调用过，
 //对于调用过的不再进行调用
 clib_error_t *
@@ -82,6 +82,7 @@ vlib_call_all_init_functions (vlib_main_t * vm)
     (vm, vm->init_function_registrations, 1 /* call_once */ );
 }
 
+//调用所有main_loop进入前的函数注册
 clib_error_t *
 vlib_call_all_main_loop_enter_functions (vlib_main_t * vm)
 {
@@ -89,6 +90,7 @@ vlib_call_all_main_loop_enter_functions (vlib_main_t * vm)
     (vm, vm->main_loop_enter_function_registrations, 1 /* call_once */ );
 }
 
+//调用所有main_loop退出前注册的函数
 clib_error_t *
 vlib_call_all_main_loop_exit_functions (vlib_main_t * vm)
 {
@@ -96,6 +98,7 @@ vlib_call_all_main_loop_exit_functions (vlib_main_t * vm)
     (vm, vm->main_loop_exit_function_registrations, 1 /* call_once */ );
 }
 
+//调用所有vm->config_function_registerations回调
 clib_error_t *
 vlib_call_all_config_functions (vlib_main_t * vm,
 				unformat_input_t * input, int is_early)
@@ -142,6 +145,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
       c = all[i];
 
       /* Is this an early config? Are we doing early configs? */
+      //如果是早期，我们仅处理早期配置函数
       if (is_early ^ c->is_early)
 	continue;
 
