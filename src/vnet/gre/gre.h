@@ -98,8 +98,8 @@ typedef struct gre_tunnel_key4_t_
   {
     struct
     {
-      ip4_address_t gtk_src;
-      ip4_address_t gtk_dst;
+      ip4_address_t gtk_src;//源地址
+      ip4_address_t gtk_dst;//目的地址
     };
     u64 gtk_as_u64;
   };

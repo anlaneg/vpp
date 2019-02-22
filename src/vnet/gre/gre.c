@@ -604,6 +604,7 @@ gre_init (vlib_main_t * vm)
   gm->vlib_main = vm;
   gm->vnet_main = vnet_get_main ();
 
+  //完成gre初始化依赖的外部模块初始化
   if ((error = vlib_call_init_function (vm, ip_main_init)))
     return error;
 
@@ -630,9 +631,11 @@ gre_init (vlib_main_t * vm)
 #define _(n,s) add_protocol (gm, GRE_PROTOCOL_##s, #s);
   foreach_gre_protocol
 #undef _
+    //调用gre_input_init完成初始化
     return vlib_call_init_function (vm, gre_input_init);
 }
 
+//注册gre初始化
 VLIB_INIT_FUNCTION (gre_init);
 
 /*

@@ -107,10 +107,10 @@ typedef union
 
     /** signed offset in data[], pre_data[] that we are currently
       * processing. If negative current header points into predata area.  */
-    i16 current_data;
+    i16 current_data;//指出当前处理位置（例如当前位于以太头，位于ip头，tcp头等等）
 
     /** Nbytes between current data and the end of this buffer.  */
-    u16 current_length;
+    u16 current_length;//当前报文的有效长度
 
     /** buffer flags:
 	<br> VLIB_BUFFER_FREE_LIST_INDEX_MASK: bits used to store free list index,
@@ -171,7 +171,7 @@ typedef union
     u8 pre_data[VLIB_BUFFER_PRE_DATA_SIZE];
 
     /** Packet data */
-    u8 data[0];
+    u8 data[0];//报文起始位置
   };
 #ifdef CLIB_HAVE_VEC128
   u8x16 as_u8x16[4];
@@ -217,7 +217,7 @@ vlib_buffer_get_va (vlib_buffer_t * b)
     @param b - (vlib_buffer_t *) pointer to the buffer
     @return - (void *) (b->data + b->current_data)
 */
-
+//获取当前数据处理的起始位置
 always_inline void *
 vlib_buffer_get_current (vlib_buffer_t * b)
 {
@@ -237,6 +237,7 @@ vlib_buffer_get_current_va (vlib_buffer_t * b)
     @param b - (vlib_buffer_t *) pointer to the buffer
     @param l - (word) signed increment
 */
+//使当前data位置前移l长度（对应的当前length长度减少l长度）
 always_inline void
 vlib_buffer_advance (vlib_buffer_t * b, word l)
 {

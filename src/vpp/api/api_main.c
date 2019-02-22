@@ -66,6 +66,7 @@ vat_plugin_hash_create (void)
 {
   vat_main_t *vam = &vat_main;
 
+  //创建hash表
   vam->sw_if_index_by_interface_name = hash_create_string (0, sizeof (uword));
   vam->function_by_name = hash_create_string (0, sizeof (uword));
   vam->help_by_name = hash_create_string (0, sizeof (uword));

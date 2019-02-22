@@ -699,6 +699,7 @@ _hash_create (uword elts, hash_t * h_user)
 
   /* Size of hash is power of 2 >= ELTS and larger than
      number of bits in is_user bitmap elements. */
+  //规范化实体数量
   elts = clib_max (elts, BITS (h->is_user[0]));
   elts = 1ULL << max_log2 (elts);
 
@@ -706,6 +707,7 @@ _hash_create (uword elts, hash_t * h_user)
   if (h_user)
     log2_pair_size = h_user->log2_pair_size;
 
+  //将vector增大为elts
   v = _vec_resize ((void *) 0,
 		   /* vec len: */ elts,
 		   /* data bytes: */

@@ -53,6 +53,7 @@ ip_main_init (vlib_main_t * vm)
     ip_protocol_info_t *pi;
     u32 i;
 
+    //添加ip协议及其名称
 #define ip_protocol(n,s)			\
 do {						\
   vec_add2 (im->protocol_infos, pi, 1);		\

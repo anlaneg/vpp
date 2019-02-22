@@ -89,12 +89,12 @@ typedef struct
 typedef struct
 {
   /* loaded plugin info */
-  plugin_info_t *plugin_info;
-  uword *plugin_by_name_hash;
+  plugin_info_t *plugin_info;//数字,可通过index获得plugin_info
+  uword *plugin_by_name_hash;//通过插件名称查找插件索引的hashtable
 
   /* paths and name filters */
-  u8 *plugin_path;
-  u8 *plugin_name_filter;
+  u8 *plugin_path;//插件路径
+  u8 *plugin_name_filter;//如果此值非０，则仅加载此值对应的plugin
   u8 *vat_plugin_path;
   u8 *vat_plugin_name_filter;
   u8 plugins_default_disable;

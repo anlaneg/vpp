@@ -174,6 +174,7 @@ unformat_check_input (unformat_input_t * i)
 
   //报文index大于buffer中内容长度
   if (i->index >= vec_len (i->buffer) && i->index != UNFORMAT_END_OF_INPUT)
+      //input中有数据，进行检查
     _unformat_fill_input (i);
 
   return i->index;

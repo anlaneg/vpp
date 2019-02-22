@@ -86,6 +86,7 @@ vpe_main_init (vlib_main_t * vm)
     vlib_unix_cli_set_prompt ("vpp# ");
 
   /* Turn off network stack components which we don't want */
+  //禁止srp_init调用
   vlib_mark_init_function_complete (vm, srp_init);
 
   /*
@@ -160,6 +161,7 @@ main (int argc, char *argv[])
       char *arg = NULL;
       char *p;
 
+      //打开文件（argv[2]为配置文件）
       fp = fopen (argv[2], "r");
       if (fp == NULL)
 	{
@@ -183,11 +185,13 @@ main (int argc, char *argv[])
 
       while (1)
 	{
+      //读取一行数据，如果长度为０，则跳出
 	  if (fgets (inbuf, 4096, fp) == 0)
 	    break;
 	  p = strtok (inbuf, " \t\n");
 	  while (p != NULL)
 	    {
+	      //跳过注释行
 	      if (*p == '#')
 		break;
 	      argc_++;
@@ -222,8 +226,10 @@ main (int argc, char *argv[])
    * Format: heapsize <nn>[mM][gG]
    */
 
+  //多个参数时，遍历参数
   for (i = 1; i < (argc - 1); i++)
     {
+      //记录插件路径
       if (!strncmp (argv[i], "plugin_path", 11))
 	{
 	  if (i < (argc - 1))
@@ -231,15 +237,18 @@ main (int argc, char *argv[])
 	}
       else if (!strncmp (argv[i], "heapsize", 8))
 	{
+      //记录配置的堆大小
 	  sizep = (u8 *) argv[i + 1];
 	  size = 0;
 	  while (*sizep >= '0' && *sizep <= '9')
 	    {
+	      //字符串转换为数字
 	      size *= 10;
 	      size += *sizep++ - '0';
 	    }
 	  if (size == 0)
 	    {
+	      //配置的size为０，报错
 	      fprintf
 		(stderr,
 		 "warning: heapsize parse error '%s', use default %lld\n",
@@ -247,8 +256,10 @@ main (int argc, char *argv[])
 	      goto defaulted;
 	    }
 
+	  //记录用户配置的堆size
 	  main_heap_size = size;
 
+	  //单位处理
 	  if (*sizep == 'g' || *sizep == 'G')
 	    main_heap_size <<= 30;
 	  else if (*sizep == 'm' || *sizep == 'M')
@@ -256,6 +267,7 @@ main (int argc, char *argv[])
 	}
       else if (!strncmp (argv[i], "main-core", 9))
 	{
+          //记录用户配置的main core
 	  if (i < (argc - 1))
 	    {
 	      errno = 0;

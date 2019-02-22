@@ -1203,6 +1203,7 @@ dispatch_node (vlib_main_t * vm,
     {
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
 	dispatch_pcap_trace (vm, node, frame);
+      //走node的function调用
       n = node->function (vm, node, frame);
     }
 
@@ -1447,7 +1448,7 @@ typedef struct
 } vlib_process_bootstrap_args_t;
 
 /* Called in process stack. */
-//完成指定node的function调用
+//完成指定process类型node的function调用
 static uword
 vlib_process_bootstrap (uword _a)
 {

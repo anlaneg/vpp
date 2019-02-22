@@ -81,7 +81,7 @@ typedef enum
   VLIB_NODE_TYPE_PRE_INPUT,//输入前节点（例如处理tx缓冲区清空）
 
   /* "Process" nodes which can be suspended and later resumed. */
-  VLIB_NODE_TYPE_PROCESS,//可被挂起的节点
+  VLIB_NODE_TYPE_PROCESS,//process类型的node,可被挂起的节点，将被创建process
 
   VLIB_N_NODE_TYPE,
 } vlib_node_type_t;
@@ -100,6 +100,7 @@ typedef struct _vlib_node_registration
   vlib_node_function_t *function;//node对应的报文处理函数
 
   /* Node function candidate registration with priority */
+  //容许为节点执行多个function,按优先级划分
   vlib_node_fn_registration_t *node_fn_registrations;
 
   /* Node name. */
@@ -112,10 +113,10 @@ typedef struct _vlib_node_registration
   u32 index;//node的索引号
 
   /* Type of this node. */
-  vlib_node_type_t type;
+  vlib_node_type_t type;//node类型
 
   /* Error strings indexed by error code for this node. */
-  char **error_strings;
+  char **error_strings;//错误码对应的字符串数组
 
   /* Buffer format/unformat for this node. */
   format_function_t *format_buffer;
@@ -152,13 +153,13 @@ typedef struct _vlib_node_registration
   u16 scalar_size, vector_size;
 
   /* Number of error codes used by this node. */
-  u16 n_errors;
+  u16 n_errors;//错误码最大值
 
   /* Number of next node names that follow. */
   u16 n_next_nodes;//下级node的数目（即next_nodes数组长度）
 
   /* Constructor link-list, don't ask... */
-  struct _vlib_node_registration *next_registration;
+  struct _vlib_node_registration *next_registration;//指出下一个待注册的node
 
   /* Names of next nodes which this node feeds into. */
   char *next_nodes[];//下一级node名称
@@ -209,6 +210,7 @@ static __clib_unused vlib_node_registration_t __clib_unused_##x
 #define CLIB_MARCH_VARIANT_STR _CLIB_MARCH_VARIANT_STR(CLIB_MARCH_VARIANT)
 #endif
 
+//定义node的函数
 //声明函数node##_fn,定义node##_fun_registration变量
 #define VLIB_NODE_FN(node)						\
 uword CLIB_MARCH_SFX (node##_fn)();					\
@@ -348,7 +350,7 @@ typedef struct vlib_node_t
   char **next_node_names;//下一级node的名称
 
   /* Next node indices for this node. */
-  u32 *next_nodes;
+  u32 *next_nodes;//此节点有哪些后继节点
 
   /* Name of node that we are sibling of. */
   char *sibling_of;
@@ -362,7 +364,7 @@ typedef struct vlib_node_t
   /* Hash table mapping next node index into slot in
      next_nodes vector.  Quickly determines whether this node
      is connected to given next node and, if so, with which slot. */
-  uword *next_slot_by_node;
+  uword *next_slot_by_node;//根据下一个节点的index,查找其对应的节点slot
 
   /* Bitmap of node indices which feed this node. */
   uword *prev_node_bitmap;
@@ -385,7 +387,7 @@ typedef struct vlib_node_t
   u8 *state_string;
 
   /* Node function candidate registration with priority */
-  vlib_node_fn_registration_t *node_fn_registrations;
+  vlib_node_fn_registration_t *node_fn_registrations;//node对应的registrations
 } vlib_node_t;
 
 #define VLIB_INVALID_NODE_INDEX ((u32) ~0)
@@ -410,7 +412,7 @@ typedef struct vlib_frame_t
   u8 vector_size;
 
   /* Number of vector elements currently in frame. */
-  u16 n_vectors;
+  u16 n_vectors;//当前有多少个vector元素
 
   /* Scalar and vector arguments to next node. */
   u8 arguments[0];
@@ -479,6 +481,7 @@ typedef struct vlib_node_runtime_t
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);	/**< cacheline mark */
 
+  //node需要被调用的函数
   vlib_node_function_t *function;	/**< Node function to call. */
 
   vlib_error_t *errors;			/**< Vector of errors for this node. */
@@ -524,7 +527,7 @@ typedef struct vlib_node_runtime_t
 
   u16 state;				/**< Input node state. */
 
-  u16 n_next_nodes;
+  u16 n_next_nodes;//后继节点的数目
 
   u16 cached_next_index;		/**< Next frame index that vector
 					  arguments were last enqueued to
@@ -713,7 +716,7 @@ typedef struct
   vlib_node_t **nodes;//存放node
 
   /* Node index hashed by node name. */
-  uword *node_by_name;//hash表，按名称查找node
+  uword *node_by_name;//hash表，按名称查找node的index,可在数组nodes中找到对应的node
 
   u32 flags;
 #define VLIB_NODE_MAIN_RUNTIME_STARTED (1 << 0)

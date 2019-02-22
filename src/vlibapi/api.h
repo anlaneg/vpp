@@ -39,9 +39,11 @@ typedef CLIB_PACKED ( struct {
 int vl_msg_api_trace_save (api_main_t * am,
 			   vl_api_trace_which_t which, FILE * fp);
 
+//注册api_init初始化函数
 #define VLIB_API_INIT_FUNCTION(x) VLIB_DECLARE_INIT_FUNCTION(x,api_init)
 
 /* Call given init function: used for init function dependencies. */
+//调用api_init函数，通过vm->init_functions_called来标记此函数是否已被调用完成
 #define vlib_call_api_init_function(vm, x)                              \
   ({                                                                    \
     extern vlib_init_function_t * _VLIB_INIT_FUNCTION_SYMBOL (x,api_init); \

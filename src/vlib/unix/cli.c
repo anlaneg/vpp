@@ -3057,6 +3057,7 @@ VLIB_MAIN_LOOP_EXIT_FUNCTION (unix_cli_exit);
  * @note This setting is global; it impacts all current
  *       and future CLI sessions.
  */
+//设置提示符号
 void
 vlib_unix_cli_set_prompt (char *prompt)
 {

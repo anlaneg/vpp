@@ -358,19 +358,26 @@ clib_bitmap_set_region (uword * bitmap, uword i, uword value, uword n_bits)
     @param ai - the bitmap
     @param body - the expression to evaluate for each set bit
 */
+//遍历bitmap ai,针对每个bitmap索引i,调用body代码块
 #define clib_bitmap_foreach(i,ai,body)					\
 do {									\
   uword __bitmap_i, __bitmap_ai, __bitmap_len, __bitmap_first_set;	\
+  /*bitmap的长度*/\
   __bitmap_len = vec_len ((ai));					\
+  /*遍历bitmap*/\
   for (__bitmap_i = 0; __bitmap_i < __bitmap_len; __bitmap_i++)		\
     {									\
+      /*取索引对应的bitmap元素*/\
       __bitmap_ai = (ai)[__bitmap_i];					\
       while (__bitmap_ai != 0)						\
 	{								\
+          /*当前遍历的mask不为０，检查每个bit位，否则直接跳过，没必要检查*/\
 	  __bitmap_first_set = first_set (__bitmap_ai);			\
+	  /*算上偏移至此处所需要的bit数，为i,即为被标为１的bitmap索引号*/\
 	  (i) = (__bitmap_i * BITS ((ai)[0])				\
 		 + min_log2 (__bitmap_first_set));			\
 	  do { body; } while (0);					\
+	  /*丢掉刚发的这个bitmap,检查其它bitmap项，注意此循环的while写法可以节省循环次数*/\
 	  __bitmap_ai ^= __bitmap_first_set;				\
 	}								\
     }									\

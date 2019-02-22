@@ -506,9 +506,12 @@ hash_set_value_bytes (hash_t * h, uword value_bytes)
   hash_t _h;						     \
   clib_memset (&_h, 0, sizeof (_h));				     \
   _h.user = (_user);				             \
+  /*填充hashcode计算函数*/\
   _h.key_sum   = (hash_key_sum_function_t *) (_key_sum);     \
+  /*填充hashtable的equal函数*/\
   _h.key_equal = (_key_equal);				     \
   hash_set_value_bytes (&_h, (_value_bytes));		     \
+  /*填充format_pair的函数*/\
   _h.format_pair = (format_function_t *) (_format_pair);     \
   _h.format_pair_arg = (_format_pair_arg);                   \
   /*构造hash表*/\
@@ -696,10 +699,12 @@ extern u8 *string_key_format_pair (u8 * s, va_list * args);
                (hash_key_sum_function_t *) KEY_FUNC_MEM,        \
                (hash_key_equal_function_t *)KEY_FUNC_MEM,       \
                0, 0)
-
+//创建字符串hash
 #define hash_create_string(elts,value_bytes)                    \
   hash_create2((elts),0,(value_bytes),                          \
+                /*字符串checksum*/\
                (hash_key_sum_function_t *) KEY_FUNC_STRING,     \
+               /*字符串equal函数*/\
                (hash_key_equal_function_t *)KEY_FUNC_STRING,    \
                0, 0)
 

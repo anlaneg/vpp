@@ -232,11 +232,13 @@ typedef enum
 
 void vlib_worker_thread_fork_fixup (vlib_fork_fixup_t which);
 
+//采用this_vlib_main遍历每个vlib_mains数组，针对每个元素，调用body
 #define foreach_vlib_main(body)                         \
 do {                                                    \
   vlib_main_t ** __vlib_mains = 0, *this_vlib_main;     \
   int ii;                                               \
                                                         \
+  /*遍历vlib_mains,将每一个元素添加至__vlib_mains中*/\
   for (ii = 0; ii < vec_len (vlib_mains); ii++)         \
     {                                                   \
       this_vlib_main = vlib_mains[ii];                  \
@@ -246,6 +248,7 @@ do {                                                    \
         vec_add1 (__vlib_mains, this_vlib_main);        \
     }                                                   \
                                                         \
+  /*遍历__vlib_main中的每一个元素，通过他调用body*/\
   for (ii = 0; ii < vec_len (__vlib_mains); ii++)       \
     {                                                   \
       this_vlib_main = __vlib_mains[ii];                \

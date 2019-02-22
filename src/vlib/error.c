@@ -129,6 +129,7 @@ vlib_register_errors (vlib_main_t * vm,
 		      u32 node_index, u32 n_errors, char *error_strings[])
 {
   vlib_error_main_t *em = &vm->error_main;
+
   //通过指定index取相应的node
   vlib_node_t *n = vlib_get_node (vm, node_index);
   uword l;

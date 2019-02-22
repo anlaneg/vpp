@@ -285,6 +285,7 @@ static void __vlib_rm_config_function_##x (void)                \
 #endif
 
 /* Call given init function: used for init function dependencies. */
+//检查x是否已调用，如果未调用，则调用
 #define vlib_call_init_function(vm, x)					\
   ({									\
     /*声明x对应的符号*/\

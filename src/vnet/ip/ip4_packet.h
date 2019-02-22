@@ -167,7 +167,7 @@ typedef union
     {
       struct
       {
-	ip4_address_t src_address, dst_address;
+	ip4_address_t src_address/*源ip*/, dst_address/*目的ip*/;
       };
       ip4_address_pair_t address_pair;
     };

@@ -34,6 +34,7 @@ typedef enum
 #undef _
 } gre_protocol_t;
 
+//定义gre头部
 typedef struct
 {
   /* flags and version */

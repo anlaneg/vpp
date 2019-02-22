@@ -21,6 +21,7 @@
 #include <vnet/mpls/mpls.h>
 #include <vppinfra/sparse_vec.h>
 
+//后继gre节点名称
 #define foreach_gre_input_next			\
 _(PUNT, "error-punt")                           \
 _(DROP, "error-drop")                           \
@@ -29,6 +30,7 @@ _(IP4_INPUT, "ip4-input")                       \
 _(IP6_INPUT, "ip6-input")			\
 _(MPLS_INPUT, "mpls-input")
 
+//后续gre节点枚举
 typedef enum
 {
 #define _(s,n) GRE_INPUT_NEXT_##s,
@@ -88,6 +90,7 @@ gre_input (vlib_main_t * vm,
     clib_memset (&cached_tunnel_key.gtk_v6, 0xff,
 		 sizeof (cached_tunnel_key.gtk_v6));
 
+  //取出frame参数
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
 
@@ -413,15 +416,19 @@ gre_input (vlib_main_t * vm,
 
 	  if (!is_ipv6)
 	    {
+	      //确保ipv4头部所需要长度存在，仅跳过ipv4头部（跳到gre头的写法有bug)
 	      vlib_buffer_advance (b0, sizeof (*ip4_0));
 	    }
 	  else
 	    {
+	      //跳过ipv6头部
 	      vlib_buffer_advance (b0, sizeof (*ip6_0));
 	    }
 
-	  h0 = vlib_buffer_get_current (b0);
+	  //这个跳完成没有考虑有ipv4选项时的情况？？？
+	  h0 = vlib_buffer_get_current (b0);//认为达到gre头部
 
+	  //取出gre下层内容对应的node索引(next0)
 	  i0 = sparse_vec_index (gm->next_by_protocol, h0->protocol);
 	  next0 = vec_elt (gm->next_by_protocol, i0).next_index;
 	  u8 ttype0 = vec_elt (gm->next_by_protocol, i0).tunnel_type;
@@ -430,8 +437,11 @@ gre_input (vlib_main_t * vm,
 	    node->errors[i0 == SPARSE_VEC_INVALID_INDEX
 			 ? GRE_ERROR_UNKNOWN_PROTOCOL : GRE_ERROR_NONE];
 
+	  //取出gre的flags及version
 	  version0 = clib_net_to_host_u16 (h0->flags_and_version);
 	  verr0 = version0 & GRE_VERSION_MASK;
+
+	  //当前不支持非０版本
 	  b0->error = verr0 ? node->errors[GRE_ERROR_UNSUPPORTED_VERSION]
 	    : b0->error;
 	  next0 = verr0 ? GRE_INPUT_NEXT_DROP : next0;
@@ -572,6 +582,7 @@ static char *gre_error_strings[] = {
 };
 
 /* *INDENT-OFF* */
+//注册gre4的input node
 VLIB_REGISTER_NODE (gre4_input_node) = {
   .function = gre4_input,
   .name = "gre4-input",
@@ -593,6 +604,7 @@ VLIB_REGISTER_NODE (gre4_input_node) = {
   .unformat_buffer = unformat_gre_header,
 };
 
+//注册gre6的input node
 VLIB_REGISTER_NODE (gre6_input_node) = {
   .function = gre6_input,
   .name = "gre6-input",
@@ -631,6 +643,7 @@ gre_register_input_protocol (vlib_main_t * vm,
   u32 i;
 
   {
+      //指明此函数调用前，gre_input_init应被调用
     clib_error_t *error = vlib_call_init_function (vm, gre_input_init);
     if (error)
       clib_error_report (error);
@@ -668,6 +681,7 @@ gre_input_init (vlib_main_t * vm)
   vlib_node_t *ethernet_input, *ip4_input, *ip6_input, *mpls_unicast_input;
 
   {
+    //此函数要求gre_init已被调用
     clib_error_t *error;
     error = vlib_call_init_function (vm, gre_init);
     if (error)
@@ -681,6 +695,7 @@ gre_input_init (vlib_main_t * vm)
     ( /* elt bytes */ sizeof (gm->next_by_protocol[0]),
      /* bits in index */ BITS (((gre_header_t *) 0)->protocol));
 
+  //通过名称查找对应的node
   /* These could be moved to the supported protocol input node defn's */
   ethernet_input = vlib_get_node_by_name (vm, (u8 *) "ethernet-input");
   ASSERT (ethernet_input);
@@ -709,6 +724,7 @@ gre_input_init (vlib_main_t * vm)
   return 0;
 }
 
+//指定init钩子
 VLIB_INIT_FUNCTION (gre_input_init);
 
 /*

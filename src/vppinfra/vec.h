@@ -112,7 +112,7 @@ void *vec_resize_allocate_memory (void *v,
     @param data_align alignment (may be zero)
     @return v_prime pointer to resized vector, may or may not equal v
 */
-
+//L要增长的长度，DB数据长度，HB头部长度,A对齐字节大小
 #define _vec_resize(V,L,DB,HB,A) \
   _vec_resize_inline(V,L,DB,HB,clib_max((__alignof__((V)[0])),(A)))
 
@@ -216,6 +216,7 @@ clib_mem_is_vec (void *v)
 }
 
 /* Local variable naming macro (prevents collisions with other macro naming). */
+//生成本地名称（防止宏之间名称串了）
 #define _v(var) _vec_##var
 
 /** \brief Resize a vector (general version).
@@ -229,9 +230,10 @@ clib_mem_is_vec (void *v)
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
-
+//扩充V的长度，使增加Ｎ
 #define vec_resize_ha(V,N,H,A)							\
 do {										\
+    /*_v(n)要增加的元素数目*/\
   word _v(n) = (N);								\
   word _v(l) = vec_len (V);							\
   V = _vec_resize ((V), _v(n), (_v(l) + _v(n)) * sizeof ((V)[0]), (H), (A));	\
@@ -426,13 +428,16 @@ do {										\
 do {									\
   STATIC_ASSERT(A==0 || ((A % sizeof(V[0]))==0) || ((sizeof(V[0]) % A) == 0),\
                 "vector validate aligned on incorrectly sized object"); \
+  /*期望的vector长度*/\
   word _v(i) = (I);							\
   word _v(l) = vec_len (V);						\
   if (_v(i) >= _v(l))							\
     {									\
+      /*使长度增加1+(_v(i)-_v(l))*/\
       vec_resize_ha ((V), 1 + (_v(i) - _v(l)), (H), (A));		\
       /* Must zero new space since user may have previously		\
 	 used e.g. _vec_len (v) -= 10 */				\
+	 /*将增加的空间初始化为０*/\
       clib_memset ((V) + _v(l), 0, (1 + (_v(i) - _v(l))) * sizeof ((V)[0]));	\
     }									\
 } while (0)
@@ -467,15 +472,19 @@ do {									\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
+//确保v的长度大于I,如果小于I,则将其扩充到I,并将扩充后的位置初始化为(INIT)
+//H为头部大小，Ａ为对齐大小
 #define vec_validate_init_empty_ha(V,I,INIT,H,A)		\
 do {								\
   word _v(i) = (I);						\
   word _v(l) = vec_len (V);					\
   if (_v(i) >= _v(l))						\
     {								\
+      /*指定的索引_v(i)大于vector的实际长度，故需要将vector扩充到至少1+(_v(i)-_v(l))大小*/\
       vec_resize_ha ((V), 1 + (_v(i) - _v(l)), (H), (A));	\
       while (_v(l) <= _v(i))					\
 	{							\
+      /*完成扩充，自_v(l)位置起，初始化每个元素，直到_v(i)*/\
 	  (V)[_v(l)] = (INIT);					\
 	  _v(l)++;						\
 	}							\
@@ -492,7 +501,7 @@ do {								\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
-
+//确保Ｖ的长度达到I,如果长度不足将其扩充到Ｉ，并将新增的元素初始化为INIT
 #define vec_validate_init_empty(V,I,INIT) \
   vec_validate_init_empty_ha(V,I,INIT,0,0)
 

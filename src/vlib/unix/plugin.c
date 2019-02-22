@@ -27,6 +27,7 @@ char *vlib_plugin_path = "";
 char *vlib_plugin_app_version __attribute__ ((weak));
 char *vlib_plugin_app_version = "";
 
+//通过插件名称查找插件，然后在插件中查找符号symbol_name
 void *
 vlib_get_plugin_symbol (char *plugin_name, char *symbol_name)
 {
@@ -49,11 +50,13 @@ str_array_to_vec (char *array, int len)
 
   do
     {
+      //将array中的len个元素添加进r中
       c = array[n];
       vec_add1 (r, c);
     }
   while (c && ++n < len);
 
+  //加入'\0'标记字符串结束
   if (c)
     vec_add1 (r, 0);
 
@@ -210,7 +213,7 @@ error:
   return -1;
 }
 
-//split 插件路径
+//split 插件路径，获得split后的字符串数组
 static u8 **
 split_plugin_path (plugin_main_t * pm)
 {
@@ -221,15 +224,20 @@ split_plugin_path (plugin_main_t * pm)
 
   for (i = 0; i < vec_len (pm->plugin_path); i++)
     {
+      //遇到的非分隔符，则直接将其加入到this中
       if (path[i] != ':')
 	{
 	  vec_add1 (this, path[i]);
 	  continue;
 	}
+      //遇到':',将this截短
       vec_add1 (this, 0);
+      //将字符串this,添加进rv中
       vec_add1 (rv, this);
+      //this赋值为null,继续split
       this = 0;
     }
+  //达到字符串结尾，将this加入到rv中
   if (this)
     {
       vec_add1 (this, 0);
@@ -238,6 +246,7 @@ split_plugin_path (plugin_main_t * pm)
   return rv;
 }
 
+//字符串名称比对
 static int
 plugin_name_sort_cmp (void *a1, void *a2)
 {
@@ -425,10 +434,12 @@ vlib_plugins_show_cmd_fn (vlib_main_t * vm,
   int index = 1;
   plugin_info_t *pi;
 
+  //显示加载的插件
   s = format (s, " Plugin path is: %s\n\n", pm->plugin_path);
   s = format (s, "     %-41s%-33s%s\n", "Plugin", "Version", "Description");
 
   /* *INDENT-OFF* */
+  //显示插件名称及插件版本，描述信息
   hash_foreach_mem (key, value, pm->plugin_by_name_hash,
     {
       if (key != 0)
@@ -447,6 +458,7 @@ vlib_plugins_show_cmd_fn (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//显示插件信息
 VLIB_CLI_COMMAND (plugins_show_cmd, static) =
 {
   .path = "show plugins",
@@ -525,9 +537,11 @@ vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
+      //按"%s %v"格式解析
       u8 *s, *v;
       if (unformat (input, "%s %v", &s, &v))
 	{
+          //如果s为plugins,则为in.buffer添加空格分隔的v
 	  if (strncmp ((const char *) s, "plugins", 8) == 0)
 	    {
 	      if (vec_len (in.buffer) > 0)
@@ -537,6 +551,7 @@ vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
 	}
       else
 	{
+          //格式有误，报错
 	  error = clib_error_return (0, "unknown input '%U'",
 				     format_unformat_error, input);
 	  goto done;

@@ -41,6 +41,7 @@
 #include <vlib/threads.h>
 
 /* Query node given name. */
+//给出名称，查找对应的node
 vlib_node_t *
 vlib_get_node_by_name (vlib_main_t * vm, u8 * name)
 {
@@ -49,6 +50,7 @@ vlib_get_node_by_name (vlib_main_t * vm, u8 * name)
   u8 *key = name;
   if (!clib_mem_is_heap_object (key))
     key = format (0, "%s", key);
+  //采用key名称查找node
   p = hash_get (nm->node_by_name, key);
   if (key != name)
     vec_free (key);
@@ -210,12 +212,15 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
   vlib_node_t *node, *next;
   uword *p;
 
+  //取被插入node
   node = vec_elt (nm->nodes, node_index);
+  //取待插入node
   next = vec_elt (nm->nodes, next_node_index);
 
   /* Runtime has to be initialized. */
   ASSERT (nm->flags & VLIB_NODE_MAIN_RUNTIME_STARTED);
 
+  //检查待插入node是否已存在
   if ((p = hash_get (node->next_slot_by_node, next_node_index)))
     {
       /* Next already exists: slot must match. */
@@ -224,12 +229,16 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
       return p[0];
     }
 
+  //使用最后一个位置
   if (slot == ~0)
     slot = vec_len (node->next_nodes);
 
+  //确保元素数达到slot，如未达到扩充，并使扩大的初始为~0
   vec_validate_init_empty (node->next_nodes, slot, ~0);
+  //确保另一个vector
   vec_validate (node->n_vectors_by_next_node, slot);
 
+  //将其插入到对应的slot
   node->next_nodes[slot] = next_node_index;
   hash_set (node->next_slot_by_node, next_node_index, slot);
 
@@ -243,7 +252,9 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
     uword sib_node_index, sib_slot;
     vlib_node_t *sib_node;
     /* *INDENT-OFF* */
+    //采用bib_node_index遍历node->sibling_bitmap,针对每个index调用代码块
     clib_bitmap_foreach (sib_node_index, node->sibling_bitmap, ({
+        //取出对应的node
       sib_node = vec_elt (nm->nodes, sib_node_index);
       if (sib_node != node)
 	{
@@ -325,7 +336,8 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
       ASSERT (VLIB_NODE_TYPE_INTERNAL == zero.type);
     }
 
-  //如果有node_fn_registrations，则r的function使用node_fn链上最大优先级的function
+  //如果有node_fn_registrations
+  //则r的function使用node_fn链上最大优先级的function
   if (r->node_fn_registrations)
     {
       vlib_node_fn_registration_t *fnr = r->node_fn_registrations;
@@ -387,6 +399,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 
   /* Node index of next sibling will be filled in by vlib_node_main_init. */
   n->sibling_of = r->sibling_of;
+  //如果没有next_nodes时才容许sibling_of有值
   if (r->sibling_of && r->n_next_nodes > 0)
     clib_error ("sibling node should not have any next nodes `%v'", n->name);
 
@@ -431,6 +444,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
     vlib_node_runtime_t *rt;
     u32 i;
 
+    //如果node类型为process,则创建process并加入
     if (n->type == VLIB_NODE_TYPE_PROCESS)
       {
 	vlib_process_t *p;
@@ -486,7 +500,6 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	if (mprotect (p->stack, page_size, PROT_READ) < 0)
 	  clib_unix_warning ("process stack");
 #endif
-
       }
     else
       {

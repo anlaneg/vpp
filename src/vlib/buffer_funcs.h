@@ -63,10 +63,12 @@ vlib_buffer_validate (vlib_main_t * vm, vlib_buffer_t * b)
 	  (bp->data_size + sizeof (vlib_buffer_t)));
 }
 
+//通过index获得vlib_buffer_t
 always_inline void *
 vlib_buffer_ptr_from_index (uword buffer_mem_start, u32 buffer_index,
 			    uword offset)
 {
+    //每个buffer_index占用　1<<6的大小，即64字节
   offset += ((uword) buffer_index) << CLIB_LOG2_CACHE_LINE_BYTES;
   return uword_to_pointer (buffer_mem_start + offset, vlib_buffer_t *);
 }
