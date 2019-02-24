@@ -107,7 +107,7 @@ typedef struct vlib_main_t
   char *name;//进程名称
 
   /* Start of the heap. */
-  void *heap_base;
+  void *heap_base;//堆的起始地址
 
   /* Truncated version, to create frame indices */
   void *heap_aligned_base;//对齐后的heap地址

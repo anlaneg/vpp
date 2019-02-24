@@ -615,6 +615,7 @@ thread0 (uword arg)
 u8 *
 vlib_thread_stack_init (uword thread_index)
 {
+	//确保vlib_thread_stacks长度
   vec_validate (vlib_thread_stacks, thread_index);
   vlib_thread_stacks[thread_index] = clib_mem_alloc_aligned
     (VLIB_THREAD_STACK_SIZE, VLIB_THREAD_STACK_SIZE);
@@ -644,7 +645,7 @@ vlib_unix_main (int argc, char *argv[])
     (((uword) vm->heap_base) & ~(VLIB_FRAME_ALIGN - 1));
   ASSERT (vm->heap_base);
 
-  //将多个参数合关到一串字符串
+  //将多个参数合关到一串字符串，并解析插件的配置
   unformat_init_command_line (&input, (char **) vm->argv);
   if ((e = vlib_plugin_config (vm, &input)))
     {
@@ -658,9 +659,11 @@ vlib_unix_main (int argc, char *argv[])
   if (i)
     return i;
 
+  //重新用命令行参数构造input
   unformat_init_command_line (&input, (char **) vm->argv);
   if (vm->init_functions_called == 0)
     vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+
   //调用所有config_functions
   e = vlib_call_all_config_functions (vm, &input, 1 /* early */ );
   if (e != 0)

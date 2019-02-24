@@ -58,7 +58,7 @@
 
 /* *INDENT-OFF* */
 typedef CLIB_PACKED(struct {
-  u8 default_disabled;
+  u8 default_disabled;//是否默认禁用
   const char version[32];//自身版本
   const char version_required[32];//要求的vpp版本
   const char *early_init;//初始化函数名称
@@ -81,9 +81,9 @@ typedef struct
 typedef struct
 {
   char *name;//插件名称
-  u8 is_disabled;
-  u8 is_enabled;
-  u8 skip_version_check;
+  u8 is_disabled;//是否禁用
+  u8 is_enabled;//是否开启
+  u8 skip_version_check;//是否跳过版本检查
 } plugin_config_t;
 
 typedef struct
@@ -97,11 +97,11 @@ typedef struct
   u8 *plugin_name_filter;//如果此值非０，则仅加载此值对应的plugin
   u8 *vat_plugin_path;
   u8 *vat_plugin_name_filter;
-  u8 plugins_default_disable;
+  u8 plugins_default_disable;//是否默认disable插件
 
   /* plugin configs and hash by name */
-  plugin_config_t *configs;
-  uword *config_index_by_name;
+  plugin_config_t *configs;//按插件名称查找插件配置
+  uword *config_index_by_name;//按插件名称查找插件配置索引
 
   /* usual */
   vlib_main_t *vlib_main;

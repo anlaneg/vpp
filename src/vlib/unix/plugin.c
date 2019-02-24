@@ -106,16 +106,18 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (pm->plugins_default_disable)
     reg->default_disabled = 1;
 
-  //??通过插件名称找配置？
+  //通过插件名称查找配置索引
   p = hash_get_mem (pm->config_index_by_name, pi->name);
   if (p)
     {
+	  //通过配置索引，查找插件配置
       pc = vec_elt_at_index (pm->configs, p[0]);
       if (pc->is_disabled)
 	{
 	  clib_warning ("Plugin disabled: %s", pi->name);
 	  goto error;
 	}
+      //如果没有明确开启，且默认禁用，则禁用
       if (reg->default_disabled && pc->is_enabled == 0)
 	{
 	  clib_warning ("Plugin disabled (default): %s", pi->name);
@@ -140,6 +142,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 		    pi->name, vlib_plugin_app_version, reg->version_required);
       if (!(pc && pc->skip_version_check == 1))
 	{
+    	  //如果不可跳过版本检查，则报错
 	  vec_free (version_required);
 	  goto error;
 	}
@@ -176,6 +179,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   pi->version = str_array_to_vec ((char *) &reg->version,
 				  sizeof (reg->version));
 
+  //用户指明了init函数名称，则查找并调用
   if (reg->early_init)
     {
       clib_error_t *(*ei) (vlib_main_t *);
@@ -467,6 +471,7 @@ VLIB_CLI_COMMAND (plugins_show_cmd, static) =
 };
 /* *INDENT-ON* */
 
+//解析插件的配置
 static clib_error_t *
 config_one_plugin (vlib_main_t * vm, char *name, unformat_input_t * input)
 {
@@ -491,6 +496,7 @@ config_one_plugin (vlib_main_t * vm, char *name, unformat_input_t * input)
       goto done;
     }
 
+  //自配置中提取，enable,disable,skip-version-check
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (input, "enable"))
@@ -509,12 +515,13 @@ config_one_plugin (vlib_main_t * vm, char *name, unformat_input_t * input)
 
   if (is_enable && is_disable)
     {
+	  //语意错误，两者只能有一种
       error = clib_error_return (0, "please specify either enable or disable"
 				 " for plugin '%s'", name);
       goto done;
     }
 
-  //注册$name插件
+  //注册$name插件的配置信息
   vec_add2 (pm->configs, pc, 1);
   hash_set_mem (pm->config_index_by_name, name, pc - pm->configs);
   pc->is_enabled = is_enable;
@@ -526,6 +533,7 @@ done:
   return error;
 }
 
+//解析插件总体配置及分散配置
 clib_error_t *
 vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -577,6 +585,7 @@ done:
       else if (unformat (input, "plugin default %U",
 			 unformat_vlib_cli_sub_input, &sub_input))
 	{
+    	  //插件默认是否disable
 	  pm->plugins_default_disable =
 	    unformat (&sub_input, "disable") ? 1 : 0;
 	  unformat_free (&sub_input);
@@ -584,6 +593,7 @@ done:
       else if (unformat (input, "plugin %s %U", &s,
 			 unformat_vlib_cli_sub_input, &sub_input))
 	{
+    	  //解析插件的配置
 	  error = config_one_plugin (vm, (char *) s, &sub_input);
 	  unformat_free (&sub_input);
 	  if (error)

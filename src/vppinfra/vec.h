@@ -805,18 +805,25 @@ do {							\
     @param M first element to delete
     @return V (value-result macro parameter)
 */
+//自V中移除N个元素，自M位置开始移除
 #define vec_delete(V,N,M)					\
 do {								\
+	/*取vector长度*/\
   word _v(l) = vec_len (V);					\
+  /*待删除元素数*/\
   word _v(n) = (N);						\
+  /*需要删除的首个元素的位置*/\
   word _v(m) = (M);						\
   /* Copy over deleted elements. */				\
+  /*如果有剩的元素，则剩的元素相当于前移到_v(m)位置处*/\
   if (_v(l) - _v(n) - _v(m) > 0)				\
     memmove ((V) + _v(m), (V) + _v(m) + _v(n),			\
 	     (_v(l) - _v(n) - _v(m)) * sizeof ((V)[0]));	\
   /* Zero empty space at end (for future re-allocation). */	\
+  /*移动完成后，尾部需要清0*/\
   if (_v(n) > 0)						\
     clib_memset ((V) + _v(l) - _v(n), 0, _v(n) * sizeof ((V)[0]));	\
+    /*修改移除后的vector长度*/\
   _vec_len (V) -= _v(n);					\
 } while (0)
 

@@ -51,6 +51,7 @@ _unformat_fill_input (unformat_input_t * i)
     first_mark = i->buffer_marks[0];
 
   /* Re-use buffer when no marks. */
+  //自0位置起，将first_mark个元素移除掉
   if (first_mark > 0)
     vec_delete (i->buffer, first_mark, 0);
 

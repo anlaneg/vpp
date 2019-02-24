@@ -226,7 +226,7 @@ main (int argc, char *argv[])
    * Format: heapsize <nn>[mM][gG]
    */
 
-  //多个参数时，遍历参数
+  //多个参数时，处理参数名及参数值提取
   for (i = 1; i < (argc - 1); i++)
     {
       //记录插件路径
