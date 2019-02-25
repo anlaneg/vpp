@@ -45,16 +45,19 @@
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
 
+//调用dpdk的remote_launch完成线程工作启动
 static clib_error_t *
 dpdk_launch_thread (void *fp, vlib_worker_thread_t * w, unsigned lcore_id)
 {
   int r;
+  //促使eal启用fp函数
   r = rte_eal_remote_launch (fp, (void *) w, lcore_id);
   if (r)
     return clib_error_return (0, "Failed to launch thread %u", lcore_id);
   return 0;
 }
 
+//禁用lcore设置
 static clib_error_t *
 dpdk_thread_set_lcore (u32 thread, u16 lcore)
 {
@@ -69,10 +72,12 @@ static vlib_thread_callbacks_t callbacks = {
 static clib_error_t *
 dpdk_thread_init (vlib_main_t * vm)
 {
+    //注册dpdk的任务函数及core绑定函数
   vlib_thread_cb_register (vm, &callbacks);
   return 0;
 }
 
+//注册dpdk线程启动函数
 VLIB_INIT_FUNCTION (dpdk_thread_init);
 
 /** @endcond */

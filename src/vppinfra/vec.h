@@ -459,7 +459,7 @@ do {									\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
-
+//确保vector足够长（>=I)
 #define vec_validate_aligned(V,I,A) vec_validate_ha(V,I,0,A)
 
 /** \brief Make sure vector is long enough for given index

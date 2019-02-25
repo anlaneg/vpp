@@ -605,6 +605,7 @@ thread0 (uword arg)
   unformat_input_t input;
   int i;
 
+  //将所有argv中所有参数合并为字符串
   unformat_init_command_line (&input, (char **) vm->argv);
   i = vlib_main (vm, &input);
   unformat_free (&input);

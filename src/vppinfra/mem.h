@@ -80,7 +80,7 @@ clib_mem_set_per_cpu_heap (u8 * new_heap)
 
 /* Memory allocator which may call os_out_of_memory() if it fails */
 always_inline void *
-clib_mem_alloc_aligned_at_offset (uword size, uword align, uword align_offset,
+clib_mem_alloc_aligned_at_offset (uword size, uword align/*按align字节进行对齐*/, uword align_offset,
 				  int os_out_of_memory_on_failure)
 {
   void *heap, *p;
@@ -121,6 +121,7 @@ clib_mem_alloc_aligned_at_offset (uword size, uword align, uword align_offset,
   p = mspace_get_aligned (heap, size, align, align_offset);
   if (PREDICT_FALSE (p == 0))
     {
+      //申请内存失败
       if (os_out_of_memory_on_failure)
 	os_out_of_memory ();
       return 0;

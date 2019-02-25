@@ -1066,6 +1066,7 @@ dpdk_log_read_ready (clib_file_t * uf)
   return 0;
 }
 
+//dpdk配置入口
 static clib_error_t *
 dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -1381,6 +1382,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     conf->eal_init_args_str = format (conf->eal_init_args_str, "%s ",
 				      conf->eal_init_args[i]);
 
+  //采用收集的参数初始化dpdk
   dpdk_log_warn ("EAL init args: %s", conf->eal_init_args_str);
   ret = rte_eal_init (vec_len (conf->eal_init_args),
 		      (char **) conf->eal_init_args);
@@ -1394,6 +1396,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     return clib_error_return (0, "rte_eal_init returned %d", ret);
 
   /* main thread 1st */
+  //创建buffer pool
   if ((error = dpdk_buffer_pools_create (vm)))
     return error;
 
@@ -1401,6 +1404,7 @@ done:
   return error;
 }
 
+//注册dpdk的配置函数
 VLIB_CONFIG_FUNCTION (dpdk_config, "dpdk");
 
 void

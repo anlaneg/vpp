@@ -31,6 +31,7 @@ STATIC_ASSERT (VLIB_BUFFER_PRE_DATA_SIZE == RTE_PKTMBUF_HEADROOM,
 struct rte_mempool **dpdk_mempool_by_buffer_pool_index = 0;
 struct rte_mempool **dpdk_no_cache_mempool_by_buffer_pool_index = 0;
 
+//dpdk使用buffer pool初始化
 clib_error_t *
 dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
 {
@@ -41,6 +42,7 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
   u32 *bi;
   u8 *name = 0;
 
+  //一个buffer实体的大小
   u32 elt_size =
     sizeof (struct rte_mbuf) + sizeof (vlib_buffer_t) + bp->data_size;
 
@@ -51,6 +53,7 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
 			CLIB_CACHE_LINE_BYTES);
 
   /* normal mempool */
+  //创建mempool(不为entity分配内存，不创建内部的ring)
   name = format (name, "vpp pool %u%c", bp->index, 0);
   mp = rte_mempool_create_empty ((char *) name, vec_len (bp->buffers),
 				 elt_size, 512, sizeof (priv),
@@ -64,18 +67,22 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
 				  bp->numa_node, 0);
   vec_free (name);
 
+  //记录mempool
   dpdk_mempool_by_buffer_pool_index[bp->index] = mp;
   dpdk_no_cache_mempool_by_buffer_pool_index[bp->index] = nmp;
 
   mp->pool_id = nmp->pool_id = bp->index;
 
+  //设置mempool对应的操作集
   rte_mempool_set_ops_byname (mp, "vpp", NULL);
   rte_mempool_set_ops_byname (nmp, "vpp-no-cache", NULL);
 
   /* Call the mempool priv initializer */
+  //设置私有数据大小
   priv.mbuf_data_room_size = VLIB_BUFFER_PRE_DATA_SIZE +
     vlib_buffer_get_default_data_size (vm);
   priv.mbuf_priv_size = VLIB_BUFFER_HDR_SIZE;
+  //初始化mempool的私有数据
   rte_pktmbuf_pool_init (mp, &priv);
   rte_pktmbuf_pool_init (nmp, &priv);
 
@@ -83,15 +90,22 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
 
   /* populate mempool object buffer header */
   /* *INDENT-OFF* */
+  //遍历所有buffer index
   vec_foreach (bi, bp->buffers)
     {
       struct rte_mempool_objhdr *hdr;
+      //通过buffer index获得buffer
       vlib_buffer_t *b = vlib_get_buffer (vm, *bi);
+      //将buffer转为mbuf
       struct rte_mbuf *mb = rte_mbuf_from_vlib_buffer (b);
+
+      //由mbuf获得mempool obj header，并填充
       hdr = (struct rte_mempool_objhdr *) RTE_PTR_SUB (mb, sizeof (*hdr));
       hdr->mp = mp;
       hdr->iova = (iova_mode == RTE_IOVA_VA) ?
 	pointer_to_uword (mb) : vlib_physmem_get_pa (vm, mb);
+
+      //将元素通过list串起来
       STAILQ_INSERT_TAIL (&mp->elt_list, hdr, next);
       STAILQ_INSERT_TAIL (&nmp->elt_list, hdr, next);
       mp->populated_size++;
@@ -100,9 +114,11 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
   /* *INDENT-ON* */
 
   /* call the object initializers */
+  //针对每个mbuf执行mbuf初始化
   rte_mempool_obj_iter (mp, rte_pktmbuf_init, 0);
 
   /* *INDENT-OFF* */
+  //针对每个buffer,通过bp->buffer_template初始化前６４字节
   vec_foreach (bi, bp->buffers)
     {
       vlib_buffer_t *b;
@@ -112,6 +128,7 @@ dpdk_buffer_pool_init (vlib_main_t * vm, vlib_buffer_pool_t * bp)
   /* *INDENT-ON* */
 
   /* map DMA pages if at least one physical device exists */
+  //如果系统中有识别出来的设备，执行dma map
   if (rte_eth_dev_count_avail ())
     {
       uword i;
@@ -164,18 +181,22 @@ dpdk_ops_vpp_free (struct rte_mempool *mp)
 
 #endif
 
+//将mbuf入队到bt中
 static_always_inline void
 dpdk_ops_vpp_enqueue_one (vlib_buffer_t * bt, void *obj)
 {
   /* Only non-replicated packets (b->ref_count == 1) expected */
 
+  //在mbuf后存放vlib_buffer_t
   struct rte_mbuf *mb = obj;
   vlib_buffer_t *b = vlib_buffer_from_rte_mbuf (mb);
   ASSERT (b->ref_count == 1);
   ASSERT (b->buffer_pool_index == bt->buffer_pool_index);
+  //将bt中的内容填充到b中
   vlib_buffer_copy_template (b, bt);
 }
 
+//入队函数１。先初始化buffer（来源于mp->buffer_template)2.将mbuf指针换算成buffer index再统一入队
 int
 CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue) (struct rte_mempool * mp,
 					  void *const *obj_table, unsigned n)
@@ -183,14 +204,20 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue) (struct rte_mempool * mp,
   const int batch_size = 32;
   vlib_main_t *vm = vlib_get_main ();
   vlib_buffer_t bt;
+  //通过mp获取到buffer pool
   u8 buffer_pool_index = mp->pool_id;
   vlib_buffer_pool_t *bp = vlib_get_buffer_pool (vm, buffer_pool_index);
   u32 bufs[batch_size];
   u32 n_left = n;
   void *const *obj = obj_table;
 
+  //将bp->buffer_template前６４字节copy到bt中
   vlib_buffer_copy_template (&bt, &bp->buffer_template);
 
+  //入队前处理
+  //记录buffer的分析情况
+  //(将mbuf后面的vlib_buffer_t结构内容统一填充为bp->buffer_template的前６４字节)
+  //多与４个时，批次入队，保证预取。
   while (n_left >= 4)
     {
       dpdk_ops_vpp_enqueue_one (&bt, obj[0]);
@@ -201,6 +228,7 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue) (struct rte_mempool * mp,
       n_left -= 4;
     }
 
+  //少于４个时，单个入队
   while (n_left)
     {
       dpdk_ops_vpp_enqueue_one (&bt, obj[0]);
@@ -208,11 +236,14 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue) (struct rte_mempool * mp,
       n_left -= 1;
     }
 
+  //完成入队（数量较多，按批次入队）
   while (n >= batch_size)
     {
+      //通过offset换算到buffer index,并填充bufs
       vlib_get_buffer_indices_with_offset (vm, (void **) obj_table, bufs,
 					   batch_size,
 					   sizeof (struct rte_mbuf));
+      //将bufs入队
       vlib_buffer_pool_put (vm, buffer_pool_index, bufs, batch_size);
       n -= batch_size;
       obj_table += batch_size;
@@ -235,14 +266,19 @@ dpdk_ops_vpp_enqueue_no_cache_one (vlib_main_t * vm, struct rte_mempool *old,
 				   struct rte_mempool *new, void *obj,
 				   vlib_buffer_t * bt)
 {
+  //由mbuf获得buffer
   struct rte_mbuf *mb = obj;
   vlib_buffer_t *b = vlib_buffer_from_rte_mbuf (mb);
 
   if (clib_atomic_sub_fetch (&b->ref_count, 1) == 0)
     {
+      //将buffer转换为buffer索引
       u32 bi = vlib_get_buffer_index (vm, b);
       mb->pool = new;
+      //填充buffer
       vlib_buffer_copy_template (b, bt);
+
+      //入队到buffer
       vlib_buffer_pool_put (vm, bt->buffer_pool_index, &bi, 1);
       return;
     }
@@ -256,11 +292,14 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue_no_cache) (struct rte_mempool * cmp,
   vlib_main_t *vm = vlib_get_main ();
   vlib_buffer_t bt;
   struct rte_mempool *mp;
+  //取对应的mp
   mp = dpdk_mempool_by_buffer_pool_index[cmp->pool_id];
   u8 buffer_pool_index = cmp->pool_id;
+  //取对应的buffer pool
   vlib_buffer_pool_t *bp = vlib_get_buffer_pool (vm, buffer_pool_index);
-  vlib_buffer_copy_template (&bt, &bp->buffer_template);
+  vlib_buffer_copy_template (&bt, &bp->buffer_template);//初始化bp
 
+  //一次性转换index并入队
   while (n >= 4)
     {
       dpdk_ops_vpp_enqueue_no_cache_one (vm, cmp, mp, obj_table[0], &bt);
@@ -282,7 +321,7 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_enqueue_no_cache) (struct rte_mempool * cmp,
 }
 
 CLIB_MARCH_FN_REGISTRATION (dpdk_ops_vpp_enqueue_no_cache);
-
+//报文出队
 int
 CLIB_MULTIARCH_FN (dpdk_ops_vpp_dequeue) (struct rte_mempool * mp,
 					  void **obj_table, unsigned n)
@@ -293,6 +332,7 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_dequeue) (struct rte_mempool * mp,
   u8 buffer_pool_index = mp->pool_id;
   void **obj = obj_table;
 
+  //先申请n个buffer,再由buffer的index转换到指针（记为obj)
   while (n >= batch_size)
     {
       n_alloc = vlib_buffer_alloc_from_pool (vm, bufs, batch_size,
@@ -300,6 +340,8 @@ CLIB_MULTIARCH_FN (dpdk_ops_vpp_dequeue) (struct rte_mempool * mp,
       if (n_alloc != batch_size)
 	goto alloc_fail;
 
+      //由buffer index 转换为mbuf指针
+      //offset需要减一个ret_mbuf结构体大小
       vlib_get_buffers_with_offset (vm, bufs, obj, batch_size,
 				    -(i32) sizeof (struct rte_mbuf));
       total += batch_size;
@@ -365,22 +407,28 @@ dpdk_ops_vpp_get_count_no_cache (const struct rte_mempool *mp)
   return dpdk_ops_vpp_get_count (cmp);
 }
 
+//创建mbuf pool
 clib_error_t *
 dpdk_buffer_pools_create (vlib_main_t * vm)
 {
   clib_error_t *err;
   vlib_buffer_pool_t *bp;
 
+  //构造mempool的　vpp ops
   struct rte_mempool_ops ops = { };
 
+  //将alloc,free,get_count均置为空实现
   strncpy (ops.name, "vpp", 4);
   ops.alloc = dpdk_ops_vpp_alloc;
   ops.free = dpdk_ops_vpp_free;
   ops.get_count = dpdk_ops_vpp_get_count;
+  //注册入队，出队函数
   ops.enqueue = CLIB_MARCH_FN_POINTER (dpdk_ops_vpp_enqueue);
   ops.dequeue = CLIB_MARCH_FN_POINTER (dpdk_ops_vpp_dequeue);
+  //注册mempool的操作集
   rte_mempool_register_ops (&ops);
 
+  //构造vpp-no-cache ops（没看出大的变换，此实现是一次性转换index并入队）
   strncpy (ops.name, "vpp-no-cache", 13);
   ops.get_count = dpdk_ops_vpp_get_count_no_cache;
   ops.enqueue = CLIB_MARCH_FN_POINTER (dpdk_ops_vpp_enqueue_no_cache);
@@ -388,6 +436,7 @@ dpdk_buffer_pools_create (vlib_main_t * vm)
   rte_mempool_register_ops (&ops);
 
   /* *INDENT-OFF* */
+  //遍历所有buffer pool,并初始化buffer pool(其对应的mempool)
   vec_foreach (bp, vm->buffer_main->buffer_pools)
     if (bp->start && (err = dpdk_buffer_pool_init (vm, bp)))
       return err;

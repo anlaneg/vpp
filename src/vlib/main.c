@@ -598,6 +598,7 @@ vlib_node_sync_stats (vlib_main_t * vm, vlib_node_t * n)
       rt = &p->node_runtime;
     }
   else
+    //将节点按类型加入到相应vector中
     rt =
       vec_elt_at_index (vm->node_main.nodes_by_type[n->type],
 			n->runtime_index);
@@ -1122,6 +1123,7 @@ dispatch_pcap_trace (vlib_main_t * vm,
     }
 }
 
+//节点调度
 static_always_inline u64
 dispatch_node (vlib_main_t * vm,
 	       vlib_node_runtime_t * node,
@@ -1334,6 +1336,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   /* See comment below about dangling references to nm->pending_frames */
   p = nm->pending_frames + pending_frame_index;
 
+  //取internal类型的p
   n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INTERNAL],
 			p->node_runtime_index);
 

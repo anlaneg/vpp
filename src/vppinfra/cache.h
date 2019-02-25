@@ -57,6 +57,7 @@
 #endif
 
 #define CLIB_CACHE_LINE_BYTES (1 << CLIB_LOG2_CACHE_LINE_BYTES)
+//指明此字段按cacheline对齐
 #define CLIB_CACHE_LINE_ALIGN_MARK(mark) u8 mark[0] __attribute__((aligned(CLIB_CACHE_LINE_BYTES)))
 #define CLIB_CACHE_LINE_ROUND(x) ((x + CLIB_CACHE_LINE_BYTES - 1) & ~(CLIB_CACHE_LINE_BYTES - 1))
 

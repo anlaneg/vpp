@@ -170,6 +170,7 @@ unix_proc_file_contents (char *file, u8 ** result)
 
 void os_panic (void) __attribute__ ((weak));
 
+//直接断言
 void
 os_panic (void)
 {
@@ -178,6 +179,7 @@ os_panic (void)
 
 void os_exit (int) __attribute__ ((weak));
 
+//直接退出
 void
 os_exit (int code)
 {

@@ -347,10 +347,10 @@ typedef struct vlib_node_t
 
   /* Vector of next node names.
      Only used before next_nodes array is initialized. */
-  char **next_node_names;//下一级node的名称
+  char **next_node_names;//此节点有哪些名称的后续节点（下一级node的名称）
 
   /* Next node indices for this node. */
-  u32 *next_nodes;//此节点有哪些后继节点
+  u32 *next_nodes;//此节点有哪些后继节点(索引）
 
   /* Name of node that we are sibling of. */
   char *sibling_of;
@@ -367,7 +367,7 @@ typedef struct vlib_node_t
   uword *next_slot_by_node;//根据下一个节点的index,查找其对应的节点slot
 
   /* Bitmap of node indices which feed this node. */
-  uword *prev_node_bitmap;
+  uword *prev_node_bitmap;//指出此节点是哪些节点的后继节点
 
   /* Node/next-index which own enqueue rights with to this node. */
   u32 owner_node_index, owner_next_index;

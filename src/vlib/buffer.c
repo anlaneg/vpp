@@ -701,6 +701,7 @@ vlib_buffer_main_alloc (vlib_main_t * vm)
 {
   vlib_buffer_main_t *bm;
 
+  //已初始化，直接退出
   if (vm->buffer_main)
     return;
 

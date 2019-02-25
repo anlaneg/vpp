@@ -226,10 +226,11 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
       /* Next already exists: slot must match. */
       if (slot != ~0)
 	ASSERT (slot == p[0]);
+      //已存在，则返回
       return p[0];
     }
 
-  //使用最后一个位置
+  //没有查找到，使用最后一个位置
   if (slot == ~0)
     slot = vec_len (node->next_nodes);
 
@@ -277,8 +278,10 @@ vlib_node_add_named_next_with_slot (vlib_main_t * vm,
   vlib_node_t *n, *n_next;
 
   nm = &vm->node_main;
+  //通过索引找到node
   n = vlib_get_node (vm, node);
 
+  //按名称查找next node
   n_next = vlib_get_node_by_name (vm, (u8 *) name);
   if (!n_next)
     {
@@ -293,6 +296,7 @@ vlib_node_add_named_next_with_slot (vlib_main_t * vm,
       return slot;
     }
 
+  //找到了next node
   return vlib_node_add_next_with_slot (vm, node, n_next->index, slot);
 }
 
@@ -672,6 +676,7 @@ vlib_node_main_init (vlib_main_t * vm)
     vlib_node_t *n, *sib;
     uword si;
 
+    //遍历所有nodes,处理!n->sibling_of情况
     for (ni = 0; ni < vec_len (nm->nodes); ni++)
       {
 	n = vec_elt (nm->nodes, ni);
@@ -708,19 +713,24 @@ vlib_node_main_init (vlib_main_t * vm)
   }
 
   /* Resolve next names into next indices. */
+  //解决next names to next node的映射
   for (ni = 0; ni < vec_len (nm->nodes); ni++)
     {
       uword i;
 
+      //取ni对应的node
       n = vec_elt (nm->nodes, ni);
 
+      //遍历此node对应的下一级node名称
       for (i = 0; i < vec_len (n->next_node_names); i++)
 	{
 	  char *a = n->next_node_names[i];
 
+	  //忽略掉无next_node_name的node
 	  if (!a)
 	    continue;
 
+	  //按名称查找并设置node对应的next_node
 	  if (~0 == vlib_node_add_named_next_with_slot (vm, n->index, a, i))
 	    {
 	      error = clib_error_create
@@ -733,6 +743,7 @@ vlib_node_main_init (vlib_main_t * vm)
     }
 
   /* Set previous node pointers. */
+  //指明自身是哪些节点的后继节点
   for (ni = 0; ni < vec_len (nm->nodes); ni++)
     {
       vlib_node_t *n_next;
@@ -740,6 +751,7 @@ vlib_node_main_init (vlib_main_t * vm)
 
       n = vec_elt (nm->nodes, ni);
 
+      //遍历此节点n的next_nodes
       for (i = 0; i < vec_len (n->next_nodes); i++)
 	{
 	  if (n->next_nodes[i] >= vec_len (nm->nodes))
@@ -757,6 +769,7 @@ vlib_node_main_init (vlib_main_t * vm)
     vlib_node_t *next;
     uword i;
 
+    //遍历所有有next node的internal类型的node,为其加上frame不释放标记
     vec_foreach (r, nm->nodes_by_type[VLIB_NODE_TYPE_INTERNAL])
     {
       if (r->n_next_nodes == 0)

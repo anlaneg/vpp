@@ -104,6 +104,7 @@ vlib_buffer_copy_indices (u32 * dst, u32 * src, u32 n_indices)
 }
 
 STATIC_ASSERT_OFFSET_OF (vlib_buffer_t, template_end, 64);
+//将bt的内容copy到b中（copy长度为６４字节）
 static_always_inline void
 vlib_buffer_copy_template (vlib_buffer_t * b, vlib_buffer_t * bt)
 {
@@ -137,6 +138,7 @@ vlib_buffer_pool_get_default_for_numa (vlib_main_t * vm, u32 numa_node)
     @param count - (uword) number of elements
     @param offset - (i32) offset applied to each pointer
 */
+//由buffer index转换为buffer指针
 static_always_inline void
 vlib_get_buffers_with_offset (vlib_main_t * vm, u32 * bi, void **b, int count,
 			      i32 offset)
@@ -177,6 +179,7 @@ vlib_get_buffers_with_offset (vlib_main_t * vm, u32 * bi, void **b, int count,
       u64x2_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
       u64x2_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 2);
 #else
+      //buffer index转换到buffer
       b[0] = vlib_buffer_ptr_from_index (buffer_mem_start, bi[0], offset);
       b[1] = vlib_buffer_ptr_from_index (buffer_mem_start, bi[1], offset);
       b[2] = vlib_buffer_ptr_from_index (buffer_mem_start, bi[2], offset);
@@ -220,10 +223,13 @@ always_inline u32
 vlib_get_buffer_index (vlib_main_t * vm, void *p)
 {
   vlib_buffer_main_t *bm = vm->buffer_main;
+  //获取p到buffer起始位置的偏移
   uword offset = pointer_to_uword (p) - bm->buffer_mem_start;
   ASSERT (pointer_to_uword (p) >= bm->buffer_mem_start);
   ASSERT (offset < bm->buffer_mem_size);
+  //offset一定按1<<CLIB_LOG2_CACHE_LINE_BYTES对齐
   ASSERT ((offset % (1 << CLIB_LOG2_CACHE_LINE_BYTES)) == 0);
+  //返回映射的编号
   return offset >> CLIB_LOG2_CACHE_LINE_BYTES;
 }
 
@@ -269,6 +275,7 @@ vlib_get_buffer_indices_with_offset (vlib_main_t * vm, void **b, u32 * bi,
       count -= 8;
     }
 #endif
+  //填充buffer index
   while (count >= 4)
     {
       /* equivalent non-nector implementation */
@@ -437,6 +444,7 @@ vlib_buffer_is_known (vlib_main_t * vm, u32 buffer_index)
 u8 *vlib_validate_buffer (vlib_main_t * vm, u32 buffer_index,
 			  uword follow_chain);
 
+//给定pool index取相应的buffer pool
 static_always_inline vlib_buffer_pool_t *
 vlib_get_buffer_pool (vlib_main_t * vm, u8 buffer_pool_index)
 {
@@ -444,6 +452,7 @@ vlib_get_buffer_pool (vlib_main_t * vm, u8 buffer_pool_index)
   return vec_elt_at_index (bm->buffer_pools, buffer_pool_index);
 }
 
+//自pool中出队n_buffers个buffer,如果出队失败，则返回出队的buffer数
 static_always_inline uword
 vlib_buffer_pool_get (vlib_main_t * vm, u8 buffer_pool_index, u32 * buffers,
 		      u32 n_buffers)
@@ -457,6 +466,7 @@ vlib_buffer_pool_get (vlib_main_t * vm, u8 buffer_pool_index, u32 * buffers,
   len = vec_len (bp->buffers);
   if (PREDICT_TRUE (n_buffers < len))
     {
+      //pool中的buffer足够，直接copy即可
       len -= n_buffers;
       vlib_buffer_copy_indices (buffers, bp->buffers + len, n_buffers);
       _vec_len (bp->buffers) = len;
@@ -465,6 +475,7 @@ vlib_buffer_pool_get (vlib_main_t * vm, u8 buffer_pool_index, u32 * buffers,
     }
   else
     {
+      //pool中的buffer不足，只能返回buffer中的最大值
       vlib_buffer_copy_indices (buffers, bp->buffers, len);
       _vec_len (bp->buffers) = 0;
       clib_spinlock_unlock (&bp->lock);
@@ -482,8 +493,9 @@ vlib_buffer_pool_get (vlib_main_t * vm, u8 buffer_pool_index, u32 * buffers,
     less than the number requested or zero
 */
 
+//自pool中申请n_buffers个buffer,返回获取到的buffer(内部采用cachebuffer机制，按线程划分cache)
 always_inline u32
-vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
+vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers/*需要的buffer数*/,
 			     u8 buffer_pool_index)
 {
   vlib_buffer_main_t *bm = vm->buffer_main;
@@ -491,17 +503,20 @@ vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
   vlib_buffer_pool_thread_t *bpt;
   u32 *src, *dst, len, n_left;
 
+  //取对应的pool
   bp = vec_elt_at_index (bm->buffer_pools, buffer_pool_index);
+  //取对应的cache buffer
   bpt = vec_elt_at_index (bp->threads, vm->thread_index);
 
   dst = buffers;
   n_left = n_buffers;
-  len = vec_len (bpt->cached_buffers);
+  len = vec_len (bpt->cached_buffers);//缓存的buffer数目
 
   /* per-thread cache contains enough buffers */
   if (len >= n_buffers)
     {
-      src = bpt->cached_buffers + len - n_buffers;
+      //线程上缓存的buffer足够了，将其自src中copy到dst里，并更新cached_buffers的大小
+      src = bpt->cached_buffers + len - n_buffers;//(自尾部取，减少内存移动)
       vlib_buffer_copy_indices (dst, src, n_buffers);
       _vec_len (bpt->cached_buffers) -= n_buffers;
 
@@ -512,6 +527,7 @@ vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
     }
 
   /* take everything available in the cache */
+  //这种情况下，需要先拿走cached_buffer中所有元素
   if (len)
     {
       vlib_buffer_copy_indices (dst, bpt->cached_buffers, len);
@@ -520,14 +536,18 @@ vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
       n_left -= len;
     }
 
+  //再自pool中批发一批
   len = round_pow2 (n_left, 32);
+  //确保cached_buffers的大小
   vec_validate_aligned (bpt->cached_buffers, len - 1, CLIB_CACHE_LINE_BYTES);
+  //自pool中出len个buffer到bpt->cached_buffers中
   len = vlib_buffer_pool_get (vm, buffer_pool_index, bpt->cached_buffers,
 			      len);
   _vec_len (bpt->cached_buffers) = len;
 
   if (len)
     {
+      //再自cached_buffer中拿到dst中
       u32 n_copy = clib_min (len, n_left);
       src = bpt->cached_buffers + len - n_copy;
       vlib_buffer_copy_indices (dst, src, n_copy);
@@ -542,6 +562,7 @@ vlib_buffer_alloc_from_pool (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
     vlib_buffer_validate_alloc_free (vm, buffers, n_buffers,
 				     VLIB_BUFFER_KNOWN_FREE);
 
+  //返回使用的获得的buffer数
   return n_buffers;
 }
 
@@ -639,11 +660,14 @@ vlib_buffer_alloc_to_ring_from_pool (vlib_main_t * vm, u32 * ring, u32 start,
   return n_alloc;
 }
 
+//将转换好的buffer index入队到pool内
 static_always_inline void
 vlib_buffer_pool_put (vlib_main_t * vm, u8 buffer_pool_index,
 		      u32 * buffers, u32 n_buffers)
 {
+    //要入队的pool
   vlib_buffer_pool_t *bp = vlib_get_buffer_pool (vm, buffer_pool_index);
+  //要入队的cached
   vlib_buffer_pool_thread_t *bpt =
     vec_elt_at_index (bp->threads, vm->thread_index);
 
@@ -651,9 +675,11 @@ vlib_buffer_pool_put (vlib_main_t * vm, u8 buffer_pool_index,
     vlib_buffer_validate_alloc_free (vm, buffers, n_buffers,
 				     VLIB_BUFFER_KNOWN_ALLOCATED);
 
+  //向将其入队到cache buffer
   vec_add_aligned (bpt->cached_buffers, buffers, n_buffers,
 		   CLIB_CACHE_LINE_BYTES);
 
+  //如果入队到cache buffer后，数量过大，则再入队到buffer中
   if (vec_len (bpt->cached_buffers) > 4 * VLIB_FRAME_SIZE)
     {
       clib_spinlock_lock (&bp->lock);

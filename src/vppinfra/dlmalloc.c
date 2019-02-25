@@ -1170,7 +1170,7 @@ struct malloc_state {
   mchunkptr  top;
   size_t     trim_check;
   size_t     release_checks;
-  size_t     magic;
+  size_t     magic;//用于校验
   mchunkptr  smallbins[(NSMALLBINS+1)*2];
   tbinptr    treebins[NTREEBINS];
   size_t     footprint;
@@ -1329,6 +1329,7 @@ static int has_segment_link(mstate m, msegmentptr ss) {
 */
 
 #if USE_LOCKS
+//如果需要锁，则请求锁，否则空
 #define PREACTION(M)  ((use_lock(M))? ACQUIRE_LOCK(&(M)->mutex) : 0)
 #define POSTACTION(M) { if (use_lock(M)) RELEASE_LOCK(&(M)->mutex); }
 #else /* USE_LOCKS */
@@ -4332,6 +4333,7 @@ size_t mspace_usable_size_with_delta (const void *p)
 void* mspace_malloc(mspace msp, size_t bytes) {
   mstate ms = (mstate)msp;
   if (!ok_magic(ms)) {
+      //直接挂掉
     USAGE_ERROR_ACTION(ms,ms);
     return 0;
   }

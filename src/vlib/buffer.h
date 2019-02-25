@@ -99,6 +99,7 @@ enum
 #define VLIB_BUFFER_FLAGS_ALL (0x0f)
 
 /** VLIB buffer representation. */
+//记录buffer的表示情况
 typedef union
 {
   struct
@@ -130,7 +131,7 @@ typedef union
     volatile u8 ref_count;
 
     /** index of buffer pool this buffer belongs. */
-    u8 buffer_pool_index;
+    u8 buffer_pool_index;//从属于那一个pool
 
     /** Error code for buffers to be enqueued to error handler.  */
     vlib_error_t error;
@@ -370,8 +371,8 @@ struct vlib_main_t;
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  u32 *cached_buffers;
-  u32 n_alloc;
+  u32 *cached_buffers;//缓存的buffer
+  u32 n_alloc;//缓存的数目
 } vlib_buffer_pool_thread_t;
 typedef struct
 {
@@ -383,12 +384,19 @@ typedef struct
   u32 numa_node;
   u32 physmem_map_index;
   u32 data_size;
+
+  //buffer数组
   u32 n_buffers;
   u32 *buffers;
+
+  //pool名称
   u8 *name;
+
+  //保护pool的锁
   clib_spinlock_t lock;
 
   /* per-thread data */
+  //每个线程上会有一些缓存的buffer,threads是一个vector,每线程一个结构
   vlib_buffer_pool_thread_t *threads;
 
   /* buffer metadata template */
@@ -400,9 +408,9 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Virtual memory address and size of buffer memory, used for calculating
      buffer index */
-  uword buffer_mem_start;//记录报文buffer
-  uword buffer_mem_size;
-  vlib_buffer_pool_t *buffer_pools;
+  uword buffer_mem_start;//记录报文buffer起始地址
+  uword buffer_mem_size;//buffer大小
+  vlib_buffer_pool_t *buffer_pools;//buffer所属的pool数组
 
   /* Hash table mapping buffer index into number
      0 => allocated but free, 1 => allocated and not-free.

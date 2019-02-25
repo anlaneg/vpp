@@ -204,6 +204,7 @@ vlib_node_set_interrupt_pending (vlib_main_t * vm, u32 node_index)
   clib_spinlock_unlock_if_init (&nm->pending_interrupt_lock);
 }
 
+//通过node取其对应的process
 always_inline vlib_process_t *
 vlib_get_process_from_node (vlib_main_t * vm, vlib_node_t * node)
 {

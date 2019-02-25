@@ -85,10 +85,12 @@ static clib_error_t * dpdk_main_init (vlib_main_t * vm)
   dm->vlib_main = vm;
   dm->vnet_main = vnet_get_main ();
 
+  //要求dpdk_init必须被调用
   if ((error = vlib_call_init_function (vm, dpdk_init)))
     return error;
 
   /* register custom delay function */
+  //注册delay函数
   rte_delay_us_callback_register (rte_delay_us_override_cb);
 
   return error;
