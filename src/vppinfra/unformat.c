@@ -46,31 +46,40 @@ _unformat_fill_input (unformat_input_t * i)
   if (i->index == UNFORMAT_END_OF_INPUT)
     return i->index;
 
+  //获取buffer长度
   first_mark = l = vec_len (i->buffer);
+  //如果buffer_marks有值，则说明记录有需要恢复的位置，则将first_mark置为恢复的位置
   if (vec_len (i->buffer_marks) > 0)
     first_mark = i->buffer_marks[0];
 
   /* Re-use buffer when no marks. */
-  //自0位置起，将first_mark个元素移除掉
+  //first_mark之前的数据已经解析完成了，没有必要保持，将其删除掉
+  //自0位置起，将first_mark个元素从i->buffer中移除掉
   if (first_mark > 0)
     vec_delete (i->buffer, first_mark, 0);
 
+  //更新index指向buffer结尾
   i->index = vec_len (i->buffer);
+  //由于我们将first_mark之前的数据已移除，
+  //故需要将buffer_marks中保存的恢复点进行更新
   for (l = 0; l < vec_len (i->buffer_marks); l++)
     i->buffer_marks[l] -= first_mark;
 
   /* Call user's function to fill the buffer. */
+  //如有必要，调用fill_buffer函数,向input中添加数据
   if (i->fill_buffer)
     i->index = i->fill_buffer (i);
 
   /* If input pointer is still beyond end of buffer even after
      fill then we've run out of input. */
+  //如果index被更新为buffer结尾，则返回END_OF_INPUT
   if (i->index >= vec_len (i->buffer))
     i->index = UNFORMAT_END_OF_INPUT;
 
   return i->index;
 }
 
+//检查c是否为空字符
 always_inline uword
 is_white_space (uword c)
 {
@@ -688,6 +697,7 @@ error:
   return 0;
 }
 
+//匹配字符串常量
 static const char *
 match_input_with_format (unformat_input_t * input, const char *f)
 {
@@ -699,15 +709,15 @@ match_input_with_format (unformat_input_t * input, const char *f)
     {
       cf = *f;
       if (cf == 0 || cf == '%' || cf == ' ')
-	break;
+	break;//格式串为‘％’或者空格或者字符串结束时，跳出
       f++;
 
       ci = unformat_get_input (input);
 
       if (cf != ci)
-	return 0;
+	return 0;//如果两者不匹配，则返回-1
     }
-  return f;
+  return f;//如果两者相等且f　token结束，则返回待解析的f
 }
 
 static const char *
@@ -790,6 +800,7 @@ do_percent (unformat_input_t * input, va_list * va, const char *f)
 
     case 'U':
       {
+          //取格式化解析函数，并调用函数
 	unformat_function_t *f = va_arg (*va, unformat_function_t *);
 	n = f (input, va);
       }
@@ -818,6 +829,7 @@ unformat_skip_white_space (unformat_input_t * input)
   uword n = 0;
   uword c;
 
+  //持续出空字符，直到遇到非空字符时为至，返回出的空字符数目（input->index指向不为空的字符）
   while ((c = unformat_get_input (input)) != UNFORMAT_END_OF_INPUT)
     {
       if (!is_white_space (c))
@@ -840,6 +852,7 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
   uword last_non_white_space_match_percent;
   uword last_non_white_space_match_format;
 
+  //先将准备匹配的index保存在input->buffer_marks中，待失配置，做恢复用
   vec_add1_aligned (input->buffer_marks, input->index,
 		    sizeof (input->buffer_marks[0]));
 
@@ -852,7 +865,7 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
   while (1)
     {
       char cf;
-      uword is_percent, skip_input_white_space;
+      uword is_percent/*标明格式符中遇到了%号*/, skip_input_white_space/*标明格式符中跳过了空格*/;
 
       cf = *f;
       is_percent = 0;
@@ -863,6 +876,7 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
       skip_input_white_space = f == fmt || default_skip_input_white_space;
 
       /* Spaces in format request skipping input white space. */
+      //如果cf为空格，则跳过其后其余的空格，将多个空格当做一个空格对待
       if (is_white_space (cf))
 	{
 	  skip_input_white_space = 1;
@@ -874,6 +888,7 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
 	}
       else if (cf == '%')
 	{
+          //发现格式化符号
 	  /* %_ toggles whether or not to skip input white space. */
 	  switch (*++f)
 	    {
@@ -892,11 +907,13 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
 	      continue;
 
 	      /* %% means match % */
+	      //遇到被转义的'%'
 	    case '%':
 	      break;
 
 	      /* % at end of format string. */
 	    case 0:
+	        //格式化符号有误，报错
 	      goto parse_fail;
 
 	    default:
@@ -905,11 +922,14 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
 	    }
 	}
 
+      //标记input中跳过的空字符数目
       n_input_white_space_skipped = 0;
       if (skip_input_white_space)
+          //如果格式串遇到空字符，则持续跳过空字符，返回跳过的数目
 	n_input_white_space_skipped = unformat_skip_white_space (input);
 
       /* End of format string. */
+      //如果到达字符串结尾
       if (cf == 0)
 	{
 	  /* Force parse error when format string ends and input is
@@ -922,6 +942,8 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
 	      && !last_non_white_space_match_format
 	      && n_input_white_space_skipped == 0
 	      && input->index != UNFORMAT_END_OF_INPUT)
+	      //如果format跳过了空格，且input未跳过空格，且input->index没有到达结尾，且
+	      //没有发现％号，且字符串常量匹配时失配，则解析失败
 	    goto parse_fail;
 	  break;
 	}
@@ -938,20 +960,26 @@ va_unformat (unformat_input_t * input, const char *fmt, va_list * va)
 
       else if (is_percent)
 	{
+          //遇到了%号，进行格式化解析
 	  if (!(f = do_percent (input, va, f)))
 	    goto parse_fail;
 	}
 
       else
 	{
+      //遇到的非字符符，非%号时，匹配字符串常量，返回待解析的格式串（“format")
+      //如果失配，则解析失败
 	  const char *g = match_input_with_format (input, f);
 	  if (!g)
 	    goto parse_fail;
+
+	  //准备继续匹配
 	  last_non_white_space_match_format = g > f;
 	  f = g;
 	}
     }
 
+  //促使input->buffer_marks长度为０
   input_matches_format = 1;
 parse_fail:
 
@@ -961,11 +989,13 @@ parse_fail:
 
     /* If we did not match back up buffer to last mark. */
     if (!input_matches_format)
+        //匹配失败，恢复到上次匹配成功的地方（方便下次继续尝试）
       input->index = input->buffer_marks[l - 1];
 
     _vec_len (input->buffer_marks) = l - 1;
   }
 
+  //返回input与format匹配的数目
   return input_matches_format;
 }
 

@@ -1088,6 +1088,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   u8 *huge_dir_path = 0;
   u32 vendor, device;
 
+  //设置大页目录名
   huge_dir_path =
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
 
@@ -1097,6 +1098,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       /* Prime the pump */
+      //尝试input当前输入是否为'no-hugetlb'，如果是则设置conf->eal_init_args
       if (unformat (input, "no-hugetlb"))
 	{
 	  vec_add1 (conf->eal_init_args, (u8 *) "--no-huge");
@@ -1111,6 +1113,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "decimal-interface-names"))
 	conf->interface_name_format_decimal = 1;
 
+      //遇到%U,通过调用unformat_dpdk_log_level函数来解析后面的token,并将结果赋给x
       else if (unformat (input, "log-level %U", unformat_dpdk_log_level, &x))
 	log_level = x;
 
@@ -1358,9 +1361,11 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     {
       if (fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
 	{
+          //为rte的log注入File
 	  FILE *f = fdopen (log_fds[1], "a");
 	  if (f && rte_openlog_stream (f) == 0)
 	    {
+	      //接受dpdk传入的日志
 	      clib_file_t t = { 0 };
 	      t.read_function = dpdk_log_read_ready;
 	      t.file_descriptor = log_fds[0];
@@ -1378,11 +1383,12 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   vm = vlib_get_main ();
 
   /* make copy of args as rte_eal_init tends to mess up with arg array */
+  //格式化参数
   for (i = 1; i < vec_len (conf->eal_init_args); i++)
     conf->eal_init_args_str = format (conf->eal_init_args_str, "%s ",
 				      conf->eal_init_args[i]);
 
-  //采用收集的参数初始化dpdk
+  //采用收集的参数初始化dpdk,完成网卡扫描识别
   dpdk_log_warn ("EAL init args: %s", conf->eal_init_args_str);
   ret = rte_eal_init (vec_len (conf->eal_init_args),
 		      (char **) conf->eal_init_args);

@@ -528,7 +528,9 @@ do {								\
 */
 #define vec_add1_ha(V,E,H,A)						\
 do {									\
+    /*取V的长度*/\
   word _v(l) = vec_len (V);						\
+  /*扩充V的长度，确保长度大于_v(l)+1*/\
   V = _vec_resize ((V), 1, (_v(l) + 1) * sizeof ((V)[0]), (H), (A));	\
   /*将E放在V的尾部*/\
   (V)[_v(l)] = (E);							\
@@ -550,6 +552,7 @@ do {									\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
+//添加一个元素E到vector
 #define vec_add1_aligned(V,E,A) vec_add1_ha(V,E,0,A)
 
 /** \brief Add N elements to end of vector V,

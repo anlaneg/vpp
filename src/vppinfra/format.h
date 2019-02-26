@@ -129,10 +129,12 @@ typedef struct _unformat_input_t
   u8 *buffer;
 
   /* Current index in input buffer. */
-  uword index;
+  uword index;//当前在buffer中的位置
 
   /* Vector of buffer marks.  Used to delineate pieces of the buffer
      for error reporting and for parse recovery. */
+  //用于解析时失配了进行恢复(例如尝试匹配"help",但input为'holp'，则恢复到h之前）
+  //或者用于指出出错位置(即指明匹配‘help'时出错，起始的匹配位置为'holp...'
   uword *buffer_marks;
 
   /* User's function to fill the buffer when its empty
@@ -189,12 +191,14 @@ unformat_is_eof (unformat_input_t * input)
 
 /* Return next element in input vector,
    possibly calling fill input to get more. */
+//返回input中的下一个element（同时index向前移动一个单元）
 always_inline uword
 unformat_get_input (unformat_input_t * input)
 {
   uword i = unformat_check_input (input);
   if (i < vec_len (input->buffer))
     {
+      //使index向前移动一个字符，并返回input->index对应的element
       input->index = i + 1;
       i = input->buffer[i];
     }
@@ -202,6 +206,7 @@ unformat_get_input (unformat_input_t * input)
 }
 
 /* Back up input pointer by one. */
+//index向后移动一个单元
 always_inline void
 unformat_put_input (unformat_input_t * input)
 {

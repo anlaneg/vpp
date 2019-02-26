@@ -135,6 +135,7 @@ vlib_unix_get_main (void)
   return &unix_main;
 }
 
+//返回配置的runtime-dir
 static inline char *
 vlib_unix_get_runtime_dir (void)
 {

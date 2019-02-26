@@ -372,6 +372,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
       else
 	if (unformat (input, "cli-listen %s", &um->cli_listen_socket.config))
 	;
+      //设置runtime-dir
       else if (unformat (input, "runtime-dir %s", &um->runtime_dir))
 	;
       else if (unformat (input, "cli-line-mode"))

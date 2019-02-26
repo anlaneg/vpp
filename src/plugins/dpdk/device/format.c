@@ -924,9 +924,11 @@ unformat_rss_fn (unformat_input_t * input, uword * rss_fn)
 uword
 unformat_dpdk_log_level (unformat_input_t * input, va_list * args)
 {
+  //取出待填充的参数
   u32 *r = va_arg (*args, u32 *);
 
   if (0);
+  //进行字符串检查，如果匹配成功，则将r置为相应log级别
 #define _(v,s) else if (unformat (input, s)) *r = RTE_LOG_##v;
   foreach_dpdk_log_level
 #undef _
