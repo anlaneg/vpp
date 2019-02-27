@@ -89,6 +89,7 @@ dpdk_tx_trace_buffer (dpdk_main_t * dm, vlib_node_runtime_t * node,
 		    sizeof (t0->data));
 }
 
+//初始化buffer内的mbuf结构
 static_always_inline void
 dpdk_validate_rte_mbuf (vlib_main_t * vm, vlib_buffer_t * b,
 			int maybe_multiseg)
@@ -97,8 +98,10 @@ dpdk_validate_rte_mbuf (vlib_main_t * vm, vlib_buffer_t * b,
 
   /* buffer is coming from non-dpdk source so we need to init
      rte_mbuf header */
+  //初始化mbuf
   if (PREDICT_FALSE ((b->flags & VLIB_BUFFER_EXT_HDR_VALID) == 0))
     {
+      //buffer扩展头无效情况处理，初始化mbuf结构体，如果有next，则初始化其它buffer的mbuf
       vlib_buffer_t *b2 = b;
       last_mb = mb = rte_mbuf_from_vlib_buffer (b2);
       rte_pktmbuf_reset (mb);
@@ -110,6 +113,7 @@ dpdk_validate_rte_mbuf (vlib_main_t * vm, vlib_buffer_t * b,
 	}
     }
 
+  //填充mbuf的data_len,pkt_len以及data_off
   last_mb = first_mb = mb = rte_mbuf_from_vlib_buffer (b);
   first_mb->nb_segs = 1;
   mb->data_len = b->current_length;
@@ -139,6 +143,7 @@ dpdk_validate_rte_mbuf (vlib_main_t * vm, vlib_buffer_t * b,
  * support multiple queues. It returns the number of packets untransmitted
  * If all packets are transmitted (the normal case), the function returns 0.
  */
+//完成报文传输，返回传输失败的报文数目
 static_always_inline
   u32 tx_burst_vector_internal (vlib_main_t * vm,
 				dpdk_device_t * xd,
@@ -158,6 +163,7 @@ static_always_inline
        * This device only supports one TX queue,
        * and we're running multi-threaded...
        */
+      //单队列情况下处理
       if (PREDICT_FALSE (xd->lockp != 0))
 	{
 	  queue_id = queue_id % xd->tx_q_used;
@@ -184,6 +190,7 @@ static_always_inline
       if (PREDICT_TRUE (xd->flags & DPDK_DEVICE_FLAG_PMD))
 	{
 	  /* no wrap, transmit in one burst */
+      //向xd->port_id的queue_id号队列发送报文mb,共计n_left个
 	  n_sent = rte_eth_tx_burst (xd->port_id, queue_id, mb, n_left);
 	}
       else
@@ -197,6 +204,7 @@ static_always_inline
 
       if (PREDICT_FALSE (n_sent < 0))
 	{
+          //发送报文出错
 	  // emit non-fatal message, bump counter
 	  vnet_main_t *vnm = dm->vnet_main;
 	  vnet_interface_main_t *im = &vnm->interface_main;
@@ -230,21 +238,30 @@ static_always_inline void
 dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
 			struct rte_mbuf *mb)
 {
+    //是否offlaod ip层checksum
   u32 ip_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_IP_CKSUM;
+  //是否offload tcp层checksum
   u32 tcp_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_TCP_CKSUM;
+  //是否offload udp层checksum
   u32 udp_cksum = b->flags & VNET_BUFFER_F_OFFLOAD_UDP_CKSUM;
+  //是否为ipv4报文
   int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
   u64 ol_flags;
 
   /* Is there any work for us? */
+  //如果没有开启offload checksum，则直接退出
   if (PREDICT_TRUE ((ip_cksum | tcp_cksum | udp_cksum) == 0))
     return;
 
+  //由于当前b->current_data指向以太头，故mb->l2_len为l3_offset-current_data
   mb->l2_len = vnet_buffer (b)->l3_hdr_offset - b->current_data;
   mb->l3_len = vnet_buffer (b)->l4_hdr_offset -
     vnet_buffer (b)->l3_hdr_offset;
+
   mb->outer_l3_len = 0;
   mb->outer_l2_len = 0;
+
+  //为mbuf打上tx_offload标记
   ol_flags = is_ip4 ? PKT_TX_IPV4 : PKT_TX_IPV6;
   ol_flags |= ip_cksum ? PKT_TX_IP_CKSUM : 0;
   ol_flags |= tcp_cksum ? PKT_TX_TCP_CKSUM : 0;
@@ -253,6 +270,7 @@ dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
 
   /* we are trying to help compiler here by using local ol_flags with known
      state of all flags */
+  //计算假头部的checksum
   if (xd->flags & DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM)
     rte_net_intel_cksum_flags_prepare (mb, ol_flags);
 }
@@ -262,12 +280,14 @@ dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
  * node. It first copies packets on the frame to a per-thread arrays
  * containing the rte_mbuf pointers.
  */
+//将报文f自rd->dev_instance对应的网口中扔出去
 VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
 					     vlib_node_runtime_t * node,
 					     vlib_frame_t * f)
 {
   dpdk_main_t *dm = &dpdk_main;
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
+  //获取对应的dpdk网口
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, rd->dev_instance);
   u32 n_packets = f->n_vectors;
   u32 n_left;
@@ -290,11 +310,13 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       n_left = n_packets;
       while (n_left > 0)
 	{
+      //自from中取出buffer的index，并依据index拿到buffer
 	  u32 bi0 = from[0];
 	  vlib_buffer_t *b0 = vlib_get_buffer (vm, bi0);
 	  if (dm->pcap[VLIB_TX].pcap_sw_if_index == 0 ||
 	      dm->pcap[VLIB_TX].pcap_sw_if_index
 	      == vnet_buffer (b0)->sw_if_index[VLIB_TX])
+	    //如果需要实现报文capture
 	    pcap_add_buffer (&dm->pcap[VLIB_TX].pcap_main, vm, bi0, 512);
 	  from++;
 	  n_left--;
@@ -310,15 +332,18 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
   n_left = n_packets;
   mb = ptd->mbufs;
 
+  //mbuf准备
   while (n_left >= 8)
     {
       u32 or_flags;
 
+      //报文预取
       dpdk_prefetch_buffer (vm, mb[4]);
       dpdk_prefetch_buffer (vm, mb[5]);
       dpdk_prefetch_buffer (vm, mb[6]);
       dpdk_prefetch_buffer (vm, mb[7]);
 
+      //buffer结构体获取
       b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
       b[1] = vlib_buffer_from_rte_mbuf (mb[1]);
       b[2] = vlib_buffer_from_rte_mbuf (mb[2]);
@@ -332,6 +357,7 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[2]);
       VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[3]);
 
+      //存在packet是next_buffer指针有效的，进行初始化，填充
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
 	  dpdk_validate_rte_mbuf (vm, b[0], 1);
@@ -347,6 +373,7 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
 	  dpdk_validate_rte_mbuf (vm, b[3], 0);
 	}
 
+      //开启了tx_offload功能，填充mbuf上的offload标记位
       if (PREDICT_FALSE ((xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD) &&
 			 (or_flags &
 			  (VNET_BUFFER_F_OFFLOAD_TCP_CKSUM
@@ -392,7 +419,8 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
     }
 
   /* transmit as many packets as possible */
-  tx_pkts = n_packets = mb - ptd->mbufs;
+  tx_pkts = n_packets = mb - ptd->mbufs;//需要传输的报文数
+  //完成报文传输，返回n_left个传输失败的报文
   n_left = tx_burst_vector_internal (vm, xd, ptd->mbufs, n_packets);
 
   {
@@ -403,15 +431,18 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
 	vlib_simple_counter_main_t *cm;
 	vnet_main_t *vnm = vnet_get_main ();
 
+	//取tx_error对应的counter
 	cm = vec_elt_at_index (vnm->interface_main.sw_if_counters,
 			       VNET_INTERFACE_COUNTER_TX_ERROR);
 
+	//tx_error统计
 	vlib_increment_simple_counter (cm, thread_index, xd->sw_if_index,
 				       n_left);
 
 	vlib_error_count (vm, node->node_index, DPDK_TX_FUNC_ERROR_PKT_DROP,
 			  n_left);
 
+	//将发送失败的报文free掉
 	while (n_left--)
 	  rte_pktmbuf_free (ptd->mbufs[n_packets - n_left - 1]);
       }
@@ -592,6 +623,7 @@ admin_up_down_process (vlib_main_t * vm,
 
   while (1)
     {
+      //如果此函数没有等到事件，则会继续等待，否则退出此函数向下执行
       vlib_process_wait_for_event (vm);
 
       event_type = vlib_process_get_events (vm, &event_data);
@@ -624,6 +656,7 @@ admin_up_down_process (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//dpdk网卡up,down处理
 VLIB_REGISTER_NODE (admin_up_down_process_node) = {
     .function = admin_up_down_process,
     .type = VLIB_NODE_TYPE_PROCESS,

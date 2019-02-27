@@ -567,9 +567,13 @@ do {									\
 */
 #define vec_add2_ha(V,P,N,H,A)							\
 do {										\
+    /*需要添加的元素数*/\
   word _v(n) = (N);								\
+  /*当前vector长度*/\
   word _v(l) = vec_len (V);							\
+  /*增加空间，使*/\
   V = _vec_resize ((V), _v(n), (_v(l) + _v(n)) * sizeof ((V)[0]), (H), (A));	\
+  /*使p指向新开辟的空间*/\
   P = (V) + _v(l);								\
 } while (0)
 
@@ -581,7 +585,7 @@ do {										\
     @param N number of elements to add
     @return V and P (value-result macro parameters)
 */
-
+//向V中添加元素P,共需要添加Ｎ个元素
 #define vec_add2(V,P,N)           vec_add2_ha(V,P,N,0,0)
 
 /** \brief Add N elements to end of vector V,

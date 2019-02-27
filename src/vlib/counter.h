@@ -56,6 +56,7 @@
 
 typedef struct
 {
+  //两维数据１，先按线程划分的counter[],２。然后按counter类别获得真实的counter
   counter_t **counters;	 /**< Per-thread u64 non-atomic counters */
   counter_t *value_at_last_serialize;	/**< Values as of last serialize. */
   u32 last_incremental_serialize_index;	/**< Last counter index
@@ -80,7 +81,9 @@ vlib_increment_simple_counter (vlib_simple_counter_main_t * cm,
 {
   counter_t *my_counters;
 
+  //取出指定线程对应的couters
   my_counters = cm->counters[thread_index];
+  //为其增加计数
   my_counters[index] += increment;
 }
 

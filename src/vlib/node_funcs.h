@@ -501,13 +501,16 @@ vlib_process_get_event_data (vlib_main_t * vm,
 
   /* Find first type with events ready.
      Return invalid type when there's nothing there. */
+  //提取首个被bit设置的位编号
   t = clib_bitmap_first_set (p->non_empty_event_type_bitmap);
   if (t == ~0)
     return 0;
 
+  //将t　bit位置为０
   p->non_empty_event_type_bitmap =
     clib_bitmap_andnoti (p->non_empty_event_type_bitmap, t);
 
+  //取t号事件对应的data
   ASSERT (_vec_len (p->pending_event_data_by_type_index[t]) > 0);
   event_data_vector = p->pending_event_data_by_type_index[t];
   p->pending_event_data_by_type_index[t] = 0;
@@ -627,6 +630,7 @@ vlib_process_wait_for_event (vlib_main_t * vm)
   p = vec_elt (nm->processes, nm->current_process_index);
   if (clib_bitmap_is_zero (p->non_empty_event_type_bitmap))
     {
+      //当bitmap为空时，跳到p->return_longjmp保存的位置运行。
       p->flags |= VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT;
       r =
 	clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
@@ -779,6 +783,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 
   ASSERT (n->type == VLIB_NODE_TYPE_PROCESS);
 
+  //指定位置的event一定存在
   ASSERT (!pool_is_free_index (p->event_type_pool, t));
 
   vec_validate (p->pending_event_data_by_type_index, t);
@@ -806,6 +811,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
     data_to_be_written_by_caller = data_vec + l * n_data_elt_bytes;
   }
 
+  //指明有事件发生
   p->non_empty_event_type_bitmap =
     clib_bitmap_ori (p->non_empty_event_type_bitmap, t);
 

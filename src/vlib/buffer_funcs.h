@@ -332,17 +332,21 @@ uword vlib_buffer_length_in_chain_slow_path (vlib_main_t * vm,
     @param b - (void *) buffer pointer
     @return - (uword) length of buffer chain
 */
+//返回报文总长度
 always_inline uword
 vlib_buffer_length_in_chain (vlib_main_t * vm, vlib_buffer_t * b)
 {
   uword len = b->current_length;
 
+  //仅有一片，next无效，则直接返回报文长度
   if (PREDICT_TRUE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0))
     return len;
 
+  //如果total_length_valid标记有效，则加下剩余其它片的报文长度
   if (PREDICT_TRUE (b->flags & VLIB_BUFFER_TOTAL_LENGTH_VALID))
     return len + b->total_length_not_including_first_buffer;
 
+  //需要计算其它片的长度
   return vlib_buffer_length_in_chain_slow_path (vm, b);
 }
 

@@ -72,7 +72,9 @@
  */
 #define foreach_vlib_buffer_flag \
   _( 0, IS_TRACED, 0)					\
+  /*标记是否有next是否有效*/\
   _( 1, NEXT_PRESENT, 0)				\
+  /*如果报文total length valid标记有效，则total_length_not_including_first_buffer记录有效*/\
   _( 2, TOTAL_LENGTH_VALID, 0)				\
   _( 3, EXT_HDR_VALID, "ext-hdr-valid")
 
@@ -138,7 +140,7 @@ typedef union
 
     /** Next buffer for this linked-list of buffers. Only valid if
       * VLIB_BUFFER_NEXT_PRESENT flag is set. */
-    u32 next_buffer;
+    u32 next_buffer;//指向next buffer,由标记指明其值是否有效
 
     /** Used by feature subgraph arcs to visit enabled feature nodes */
     u32 current_config_index;

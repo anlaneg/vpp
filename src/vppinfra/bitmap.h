@@ -53,6 +53,7 @@ typedef uword clib_bitmap_t;
     @param ai - pointer to a bitmap
     @returns 1 if the entire bitmap is zero, 0 otherwise
 */
+//检查ai所对应的bitmap是否整个为空
 always_inline uword
 clib_bitmap_is_zero (uword * ai)
 {
@@ -109,6 +110,7 @@ clib_bitmap_is_equal (uword * a, uword * b)
 #define clib_bitmap_alloc(v,n_bits) \
   v = vec_new (uword, ((n_bits) + BITS (uword) - 1) / BITS (uword))
 
+//确保vector足够长，大于i
 #define clib_bitmap_vec_validate(v,i) vec_validate_aligned((v),(i),sizeof(uword))
 
 /* Make sure that a bitmap is at least n_bits in size */
@@ -599,13 +601,17 @@ _(xor);
 always_inline uword *					\
 clib_bitmap_##name (uword * ai, uword i)		\
 {							\
+    /*取bitmap对应索引*/\
   uword i0 = i / BITS (ai[0]);				\
+  /*取bitmap对应的位置*/\
   uword i1 = i % BITS (ai[0]);				\
   uword a, b;						\
   clib_bitmap_vec_validate (ai, i0);			\
   a = ai[i0];						\
   b = (uword) 1 << i1;					\
+  /*针对a,b做相应的操作，将结果存入到a中*/\
   do { body; } while (0);				\
+  /*设置操作后结果*/\
   ai[i0] = a;						\
   if (check_zero && a == 0)				\
     ai = _clib_bitmap_remove_trailing_zeros (ai);	\
@@ -614,9 +620,13 @@ clib_bitmap_##name (uword * ai, uword i)		\
 
 /* ALU functions immediate: */
 /* *INDENT-OFF* */
+  //检查指定位是否为１
 _(andi, a = a & b, 1)
+//将指定位清为０
 _(andnoti, a = a & ~b, 1)
+//将指定位设置为１
 _(ori, a = a | b, 0)
+//将指定位取反
 _(xori, a = a ^ b, 1)
 /* *INDENT-ON* */
 #undef _

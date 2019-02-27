@@ -162,13 +162,13 @@ typedef struct
   char *file_name;
 
   /** Number of packets to capture. */
-  u32 n_packets_to_capture;
+  u32 n_packets_to_capture;//需要capture的报文数
 
   /** Packet type */
   pcap_packet_type_t packet_type;
 
   /** Number of packets currently captured. */
-  u32 n_packets_captured;
+  u32 n_packets_captured;//当前已capture的报文数
 
   /** flags */
   u32 flags;
@@ -181,7 +181,7 @@ typedef struct
   u32 n_pcap_data_written;
 
   /** Vector of pcap data. */
-  u8 *pcap_data;
+  u8 *pcap_data;//记录capture的报文
 
   /** Packets read from file. */
   u8 **packets_read;

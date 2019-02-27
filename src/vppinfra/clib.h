@@ -269,6 +269,7 @@ first_set (uword x)
   return x & -x;
 }
 
+//取x中第一个bit为１的bit位数
 always_inline uword
 log2_first_set (uword x)
 {

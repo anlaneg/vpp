@@ -568,7 +568,7 @@ typedef struct
 typedef struct
 {
   /* Node runtime for this process. */
-  vlib_node_runtime_t node_runtime;
+  vlib_node_runtime_t node_runtime;//对应的node
 
   /* Where to longjmp when process is done. */
   clib_longjmp_t return_longjmp;

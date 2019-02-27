@@ -35,6 +35,7 @@
   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
+//定义cdecl宏
 #if defined(__APPLE__)
 # define cdecl(s) _##s
 #else
@@ -48,7 +49,10 @@
 	.type cdecl(clib_setjmp), @function
 #endif
 
+//定义x86_64的setjmp
 cdecl(clib_setjmp):
+　　　　//保存rbx,rbp,r12,r13,r14,r15　64位寄存器到rdi指向的数组中
+	//RDI寄存器一般用于是指向数据的指针
 	movq %rbx, 8*0(%rdi)
 	movq %rbp, 8*1(%rdi)
 	movq %r12, 8*2(%rdi)
@@ -68,12 +72,14 @@ cdecl(clib_setjmp):
 	movq %rsi, %rax
 	ret
 	
+//定义x86_64的logjmp
 	.global cdecl(clib_longjmp)
 	.align 4
 #ifndef __APPLE__
 	.type cdecl(clib_longjmp), @function
 #endif
-cdecl(clib_longjmp):	
+cdecl(clib_longjmp):
+　　　　//将保存在rdi寄存器指向的数据还原到相应寄存器
         /* Restore regs. */
 	movq 8*0(%rdi), %rbx
 	movq 8*1(%rdi), %rbp
@@ -90,6 +96,7 @@ cdecl(clib_longjmp):
 	/* Away we go. */
 	jmpq *%rdx	
 	
+//定义x86_64的clib_calljmp
 	.global cdecl(clib_calljmp)
 	.align 4
 #ifndef __APPLE__

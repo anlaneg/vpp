@@ -166,6 +166,7 @@ typedef struct
   _( 7, BOND_SLAVE, "bond-slave") \
   _( 8, BOND_SLAVE_UP, "bond-slave-up") \
   _( 9, TX_OFFLOAD, "tx-offload") \
+  /*需要帮助计算内层udp,tcp　checksum的假头部checksum*/\
   _(10, INTEL_PHDR_CKSUM, "intel-phdr-cksum") \
   _(11, RX_FLOW_OFFLOAD, "rx-flow-offload") \
   _(12, RX_IP4_CKSUM, "rx-ip4-cksum")
@@ -197,10 +198,10 @@ typedef struct
   volatile u32 **lockp;
 
   /* Instance ID to access internal device array. */
-  dpdk_portid_t device_index;
+  dpdk_portid_t device_index;//内部数组索引（用于找出设备）
 
   /* DPDK device port number */
-  dpdk_portid_t port_id;
+  dpdk_portid_t port_id;//dpdk的port_id
 
   u32 hw_if_index;
   u32 sw_if_index;

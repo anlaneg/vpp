@@ -1521,6 +1521,7 @@ dispatch_process (vlib_main_t * vm,
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_runtime_t *node_runtime = &p->node_runtime;
+  //获得process对应的node
   vlib_node_t *node = vlib_get_node (vm, node_runtime->node_index);
   u32 old_process_index;
   u64 t;
@@ -1531,6 +1532,7 @@ dispatch_process (vlib_main_t * vm,
 		      | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT)))
     return last_time_stamp;
 
+  //指明node处于running状态
   p->flags |= VLIB_PROCESS_IS_RUNNING;
 
   t = last_time_stamp;
@@ -1697,6 +1699,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   /* Initialize pending node vector. */
   if (is_main)
     {
+      //初始化pending_frames
       vec_resize (nm->pending_frames, 32);
       _vec_len (nm->pending_frames) = 0;
     }
@@ -1708,6 +1711,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       vm->cpu_time_main_loop_start = cpu_time_now;
     }
   else
+    //取当前时间
     cpu_time_now = clib_cpu_time_now ();
 
   /* Pre-allocate interupt runtime indices and lock. */

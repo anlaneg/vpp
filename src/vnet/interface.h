@@ -289,11 +289,14 @@ static __clib_unused vnet_device_class_t __clib_unused_##x
 #endif
 
 #define VNET_DEVICE_CLASS_TX_FN(devclass)				\
+    /*申明tx function*/\
 uword CLIB_MARCH_SFX (devclass##_tx_fn)();				\
+    /*初始化node_fn_registration注册tx function*/\
 static vlib_node_fn_registration_t					\
   CLIB_MARCH_SFX(devclass##_tx_fn_registration) =			\
   { .function = &CLIB_MARCH_SFX (devclass##_tx_fn), };			\
 									\
+/*将node_fun_register变量注册给devclass.tx_fun_registrations*/\
 static void __clib_constructor						\
 CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
 {									\
@@ -304,6 +307,7 @@ CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
   r->next_registration = devclass.tx_fn_registrations;			\
   devclass.tx_fn_registrations = r;					\
 }									\
+/*开始定义 tx function*/\
 uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (devclass##_tx_fn)
 
 /* FIXME to be removed */

@@ -69,13 +69,18 @@ vlib_buffer_length_in_chain_slow_path (vlib_main_t * vm,
   vlib_buffer_t *b = b_first;
   uword l_first = b_first->current_length;
   uword l = 0;
+  //如果有next，则先计算后面各片的总大小
   while (b->flags & VLIB_BUFFER_NEXT_PRESENT)
     {
       b = vlib_get_buffer (vm, b->next_buffer);
       l += b->current_length;
     }
+
+  //为b_first打上total_length_valid标记，并指明除首片外报文长度
   b_first->total_length_not_including_first_buffer = l;
   b_first->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
+
+  //返回报文总长度
   return l + l_first;
 }
 

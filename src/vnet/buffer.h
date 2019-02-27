@@ -54,10 +54,15 @@
   _( 5, SPAN_CLONE, "span-clone", 1)                    \
   _( 6, LOOP_COUNTER_VALID, "loop-counter-valid", 0)    \
   _( 7, LOCALLY_ORIGINATED, "local", 1)                 \
+  /*是否为ipv4报文*/\
   _( 8, IS_IP4, "ip4", 1)                               \
+  /*是否为ipv6报文*/\
   _( 9, IS_IP6, "ip6", 1)                               \
+  /*是否offload ip层checksum*/\
   _(10, OFFLOAD_IP_CKSUM, "offload-ip-cksum", 1)        \
+  /*是否offload tcp层checksum*/\
   _(11, OFFLOAD_TCP_CKSUM, "offload-tcp-cksum", 1)      \
+  /*是否offload udp层checksum*/\
   _(12, OFFLOAD_UDP_CKSUM, "offload-udp-cksum", 1)      \
   _(13, IS_NATED, "natted", 1)                          \
   _(14, L2_HDR_OFFSET_VALID, "l2_hdr_offset_valid", 0)  \
@@ -135,7 +140,7 @@ typedef struct
 {
   u32 sw_if_index[VLIB_N_RX_TX];//报文的入出接口
   i16 l2_hdr_offset;
-  i16 l3_hdr_offset;
+  i16 l3_hdr_offset;//到l3头的offset
   i16 l4_hdr_offset;
   u8 feature_arc_index;
   u8 dont_waste_me;
