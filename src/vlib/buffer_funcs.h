@@ -591,7 +591,7 @@ vlib_buffer_alloc_on_numa (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
     @return - (u32) number of buffers actually allocated, may be
     less than the number requested or zero
 */
-
+//申请n_buffers个buffer,并将其保存在buffers中
 always_inline u32
 vlib_buffer_alloc (vlib_main_t * vm, u32 * buffers, u32 n_buffers)
 {
@@ -1221,7 +1221,7 @@ format_function_t format_vlib_buffer, format_vlib_buffer_and_data,
 typedef struct
 {
   /* Vector of packet data. */
-  u8 *packet_data;
+  u8 *packet_data;//报文数据
 
   /* Number of buffers to allocate in each call to allocator. */
   u32 min_n_buffers_each_alloc;

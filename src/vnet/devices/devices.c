@@ -143,6 +143,8 @@ vnet_hw_interface_assign_rx_thread (vnet_main_t * vnm, u32 hw_if_index,
   vlib_main_t *vm, *vm0;
   vnet_device_input_runtime_t *rt;
   vnet_device_and_queue_t *dq;
+
+  //通过index获取硬件接口
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
 
   ASSERT (hw->input_node_index > 0);

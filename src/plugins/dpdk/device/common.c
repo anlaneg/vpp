@@ -71,6 +71,7 @@ dpdk_device_setup (dpdk_device_t * xd)
 	xd->port_conf.fdir_conf.mode = RTE_FDIR_MODE_NONE;
     }
 
+  //取设备统计信息
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
   bitmap = xd->port_conf.txmode.offloads & ~dev_info.tx_offload_capa;
@@ -215,6 +216,7 @@ dpdk_device_start (dpdk_device_t * xd)
 		 format_dpdk_device_name, xd->port_id);
 }
 
+//停止dpdk设备
 void
 dpdk_device_stop (dpdk_device_t * xd)
 {
@@ -266,8 +268,10 @@ send_garp_na_process (vlib_main_t * vm,
 	  dpdk_port = event_data[i];
 	  if (i < 5)		/* wait 0.2 sec for link to settle, max total 1 sec */
 	    vlib_process_suspend (vm, 0.2);
+	  //获得需要发送免费arp的接口
 	  dpdk_device_t *xd = &dpdk_main.devices[dpdk_port];
 	  dpdk_update_link_state (xd, vlib_time_now (vm));
+	  //发送ipv4的免费arp
 	  send_ip4_garp (vm, xd->sw_if_index);
 	  send_ip6_na (vm, xd->sw_if_index);
 	}

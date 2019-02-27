@@ -178,7 +178,7 @@ static __clib_unused void * __clib_unused_##f = f;
 typedef struct _vnet_device_class
 {
   /* Index into main vector. */
-  u32 index;
+  u32 index;//其在device_classes中的索引号
 
   /* Device name (e.g. "FOOBAR 1234a"). */
   char *name;
@@ -205,7 +205,7 @@ typedef struct _vnet_device_class
   vlib_node_function_t *tx_function;//接口发包函数
 
   /* Transmit function candidate registration with priority */
-  vlib_node_fn_registration_t *tx_fn_registrations;
+  vlib_node_fn_registration_t *tx_fn_registrations;//注册的发包函数
 
   /* Error strings indexed by error code for this node. */
   char **tx_function_error_strings;
@@ -506,7 +506,7 @@ typedef struct vnet_hw_interface_t
 
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
-  u8 *hw_address;
+  u8 *hw_address;//设备mac地址
 
   /* Interface is up as far as software is concerned. */
   /* NAME.{output,tx} nodes for this interface. */
@@ -805,14 +805,14 @@ typedef struct
 typedef struct
 {
   /* Hardware interfaces. */
-  vnet_hw_interface_t *hw_interfaces;
+  vnet_hw_interface_t *hw_interfaces;//硬件接口表
 
   /* Hash table mapping HW interface name to index. */
   uword *hw_interface_by_name;
 
   /* Vectors if hardware interface classes and device classes. */
   vnet_hw_interface_class_t *hw_interface_classes;
-  vnet_device_class_t *device_classes;
+  vnet_device_class_t *device_classes;//注册设备可发送报文类型
 
   /* Hash table mapping name to hw interface/device class. */
   uword *hw_interface_class_by_name;

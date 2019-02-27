@@ -373,6 +373,7 @@ vlib_packet_template_init (vlib_main_t * vm,
   vlib_worker_thread_barrier_release (vm);
 }
 
+//申请一个buffer,并自template中复制buffer内容，返回填充好的buffer
 void *
 vlib_packet_template_get_packet (vlib_main_t * vm,
 				 vlib_packet_template_t * t, u32 * bi_result)
@@ -380,12 +381,16 @@ vlib_packet_template_get_packet (vlib_main_t * vm,
   u32 bi;
   vlib_buffer_t *b;
 
+  //申请一个buffer index
   if (vlib_buffer_alloc (vm, &bi, 1) != 1)
     return 0;
 
   *bi_result = bi;
 
+  //由buffer index转换为buffer
   b = vlib_get_buffer (vm, bi);
+
+  //将template中的数据填充到b中
   clib_memcpy_fast (vlib_buffer_get_current (b),
 		    t->packet_data, vec_len (t->packet_data));
   b->current_length = vec_len (t->packet_data);

@@ -40,6 +40,7 @@
 #ifndef included_vnet_interface_funcs_h
 #define included_vnet_interface_funcs_h
 
+//通过索引获取指定硬件接口
 always_inline vnet_hw_interface_t *
 vnet_get_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
 {
