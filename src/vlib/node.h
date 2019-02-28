@@ -573,6 +573,7 @@ typedef struct
   /* Where to longjmp when process is done. */
   clib_longjmp_t return_longjmp;
 
+//返回此值时继续调用function
 #define VLIB_PROCESS_RETURN_LONGJMP_RETURN ((uword) ~0 - 0)
 #define VLIB_PROCESS_RETURN_LONGJMP_SUSPEND ((uword) ~0 - 1)
 

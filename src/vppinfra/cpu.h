@@ -152,6 +152,7 @@ _ (asimddp,    20) \
 _ (sha512,     21) \
 _ (sve,        22)
 
+//获取cpu_id
 static inline u32
 clib_get_current_cpu_id ()
 {
@@ -160,6 +161,7 @@ clib_get_current_cpu_id ()
   return cpu;
 }
 
+//获取numa_node
 static inline u32
 clib_get_current_numa_node ()
 {

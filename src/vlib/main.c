@@ -1497,7 +1497,7 @@ vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
   //记录跳转点
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
-      //调用bootstrap函数，完成node的function调用
+      //调用bootstrap函数，完成node的function调用，调用完成后，以ret返回到setjmp
     r = clib_calljmp (vlib_process_bootstrap, pointer_to_uword (&a),
 		      (void *) p->stack + (1 << p->log2_n_stack_bytes));
 
@@ -1728,6 +1728,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   if (!nm->interrupt_threshold_vector_length)
     nm->interrupt_threshold_vector_length = 5;
 
+  //获取cpu_id,numa_node
   vm->cpu_id = clib_get_current_cpu_id ();
   vm->numa_node = clib_get_current_numa_node ();
 
