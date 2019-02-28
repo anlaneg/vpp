@@ -3129,6 +3129,7 @@ unix_cli_exec (vlib_main_t * vm,
   fd = -1;
   error = 0;
 
+  //解析文件名称
   if (!unformat (input, "%s", &file_name))
     {
       error = clib_error_return (0, "expecting file name, got `%U'",
@@ -3136,6 +3137,7 @@ unix_cli_exec (vlib_main_t * vm,
       goto done;
     }
 
+  //打开文件名称
   fd = open (file_name, O_RDONLY);
   if (fd < 0)
     {
@@ -3153,6 +3155,7 @@ unix_cli_exec (vlib_main_t * vm,
 	goto done;
       }
 
+    //必须为规则文件
     if (!(S_ISREG (s.st_mode) || S_ISLNK (s.st_mode)))
       {
 	error = clib_error_return (0, "not a regular file `%s'", file_name);
@@ -3160,8 +3163,10 @@ unix_cli_exec (vlib_main_t * vm,
       }
   }
 
+  //初始化sub_input，使其不足时，自fd中读取数据
   unformat_init_clib_file (&sub_input, fd);
 
+  //传给cli执行命令行
   vlib_cli_input (vm, &sub_input, 0, 0);
   unformat_free (&sub_input);
 

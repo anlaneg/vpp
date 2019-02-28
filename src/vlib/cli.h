@@ -49,14 +49,15 @@ typedef struct
   u32 min_char;
 
   /* Indexed by name[position] - min_char. */
-  uword **bitmaps;
+  //得到的索引即自sub_commands中获得sub_command
+  uword **bitmaps;//按位置索引sub_command(位置由sub命令字减去min_char获得）
 } vlib_cli_parse_position_t;
 
 typedef struct
 {
-  u8 *name;
+  u8 *name;//子命令名称
 
-  u32 index;
+  u32 index;//子命令索引
 } vlib_cli_sub_command_t;
 
 typedef struct
@@ -93,7 +94,7 @@ typedef struct vlib_cli_command_t
 {
   /* Command path (e.g. "show something").
      Spaces delimit elements of path. */
-  char *path;//命令行
+  char *path;//规范后的命令行
 
   /* Short/long help strings. */
   char *short_help;//短的帮助信息
@@ -109,14 +110,14 @@ typedef struct vlib_cli_command_t
   uword is_mp_safe;
 
   /* Sub commands for this command. */
-  vlib_cli_sub_command_t *sub_commands;
+  vlib_cli_sub_command_t *sub_commands;//此命令的子命令
 
   /* Hash table mapping name (e.g. last path element) to sub command index. */
-  uword *sub_command_index_by_name;
+  uword *sub_command_index_by_name;//按名称映射子命令的索引号
 
   /* bitmap[p][c][i] says whether sub-command i has character
      c in position p. */
-  vlib_cli_parse_position_t *sub_command_positions;
+  vlib_cli_parse_position_t *sub_command_positions;//按sub_command中的每个字符串进行索引parse_position
 
   /* Hash table mapping name (e.g. last path element) to sub rule index. */
   uword *sub_rule_index_by_name;
@@ -134,10 +135,10 @@ typedef void (vlib_cli_output_function_t) (uword arg,
 typedef struct
 {
   /* Vector of all known commands. */
-  vlib_cli_command_t *commands;
+  vlib_cli_command_t *commands;//保存所有的command(０号位置存放根command)
 
   /* Hash table mapping normalized path to index into all_commands. */
-  uword *command_index_by_path;
+  uword *command_index_by_path;//存储命令行对应的字符串（通过名称索引index,用于映射command)
 
   /* Vector of all known parse rules. */
   vlib_cli_parse_rule_t *parse_rules;

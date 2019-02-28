@@ -51,7 +51,7 @@
 
 //定义x86_64的setjmp
 cdecl(clib_setjmp):
-　　　　//保存rbx,rbp,r12,r13,r14,r15　64位寄存器到rdi指向的数组中
+        //保存rbx,rbp,r12,r13,r14,r15　64位寄存器到rdi指向的数组中
 	//RDI寄存器一般用于是指向数据的指针
 	movq %rbx, 8*0(%rdi)
 	movq %rbp, 8*1(%rdi)
@@ -79,7 +79,7 @@ cdecl(clib_setjmp):
 	.type cdecl(clib_longjmp), @function
 #endif
 cdecl(clib_longjmp):
-　　　　//将保存在rdi寄存器指向的数据还原到相应寄存器
+        //将保存在rdi寄存器指向的数据还原到相应寄存器
         /* Restore regs. */
 	movq 8*0(%rdi), %rbx
 	movq 8*1(%rdi), %rbp

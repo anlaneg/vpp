@@ -468,6 +468,7 @@ clib_bitmap_first_clear (uword * ai)
     @param ai - pointer to the bitmap
     @returns the number of set bits in the bitmap
 */
+//返回bitmap中bits数目
 always_inline uword
 clib_bitmap_count_set_bits (uword * ai)
 {

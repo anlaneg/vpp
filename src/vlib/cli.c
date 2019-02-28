@@ -77,6 +77,7 @@ VLIB_CLI_COMMAND (vlib_cli_test_command, static) = {
 /* *INDENT-ON* */
 
 /* Returns bitmap of commands which match key. */
+//检查input中的token,进行匹配，获得匹配的match bitmap
 static uword *
 vlib_cli_sub_command_match (vlib_cli_command_t * c, unformat_input_t * input)
 {
@@ -98,18 +99,20 @@ vlib_cli_sub_command_match (vlib_cli_command_t * c, unformat_input_t * input)
 	case '0' ... '9':
 	case '-':
 	case '_':
-	  break;
+	  break;//遇到字符串
 
 	case ' ':
 	case '\t':
 	case '\r':
 	case '\n':
-	case UNFORMAT_END_OF_INPUT:
+	case UNFORMAT_END_OF_INPUT://遇到token分隔符
 	  /* White space or end of input removes any non-white
 	     matches that were before possible. */
 	  if (i < vec_len (c->sub_command_positions)
 	      && clib_bitmap_count_set_bits (match) > 1)
 	    {
+	      //i小于c->sub_command_positions时，且match中有大于１的值标记值
+	      //则匹配第i个元素，检查是否是对应的sub_command
 	      p = vec_elt_at_index (c->sub_command_positions, i);
 	      for (n = 0; n < vec_len (p->bitmaps); n++)
 		match = clib_bitmap_andnot (match, p->bitmaps[n]);
@@ -117,10 +120,12 @@ vlib_cli_sub_command_match (vlib_cli_command_t * c, unformat_input_t * input)
 	  goto done;
 
 	default:
+	    //其它字符，回退
 	  unformat_put_input (input);
 	  goto done;
 	}
 
+      //如果i超过sub_command_positions，则不可能为其它所有sub_command，故直接退出０
       if (i >= vec_len (c->sub_command_positions))
 	{
 	no_match:
@@ -128,23 +133,28 @@ vlib_cli_sub_command_match (vlib_cli_command_t * c, unformat_input_t * input)
 	  return 0;
 	}
 
+      //取相应的parse_position,如果此对应的bitmaps长度为０，则也不匹配
       p = vec_elt_at_index (c->sub_command_positions, i);
       if (vec_len (p->bitmaps) == 0)
 	goto no_match;
 
+      //按k计算hashcode,并检查，如果n大于p->bitmaps的长度，则也不匹配
       n = k - p->min_char;
       if (n < 0 || n >= vec_len (p->bitmaps))
 	goto no_match;
 
+      //取对应的bitmaps（如果为０，则直接duplicate,否则直接与了之后获得结果）
       if (i == 0)
 	match = clib_bitmap_dup (p->bitmaps[n]);
       else
 	match = clib_bitmap_and (match, p->bitmaps[n]);
 
+      //如果match中已为０，则也不匹配
       if (clib_bitmap_is_zero (match))
 	goto no_match;
     }
 
+  //匹配成功，返回匹配的bitmap
 done:
   return match;
 }
@@ -196,6 +206,7 @@ get_sub_command (vlib_cli_main_t * cm, vlib_cli_command_t * parent, u32 si)
 static uword
 unformat_vlib_cli_sub_command (unformat_input_t * i, va_list * args)
 {
+
   vlib_main_t *vm = va_arg (*args, vlib_main_t *);
   vlib_cli_command_t *c = va_arg (*args, vlib_cli_command_t *);
   vlib_cli_command_t **result = va_arg (*args, vlib_cli_command_t **);
@@ -205,10 +216,13 @@ unformat_vlib_cli_sub_command (unformat_input_t * i, va_list * args)
   {
     vlib_cli_sub_rule_t *sr;
     vlib_cli_parse_rule_t *r;
+    //遍历sub_rules，如果解析成功，返回sr
     vec_foreach (sr, c->sub_rules)
     {
       void **d;
       r = vec_elt_at_index (cm->parse_rules, sr->rule_index);
+
+      //扩展d缓存，采用r->unformat_function来解析它，并将结果存入到d「０」中
       vec_add2 (cm->parse_rule_data, d, 1);
       vec_reset_length (d[0]);
       if (r->data_size)
@@ -225,11 +239,13 @@ unformat_vlib_cli_sub_command (unformat_input_t * i, va_list * args)
     }
   }
 
+  //通过input获得match_bitmap
   match_bitmap = vlib_cli_sub_command_match (c, i);
   is_unique = clib_bitmap_count_set_bits (match_bitmap) == 1;
   index = ~0;
   if (is_unique)
     {
+      //是唯一匹配，取匹配的sub_command,返回对应的command
       index = clib_bitmap_first_set (match_bitmap);
       *result = get_sub_command (cm, c, index);
     }
@@ -286,22 +302,27 @@ vlib_cli_get_possible_completions (u8 * str)
 
   while (1)
     {
+      //解析input中当前位置的token
       match_bitmap = vlib_cli_sub_command_match (c, &input);
       /* no match: return no result */
       if (match_bitmap == 0)
 	{
-	  goto done;
+	  goto done;//没有匹配
 	}
+
+      //是否唯一的match
       is_unique = clib_bitmap_count_set_bits (match_bitmap) == 1;
       /* unique match: try to step one subcommand level further */
       if (is_unique)
 	{
 	  /* stop if no more input */
+          //没有其它input,跳出
 	  if (input.index >= vec_len (input.buffer) - 1)
 	    {
 	      break;
 	    }
 
+	  //使用command获得sub_command
 	  index = clib_bitmap_first_set (match_bitmap);
 	  c = get_sub_command (vcm, c, index);
 	  clib_bitmap_free (match_bitmap);
@@ -451,20 +472,24 @@ vlib_cli_dispatch_sub_commands (vlib_main_t * vm,
 
   //取出父命令
   parent = vec_elt_at_index (cm->commands, parent_command_index);
+  //如果是主dispatch,且输入为help,则显示所有支持的命令
   if (is_main_dispatch && unformat (input, "help"))
     {
       uword help_at_end_of_line, i;
 
+      //help是否在input结尾处
       help_at_end_of_line =
 	unformat_check_input (input) == UNFORMAT_END_OF_INPUT;
       while (1)
 	{
 	  c = parent;
+	  //获取下一级command,如果匹配上，则继续循环
 	  if (unformat_user
 	      (input, unformat_vlib_cli_sub_command, vm, c, &parent))
 	    ;
 
 	  else if (!(unformat_check_input (input) == UNFORMAT_END_OF_INPUT))
+	      //如果未达到input结束，则遇着了不认识的command
 	    goto unknown;
 
 	  else
@@ -704,14 +729,17 @@ vlib_cli_input (vlib_main_t * vm,
 
   do
     {
+      //将parse_rule_data置为空。
       vec_reset_length (cm->parse_rule_data);
       error = vlib_cli_dispatch_sub_commands (vm, &vm->cli_main, input,	/* parent */
-					      0);
+					      0/*父命令索引为０*/);
     }
+  //如果输入未达到结尾，则继续执行命令
   while (!error && !unformat (input, "%U", unformat_eof));
 
   if (error)
     {
+      //输出错误日志
       vlib_cli_output (vm, "%v", error->what);
       vlib_unix_error_report (vm, error);
       clib_error_free (error);
@@ -1122,19 +1150,20 @@ parent_path_len (char *path)
 }
 
 static void
-add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
+add_sub_command (vlib_cli_main_t * cm, uword parent_index/*父命令索引*/, uword child_index/*子命令索引*/)
 {
   vlib_cli_command_t *p, *c;
   vlib_cli_sub_command_t *sub_c;
   u8 *sub_name;
   word i, l;
 
+  //提取父命令，子命令
   p = vec_elt_at_index (cm->commands, parent_index);
   c = vec_elt_at_index (cm->commands, child_index);
 
   l = parent_path_len (c->path);
   if (l == ~0)
-	  //单命令字，复制其
+	//父命令为root command,单命令字，则sub_name为其自身
     sub_name = vec_dup ((u8 *) c->path);
   else
     {
@@ -1142,9 +1171,11 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
 	  //将“interface”加入到vector sub_name中,做为其一个元素
       ASSERT (l + 1 < vec_len (c->path));
       sub_name = 0;
-      vec_add (sub_name, c->path + l + 1, vec_len (c->path) - (l + 1));
+      //sub为_name其后面的值
+      vec_add (sub_name, c->path + l + 1/*加１跳过空格*/, vec_len (c->path) - (l + 1));
     }
 
+  //子命令是%开头，
   if (sub_name[0] == '%')
     {
       uword *q;
@@ -1160,6 +1191,7 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
       q = hash_get_mem (p->sub_rule_index_by_name, sub_name);
       if (q)
 	{
+      //已存在，退出
 	  sr = vec_elt_at_index (p->sub_rules, q[0]);
 	  ASSERT (sr->command_index == child_index);
 	  return;
@@ -1168,11 +1200,13 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
       q = hash_get_mem (cm->parse_rule_index_by_name, sub_name);
       if (!q)
 	{
+      //查不到q，报错退出
 	  clib_error ("reference to unknown rule `%%%v' in path `%v'",
 		      sub_name, c->path);
 	  return;
 	}
 
+      //????
       hash_set_mem (p->sub_rule_index_by_name, sub_name,
 		    vec_len (p->sub_rules));
       vec_add2 (p->sub_rules, sr, 1);
@@ -1182,14 +1216,17 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
       return;
     }
 
+  //如果父command未创建按sub_name查找子command的hash，则创建它
   if (!p->sub_command_index_by_name)
     p->sub_command_index_by_name = hash_create_vec ( /* initial length */ 32,
 						    sizeof (c->path[0]),
 						    sizeof (uword));
 
   /* Check if sub-command has already been created. */
+  //检查子命令是否已存在
   if (hash_get_mem (p->sub_command_index_by_name, sub_name))
     {
+      //已存在，直接返回
       vec_free (sub_name);
       return;
     }
@@ -1199,8 +1236,10 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
   sub_c->index = child_index;
   sub_c->name = sub_name;
   hash_set_mem (p->sub_command_index_by_name, sub_c->name,
-		sub_c - p->sub_commands);
+		sub_c - p->sub_commands);//加入子命令索引
 
+  //遍历每个sub_c->name中的字符，取parent中的sub_command_positions中对应的pos
+  //针对每个字符减去pos->min_char后，将其映射到pos->bitmaps[n]中
   vec_validate (p->sub_command_positions, vec_len (sub_c->name) - 1);
   for (i = 0; i < vec_len (sub_c->name); i++)
     {
@@ -1209,23 +1248,30 @@ add_sub_command (vlib_cli_main_t * cm, uword parent_index, uword child_index)
 
       pos = vec_elt_at_index (p->sub_command_positions, i);
 
+      //如果pos->bitmaps未初始化，则置pos->min_char为当前的name[i]
       if (!pos->bitmaps)
 	pos->min_char = sub_c->name[i];
 
+      //算个差值
       n = sub_c->name[i] - pos->min_char;
       if (n < 0)
 	{
+      //min_char较大，更新其为sub_c->name[i]
 	  pos->min_char = sub_c->name[i];
+	  //由于我们更改了pos->min_char,故其它已添加的bitmap中均需要增加-n，故在
+	  //vector上的自０号位置开始插入-n个bitmaps
 	  vec_insert (pos->bitmaps, -n, 0);
 	  n = 0;
 	}
 
+      //确保pos->bitmaps长度为n,记录sub_c的索引到pos->bitmaps
       vec_validate (pos->bitmaps, n);
       pos->bitmaps[n] =
 	clib_bitmap_ori (pos->bitmaps[n], sub_c - p->sub_commands);
     }
 }
 
+//构造ci对应的parent
 static void
 vlib_cli_make_parent (vlib_cli_main_t * cm, uword ci)
 {
@@ -1238,6 +1284,7 @@ vlib_cli_make_parent (vlib_cli_main_t * cm, uword ci)
 
   //取出命令索引(ci)指明的command
   c = vec_elt_at_index (cm->commands, ci);
+
   //取出其父命令的长度
   p_len = parent_path_len (c->path);
 
@@ -1245,19 +1292,23 @@ vlib_cli_make_parent (vlib_cli_main_t * cm, uword ci)
   //如果为~0,则此条命令是一个单命令，例如"exit"
   if (p_len == ~0)
     {
+      //如果命令是单命令，则其父command为0,即root command
       add_sub_command (cm, 0, ci);
       return;
     }
 
+  //设置父command中的path
   p_path = 0;
   vec_add (p_path, c->path, p_len);
 
+  //查找父command对应的index
   p = hash_get_mem (cm->command_index_by_path, p_path);
 
   /* Parent exists? */
   if (!p)
     {
       /* Parent does not exist; create it. */
+      //父command不存在，创建它（置为空的）
       vec_add2 (cm->commands, parent, 1);
       parent->path = p_path;
       hash_set_mem (cm->command_index_by_path, parent->path,
@@ -1266,17 +1317,21 @@ vlib_cli_make_parent (vlib_cli_main_t * cm, uword ci)
     }
   else
     {
+      //已存在，取其对应的索引
       pi = p[0];
       vec_free (p_path);
     }
 
+  //找到了父节点的索引，将其加入
   add_sub_command (cm, pi, ci);
 
   /* Create parent's parent. */
   if (!p)
+    //我们刚才创建了parent，现在创建parent的parent
     vlib_cli_make_parent (cm, pi);
 }
 
+//检查command是否为空
 always_inline uword
 vlib_cli_command_is_empty (vlib_cli_command_t * c)
 {
@@ -1298,6 +1353,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
     return error;
 
   //将c->path规范化处理成normalized_path
+  //将command　token间的空格缩减成一个
   (void) vlib_cli_normalize_path (c->path, &normalized_path);
 
   //如果hash表未创建，则创建hash表（用于存储command)
@@ -1307,10 +1363,11 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
 						 sizeof (uword));
 
   /* See if command already exists with given path. */
-  //检查command是否已存在
+  //按命令行索引，检查command是否已存在
   p = hash_get_mem (cm->command_index_by_path, normalized_path);
   if (p)
     {
+      //对应的command已注册，取出其映射的command记为d,
       vlib_cli_command_t *d;
 
       ci = p[0];
@@ -1320,14 +1377,17 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
          replaced it with callers data. */
       if (vlib_cli_command_is_empty (d))
 	{
+          //存在的是一个空的command
 	  vlib_cli_command_t save = d[0];
 
 	  ASSERT (!vlib_cli_command_is_empty (c));
 
 	  /* Copy callers fields. */
+	  //完成command成员copy
 	  d[0] = c[0];
 
 	  /* Save internal fields. */
+	  //overwirte旧的信息
 	  d->path = save.path;
 	  d->sub_commands = save.sub_commands;
 	  d->sub_command_index_by_name = save.sub_command_index_by_name;
@@ -1335,6 +1395,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
 	  d->sub_rules = save.sub_rules;
 	}
       else
+          //命令已注册，报错
 	error =
 	  clib_error_return (0, "duplicate command name with path %v",
 			     normalized_path);
@@ -1351,6 +1412,7 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
       /* Add root command (index 0). */
       if (vec_len (cm->commands) == 0)
 	{
+          //如果对应的根command不存在，则添加它
 	  /* Create command with index 0; path is empty string. */
 	  vec_resize (cm->commands, 1);
 	}
@@ -1361,19 +1423,19 @@ vlib_cli_register (vlib_main_t * vm, vlib_cli_command_t * c)
       //将command加入到cm->commands中
       vec_add1 (cm->commands, c[0]);
 
-      //取出刚刚添加进去的command(注意，其实际上是c[0]的副本），并填充它
+      //取出刚刚添加进去的command(注意，其实际上是c[0]的副本），并设置其它属性
       c = vec_elt_at_index (cm->commands, ci);
       c->path = normalized_path;
 
       /* Don't inherit from registration. */
-      //不使用c[0]中旧的这三个值，将其初始化为0
+      //新command新加入，故其子命令为空
       c->sub_commands = 0;
       c->sub_command_index_by_name = 0;
       c->sub_command_positions = 0;
     }
 
   //将命令按token拆开，合并到vector内（方便cli查找，说实话，这个实现特别丑)
-  vlib_cli_make_parent (cm, ci);
+  vlib_cli_make_parent (cm, ci/*刚插入的command对应的index*/);
   return 0;
 }
 
@@ -1608,7 +1670,7 @@ vlib_cli_init (vlib_main_t * vm)
 
   while (cmd)
     {
-      //遍历cm对应的已注册command,将其采用vlib_cli_register注册进vm中
+      //遍历已注册command,将其采用vlib_cli_register注册进vm中
       error = vlib_cli_register (vm, cmd);
       if (error)
 	return error;

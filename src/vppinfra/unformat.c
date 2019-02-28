@@ -1011,6 +1011,7 @@ unformat (unformat_input_t * input, const char *fmt, ...)
   return result;
 }
 
+//调用func完成解析
 uword
 unformat_user (unformat_input_t * input, unformat_function_t * func, ...)
 {
@@ -1018,14 +1019,17 @@ unformat_user (unformat_input_t * input, unformat_function_t * func, ...)
   uword result, l;
 
   /* Save place in input buffer in case parse fails. */
+  //保存当前input->index
   l = vec_len (input->buffer_marks);
   vec_add1_aligned (input->buffer_marks, input->index,
 		    sizeof (input->buffer_marks[0]));
 
+  //调用func完成解析
   va_start (va, func);
   result = func (input, &va);
   va_end (va);
 
+  //如果解析失败，result返回０且未达到结尾，则回退index
   if (!result && input->index != UNFORMAT_END_OF_INPUT)
     input->index = input->buffer_marks[l];
 
@@ -1070,14 +1074,17 @@ unformat_init_vector (unformat_input_t * input, u8 * vector_string)
 
 #ifdef CLIB_UNIX
 
+//自fd中读取文件，填充到input buffer中
 static uword
 clib_file_fill_buffer (unformat_input_t * input)
 {
   int fd = pointer_to_uword (input->fill_buffer_arg);
   uword l, n;
 
+  //扩充buffer
   l = vec_len (input->buffer);
   vec_resize (input->buffer, 4096);
+  //读取4096个buffer
   n = read (fd, input->buffer + l, 4096);
   if (n > 0)
     _vec_len (input->buffer) = l + n;

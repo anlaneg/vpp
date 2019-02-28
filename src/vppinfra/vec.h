@@ -423,7 +423,7 @@ do {										\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
-
+//增加Ｖ的长度
 #define vec_validate_ha(V,I,H,A)					\
 do {									\
   STATIC_ASSERT(A==0 || ((A % sizeof(V[0]))==0) || ((sizeof(V[0]) % A) == 0),\
@@ -713,6 +713,7 @@ do {							\
     @param M insertion point
     @return V (value-result macro parameter)
 */
+//在０号位置前添加N个元素到Vector中
 #define vec_insert(V,N,M)           vec_insert_ha(V,N,M,0,0)
 
 /** \brief Insert N vector elements starting at element M,

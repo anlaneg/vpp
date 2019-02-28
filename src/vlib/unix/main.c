@@ -251,6 +251,7 @@ vlib_unix_error_report (vlib_main_t * vm, clib_error_t * error)
   }
 }
 
+//启动配置进程
 static uword
 startup_config_process (vlib_main_t * vm,
 			vlib_node_runtime_t * rt, vlib_frame_t * f)
@@ -264,6 +265,7 @@ startup_config_process (vlib_main_t * vm,
   while (um->unix_config_complete == 0)
     vlib_process_suspend (vm, 0.1);
 
+  //如果指定了启动配置文件
   if (um->startup_config_filename)
     {
       unformat_input_t sub_input;
@@ -271,6 +273,7 @@ startup_config_process (vlib_main_t * vm,
       struct stat s;
       char *fn = (char *) um->startup_config_filename;
 
+      //打开配置文件
       fd = open (fn, O_RDONLY);
       if (fd < 0)
 	{
@@ -278,6 +281,7 @@ startup_config_process (vlib_main_t * vm,
 	  return 0;
 	}
 
+      //获取文件信息
       if (fstat (fd, &s) < 0)
 	{
 	  clib_warning ("failed to stat `%s'", fn);
@@ -286,6 +290,7 @@ startup_config_process (vlib_main_t * vm,
 	  return 0;
 	}
 
+      //跳过非规则文件
       if (!(S_ISREG (s.st_mode) || S_ISLNK (s.st_mode)))
 	{
 	  clib_warning ("not a regular file: `%s'", fn);
@@ -299,13 +304,17 @@ startup_config_process (vlib_main_t * vm,
 	  n = read (fd, buf + l, 4096);
 	  if (n > 0)
 	    {
+	      //如果读取文件完成，则跳出，否则继续读取
 	      _vec_len (buf) = l + n;
 	      if (n < 4096)
 		break;
 	    }
 	  else
+	      //读取失败或者到达文件结尾
 	    break;
 	}
+
+      //日志输出
       if (um->log_fd && vec_len (buf))
 	{
 	  u8 *lv = 0;
@@ -328,6 +337,7 @@ startup_config_process (vlib_main_t * vm,
 	  vec_free (lv);
 	}
 
+      //如果有配置，则初始化input,并将其转给cli_input进行执行
       if (vec_len (buf))
 	{
 	  unformat_init_vector (&sub_input, buf);
@@ -341,6 +351,7 @@ startup_config_process (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//注册配置node，完成对配置文件读取执行
 VLIB_REGISTER_NODE (startup_config_node,static) = {
     .function = startup_config_process,
     .type = VLIB_NODE_TYPE_PROCESS,

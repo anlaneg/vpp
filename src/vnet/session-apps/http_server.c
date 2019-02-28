@@ -341,6 +341,7 @@ http_cli_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
       goto out;
     }
 
+  //首部method必须为GET
   for (i = 0; i < vec_len (request) - 4; i++)
     {
       if (request[i] == 'G' &&
@@ -375,15 +376,18 @@ found:
     }
 
   /* Generate the html header */
+  //format传入的参数为request成html
   html = format (0, html_header_template, request /* title */ );
 
   /* Run the command */
   unformat_init_vector (&input, vec_dup (request));
+  //执行cli命令
   vlib_cli_input (vm, &input, http_cli_output, (uword) & reply);
   unformat_free (&input);
   request = 0;
 
   /* Generate the html page */
+  //生成reply做成html
   html = format (html, "%v", reply);
   html = format (html, html_footer);
   /* And the http reply */
@@ -422,6 +426,7 @@ alloc_http_process (http_server_args * args)
     }
   else
     {
+      //注册node,处理http处理的cli
       static vlib_node_registration_t r = {
 	.function = http_cli_process,
 	.type = VLIB_NODE_TYPE_PROCESS,

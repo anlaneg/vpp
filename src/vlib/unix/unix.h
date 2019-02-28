@@ -69,7 +69,7 @@ typedef struct
   u64 n_total_errors;
 
   /* startup-config filename */
-  u8 *startup_config_filename;
+  u8 *startup_config_filename;//启动时的配置文件
 
   /* runtime directory path */
   u8 *runtime_dir;
