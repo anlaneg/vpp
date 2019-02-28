@@ -111,6 +111,7 @@ typedef enum
   VNET_DPDK_PORT_TYPE_ETH_BOND,
   VNET_DPDK_PORT_TYPE_ETH_SWITCH,
   VNET_DPDK_PORT_TYPE_AF_PACKET,
+  //使用VF口
   VNET_DPDK_PORT_TYPE_ETH_VF,
   VNET_DPDK_PORT_TYPE_VIRTIO_USER,
   VNET_DPDK_PORT_TYPE_VHOST_ETHER,
@@ -156,7 +157,9 @@ typedef struct
 } dpdk_device_hqos_per_hqos_thread_t;
 
 #define foreach_dpdk_device_flags \
+	/*接口是否admin-up*/\
   _( 0, ADMIN_UP, "admin-up") \
+  /*接口是否开启了混杂模式*/\
   _( 1, PROMISC, "promisc") \
   _( 2, PMD, "pmd") \
   _( 3, PMD_INIT_FAIL, "pmd-init-fail") \
@@ -201,7 +204,7 @@ typedef struct
   dpdk_portid_t device_index;//内部数组索引（用于找出设备）
 
   /* DPDK device port number */
-  dpdk_portid_t port_id;//dpdk的port_id
+  dpdk_portid_t port_id;//接口在dpdk中的编号
 
   u32 hw_if_index;
   u32 sw_if_index;
@@ -252,7 +255,7 @@ typedef struct
      only valid if DPDK_DEVICE_FLAG_BOND_SLAVE bit is set */
   dpdk_portid_t bond_port;
 
-  struct rte_eth_link link;
+  struct rte_eth_link link;//接口的链路状态
   f64 time_last_link_update;
 
   struct rte_eth_stats stats;
@@ -375,7 +378,7 @@ typedef struct
 
   /* per-device config */
   dpdk_device_config_t default_devconf;
-  dpdk_device_config_t *dev_confs;
+  dpdk_device_config_t *dev_confs;//各设备对应的配置
   uword *device_config_index_by_pci_addr;
 
   /* devices blacklist by pci vendor_id, device_id */

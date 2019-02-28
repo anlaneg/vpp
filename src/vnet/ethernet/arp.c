@@ -2551,6 +2551,7 @@ ethernet_arp_change_mac (u32 sw_if_index)
     adj_glean_update_rewrite (ai);
 }
 
+//发送ipv4免费arp
 void
 send_ip4_garp (vlib_main_t * vm, u32 sw_if_index)
 {
@@ -2560,6 +2561,7 @@ send_ip4_garp (vlib_main_t * vm, u32 sw_if_index)
   send_ip4_garp_w_addr (vm, ip4_addr, sw_if_index);
 }
 
+//构造并发送免费arp
 void
 send_ip4_garp_w_addr (vlib_main_t * vm,
 		      const ip4_address_t * ip4_addr, u32 sw_if_index)
@@ -2584,18 +2586,23 @@ send_ip4_garp_w_addr (vlib_main_t * vm,
       if (!h)
 	return;
 
+      //请求方及target对应的mac地址
       mac_address_from_bytes (&h->ip4_over_ethernet[0].mac, hi->hw_address);
       mac_address_from_bytes (&h->ip4_over_ethernet[1].mac, hi->hw_address);
+      //请求方及target对应的ip地址
       h->ip4_over_ethernet[0].ip4 = ip4_addr[0];
       h->ip4_over_ethernet[1].ip4 = ip4_addr[0];
 
       /* Setup MAC header with ARP Etype and broadcast DMAC */
+      //获取填充好的报文对应的buffer
       vlib_buffer_t *b = vlib_get_buffer (vm, bi);
       rewrite =
 	ethernet_build_rewrite (vnm, sw_if_index, VNET_LINK_ARP,
 				VNET_REWRITE_FOR_SW_INTERFACE_ADDRESS_BROADCAST);
       rewrite_len = vec_len (rewrite);
       vlib_buffer_advance (b, -rewrite_len);
+
+      //获取当前以太头，填充目的mac
       ethernet_header_t *e = vlib_buffer_get_current (b);
       clib_memcpy_fast (e->dst_address, rewrite, rewrite_len);
       vec_free (rewrite);

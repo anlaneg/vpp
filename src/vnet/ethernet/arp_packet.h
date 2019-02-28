@@ -135,9 +135,10 @@ typedef struct
   u16 l3_type;
   u8 n_l2_address_bytes;
   u8 n_l3_address_bytes;
-  u16 opcode;
+  u16 opcode;//arp操作码
   union
   {
+	//请求方地址，响应方地址
     ethernet_arp_ip4_over_ethernet_address_t ip4_over_ethernet[2];
 
     /* Others... */

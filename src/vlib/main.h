@@ -177,7 +177,7 @@ typedef struct vlib_main_t
   /* thread, cpu and numa_node indices */
   u32 thread_index;
   u32 cpu_id;
-  u32 numa_node;
+  u32 numa_node;//所属的node
 
   /* List of init functions to call, setup by constructors */
   _vlib_init_function_list_elt_t *init_function_registrations;

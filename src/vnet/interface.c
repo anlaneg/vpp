@@ -1283,6 +1283,7 @@ vnet_interface_init (vlib_main_t * vm)
 	c->index = vec_len (im->device_classes);
 	hash_set_mem (im->device_class_by_name, c->name, c->index);
 
+	//如果有注册的tx_fun,则尝试选择
 	if (c->tx_fn_registrations)
 	  {
 	    vlib_node_fn_registration_t *fnr = c->tx_fn_registrations;
@@ -1292,6 +1293,7 @@ vnet_interface_init (vlib_main_t * vm)
 	       from VNET_DEVICE_CLASS() if using function candidates */
 	    ASSERT (c->tx_function == 0);
 
+	    //如果有选择优先级更大的function则选用其做为tx_function
 	    while (fnr)
 	      {
 		if (fnr->priority > priority)
@@ -1303,7 +1305,10 @@ vnet_interface_init (vlib_main_t * vm)
 	      }
 	  }
 
+	//将device_classes加入进去
 	vec_add1 (im->device_classes, c[0]);
+
+	//加入下一个class
 	c = c->next_class_registration;
       }
   }

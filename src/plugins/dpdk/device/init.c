@@ -47,7 +47,7 @@ dpdk_config_main_t dpdk_config_main;
 #define LINK_STATE_ELOGS	0
 
 /* Port configuration, mildly modified Intel app values */
-
+//返回各接口对应的速率类型
 static dpdk_port_type_t
 port_type_from_speed_capa (struct rte_eth_dev_info *dev_info)
 {
@@ -117,13 +117,16 @@ dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
     {
       old = (xd->flags & DPDK_DEVICE_FLAG_PROMISC) != 0;
 
+      //如果开启了接受ALL,则开启混杂模式
       if (flags & ETHERNET_INTERFACE_FLAG_ACCEPT_ALL)
 	xd->flags |= DPDK_DEVICE_FLAG_PROMISC;
       else
 	xd->flags &= ~DPDK_DEVICE_FLAG_PROMISC;
 
+      //如果接口admin_up,则处理混杂模式
       if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
 	{
+      //开启或者关闭混杂模式
 	  if (xd->flags & DPDK_DEVICE_FLAG_PROMISC)
 	    rte_eth_promiscuous_enable (xd->port_id);
 	  else
@@ -132,7 +135,10 @@ dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
     }
   else if (ETHERNET_INTERFACE_FLAG_CONFIG_MTU (flags))
     {
+	  //配置mtu
       xd->port_conf.rxmode.max_rx_pkt_len = hi->max_packet_bytes;
+
+      //启动dpdk网络设备
       dpdk_device_setup (xd);
     }
   return old;
@@ -240,7 +246,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       if (!rte_eth_dev_is_valid_port(i))
 	continue;
 
-      //取设备状态
+      //取设备状态，设备配置信息
       rte_eth_link_get_nowait (i, &l);
       rte_eth_dev_info_get (i, &dev_info);
 
@@ -274,10 +280,12 @@ dpdk_lib_init (dpdk_main_t * dm)
 
       if (p)
 	{
+    	  //如果有port对应的配置，则使用设备配置
 	  devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
 	  xd->name = devconf->name;
 	}
       else
+    	  //使用默认的设备配置
 	devconf = &dm->conf->default_devconf;
 
       /* Handle interface naming for devices with multiple ports sharing same PCI ID */
@@ -338,6 +346,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  && devconf->num_tx_queues < xd->tx_q_used)
 	xd->tx_q_used = clib_min (xd->tx_q_used, devconf->num_tx_queues);
 
+      //配置的rx队列大于1，且设备支持的队列数大于等于配置的队列数
       if (devconf->num_rx_queues > 1
 	  && dev_info.max_rx_queues >= devconf->num_rx_queues)
 	{
@@ -360,6 +369,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    dev_info.flow_type_rss_offloads;
 	}
       else
+    	  //否则仅使用1个rx队列
 	xd->rx_q_used = 1;
 
       xd->flags |= DPDK_DEVICE_FLAG_PMD;
@@ -515,6 +525,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       //生成或者获取接口对应的mac地址
       if (xd->pmd == VNET_DPDK_PMD_AF_PACKET)
 	{
+    	  //生成随机的mac地址
 	  f64 now = vlib_time_now (vm);
 	  u32 rnd;
 	  rnd = (u32) (now * 1e6);
@@ -748,6 +759,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       if (dm->conf->no_multi_seg)
 	mtu = mtu > ETHER_MAX_LEN ? ETHER_MAX_LEN : mtu;
 
+      //设置接口的mtu
       rte_eth_dev_set_mtu (xd->port_id, mtu);
     }
   /* *INDENT-ON* */
@@ -1518,6 +1530,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   int i;
   int j;
 
+  //dpdk库初始化
   error = dpdk_lib_init (dm);
 
   if (error)
@@ -1525,6 +1538,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 
   tm->worker_thread_release = 1;
 
+  //遍历每个device,更新其link状态
   f64 now = vlib_time_now (vm);
   vec_foreach (xd, dm->devices)
   {
@@ -1546,6 +1560,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	/* *INDENT-OFF* */
 	RTE_ETH_FOREACH_DEV(i)
 	  {
+		//查找port_id为i的devices
 	    xd = NULL;
 	    for (j = 0; j < nports; j++)
 	      {
@@ -1554,6 +1569,8 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		    xd = &dm->devices[j];
 		  }
 	      }
+
+	    //device必须存在，且pmd＝bond类型
 	    if (xd != NULL && xd->pmd == VNET_DPDK_PMD_BOND)
 	      {
 		u8 addr[6];
@@ -1561,17 +1578,20 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		int nlink = rte_eth_bond_slaves_get (i, slink, 16);
 		if (nlink > 0)
 		  {
+			//此时port i有nlink个成员接口
 		    vnet_hw_interface_t *bhi;
 		    ethernet_interface_t *bei;
 		    int rv;
 
 		    /* Get MAC of 1st slave link */
+		    //取成员接口0的mac地址
 		    rte_eth_macaddr_get
 		      (slink[0], (struct ether_addr *) addr);
 
 		    /* Set MAC of bounded interface to that of 1st slave link */
 		    dpdk_log_info ("Set MAC for bond port %d BondEthernet%d",
 				   i, xd->bond_instance_num);
+		    //设置成员接口的mac地址
 		    rv = rte_eth_bond_mac_address_set
 		      (i, (struct ether_addr *) addr);
 		    if (rv)

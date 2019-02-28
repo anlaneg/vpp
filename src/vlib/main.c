@@ -197,8 +197,10 @@ vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index, vlib_frame_t * f)
   if (f->n_vectors == 0)
     return;
 
+  //获取报文要传递给的node
   to_node = vlib_get_node (vm, to_node_index);
 
+  //将报文加入到pending集合中
   vec_add2 (vm->node_main.pending_frames, p, 1);
 
   f->frame_flags |= VLIB_FRAME_PENDING;
