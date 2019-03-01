@@ -1616,7 +1616,7 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
   u32 vectors = 0;
 
   ASSERT (fq);
-  ASSERT (vm == vlib_mains[thread_id]);
+  ASSERT (vm == vlib_mains[thread_id]);//确定为相应vm
 
   if (PREDICT_FALSE (fqm->node_index == ~0))
     return 0;
@@ -1667,6 +1667,7 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	  return processed;
 	}
 
+      //取当前读头实体
       elt = fq->elts + ((fq->head + 1) & (fq->nelts - 1));
 
       if (!elt->valid)

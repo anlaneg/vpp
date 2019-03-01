@@ -214,6 +214,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
 
   //取被插入node
   node = vec_elt (nm->nodes, node_index);
+
   //取待插入node
   next = vec_elt (nm->nodes, next_node_index);
 
@@ -236,6 +237,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
 
   //确保元素数达到slot，如未达到扩充，并使扩大的初始为~0
   vec_validate_init_empty (node->next_nodes, slot, ~0);
+
   //确保另一个vector
   vec_validate (node->n_vectors_by_next_node, slot);
 
@@ -255,7 +257,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
     /* *INDENT-OFF* */
     //采用bib_node_index遍历node->sibling_bitmap,针对每个index调用代码块
     clib_bitmap_foreach (sib_node_index, node->sibling_bitmap, ({
-        //取出对应的node
+      //取出对应的node
       sib_node = vec_elt (nm->nodes, sib_node_index);
       if (sib_node != node)
 	{
@@ -330,7 +332,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_t *n;
-  u32 page_size = clib_mem_get_page_size ();
+  u32 page_size = clib_mem_get_page_size ();//页大小
   int i;
 
   if (CLIB_DEBUG > 0)
@@ -373,7 +375,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   n->node_fn_registrations = r->node_fn_registrations;
   n->protocol_hint = r->protocol_hint;
 
-  //放入对应索引（node被加入***）
+  //放入对应索引（node被加入集合）
   vec_add1 (nm->nodes, n);
 
   /* Name is always a vector so it can be formatted with %v. */
@@ -426,6 +428,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
   vlib_register_errors (vm, n->index, r->n_errors, r->error_strings);
   node_elog_init (vm, n->index);
 
+  //如果有runtime_data,则填充runtime_data或者创建runtime_data
   _(runtime_data_bytes);
   if (r->runtime_data_bytes > 0)
     {
@@ -434,6 +437,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	clib_memcpy (n->runtime_data, r->runtime_data, r->runtime_data_bytes);
     }
 
+  //设置next_node的名称数组
   vec_resize (n->next_node_names, r->n_next_nodes);
   for (i = 0; i < r->n_next_nodes; i++)
     n->next_node_names[i] = r->next_nodes[i];
@@ -471,6 +475,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	  }
 #endif
 
+	//申请process及其对应的栈所需要的空间
 	p = clib_mem_alloc_aligned_at_offset
 	  (sizeof (p[0]) + (1 << log2_n_stack_bytes),
 	   STACK_ALIGN, STRUCT_OFFSET_OF (vlib_process_t, stack),
@@ -501,6 +506,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	 * Disallow writes to the bottom page of the stack, to
 	 * catch stack overflows.
 	 */
+	//设置栈底一个页的大小不可写
 	if (mprotect (p->stack, page_size, PROT_READ) < 0)
 	  clib_unix_warning ("process stack");
 #endif
@@ -527,6 +533,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
     for (i = 0; i < rt->n_next_nodes; i++)
       vlib_next_frame_init (nm->next_frames + rt->next_frame_index + i);
 
+    //使errors中包含两个数据量，１ 节点编号;2.错误码
     vec_resize (rt->errors, r->n_errors);
     for (i = 0; i < vec_len (rt->errors); i++)
       rt->errors[i] = vlib_error_set (n->index, i);
@@ -534,6 +541,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
     STATIC_ASSERT_SIZEOF (vlib_node_runtime_t, 128);
     ASSERT (vec_len (n->runtime_data) <= VLIB_NODE_RUNTIME_DATA_SIZE);
 
+    //填充runtime_data
     if (vec_len (n->runtime_data) > 0)
       clib_memcpy (rt->runtime_data, n->runtime_data,
 		   vec_len (n->runtime_data));

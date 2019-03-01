@@ -1439,6 +1439,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   return last_time_stamp;
 }
 
+//检查进程的栈空间是否有效
 always_inline uword
 vlib_process_stack_is_valid (vlib_process_t * p)
 {
@@ -1476,13 +1477,14 @@ vlib_process_bootstrap (uword _a)
 
   ASSERT (vlib_process_stack_is_valid (p));
 
-  //函数执行完成，以结果n跳回return_longjmp
+  //函数执行完成，以返回值n的形式，跳回return_longjmp
   clib_longjmp (&p->return_longjmp, n);
 
   return n;
 }
 
 /* Called in main stack. */
+//vpp process启动
 static_always_inline uword
 vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
 {
@@ -1497,7 +1499,8 @@ vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
   //记录跳转点
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
-      //调用bootstrap函数，完成node的function调用，调用完成后，以ret返回到setjmp
+      //调用bootstrap函数，完成node的function调用
+      //注意，在调用中使用的栈为进程专有的栈空间
     r = clib_calljmp (vlib_process_bootstrap, pointer_to_uword (&a),
 		      (void *) p->stack + (1 << p->log2_n_stack_bytes));
 
@@ -1511,12 +1514,15 @@ vlib_process_resume (vlib_process_t * p)
   p->flags &= ~(VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK
 		| VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT
 		| VLIB_PROCESS_RESUME_PENDING);
+
+  //保存恢复位置
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
     clib_longjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_RESUME);
   return r;
 }
 
+//使进程p开始运行
 static u64
 dispatch_process (vlib_main_t * vm,
 		  vlib_process_t * p, vlib_frame_t * f, u64 last_time_stamp)
@@ -1546,11 +1552,13 @@ dispatch_process (vlib_main_t * vm,
   old_process_index = nm->current_process_index;
   nm->current_process_index = node->runtime_index;
 
+  //启动各process,使其运行一遍
   n_vectors = vlib_process_startup (vm, p, f);
 
   nm->current_process_index = old_process_index;
 
   ASSERT (n_vectors != VLIB_PROCESS_RETURN_LONGJMP_RETURN);
+
   //node挂起处理
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
   if (is_suspend)
@@ -1558,6 +1566,7 @@ dispatch_process (vlib_main_t * vm,
       vlib_pending_frame_t *pf;
 
       n_vectors = 0;
+
       //将process记录在suspended集合中
       pool_get (nm->suspended_process_frames, pf);
       pf->node_runtime_index = node->runtime_index;
@@ -1605,9 +1614,10 @@ vlib_start_process (vlib_main_t * vm, uword process_index)
   dispatch_process (vm, p, /* frame */ 0, /* cpu_time_now */ 0);
 }
 
+//使进程p恢复执行
 static u64
 dispatch_suspended_process (vlib_main_t * vm,
-			    uword process_index, u64 last_time_stamp)
+			    uword process_index/*进程索引*/, u64 last_time_stamp)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_runtime_t *node_runtime;
@@ -1619,6 +1629,7 @@ dispatch_suspended_process (vlib_main_t * vm,
 
   t = last_time_stamp;
 
+  //获取process，如果其未running,返回时间
   p = vec_elt (nm->processes, process_index);
   if (PREDICT_FALSE (!(p->flags & VLIB_PROCESS_IS_RUNNING)))
     return last_time_stamp;
@@ -1629,8 +1640,11 @@ dispatch_suspended_process (vlib_main_t * vm,
   pf = pool_elt_at_index (nm->suspended_process_frames,
 			  p->suspended_process_frame_index);
 
+  //获取process对应的node
   node_runtime = &p->node_runtime;
   node = vlib_get_node (vm, node_runtime->node_index);
+
+  //取待处理的frame
   f = pf->frame_index != ~0 ? vlib_get_frame (vm, pf->frame_index) : 0;
 
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t,
@@ -1639,6 +1653,7 @@ dispatch_suspended_process (vlib_main_t * vm,
   /* Save away current process for suspend. */
   nm->current_process_index = node->runtime_index;
 
+  //更新p的恢复点，并使之自此处恢复
   n_vectors = vlib_process_resume (p);
   t = clib_cpu_time_now ();
 
@@ -1738,6 +1753,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
     {
       uword i;
       nm->current_process_index = ~0;
+      //顺序运行
       for (i = 0; i < vec_len (nm->processes); i++)
 	cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
 					 cpu_time_now);
@@ -1766,7 +1782,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       /* Process pre-input nodes. */
       //处理pre-input类型的节点
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
-	cpu_time_now = dispatch_node (vm, n,
+	cpu_time_now = dispatch_node (vm, n/*待dispatch的节点*/,
 				      VLIB_NODE_TYPE_PRE_INPUT,
 				      VLIB_NODE_STATE_POLLING,
 				      /* frame */ 0,

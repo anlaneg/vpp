@@ -112,6 +112,10 @@ void clib_longjmp (clib_longjmp_t * save, uword return_value);
 uword clib_setjmp (clib_longjmp_t * save, uword return_value_not_taken);
 
 /* Call function on given stack. */
+//在给定的堆栈上调用函数func
+//之所有费这么大劲，是为了给每一个func配一个堆栈，这样当process切换时，
+//可以直接切换而不需要考虑单堆栈时需要退栈的问题
+//返回值为function的返回值
 uword clib_calljmp (uword (*func) (uword func_arg),
 		    uword func_arg, void *stack);
 

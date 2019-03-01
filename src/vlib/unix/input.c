@@ -53,8 +53,8 @@
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  int epoll_fd;
-  struct epoll_event *epoll_events;
+  int epoll_fd;//epoll fd
+  struct epoll_event *epoll_events;//epoll 事件
   int n_epoll_fds;
 
   /* Statistics. */
@@ -210,6 +210,7 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
     /* Allow any signal to wakeup our sleep. */
     if (is_main || em->epoll_fd != -1)
       {
+    //监听epoll_fd上收到的事件（包含关系的事件）
 	static sigset_t unblock_all_signals;
 	n_fds_ready = epoll_pwait (em->epoll_fd,
 				   em->epoll_events,
@@ -219,6 +220,7 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	/* This kludge is necessary to run over absurdly old kernels */
 	if (n_fds_ready < 0 && errno == ENOSYS)
 	  {
+	    //等待时发生错误（如果无此系统调用，则通过epoll_wait来调用)
 	    n_fds_ready = epoll_wait (em->epoll_fd,
 				      em->epoll_events,
 				      vec_len (em->epoll_events), timeout_ms);
@@ -227,6 +229,7 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       }
     else
       {
+        //无fd,则等待timeout_ms秒
 	if (timeout_ms)
 	  usleep (timeout_ms * 1000);
 	goto done;
@@ -235,6 +238,7 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (n_fds_ready < 0)
     {
+      //等待事件出错
       if (unix_error_is_fatal (errno))
 	vlib_panic_with_error (vm, clib_error_return_unix (0, "epoll_wait"));
 
@@ -329,6 +333,7 @@ static uword
 linux_epoll_input (vlib_main_t * vm,
 		   vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
+  //取当前线程
   u32 thread_index = vlib_get_thread_index ();
 
   if (thread_index == 0)
@@ -338,6 +343,7 @@ linux_epoll_input (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//注册inport类型节点
 VLIB_REGISTER_NODE (linux_epoll_input_node,static) = {
   .function = linux_epoll_input,
   .type = VLIB_NODE_TYPE_PRE_INPUT,
@@ -363,6 +369,7 @@ linux_epoll_input_init (vlib_main_t * vm)
 
     if (linux_epoll_mains == em)
       {
+        //创建epoll_fd
 	em->epoll_fd = epoll_create (1);
 	if (em->epoll_fd < 0)
 	  return clib_error_return_unix (0, "epoll_create");
@@ -376,6 +383,7 @@ linux_epoll_input_init (vlib_main_t * vm)
   return 0;
 }
 
+//注册初始化函数linux_epoll_input_init
 VLIB_INIT_FUNCTION (linux_epoll_input_init);
 
 #endif /* HAVE_LINUX_EPOLL */
@@ -383,9 +391,11 @@ VLIB_INIT_FUNCTION (linux_epoll_input_init);
 static clib_error_t *
 unix_input_init (vlib_main_t * vm)
 {
+    //需要linux_epoll_input_init函数被调用
   return vlib_call_init_function (vm, linux_epoll_input_init);
 }
 
+//注册初始化函数unix_input_init
 VLIB_INIT_FUNCTION (unix_input_init);
 
 /*

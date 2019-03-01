@@ -139,6 +139,7 @@ vlib_register_errors (vlib_main_t * vm,
   ASSERT (vlib_get_thread_index () == 0);
 
   /* Free up any previous error strings. */
+  //节点有多个错误码，则为其申请错误字符串空间
   if (n->n_errors > 0)
     heap_dealloc (em->error_strings_heap, n->error_heap_handle);
 

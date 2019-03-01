@@ -61,6 +61,7 @@ cdecl(clib_setjmp):
 	movq %r15, 8*5(%rdi)
 
 	/* Save SP after return. */
+	//rsp指向栈顶，向上偏移8即为返回地址，将其存入rdx,并存储
 	leaq 8(%rsp), %rdx
 	movq %rdx, 8*6(%rdi)
 	
@@ -69,6 +70,7 @@ cdecl(clib_setjmp):
 	movq %rax, 8*7(%rdi)
 	
 	/* Give back user's return value. */
+	//rsi按gcc传参规定，为第二个参数，将其赋给rax，做为返回值
 	movq %rsi, %rax
 	ret
 	
@@ -91,9 +93,11 @@ cdecl(clib_longjmp):
 	movq 8*7(%rdi), %rdx
 	
 	/* Give back user's return value. */
+	/*准备返回值,按gcc参数使用规范%rsi为第二个参数*/
 	movq %rsi, %rax
 	
 	/* Away we go. */
+	//跳转到rdx位置开始执行（此中存储的是clib_setjmp函数调用后的返回地址）
 	jmpq *%rdx	
 	
 //定义x86_64的clib_calljmp
@@ -104,37 +108,48 @@ cdecl(clib_longjmp):
 #endif
 cdecl(clib_calljmp):
 	/* Make sure stack is 16-byte aligned. */
+	//按gcc规定rdx为第三个参数，将其赋给rax,即将栈指针给rax
+	//并将栈指针按８字节对齐后，赋还给rdx
 	movq %rdx, %rax
 	andq $0xf, %rax
 	subq %rax, %rdx
 	
 	/* Get return address. */
+	//将堆栈段中的数据弹出，获得返回地址
 	pop %rax
 	
 	/* Switch to new stack. */
+	//使栈顶指针替换为新的栈顶指定，将旧指针保存在%rdx中
 	xchgq %rsp, %rdx
 	
 	/* Save return address on new stack. */
+	//在栈底保存返回地址
 	push %rax
 	
 	/* Save old stack pointer on new stack. */
+	//保存旧的栈顶指针
 	push %rdx
 	
 	/* Get function. */
+	//按gcc规定rdi是第一个参数，即为待调用的函数地址，将其存入rdx
 	movq %rdi, %rdx
 	
 	/* Move argument into place. */
+	//将rsi移动到rdi中，为调用准备参数
 	movq %rsi, %rdi
 	
 	/* Away we go. */
+	//调用指明的参数指明的函数
 	callq *%rdx
 	
 	/* Switch back to old stack. */
+	//切换到旧的stack
 	movq 8(%rsp), %rdx
 	movq 0(%rsp), %rcx
 	xchgq %rcx, %rsp
 	
 	/* Return to caller. */
+	//返回到旧的caller
 	jmpq *%rdx
 
 #elif defined(i386)

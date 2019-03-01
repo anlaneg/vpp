@@ -100,7 +100,8 @@ typedef struct _vlib_node_registration
   vlib_node_function_t *function;//node对应的报文处理函数
 
   /* Node function candidate registration with priority */
-  //容许为节点执行多个function,按优先级划分
+  //容许为节点执行多个function,按优先级划分（如果此值不为NULL,则在注册节点时
+  //将通过此链表查找优先级更大的function做为注册function)
   vlib_node_fn_registration_t *node_fn_registrations;
 
   /* Node name. */
@@ -135,10 +136,10 @@ typedef struct _vlib_node_registration
   void *runtime_data;
 
   /* Process stack size. */
-  u16 process_log2_n_stack_bytes;
+  u16 process_log2_n_stack_bytes;//process对应的堆栈大小
 
   /* Number of bytes of per-node run time data. */
-  u8 runtime_data_bytes;
+  u8 runtime_data_bytes;//runtime_data所需要内存大小
 
   /* State for input nodes. */
   u8 state;
@@ -299,7 +300,7 @@ typedef struct vlib_node_t
   u32 index;//node编号
 
   /* Index of corresponding node runtime. */
-  u32 runtime_index;//节点的运行索引
+  u32 runtime_index;//节点的运行索引（例如process索引号）
 
   /* Runtime data for this node. */
   void *runtime_data;
@@ -484,6 +485,7 @@ typedef struct vlib_node_runtime_t
   //node需要被调用的函数
   vlib_node_function_t *function;	/**< Node function to call. */
 
+  //此节点支持的错误码（会被加上node编号）
   vlib_error_t *errors;			/**< Vector of errors for this node. */
 
 #if __SIZEOF_POINTER__ == 4
@@ -592,9 +594,9 @@ typedef struct
 #define VLIB_PROCESS_IS_RUNNING (1 << 3)
 
   /* Size of process stack. */
-  u16 log2_n_stack_bytes;
+  u16 log2_n_stack_bytes;//process栈空间大小
 
-  u32 suspended_process_frame_index;
+  u32 suspended_process_frame_index;//挂起进程frame索引
 
   /* Number of times this process was suspended. */
   u32 n_suspends;//被挂起数目
@@ -640,6 +642,7 @@ typedef struct
   /* Process stack.  Starts here and extends 2^log2_n_stack_bytes
      bytes. */
 
+  //进程对应的栈空间
 #define VLIB_PROCESS_STACK_MAGIC (0xdead7ead)
   u32 stack[0] ALIGN_ON_MULTIPLE_PAGE_BOUNDARY_FOR_MPROTECT;
 } vlib_process_t __attribute__ ((aligned (CLIB_CACHE_LINE_BYTES)));
@@ -768,6 +771,7 @@ typedef struct
   void **recycled_event_data_vectors;
 
   /* Current counts of nodes in each state. */
+  //input类型node按节点状态统计数量
   u32 input_node_counts_by_state[VLIB_N_NODE_STATE];
 
   /* Hash of (scalar_size,vector_size) to frame_sizes index. */

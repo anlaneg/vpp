@@ -93,7 +93,7 @@ typedef struct
   /* Second Cache Line */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
   void *thread_mheap;
-  u8 *thread_stack;
+  u8 *thread_stack;//线程对应的栈空间
   void (*thread_function) (void *);
   void *thread_function_arg;
   i64 recursion_level;
@@ -141,8 +141,8 @@ typedef struct
 
   /* read-only, constant, shared */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline3);
-  vlib_frame_queue_elt_t *elts;
-  u32 nelts;
+  vlib_frame_queue_elt_t *elts;//队列指针
+  u32 nelts;//队列大小
 }
 vlib_frame_queue_t;
 
@@ -158,7 +158,7 @@ typedef struct
   u32 frame_queue_nelts;
   u32 queue_hi_thresh;
 
-  vlib_frame_queue_t **vlib_frame_queues;
+  vlib_frame_queue_t **vlib_frame_queues;//按线程索引frame队列
   vlib_frame_queue_per_thread_data_t *per_thread_data;
 
   /* for frame queue tracing */
@@ -301,7 +301,7 @@ typedef struct
   int use_pthreads;
 
   /* Number of vlib_main / vnet_main clones */
-  u32 n_vlib_mains;
+  u32 n_vlib_mains;//vm数量
 
   /* Number of thread stacks to create */
   u32 n_thread_stacks;

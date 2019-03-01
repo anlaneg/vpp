@@ -625,10 +625,11 @@ thread0 (uword arg)
   return i;
 }
 
+//为指定线程分配栈空间
 u8 *
 vlib_thread_stack_init (uword thread_index)
 {
-	//确保vlib_thread_stacks长度
+	//确保vlib_thread_stacks长度，并申请足够的栈大小。
   vec_validate (vlib_thread_stacks, thread_index);
   vlib_thread_stacks[thread_index] = clib_mem_alloc_aligned
     (VLIB_THREAD_STACK_SIZE, VLIB_THREAD_STACK_SIZE);
@@ -694,7 +695,7 @@ vlib_unix_main (int argc, char *argv[])
   __os_thread_index = 0;
   vm->thread_index = 0;
 
-  //在栈上调用函数
+  //在指定栈上调用函数thread0(指定栈长2个G)
   i = clib_calljmp (thread0, (uword) vm,
 		    (void *) (vlib_thread_stacks[0] +
 			      VLIB_THREAD_STACK_SIZE));
