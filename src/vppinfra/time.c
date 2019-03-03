@@ -73,6 +73,7 @@ estimate_clock_frequency (f64 sample_time)
 
 /* Fetch cpu frequency via parseing /proc/cpuinfo.
    Only works for Linux. */
+//通过/proc/cpuinfo获取linux的最大频率数
 static f64
 clock_frequency_from_proc_filesystem (void)
 {
@@ -117,6 +118,7 @@ clock_frequency_from_proc_filesystem (void)
 
 /* Fetch cpu frequency via reading /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq
    Only works for Linux. */
+//读取cpu最大运行频率
 static f64
 clock_frequency_from_sys_filesystem (void)
 {
@@ -168,6 +170,7 @@ os_cpu_clock_frequency (void)
 
   /* If /proc/cpuinfo fails (e.g. not running on Linux) fall back to
      gettimeofday based estimated clock frequency. */
+  //通过gettimeofday来获取
   return estimate_clock_frequency (1e-3);
 }
 

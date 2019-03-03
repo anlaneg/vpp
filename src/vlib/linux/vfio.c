@@ -240,6 +240,7 @@ linux_vfio_init (vlib_main_t * vm)
 {
   linux_vfio_main_t *lvm = &vfio_main;
 
+  //注册vfio的log类别
   lvm->log_default = vlib_log_register_class ("vfio", 0);
   lvm->container_fd = -1;
 

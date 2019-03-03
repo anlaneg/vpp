@@ -525,7 +525,9 @@ mheap_get_search_free_list (void *v,
   mheap_t *h = mheap_header (v);
   uword bin, n_user_bytes, i, bi;
 
+  //取用户请求的大小
   n_user_bytes = *n_user_bytes_arg;
+  //取用户请求大小对应bin
   bin = user_data_size_to_bin_index (n_user_bytes);
 
   if (MHEAP_HAVE_SMALL_OBJECT_CACHE
@@ -695,6 +697,7 @@ mheap_get_aligned (void *v,
 
   mheap_maybe_lock (v);//锁住内存
 
+  //取堆对应的结构体
   h = mheap_header (v);
 
   if (h->flags & MHEAP_FLAG_VALIDATE)

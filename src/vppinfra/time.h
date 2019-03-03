@@ -50,11 +50,11 @@ typedef struct
   u64 last_cpu_time;
 
   /* CPU clock frequency. */
-  f64 clocks_per_second;
+  f64 clocks_per_second;//cpu频率
 
   /* 1 / cpu clock frequency: conversion factor
      from clock cycles into seconds. */
-  f64 seconds_per_clock;
+  f64 seconds_per_clock;//将clock转换为秒数
 
   f64 round_to_units;
 
@@ -66,6 +66,7 @@ typedef struct
   /* Same but for reference time (if present). */
   f64 last_verify_reference_time;
 
+  //每秒clocks数的log2,每个clock时间内秒数的log2
   u32 log2_clocks_per_second, log2_clocks_per_frequency_verify;
 } clib_time_t;
 

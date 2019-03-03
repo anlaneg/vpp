@@ -616,6 +616,7 @@ VLIB_MAIN_LOOP_EXIT_FUNCTION (unix_exit);
 
 u8 **vlib_thread_stacks;
 
+//构造参数为input，并调其传入vlib_main,执行主函数
 static uword
 thread0 (uword arg)
 {

@@ -99,11 +99,13 @@ vlib_physmem_init (vlib_main_t * vm)
   void *p;
 
   /* check if pagemap is accessible */
+  //检查pagemap是否有效，如果可返回数据，则认为有效
   pt = clib_mem_vm_get_paddr (&pt, min_log2 (sysconf (_SC_PAGESIZE)), 1);
   if (pt && pt[0])
     vpm->flags |= VLIB_PHYSMEM_MAIN_F_HAVE_PAGEMAP;
   vec_free (pt);
 
+  //vfio log初始化
   if ((error = linux_vfio_init (vm)))
     return error;
 
