@@ -492,11 +492,6 @@ list(APPEND VNET_SOURCES
   ipsec/esp_decrypt.c
   ipsec/ah_decrypt.c
   ipsec/ah_encrypt.c
-  ipsec/ikev2.c
-  ipsec/ikev2_crypto.c
-  ipsec/ikev2_cli.c
-  ipsec/ikev2_payload.c
-  ipsec/ikev2_format.c
   ipsec/ipsec_api.c
 )
 
@@ -518,10 +513,12 @@ list(APPEND VNET_SOURCES
 
 list(APPEND VNET_HEADERS
   ipsec/ipsec.h
+  ipsec/ipsec_spd.h
+  ipsec/ipsec_spd_policy.h
+  ipsec/ipsec_sa.h
+  ipsec/ipsec_if.h
   ipsec/esp.h
   ipsec/ah.h
-  ipsec/ikev2.h
-  ipsec/ikev2_priv.h
 )
 
 ##############################################################################
@@ -1048,6 +1045,7 @@ list(APPEND VNET_SOURCES
   session/application_worker.c
   session/session_cli.c
   session/application_interface.c
+  session/application_local.c
   session/application_namespace.c
   session/segment_manager.c
   session/session_api.c
@@ -1063,6 +1061,7 @@ list(APPEND VNET_HEADERS
   session/transport.h
   session/transport_types.h
   session/application_interface.h
+  session/application_local.h
   session/application_namespace.h
   session/session_debug.h
   session/segment_manager.h

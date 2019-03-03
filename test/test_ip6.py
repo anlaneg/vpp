@@ -18,7 +18,7 @@ from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
 from six import moves
 
 from framework import VppTestCase, VppTestRunner
-from util import ppp, ip6_normalize
+from util import ppp, ip6_normalize, mk_ll_addr
 from vpp_ip import DpoProto
 from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
@@ -30,11 +30,10 @@ from ipaddress import IPv6Network, IPv4Network
 
 AF_INET6 = socket.AF_INET6
 
-
-def mk_ll_addr(mac):
-    euid = in6_mactoifaceid(mac)
-    addr = "fe80::" + euid
-    return addr
+try:
+    text_type = unicode
+except NameError:
+    text_type = str
 
 
 class TestIPv6ND(VppTestCase):
@@ -1060,9 +1059,9 @@ class TestIPv6RD(TestIPv6ND):
 
     def verify_prefix_info(self, reported_prefix, prefix_option):
         prefix = IPv6Network(
-            unicode(prefix_option.getfieldval("prefix") +
-                    "/" +
-                    str(prefix_option.getfieldval("prefixlen"))),
+            text_type(prefix_option.getfieldval("prefix") +
+                      "/" +
+                      text_type(prefix_option.getfieldval("prefixlen"))),
             strict=False)
         self.assert_equal(reported_prefix.prefix.network_address,
                           prefix.network_address)
@@ -1670,20 +1669,20 @@ class TestIP6LoadBalance(VppTestCase):
             i.disable_mpls()
         super(TestIP6LoadBalance, self).tearDown()
 
-    def send_and_expect_load_balancing(self, input, pkts, outputs):
+    def pg_send(self, input, pkts):
         self.vapi.cli("clear trace")
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
+
+    def send_and_expect_load_balancing(self, input, pkts, outputs):
+        self.pg_send(input, pkts)
         for oo in outputs:
             rx = oo._get_capture(1)
             self.assertNotEqual(0, len(rx))
 
     def send_and_expect_one_itf(self, input, pkts, itf):
-        self.vapi.cli("clear trace")
-        input.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
+        self.pg_send(input, pkts)
         rx = itf.get_capture(len(pkts))
 
     def test_ip6_load_balance(self):
@@ -1971,7 +1970,7 @@ class TestIP6Punt(VppTestCase):
         self.assertLess(len(rx), len(pkts))
 
         #
-        # remove the poilcer. back to full rx
+        # remove the policer. back to full rx
         #
         self.vapi.ip_punt_police(policer.policer_index, is_add=0, is_ip6=1)
         self.vapi.policer_add_del("ip6-punt", 400, 0, 10, 0,

@@ -21,8 +21,17 @@
 #include <vnet/session/session.h>
 #include <vnet/session/application.h>
 #include <vnet/session/application_interface.h>
+#include <vnet/session/application_local.h>
 #include <vnet/session/session_debug.h>
 #include <svm/queue.h>
+
+static void session_mq_accepted_reply_handler (void *data);
+
+static void
+accepted_notify_cb (void *data, u32 data_len)
+{
+  session_mq_accepted_reply_handler (data);
+}
 
 static void
 session_mq_accepted_reply_handler (void *data)
@@ -31,7 +40,6 @@ session_mq_accepted_reply_handler (void *data)
   vnet_disconnect_args_t _a = { 0 }, *a = &_a;
   session_state_t old_state;
   app_worker_t *app_wrk;
-  local_session_t *ls;
   session_t *s;
 
   /* Server isn't interested, kill the session */
@@ -43,42 +51,39 @@ session_mq_accepted_reply_handler (void *data)
       return;
     }
 
-  if (session_handle_is_local (mp->handle))
+  /* Mail this back from the main thread. We're not polling in main
+   * thread so we're using other workers for notifications. */
+  if (vlib_num_workers () && vlib_get_thread_index () != 0
+      && session_thread_from_handle (mp->handle) == 0)
     {
-      ls = app_worker_get_local_session_from_handle (mp->handle);
-      if (!ls)
-	{
-	  clib_warning ("unknown local handle 0x%lx", mp->handle);
-	  return;
-	}
-      app_wrk = app_worker_get (ls->app_wrk_index);
-      if (app_wrk->app_index != mp->context)
-	{
-	  clib_warning ("server %u doesn't own local handle 0x%lx",
-			mp->context, mp->handle);
-	  return;
-	}
-      if (app_worker_local_session_connect_notify (ls))
+      vl_api_rpc_call_main_thread (accepted_notify_cb, data,
+				   sizeof (session_accepted_reply_msg_t));
+      return;
+    }
+
+  s = session_get_from_handle_if_valid (mp->handle);
+  if (!s)
+    return;
+
+  app_wrk = app_worker_get (s->app_wrk_index);
+  if (app_wrk->app_index != mp->context)
+    {
+      clib_warning ("app doesn't own session");
+      return;
+    }
+
+  if (!session_has_transport (s))
+    {
+      if (ct_session_connect_notify (s))
 	return;
-      ls->session_state = SESSION_STATE_READY;
+      s->session_state = SESSION_STATE_READY;
     }
   else
     {
-      s = session_get_from_handle_if_valid (mp->handle);
-      if (!s)
-	return;
-
-      app_wrk = app_worker_get (s->app_wrk_index);
-      if (app_wrk->app_index != mp->context)
-	{
-	  clib_warning ("app doesn't own session");
-	  return;
-	}
-
       old_state = s->session_state;
       s->session_state = SESSION_STATE_READY;
       if (!svm_fifo_is_empty (s->rx_fifo))
-	app_worker_lock_and_send_event (app_wrk, s, FIFO_EVENT_APP_RX);
+	app_worker_lock_and_send_event (app_wrk, s, SESSION_IO_EVT_RX);
 
       /* Closed while waiting for app to reply. Resend disconnect */
       if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
@@ -278,10 +283,10 @@ session_mq_worker_update_handler (void *data)
    * Retransmit messages that may have been lost
    */
   if (s->tx_fifo && !svm_fifo_is_empty (s->tx_fifo))
-    session_send_io_evt_to_thread (s->tx_fifo, FIFO_EVENT_APP_TX);
+    session_send_io_evt_to_thread (s->tx_fifo, SESSION_IO_EVT_TX);
 
   if (s->rx_fifo && !svm_fifo_is_empty (s->rx_fifo))
-    app_worker_lock_and_send_event (app_wrk, s, FIFO_EVENT_APP_RX);
+    app_worker_lock_and_send_event (app_wrk, s, SESSION_IO_EVT_RX);
 
   if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     app->cb_fns.session_disconnect_callback (s);
@@ -361,11 +366,11 @@ session_tx_fifo_chain_tail (vlib_main_t * vm, session_tx_context_t * ctx,
 {
   vlib_buffer_t *chain_b, *prev_b;
   u32 chain_bi0, to_deq, left_from_seg;
-  session_manager_worker_t *wrk;
+  session_worker_t *wrk;
   u16 len_to_deq, n_bytes_read;
   u8 *data, j;
 
-  wrk = session_manager_get_worker (ctx->s->thread_index);
+  wrk = session_main_get_worker (ctx->s->thread_index);
   b->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
   b->total_length_not_including_first_buffer = 0;
 
@@ -506,7 +511,7 @@ session_tx_fill_buffer (vlib_main_t * vm, session_tx_context_t * ctx,
 
   /* *INDENT-OFF* */
   SESSION_EVT_DBG(SESSION_EVT_DEQ, ctx->s, ({
-	ed->data[0] = FIFO_EVENT_APP_TX;
+	ed->data[0] = SESSION_IO_EVT_TX;
 	ed->data[1] = ctx->max_dequeue;
 	ed->data[2] = len_to_deq;
 	ed->data[3] = ctx->left_to_snd;
@@ -618,13 +623,13 @@ session_tx_set_dequeue_params (vlib_main_t * vm, session_tx_context_t * ctx,
 
 always_inline int
 session_tx_fifo_read_and_snd_i (vlib_main_t * vm, vlib_node_runtime_t * node,
-				session_manager_worker_t * wrk,
+				session_worker_t * wrk,
 				session_event_t * e, int *n_tx_packets,
 				u8 peek_data)
 {
   u32 next_index, next0, next1, *to_next, n_left_to_next, n_left, pbi;
   u32 n_trace = vlib_get_trace_count (vm, node), n_bufs_needed = 0;
-  session_manager_main_t *smm = &session_manager_main;
+  session_main_t *smm = &session_main;
   session_tx_context_t *ctx = &wrk->ctx;
   transport_proto_t tp;
   vlib_buffer_t *pb;
@@ -794,7 +799,7 @@ session_tx_fifo_read_and_snd_i (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 int
 session_tx_fifo_peek_and_snd (vlib_main_t * vm, vlib_node_runtime_t * node,
-			      session_manager_worker_t * wrk,
+			      session_worker_t * wrk,
 			      session_event_t * e, int *n_tx_pkts)
 {
   return session_tx_fifo_read_and_snd_i (vm, node, wrk, e, n_tx_pkts, 1);
@@ -802,7 +807,7 @@ session_tx_fifo_peek_and_snd (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 int
 session_tx_fifo_dequeue_and_snd (vlib_main_t * vm, vlib_node_runtime_t * node,
-				 session_manager_worker_t * wrk,
+				 session_worker_t * wrk,
 				 session_event_t * e, int *n_tx_pkts)
 {
   return session_tx_fifo_read_and_snd_i (vm, node, wrk, e, n_tx_pkts, 0);
@@ -811,7 +816,7 @@ session_tx_fifo_dequeue_and_snd (vlib_main_t * vm, vlib_node_runtime_t * node,
 int
 session_tx_fifo_dequeue_internal (vlib_main_t * vm,
 				  vlib_node_runtime_t * node,
-				  session_manager_worker_t * wrk,
+				  session_worker_t * wrk,
 				  session_event_t * e, int *n_tx_pkts)
 {
   session_t *s = wrk->ctx.s;
@@ -831,7 +836,7 @@ session_event_get_session (session_event_t * e, u8 thread_index)
 }
 
 static void
-session_update_dispatch_period (session_manager_worker_t * wrk, f64 now,
+session_update_dispatch_period (session_worker_t * wrk, f64 now,
 				u32 thread_index)
 {
   if (wrk->last_tx_packets)
@@ -846,9 +851,9 @@ static uword
 session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		       vlib_frame_t * frame)
 {
-  session_manager_main_t *smm = vnet_get_session_manager_main ();
+  session_main_t *smm = vnet_get_session_main ();
   u32 thread_index = vm->thread_index, n_to_dequeue, n_events;
-  session_manager_worker_t *wrk = &smm->wrk[thread_index];
+  session_worker_t *wrk = &smm->wrk[thread_index];
   session_event_t *e, *fifo_events;
   svm_msg_q_msg_t _msg, *msg = &_msg;
   f64 now = vlib_time_now (vm);
@@ -912,7 +917,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
       switch (e->event_type)
 	{
 	case SESSION_IO_EVT_TX_FLUSH:
-	case FIFO_EVENT_APP_TX:
+	case SESSION_IO_EVT_TX:
 	  /* Don't try to send more that one frame per dispatch cycle */
 	  if (n_tx_packets == VLIB_FRAME_SIZE)
 	    {
@@ -945,7 +950,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      continue;
 	    }
 	  break;
-	case FIFO_EVENT_DISCONNECT:
+	case SESSION_CTRL_EVT_CLOSE:
 	  s = session_get_from_handle_if_valid (e->session_handle);
 	  if (PREDICT_FALSE (!s))
 	    break;
@@ -964,7 +969,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  session_transport_close (s);
 	  break;
-	case FIFO_EVENT_BUILTIN_RX:
+	case SESSION_IO_EVT_BUILTIN_RX:
 	  s = session_event_get_session (e, thread_index);
 	  if (PREDICT_FALSE (!s || s->session_state >= SESSION_STATE_CLOSING))
 	    continue;
@@ -973,14 +978,14 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  app = application_get (app_wrk->app_index);
 	  app->cb_fns.builtin_app_rx_callback (s);
 	  break;
-	case FIFO_EVENT_BUILTIN_TX:
+	case SESSION_IO_EVT_BUILTIN_TX:
 	  s = session_get_from_handle_if_valid (e->session_handle);
 	  wrk->ctx.s = s;
 	  if (PREDICT_TRUE (s != 0))
 	    session_tx_fifo_dequeue_internal (vm, node, wrk, e,
 					      &n_tx_packets);
 	  break;
-	case FIFO_EVENT_RPC:
+	case SESSION_CTRL_EVT_RPC:
 	  fp = e->rpc_args.fp;
 	  (*fp) (e->rpc_args.arg);
 	  break;
@@ -1034,7 +1039,7 @@ VLIB_REGISTER_NODE (session_queue_node) =
 void
 dump_thread_0_event_queue (void)
 {
-  session_manager_main_t *smm = vnet_get_session_manager_main ();
+  session_main_t *smm = vnet_get_session_main ();
   vlib_main_t *vm = &vlib_global_main;
   u32 my_thread_index = vm->thread_index;
   session_event_t _e, *e = &_e;
@@ -1055,23 +1060,23 @@ dump_thread_0_event_queue (void)
 
       switch (e->event_type)
 	{
-	case FIFO_EVENT_APP_TX:
+	case SESSION_IO_EVT_TX:
 	  s0 = session_event_get_session (e, my_thread_index);
 	  fformat (stdout, "[%04d] TX session %d\n", i, s0->session_index);
 	  break;
 
-	case FIFO_EVENT_DISCONNECT:
+	case SESSION_CTRL_EVT_CLOSE:
 	  s0 = session_get_from_handle (e->session_handle);
 	  fformat (stdout, "[%04d] disconnect session %d\n", i,
 		   s0->session_index);
 	  break;
 
-	case FIFO_EVENT_BUILTIN_RX:
+	case SESSION_IO_EVT_BUILTIN_RX:
 	  s0 = session_event_get_session (e, my_thread_index);
 	  fformat (stdout, "[%04d] builtin_rx %d\n", i, s0->session_index);
 	  break;
 
-	case FIFO_EVENT_RPC:
+	case SESSION_CTRL_EVT_RPC:
 	  fformat (stdout, "[%04d] RPC call %llx with %llx\n",
 		   i, (u64) (uword) (e->rpc_args.fp),
 		   (u64) (uword) (e->rpc_args.arg));
@@ -1096,15 +1101,15 @@ session_node_cmp_event (session_event_t * e, svm_fifo_t * f)
   session_t *s;
   switch (e->event_type)
     {
-    case FIFO_EVENT_APP_RX:
-    case FIFO_EVENT_APP_TX:
-    case FIFO_EVENT_BUILTIN_RX:
+    case SESSION_IO_EVT_RX:
+    case SESSION_IO_EVT_TX:
+    case SESSION_IO_EVT_BUILTIN_RX:
       if (e->fifo == f)
 	return 1;
       break;
-    case FIFO_EVENT_DISCONNECT:
+    case SESSION_CTRL_EVT_CLOSE:
       break;
-    case FIFO_EVENT_RPC:
+    case SESSION_CTRL_EVT_RPC:
       s = session_get_from_handle (e->session_handle);
       if (!s)
 	{
@@ -1124,7 +1129,7 @@ u8
 session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e)
 {
   session_event_t *pending_event_vector, *evt;
-  session_manager_worker_t *wrk;
+  session_worker_t *wrk;
   int i, index, found = 0;
   svm_msg_q_msg_t *msg;
   svm_msg_q_ring_t *ring;
@@ -1133,7 +1138,7 @@ session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e)
 
   ASSERT (e);
   thread_index = f->master_thread_index;
-  wrk = session_manager_get_worker (thread_index);
+  wrk = session_main_get_worker (thread_index);
 
   /*
    * Search evt queue

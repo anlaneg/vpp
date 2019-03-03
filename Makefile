@@ -89,6 +89,7 @@ RPM_DEPENDS += boost boost-devel
 RPM_DEPENDS += selinux-policy selinux-policy-devel
 RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
+RPM_DEPENDS += mbedtls-devel
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
@@ -96,13 +97,13 @@ ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += compat-openssl10-devel
 	RPM_DEPENDS += python2-devel python34-ply
 	RPM_DEPENDS += python2-virtualenv
-	RPM_DEPENDS += mbedtls-devel
 	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
 	RPM_DEPENDS += python-devel python34-ply
+	RPM_DEPENDS += python34-devel python34-pip
 	RPM_DEPENDS += python-virtualenv
 	RPM_DEPENDS += devtoolset-7
 	RPM_DEPENDS += cmake3
@@ -205,7 +206,9 @@ help:
 	@echo " test-help           - show help on test framework"
 	@echo " run-vat             - run vpp-api-test tool"
 	@echo " pkg-deb             - build DEB packages"
+	@echo " pkg-deb-debug       - build DEB debug packages"
 	@echo " vom-pkg-deb         - build vom DEB packages"
+	@echo " vom-pkg-deb-debug   - build vom DEB debug packages"
 	@echo " pkg-rpm             - build RPM packages"
 	@echo " install-ext-deps    - install external development dependencies"
 	@echo " ctags               - (re)generate ctags database"

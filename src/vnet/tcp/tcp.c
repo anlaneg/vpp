@@ -223,6 +223,9 @@ tcp_connection_cleanup (tcp_connection_t * tc)
       if (!tc->c_is_ip4 && ip6_address_is_link_local_unicast (&tc->c_rmt_ip6))
 	tcp_add_del_adjacency (tc, 0);
 
+      vec_free (tc->snd_sacks);
+      vec_free (tc->snd_sacks_fl);
+
       /* Poison the entry */
       if (CLIB_DEBUG > 0)
 	clib_memset (tc, 0xFA, sizeof (*tc));
@@ -347,7 +350,7 @@ tcp_connection_close (tcp_connection_t * tc)
       tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_ESTABLISHED:
-      if (!session_tx_fifo_max_dequeue (&tc->connection))
+      if (!transport_max_tx_dequeue (&tc->connection))
 	tcp_send_fin (tc);
       else
 	tc->flags |= TCP_CONN_FINPNDG;
@@ -358,7 +361,7 @@ tcp_connection_close (tcp_connection_t * tc)
       tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_CLOSE_WAIT:
-      if (!session_tx_fifo_max_dequeue (&tc->connection))
+      if (!transport_max_tx_dequeue (&tc->connection))
 	{
 	  tcp_send_fin (tc);
 	  tcp_connection_timers_reset (tc);
@@ -840,7 +843,7 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tcp_rcv_wnd_available (tc));
   s = format (s, " tsval_recent %u tsval_recent_age %u\n", tc->tsval_recent,
 	      tcp_time_now () - tc->tsval_recent_age);
-  s = format (s, " rto %u rto_boff %u srtt %u us %.3f rttvar %u rtt_ts %x",
+  s = format (s, " rto %u rto_boff %u srtt %u us %.3f rttvar %u rtt_ts %.4f",
 	      tc->rto, tc->rto_boff, tc->srtt, tc->mrtt_us * 1000, tc->rttvar,
 	      tc->rtt_ts);
   s = format (s, " rtt_seq %u\n", tc->rtt_seq - tc->iss);

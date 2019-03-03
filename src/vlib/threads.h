@@ -201,9 +201,10 @@ u32 vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts);
 #define BARRIER_SYNC_TIMEOUT (1.0)
 #endif
 
-#define vlib_worker_thread_barrier_sync(X) {vlib_worker_threads[0].barrier_caller=__FUNCTION__;vlib_worker_thread_barrier_sync_int(X);}
+#define vlib_worker_thread_barrier_sync(X) {vlib_worker_thread_barrier_sync_int(X, __FUNCTION__);}
 
-void vlib_worker_thread_barrier_sync_int (vlib_main_t * vm);
+void vlib_worker_thread_barrier_sync_int (vlib_main_t * vm,
+					  const char *func_name);
 void vlib_worker_thread_barrier_release (vlib_main_t * vm);
 void vlib_worker_thread_node_refork (void);
 
@@ -433,6 +434,21 @@ vlib_worker_thread_barrier_check (void)
 	}
       while (*vlib_worker_threads->wait_at_barrier)
 	;
+
+      /*
+       * Recompute the offset from thread-0 time.
+       * Note that vlib_time_now adds vm->time_offset, so
+       * clear it first. Save the resulting idea of "now", to
+       * see how well we're doing. See show_clock_command_fn(...)
+       */
+      {
+	f64 now;
+	vm->time_offset = 0.0;
+	now = vlib_time_now (vm);
+	vm->time_offset = vlib_global_main.time_last_barrier_release - now;
+	vm->time_last_barrier_release = vlib_time_now (vm);
+      }
+
       if (CLIB_DEBUG > 0)
 	vm->parked_at_barrier = 0;
       clib_atomic_fetch_add (vlib_worker_threads->workers_at_barrier, -1);
