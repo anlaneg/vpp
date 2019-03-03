@@ -52,9 +52,9 @@
 
 typedef struct
 {
-  f64 time;
-  timer_func_t *func;
-  any arg;
+  f64 time;//过期时间
+  timer_func_t *func;//timer过期函数
+  any arg;//过期函数参数
 } timer_callback_t;
 
 /* Vector of currently unexpired timers. */
@@ -77,12 +77,14 @@ f64_to_tv (f64 t, struct timeval *tv)
 static int
 timer_compare (const void *_a, const void *_b)
 {
+  //两个timer大小比较
   const timer_callback_t *a = _a;
   const timer_callback_t *b = _b;
   f64 dt = b->time - a->time;
   return dt < 0 ? -1 : (dt > 0 ? +1 : 0);
 }
 
+//timer回调排序（从小向大排列）
 static inline void
 sort_timers (timer_callback_t * timers)
 {
@@ -110,27 +112,29 @@ timer_interrupt (int signum)
   while (1)
     {
       if (vec_len (timers) <= 0)
-	return;
+	return;//无数据，直接退出
 
       /* Consider last (earliest) timer in reverse sorted
          vector of pending timers. */
-      t = vec_end (timers) - 1;
+      t = vec_end (timers) - 1;//取最后一个timer
 
       ASSERT (now >= 0 && isfinite (now));
 
       /* Time difference between when timer goes off and now. */
-      dt = t->time - now;
+      dt = t->time - now;//过期时间
 
       /* If timer is within threshold of going off
          call user's callback. */
       if (dt <= time_resolution && isfinite (dt))
 	{
+    	  //移除最后一个成员，并调用其回调
 	  _vec_len (timers) -= 1;
 	  (*t->func) (t->arg, -dt);
 	}
       else
 	{
 	  /* Set timer for to go off in future. */
+    	  //设置过期时间，到期后，进程将收到一个信号
 	  struct itimerval itv;
 	  clib_memset (&itv, 0, sizeof (itv));
 	  f64_to_tv (dt, &itv.it_value);
@@ -141,6 +145,7 @@ timer_interrupt (int signum)
     }
 }
 
+//阻塞信号
 void
 timer_block (sigset_t * save)
 {
@@ -151,6 +156,7 @@ timer_block (sigset_t * save)
   sigprocmask (SIG_BLOCK, &block_timer, save);
 }
 
+//解除信号阻塞
 void
 timer_unblock (sigset_t * save)
 {
@@ -159,6 +165,7 @@ timer_unblock (sigset_t * save)
 
 /* Arrange for function to be called some time,
    roughly equal to dt seconds, in the future. */
+//timer注册
 void
 timer_call (timer_func_t * func, any arg, f64 dt)
 {
@@ -168,6 +175,7 @@ timer_call (timer_func_t * func, any arg, f64 dt)
   /* Install signal handler on first call. */
   static word signal_installed = 0;
 
+  //如果未注册信号处理函数，则注册它
   if (!signal_installed)
     {
       struct sigaction sa;
@@ -178,6 +186,7 @@ timer_call (timer_func_t * func, any arg, f64 dt)
       clib_memset (&sa, 0, sizeof (sa));
       sa.sa_handler = timer_interrupt;
 
+      //注册timer_interrupt来响应信号
       if (sigaction (TIMER_SIGNAL, &sa, 0) < 0)
 	clib_panic ("sigaction");
 
@@ -187,6 +196,7 @@ timer_call (timer_func_t * func, any arg, f64 dt)
   timer_block (&save);
 
   /* Add new timer. */
+  //添加一个timer
   vec_add2 (timers, t, 1);
 
   t->time = unix_time_now () + dt;
@@ -198,10 +208,12 @@ timer_call (timer_func_t * func, any arg, f64 dt)
 
     if (_vec_len (timers) > 1)
       {
+    	//对timer进行排序
 	reset_timer += t->time < (t - 1)->time;
 	sort_timers (timers);
       }
 
+    //主动触发
     if (reset_timer)
       timer_interrupt (TIMER_SIGNAL);
   }

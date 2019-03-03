@@ -121,6 +121,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   vlib_frame_t *f;
   u32 fi, l, n, scalar_size, vector_size;
 
+  //取node
   to_node = vlib_get_node (vm, to_node_index);
 
   scalar_size = to_node->scalar_size;
@@ -1700,33 +1701,41 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
   /* Initialize pending node vector. */
   if (is_main)
-    {
+  {
       //初始化pending_frames
       vec_resize (nm->pending_frames, 32);
       _vec_len (nm->pending_frames) = 0;
-    }
+  }
 
   /* Mark time of main loop start. */
   if (is_main)
-    {
+  {
       cpu_time_now = vm->clib_time.last_cpu_time;
       vm->cpu_time_main_loop_start = cpu_time_now;
-    }
+  }
   else
+  {
     //取当前时间
     cpu_time_now = clib_cpu_time_now ();
+  }
 
   /* Pre-allocate interupt runtime indices and lock. */
   vec_alloc (nm->pending_interrupt_node_runtime_indices, 32);
   vec_alloc (last_node_runtime_indices, 32);
   if (!is_main)
+  {
     clib_spinlock_init (&nm->pending_interrupt_lock);
+  }
 
   /* Pre-allocate expired nodes. */
   if (!nm->polling_threshold_vector_length)
+  {
     nm->polling_threshold_vector_length = 10;
+  }
   if (!nm->interrupt_threshold_vector_length)
+  {
     nm->interrupt_threshold_vector_length = 5;
+  }
 
   //获取cpu_id,numa_node
   vm->cpu_id = clib_get_current_cpu_id ();
@@ -1735,38 +1744,43 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   /* Start all processes. */
   //如果为主线程，则启动所有其它process
   if (is_main)
-    {
+  {
       uword i;
       nm->current_process_index = ~0;
       for (i = 0; i < vec_len (nm->processes); i++)
-	cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
+      {
+	      cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
 					 cpu_time_now);
-    }
+      }
+  }
 
   while (1)
-    {
+  {
       vlib_node_runtime_t *n;
 
       if (PREDICT_FALSE (_vec_len (vm->pending_rpc_requests) > 0))
-	{
-	  if (!is_main)
-	    vl_api_send_pending_rpc_requests (vm);
-	}
+      {
+    	  	  if (!is_main)
+    	  	  {
+    	  		  vl_api_send_pending_rpc_requests (vm);
+    	  	  }
+      }
 
       if (!is_main)
-	{
-	  vlib_worker_thread_barrier_check ();
-	  vec_foreach (fqm, tm->frame_queue_mains)
-	    vlib_frame_queue_dequeue (vm, fqm);
-	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
-	    ((void (*)(vlib_main_t *)) vm->worker_thread_main_loop_callback)
-	      (vm);
-	}
+      {
+    	  	  vlib_worker_thread_barrier_check ();
+    	  	  vec_foreach (fqm, tm->frame_queue_mains)
+    	  	  vlib_frame_queue_dequeue (vm, fqm);
+    	  	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
+    	  	  {
+    	  		  ((void (*)(vlib_main_t *)) vm->worker_thread_main_loop_callback)(vm);
+    	  	  }
+      }
 
       /* Process pre-input nodes. */
       //处理pre-input类型的节点
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
-	cpu_time_now = dispatch_node (vm, n,
+	  cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_PRE_INPUT,
 				      VLIB_NODE_STATE_POLLING,
 				      /* frame */ 0,
@@ -1775,14 +1789,16 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       /* Next process input nodes. */
       //input的nodes处理
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_INPUT])
-	cpu_time_now = dispatch_node (vm, n,
+	  cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_INPUT,
 				      VLIB_NODE_STATE_POLLING,
 				      /* frame */ 0,
 				      cpu_time_now);
 
       if (PREDICT_TRUE (is_main && vm->queue_signal_pending == 0))
-	vm->queue_signal_callback (vm);
+      {
+    	  	  vm->queue_signal_callback (vm);
+      }
 
       /* Next handle interrupts. */
       {
