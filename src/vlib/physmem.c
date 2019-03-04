@@ -29,6 +29,15 @@
 #include <vlib/pci/pci.h>
 #include <vlib/linux/vfio.h>
 
+#ifdef __x86_64__
+/* we keep physmem in low 38 bits of VA address space as some
+   IOMMU implamentation cannot map above that range */
+#define VLIB_PHYSMEM_DEFAULT_BASE_ADDDR		(1ULL << 36)
+#else
+/* let kernel decide */
+#define VLIB_PHYSMEM_DEFAULT_BASE_ADDDR		0
+#endif
+
 clib_error_t *
 vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
 				u32 log2_page_sz, u32 numa_node,
@@ -90,11 +99,13 @@ vlib_physmem_init (vlib_main_t * vm)
   void *p;
 
   /* check if pagemap is accessible */
+  //检查pagemap是否有效，如果可返回数据，则认为有效
   pt = clib_mem_vm_get_paddr (&pt, min_log2 (sysconf (_SC_PAGESIZE)), 1);
   if (pt && pt[0])
     vpm->flags |= VLIB_PHYSMEM_MAIN_F_HAVE_PAGEMAP;
   vec_free (pt);
 
+  //vfio log初始化
   if ((error = linux_vfio_init (vm)))
     return error;
 
@@ -102,7 +113,11 @@ vlib_physmem_init (vlib_main_t * vm)
 			      CLIB_CACHE_LINE_BYTES);
   memset (p, 0, sizeof (clib_pmalloc_main_t));
   vpm->pmalloc_main = (clib_pmalloc_main_t *) p;
-  clib_pmalloc_init (vpm->pmalloc_main, 0);
+
+  if (vpm->base_addr == 0)
+    vpm->base_addr = VLIB_PHYSMEM_DEFAULT_BASE_ADDDR;
+
+  clib_pmalloc_init (vpm->pmalloc_main, vpm->base_addr, 0);
 
   return error;
 }
@@ -150,6 +165,25 @@ VLIB_CLI_COMMAND (show_physmem_command, static) = {
   .function = show_physmem,
 };
 /* *INDENT-ON* */
+
+static clib_error_t *
+vlib_physmem_config (vlib_main_t * vm, unformat_input_t * input)
+{
+  vlib_physmem_main_t *vpm = &vm->physmem_main;
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "base-addr 0x%lx", &vpm->base_addr))
+	;
+      else
+	return unformat_parse_error (input);
+    }
+
+  unformat_free (input);
+  return 0;
+}
+
+VLIB_EARLY_CONFIG_FUNCTION (vlib_physmem_config, "physmem");
 
 /*
  * fd.io coding-style-patch-verification: ON

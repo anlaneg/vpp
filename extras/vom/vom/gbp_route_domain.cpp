@@ -48,19 +48,26 @@ gbp_route_domain::gbp_route_domain(const route_domain& rd,
   , m_ip6_uu_fwd(ip6_uu_fwd.singular())
 {
 }
+
 gbp_route_domain::gbp_route_domain(const route_domain& rd,
                                    const std::shared_ptr<interface> ip4_uu_fwd,
                                    const std::shared_ptr<interface> ip6_uu_fwd)
   : m_id(rd.table_id())
   , m_rd(rd.singular())
-  , m_ip4_uu_fwd(ip4_uu_fwd->singular())
-  , m_ip6_uu_fwd(ip6_uu_fwd->singular())
+  , m_ip4_uu_fwd(ip4_uu_fwd)
+  , m_ip6_uu_fwd(ip6_uu_fwd)
 {
+  if (m_ip4_uu_fwd)
+    m_ip4_uu_fwd = m_ip4_uu_fwd->singular();
+  if (m_ip6_uu_fwd)
+    m_ip6_uu_fwd = m_ip6_uu_fwd->singular();
 }
 
 gbp_route_domain::gbp_route_domain(const route_domain& rd)
   : m_id(rd.table_id())
   , m_rd(rd.singular())
+  , m_ip4_uu_fwd()
+  , m_ip6_uu_fwd()
 {
 }
 
@@ -70,7 +77,7 @@ gbp_route_domain::key() const
   return (m_rd->key());
 }
 
-uint32_t
+route::table_id_t
 gbp_route_domain::id() const
 {
   return (m_rd->table_id());
@@ -80,6 +87,18 @@ const std::shared_ptr<route_domain>
 gbp_route_domain::get_route_domain() const
 {
   return m_rd;
+}
+
+const std::shared_ptr<interface>
+gbp_route_domain::get_ip4_uu_fwd() const
+{
+  return m_ip4_uu_fwd;
+}
+
+const std::shared_ptr<interface>
+gbp_route_domain::get_ip6_uu_fwd() const
+{
+  return m_ip6_uu_fwd;
 }
 
 bool
@@ -175,7 +194,7 @@ gbp_route_domain::update(const gbp_route_domain& desired)
 std::shared_ptr<gbp_route_domain>
 gbp_route_domain::find_or_add(const gbp_route_domain& temp)
 {
-  return (m_db.find_or_add(temp.m_id.data(), temp));
+  return (m_db.find_or_add(temp.key(), temp));
 }
 
 std::shared_ptr<gbp_route_domain>

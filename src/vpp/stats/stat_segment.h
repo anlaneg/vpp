@@ -32,19 +32,23 @@ typedef enum
  STAT_COUNTER_NODE_VECTORS,
  STAT_COUNTER_NODE_CALLS,
  STAT_COUNTER_NODE_SUSPENDS,
+ STAT_COUNTER_INTERFACE_NAMES,
+ STAT_COUNTER_NODE_NAMES,
  STAT_COUNTERS
 } stat_segment_counter_t;
 
 #define foreach_stat_segment_counter_name			\
-  _(VECTOR_RATE, SCALAR_INDEX, vector_rate,)			\
-  _(INPUT_RATE, SCALAR_INDEX, input_rate,)			\
-  _(LAST_UPDATE, SCALAR_INDEX, last_update,)			\
-  _(LAST_STATS_CLEAR, SCALAR_INDEX, last_stats_clear,)		\
-  _(HEARTBEAT, SCALAR_INDEX, heartbeat,)			\
-  _(NODE_CLOCKS, COUNTER_VECTOR_SIMPLE, clocks, /node)		\
-  _(NODE_VECTORS, COUNTER_VECTOR_SIMPLE, vectors, /node)	\
-  _(NODE_CALLS, COUNTER_VECTOR_SIMPLE, calls, /node)		\
-  _(NODE_SUSPENDS, COUNTER_VECTOR_SIMPLE, suspends, /node)
+  _(VECTOR_RATE, SCALAR_INDEX, vector_rate, /sys)		\
+  _(INPUT_RATE, SCALAR_INDEX, input_rate, /sys)			\
+  _(LAST_UPDATE, SCALAR_INDEX, last_update, /sys)		\
+  _(LAST_STATS_CLEAR, SCALAR_INDEX, last_stats_clear, /sys)	\
+  _(HEARTBEAT, SCALAR_INDEX, heartbeat, /sys)			\
+  _(NODE_CLOCKS, COUNTER_VECTOR_SIMPLE, clocks, /sys/node)	\
+  _(NODE_VECTORS, COUNTER_VECTOR_SIMPLE, vectors, /sys/node)	\
+  _(NODE_CALLS, COUNTER_VECTOR_SIMPLE, calls, /sys/node)	\
+  _(NODE_SUSPENDS, COUNTER_VECTOR_SIMPLE, suspends, /sys/node)	\
+  _(INTERFACE_NAMES, NAME_VECTOR, names, /if)                   \
+  _(NODE_NAMES, NAME_VECTOR, names, /sys/node)
 
 typedef struct
 {
@@ -85,11 +89,25 @@ stat_segment_pointer (void *start, uint64_t offset)
   return ((char *) start + offset);
 }
 
+typedef void (*stat_segment_update_fn)(stat_segment_directory_entry_t * e, u32 i);
+
+typedef struct {
+  u32 directory_index;
+  stat_segment_update_fn fn;
+  u32 caller_index;
+} stat_segment_gauges_pool_t;
+
 typedef struct
 {
+  /* internal, does not point to shared memory */
+  stat_segment_gauges_pool_t *gauges;
+
   /* statistics segment */
   uword *directory_vector_by_name;
   stat_segment_directory_entry_t *directory_vector;
+  u8 **interfaces;
+  u8 **nodes;
+
   clib_spinlock_t *stat_segment_lockp;
   clib_socket_t *socket;
   u8 *socket_name;
@@ -99,9 +117,12 @@ typedef struct
   stat_segment_shared_header_t *shared_header;	/* pointer to shared memory segment */
   int memfd;
 
-  u64 last_input_packets;
+  u64 last_input_packets; // OLE REMOVE?
 } stat_segment_main_t;
 
 extern stat_segment_main_t stat_segment_main;
+
+clib_error_t *
+stat_segment_register_gauge (u8 *names, stat_segment_update_fn update_fn, u32 index);
 
 #endif

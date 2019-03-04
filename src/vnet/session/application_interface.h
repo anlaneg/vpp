@@ -95,7 +95,7 @@ typedef struct _vnet_bind_args_t
   u64 handle;
 } vnet_listen_args_t;
 
-typedef struct _vnet_unbind_args_t
+typedef struct _vnet_unlisten_args_t
 {
   union
   {
@@ -267,6 +267,13 @@ typedef struct session_bound_msg_
   u8 segment_name_length;
   u8 segment_name[128];
 } __clib_packed session_bound_msg_t;
+
+typedef struct session_unlisten_reply_msg_
+{
+  u32 context;
+  u64 handle;
+  i32 retval;
+} __clib_packed session_unlisten_reply_msg_t;
 
 typedef struct session_accepted_msg_
 {
@@ -483,7 +490,7 @@ always_inline int
 app_send_dgram (app_session_t * s, u8 * data, u32 len, u8 noblock)
 {
   return app_send_dgram_raw (s->tx_fifo, &s->transport, s->vpp_evt_q, data,
-			     len, FIFO_EVENT_APP_TX, noblock);
+			     len, SESSION_IO_EVT_TX, noblock);
 }
 
 always_inline int
@@ -504,7 +511,7 @@ always_inline int
 app_send_stream (app_session_t * s, u8 * data, u32 len, u8 noblock)
 {
   return app_send_stream_raw (s->tx_fifo, s->vpp_evt_q, data, len,
-			      FIFO_EVENT_APP_TX, noblock);
+			      SESSION_IO_EVT_TX, noblock);
 }
 
 always_inline int

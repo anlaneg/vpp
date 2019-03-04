@@ -112,11 +112,11 @@ typedef struct
 typedef struct
 {
   /** Track name vector. */
-  char *name;
+  char *name;//track名称
 
   /** Set to one when track has been added to
      main structure. */
-  u32 track_index_plus_one;
+  u32 track_index_plus_one;//track索引
 } elog_track_t;
 
 typedef struct
@@ -131,7 +131,7 @@ typedef struct
 typedef struct
 {
   /** Total number of events in buffer. */
-  u32 n_total_events;
+  u32 n_total_events;//在buffer中event数量
 
   /** When count reaches limit logging is disabled.  This is
      used for event triggers. */
@@ -141,11 +141,11 @@ typedef struct
   elog_event_t dummy_event;
 
   /** Power of 2 number of elements in ring. */
-  uword event_ring_size;
+  uword event_ring_size;//ring事件大小
 
   /** Vector of events (circular buffer).  Power of 2 size.
       Used when events are being collected. */
-  elog_event_t *event_ring;
+  elog_event_t *event_ring;//存放event的buffer
 
   /** Vector of event types. */
   elog_event_type_t *event_types;
@@ -157,7 +157,7 @@ typedef struct
   char *string_table;
 
   /** Vector of tracks. */
-  elog_track_t *tracks;
+  elog_track_t *tracks;//记录track
 
   /** Default track. */
   elog_track_t default_track;
@@ -166,7 +166,7 @@ typedef struct
   clib_time_t cpu_timer;
 
   /** Timestamps */
-  elog_time_stamp_t init_time, serialize_time;
+  elog_time_stamp_t init_time/*初始化时间*/, serialize_time;
 
   /** SMP lock, non-zero means locking required */
   uword *lock;
@@ -318,8 +318,9 @@ elog_event_data_inline (elog_main_t * em,
     ei = em->n_total_events++;
 
   ei &= em->event_ring_size - 1;
-  e = vec_elt_at_index (em->event_ring, ei);
+  e = vec_elt_at_index (em->event_ring, ei);//在ei位置添加event
 
+  //填充event
   e->time_cycles = cpu_time;
   e->type = type_index;
   e->track = track_index;

@@ -260,7 +260,7 @@ do {										\
     @param A alignment (may be zero)
     @return V (value-result macro parameter)
 */
-
+//为V添加N个元素
 #define vec_resize_aligned(V,N,A) vec_resize_ha(V,N,0,A)
 
 /** \brief Allocate space for N more elements

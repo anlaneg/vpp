@@ -353,6 +353,7 @@ clib_mem_vm_get_paddr (void *mem, int log2_page_size, int n_pages)
   int i;
   u64 *r = 0;
 
+  //打开当前进程的pagemap
   if ((fd = open ((char *) "/proc/self/pagemap", O_RDONLY)) == -1)
     return 0;
 
@@ -364,12 +365,15 @@ clib_mem_vm_get_paddr (void *mem, int log2_page_size, int n_pages)
       if (lseek (fd, seek, SEEK_SET) != seek)
 	goto done;
 
+      //自seek位置读取一个64bit的数据，并将其存入到pagemap中
       if (read (fd, &pagemap, sizeof (pagemap)) != (sizeof (pagemap)))
 	goto done;
 
+      //高位为0，则跳出？
       if ((pagemap & (1ULL << 63)) == 0)
 	goto done;
 
+      //取低54位
       pagemap &= pow2_mask (55);
       vec_add1 (r, pagemap * pagesize);
     }

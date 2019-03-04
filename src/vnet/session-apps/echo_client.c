@@ -63,7 +63,7 @@ send_data_chunk (echo_client_main_t * ecm, eclient_session_t * s)
 	  rv = clib_min (svm_fifo_max_enqueue (f), bytes_this_chunk);
 	  svm_fifo_enqueue_nocopy (f, rv);
 	  session_send_io_evt_to_thread_custom (f, s->thread_index,
-						FIFO_EVENT_APP_TX);
+						SESSION_IO_EVT_TX);
 	}
       else
 	rv = app_send_stream (&s->data, test_data + test_buf_offset,
@@ -96,7 +96,7 @@ send_data_chunk (echo_client_main_t * ecm, eclient_session_t * s)
 	  svm_fifo_enqueue_nowait (f, sizeof (hdr), (u8 *) & hdr);
 	  svm_fifo_enqueue_nocopy (f, rv);
 	  session_send_io_evt_to_thread_custom (f, s->thread_index,
-						FIFO_EVENT_APP_TX);
+						SESSION_IO_EVT_TX);
 	}
       else
 	rv = app_send_dgram (&s->data, test_data + test_buf_offset,
@@ -380,7 +380,7 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
 
   if (!ecm->vpp_event_queue[thread_index])
     ecm->vpp_event_queue[thread_index] =
-      session_manager_get_vpp_event_queue (thread_index);
+      session_main_get_vpp_event_queue (thread_index);
 
   /*
    * Setup session
@@ -428,7 +428,7 @@ echo_clients_session_reset_callback (session_t * s)
   vnet_disconnect_args_t _a = { 0 }, *a = &_a;
 
   if (s->session_state == SESSION_STATE_READY)
-    clib_warning ("Reset active connection %U", format_stream_session, s, 2);
+    clib_warning ("Reset active connection %U", format_session, s, 2);
 
   a->handle = session_handle (s);
   a->app_index = ecm->app_index;
@@ -481,7 +481,7 @@ echo_clients_rx_callback (session_t * s)
   if (svm_fifo_max_dequeue (s->rx_fifo))
     {
       if (svm_fifo_set_event (s->rx_fifo))
-	session_send_io_evt_to_thread (s->rx_fifo, FIFO_EVENT_BUILTIN_RX);
+	session_send_io_evt_to_thread (s->rx_fifo, SESSION_IO_EVT_BUILTIN_RX);
     }
   return 0;
 }

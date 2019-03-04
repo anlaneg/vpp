@@ -575,8 +575,8 @@ close_session:
   return 0;
 
 postpone:
-  svm_fifo_set_event (hs->rx_fifo);
-  session_send_io_evt_to_thread (hs->rx_fifo, FIFO_EVENT_BUILTIN_RX);
+  (void) svm_fifo_set_event (hs->rx_fifo);
+  session_send_io_evt_to_thread (hs->rx_fifo, SESSION_IO_EVT_BUILTIN_RX);
   return 0;
 
 wait_for_data:
@@ -590,7 +590,7 @@ http_server_session_accept_callback (session_t * s)
   http_session_t *hs;
 
   hsm->vpp_queue[s->thread_index] =
-    session_manager_get_vpp_event_queue (s->thread_index);
+    session_main_get_vpp_event_queue (s->thread_index);
 
   if (!hsm->is_static)
     http_server_sessions_writer_lock ();

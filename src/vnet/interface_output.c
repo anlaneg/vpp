@@ -388,7 +388,8 @@ tso_segment_buffer (vlib_main_t * vm, vnet_interface_per_thread_data_t * ptd,
       int nloops = 2000;
       while (total_src_left)
 	{
-	  ASSERT (nloops-- > 0);
+	  if (nloops-- <= 0)
+	    clib_panic ("infinite loop detected");
 	  u16 bytes_to_copy = clib_min (src_left, dst_left);
 
 	  clib_memcpy_fast (dst_ptr, src_ptr, bytes_to_copy);
@@ -814,6 +815,43 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
   return n_buffers;
 }
 
+static_always_inline void vnet_interface_pcap_tx_trace
+  (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame,
+   int sw_if_index_from_buffer)
+{
+  u32 n_left_from, *from;
+  u32 sw_if_index;
+
+  if (PREDICT_TRUE (vm->pcap[VLIB_TX].pcap_enable == 0))
+    return;
+
+  if (sw_if_index_from_buffer == 0)
+    {
+      vnet_interface_output_runtime_t *rt = (void *) node->runtime_data;
+      sw_if_index = rt->sw_if_index;
+    }
+  else
+    sw_if_index = ~0;
+
+  n_left_from = frame->n_vectors;
+  from = vlib_frame_vector_args (frame);
+
+  while (n_left_from > 0)
+    {
+      u32 bi0 = from[0];
+      vlib_buffer_t *b0 = vlib_get_buffer (vm, bi0);
+
+      if (sw_if_index_from_buffer)
+	sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
+
+      if (vm->pcap[VLIB_TX].pcap_sw_if_index == 0 ||
+	  vm->pcap[VLIB_TX].pcap_sw_if_index == sw_if_index)
+	pcap_add_buffer (&vm->pcap[VLIB_TX].pcap_main, vm, bi0, 512);
+      from++;
+      n_left_from--;
+    }
+}
+
 static_always_inline uword
 vnet_interface_output_node_inline (vlib_main_t * vm,
 				   vlib_node_runtime_t * node,
@@ -821,6 +859,9 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 				   vnet_hw_interface_t * hi,
 				   int do_tx_offloads)
 {
+  vnet_interface_pcap_tx_trace (vm, node, frame,
+				0 /* sw_if_index_from_buffer */ );
+
   /*
    * The 3-headed "if" is here because we want to err on the side
    * of not impacting the non-GSO performance - so for the more
@@ -850,6 +891,9 @@ vnet_interface_output_node (vlib_main_t * vm, vlib_node_runtime_t * node,
   vnet_interface_output_runtime_t *rt = (void *) node->runtime_data;
   hi = vnet_get_sup_hw_interface (vnm, rt->sw_if_index);
 
+  vnet_interface_pcap_tx_trace (vm, node, frame,
+				0 /* sw_if_index_from_buffer */ );
+
   if (hi->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD)
     return vnet_interface_output_node_inline (vm, node, frame, vnm, hi,
 					      /* do_tx_offloads */ 0);
@@ -867,6 +911,9 @@ vnet_per_buffer_interface_output (vlib_main_t * vm,
   vnet_main_t *vnm = vnet_get_main ();
   u32 n_left_to_next, *from, *to_next;
   u32 n_left_from, next_index;
+
+  vnet_interface_pcap_tx_trace (vm, node, frame,
+				1 /* sw_if_index_from_buffer */ );
 
   n_left_from = frame->n_vectors;
 

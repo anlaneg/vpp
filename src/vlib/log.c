@@ -29,9 +29,9 @@ typedef struct
 typedef struct
 {
   u32 index;
-  u8 *name;
+  u8 *name;//子class名称
   // level of log messages kept for this subclass
-  vlib_log_level_t level;
+  vlib_log_level_t level;//log级别
   // level of log messages sent to syslog for this subclass
   vlib_log_level_t syslog_level;
   // flag saying whether this subclass is logged to syslog
@@ -43,8 +43,8 @@ typedef struct
 
 typedef struct
 {
-  u32 index;
-  u8 *name;
+  u32 index;//其对应的索引号
+  u8 *name;//class名称
   vlib_log_subclass_data_t *subclasses;
 } vlib_log_class_data_t;
 
@@ -223,6 +223,7 @@ syslog:
 
 }
 
+//注册log class及子class
 vlib_log_class_t
 vlib_log_register_class (char *class, char *subclass)
 {
@@ -230,16 +231,21 @@ vlib_log_register_class (char *class, char *subclass)
   vlib_log_class_data_t *c = NULL;
   vlib_log_subclass_data_t *s;
   vlib_log_class_data_t *tmp;
+  //遍历所有已注册的class
   vec_foreach (tmp, lm->classes)
   {
+	//跳过与class不相同的tmp
     if (vec_len (tmp->name) != strlen (class))
       continue;
+    //用c来记录相应的tmp,并停止循环
     if (!memcmp (class, tmp->name, vec_len (tmp->name)))
       {
 	c = tmp;
 	break;
       }
   }
+
+  //不存在相同的class,则注册它
   if (!c)
     {
       vec_add2 (lm->classes, c, 1);
@@ -247,6 +253,7 @@ vlib_log_register_class (char *class, char *subclass)
       c->name = format (0, "%s", class);
     }
 
+  //添加s做为子class
   vec_add2 (c->subclasses, s, 1);
   s->index = s - c->subclasses;
   s->name = subclass ? format (0, "%s", subclass) : 0;

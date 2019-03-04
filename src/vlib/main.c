@@ -121,6 +121,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   vlib_frame_t *f;
   u32 fi, l, n, scalar_size, vector_size;
 
+  //取node
   to_node = vlib_get_node (vm, to_node_index);
 
   scalar_size = to_node->scalar_size;
@@ -235,7 +236,7 @@ vlib_frame_free (vlib_main_t * vm, vlib_node_runtime_t * r, vlib_frame_t * f)
 	ASSERT (nf->frame_index != frame_index);
     }
 
-  f->frame_flags &= ~VLIB_FRAME_IS_ALLOCATED;
+  f->frame_flags &= ~(VLIB_FRAME_IS_ALLOCATED | VLIB_FRAME_NO_APPEND);
 
   vec_add1 (fs->free_frame_indices, frame_index);
   ASSERT (fs->n_alloc_frames > 0);
@@ -389,9 +390,11 @@ vlib_get_next_frame_internal (vlib_main_t * vm,
       f->flags = 0;
     }
 
-  /* Allocate new frame if current one is already full. */
+  /* Allocate new frame if current one is marked as no-append or
+     it is already full. */
   n_used = f->n_vectors;
-  if (n_used >= VLIB_FRAME_SIZE || (allocate_new_next_frame && n_used > 0))
+  if (n_used >= VLIB_FRAME_SIZE || (allocate_new_next_frame && n_used > 0) ||
+      (f->frame_flags & VLIB_FRAME_NO_APPEND))
     {
       /* Old frame may need to be freed after dispatch, since we'll have
          two redundant frames from node -> next node. */
@@ -1382,7 +1385,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
 				   VLIB_NODE_STATE_POLLING,
 				   f, last_time_stamp);
 
-  f->frame_flags &= ~VLIB_FRAME_PENDING;
+  f->frame_flags &= ~(VLIB_FRAME_PENDING | VLIB_FRAME_NO_APPEND);
 
   /* Frame is ready to be used again, so restore it. */
   if (restore_frame_index != ~0)
@@ -1715,33 +1718,41 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
   /* Initialize pending node vector. */
   if (is_main)
-    {
+  {
       //初始化pending_frames
       vec_resize (nm->pending_frames, 32);
       _vec_len (nm->pending_frames) = 0;
-    }
+  }
 
   /* Mark time of main loop start. */
   if (is_main)
-    {
+  {
       cpu_time_now = vm->clib_time.last_cpu_time;
       vm->cpu_time_main_loop_start = cpu_time_now;
-    }
+  }
   else
+  {
     //取当前时间
     cpu_time_now = clib_cpu_time_now ();
+  }
 
   /* Pre-allocate interupt runtime indices and lock. */
   vec_alloc (nm->pending_interrupt_node_runtime_indices, 32);
   vec_alloc (last_node_runtime_indices, 32);
   if (!is_main)
+  {
     clib_spinlock_init (&nm->pending_interrupt_lock);
+  }
 
   /* Pre-allocate expired nodes. */
   if (!nm->polling_threshold_vector_length)
+  {
     nm->polling_threshold_vector_length = 10;
+  }
   if (!nm->interrupt_threshold_vector_length)
+  {
     nm->interrupt_threshold_vector_length = 5;
+  }
 
   //获取cpu_id,numa_node
   vm->cpu_id = clib_get_current_cpu_id ();
@@ -1750,100 +1761,117 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   /* Start all processes. */
   //如果为主线程，则启动所有其它process
   if (is_main)
-    {
+  {
       uword i;
       nm->current_process_index = ~0;
       //顺序运行
       for (i = 0; i < vec_len (nm->processes); i++)
-	cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
+      {
+	      cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
 					 cpu_time_now);
-    }
+      }
+  }
 
   while (1)
-    {
+  {
       vlib_node_runtime_t *n;
 
       if (PREDICT_FALSE (_vec_len (vm->pending_rpc_requests) > 0))
-	{
-	  if (!is_main)
-	    vl_api_send_pending_rpc_requests (vm);
-	}
+      {
+    	  	  if (!is_main)
+    	  	  {
+    	  		  vl_api_send_pending_rpc_requests (vm);
+    	  	  }
+      }
 
       if (!is_main)
-	{
-	  vlib_worker_thread_barrier_check ();
-	  vec_foreach (fqm, tm->frame_queue_mains)
-	    vlib_frame_queue_dequeue (vm, fqm);
-	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
-	    ((void (*)(vlib_main_t *)) vm->worker_thread_main_loop_callback)
-	      (vm);
-	}
+      {
+    	  	  vlib_worker_thread_barrier_check ();
+    	  	  vec_foreach (fqm, tm->frame_queue_mains)
+    	  	  {
+    	  		  vlib_frame_queue_dequeue (vm, fqm);
+    	  	  }
+    	  	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
+    	  	  {
+    	  		  ((void (*)(vlib_main_t *)) vm->worker_thread_main_loop_callback)(vm);
+    	  	  }
+      }
 
       /* Process pre-input nodes. */
       //处理pre-input类型的节点
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
-	cpu_time_now = dispatch_node (vm, n/*待dispatch的节点*/,
+      {
+    	  	  cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_PRE_INPUT,
 				      VLIB_NODE_STATE_POLLING,
 				      /* frame */ 0,
 				      cpu_time_now);
+      }
 
       /* Next process input nodes. */
       //input的nodes处理
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_INPUT])
-	cpu_time_now = dispatch_node (vm, n,
+      {
+    	  	  cpu_time_now = dispatch_node (vm, n,
 				      VLIB_NODE_TYPE_INPUT,
 				      VLIB_NODE_STATE_POLLING,
 				      /* frame */ 0,
 				      cpu_time_now);
+      }
 
       if (PREDICT_TRUE (is_main && vm->queue_signal_pending == 0))
-	vm->queue_signal_callback (vm);
+      {
+    	  	  vm->queue_signal_callback (vm);
+      }
 
       /* Next handle interrupts. */
       {
-	/* unlocked read, for performance */
-	uword l = _vec_len (nm->pending_interrupt_node_runtime_indices);
-	uword i;
-	if (PREDICT_FALSE (l > 0))
-	  {
-	    u32 *tmp;
-	    if (!is_main)
-	      {
-		clib_spinlock_lock (&nm->pending_interrupt_lock);
-		/* Re-read w/ lock held, in case another thread added an item */
-		l = _vec_len (nm->pending_interrupt_node_runtime_indices);
-	      }
+    	  	  /* unlocked read, for performance */
+    	  	  uword l = _vec_len (nm->pending_interrupt_node_runtime_indices);
+    	  	  uword i;
+    	  	  if (PREDICT_FALSE (l > 0))
+    	  	  {
+    	  		  u32 *tmp;
+    	  		  if (!is_main)
+    	  		  {
+    	  			  clib_spinlock_lock (&nm->pending_interrupt_lock);
+    	  			  /* Re-read w/ lock held, in case another thread added an item */
+    	  			  l = _vec_len (nm->pending_interrupt_node_runtime_indices);
+    	  		  }
 
-	    tmp = nm->pending_interrupt_node_runtime_indices;
-	    nm->pending_interrupt_node_runtime_indices =
-	      last_node_runtime_indices;
-	    last_node_runtime_indices = tmp;
-	    _vec_len (last_node_runtime_indices) = 0;
-	    if (!is_main)
-	      clib_spinlock_unlock (&nm->pending_interrupt_lock);
-	    for (i = 0; i < l; i++)
-	      {
-		n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INPUT],
+    	  		  tmp = nm->pending_interrupt_node_runtime_indices;
+    	  		  nm->pending_interrupt_node_runtime_indices =
+    	  				  last_node_runtime_indices;
+    	  		  last_node_runtime_indices = tmp;
+    	  		  _vec_len (last_node_runtime_indices) = 0;
+    	  		  if (!is_main)
+    	  		  {
+    	  			  clib_spinlock_unlock (&nm->pending_interrupt_lock);
+    	  		  }
+    	  		  for (i = 0; i < l; i++)
+    	  		  {
+    	  			  n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INPUT],
 				      last_node_runtime_indices[i]);
-		cpu_time_now =
-		  dispatch_node (vm, n, VLIB_NODE_TYPE_INPUT,
-				 VLIB_NODE_STATE_INTERRUPT,
-				 /* frame */ 0,
-				 cpu_time_now);
-	      }
-	  }
+    	  			  cpu_time_now =
+    	  					  dispatch_node (vm, n, VLIB_NODE_TYPE_INPUT,
+    	  							  VLIB_NODE_STATE_INTERRUPT,
+								  /* frame */ 0,
+								  cpu_time_now);
+    	  		  }
+    	  	  }
       }
       /* Input nodes may have added work to the pending vector.
          Process pending vector until there is nothing left.
          All pending vectors will be processed from input -> output. */
       for (i = 0; i < _vec_len (nm->pending_frames); i++)
-	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
+      {
+    	  	  cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
+      }
       /* Reset pending vector for next iteration. */
       _vec_len (nm->pending_frames) = 0;
 
       if (is_main)
-	{
+      {
           /* *INDENT-OFF* */
           ELOG_TYPE_DECLARE (es) =
             {
@@ -1857,78 +1885,82 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
             };
           /* *INDENT-ON* */
 
-	  struct
-	  {
-	    int nready_procs;
-	  } *ed;
+          struct
+		  {
+        	  	  int nready_procs;
+		  } *ed;
 
-	  /* Check if process nodes have expired from timing wheel. */
-	  ASSERT (nm->data_from_advancing_timing_wheel != 0);
+		  /* Check if process nodes have expired from timing wheel. */
+		  ASSERT (nm->data_from_advancing_timing_wheel != 0);
 
-	  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
-	    ed = ELOG_DATA (&vlib_global_main.elog_main, es);
+		  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
+		  {
+			  ed = ELOG_DATA (&vlib_global_main.elog_main, es);
+		  }
 
-	  nm->data_from_advancing_timing_wheel =
-	    TW (tw_timer_expire_timers_vec)
-	    ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm),
-	     nm->data_from_advancing_timing_wheel);
+		  nm->data_from_advancing_timing_wheel =
+				  TW (tw_timer_expire_timers_vec)
+				  ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm),
+						  nm->data_from_advancing_timing_wheel);
 
-	  ASSERT (nm->data_from_advancing_timing_wheel != 0);
+		  ASSERT (nm->data_from_advancing_timing_wheel != 0);
 
-	  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
-	    {
-	      ed = ELOG_DATA (&vlib_global_main.elog_main, ee);
-	      ed->nready_procs =
-		_vec_len (nm->data_from_advancing_timing_wheel);
-	    }
+		  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
+		  {
+			  ed = ELOG_DATA (&vlib_global_main.elog_main, ee);
+			  ed->nready_procs =
+					  _vec_len (nm->data_from_advancing_timing_wheel);
+		  }
 
-	  if (PREDICT_FALSE
-	      (_vec_len (nm->data_from_advancing_timing_wheel) > 0))
-	    {
-	      uword i;
+		  if (PREDICT_FALSE
+				  (_vec_len (nm->data_from_advancing_timing_wheel) > 0))
+		  {
+			  uword i;
 
-	      for (i = 0; i < _vec_len (nm->data_from_advancing_timing_wheel);
-		   i++)
-		{
-		  u32 d = nm->data_from_advancing_timing_wheel[i];
-		  u32 di = vlib_timing_wheel_data_get_index (d);
+			  for (i = 0; i < _vec_len (nm->data_from_advancing_timing_wheel);
+					  i++)
+			  {
+				  u32 d = nm->data_from_advancing_timing_wheel[i];
+				  u32 di = vlib_timing_wheel_data_get_index (d);
 
-		  if (vlib_timing_wheel_data_is_timed_event (d))
-		    {
-		      vlib_signal_timed_event_data_t *te =
-			pool_elt_at_index (nm->signal_timed_event_data_pool,
-					   di);
-		      vlib_node_t *n =
-			vlib_get_node (vm, te->process_node_index);
-		      vlib_process_t *p =
-			vec_elt (nm->processes, n->runtime_index);
-		      void *data;
-		      data =
-			vlib_process_signal_event_helper (nm, n, p,
-							  te->event_type_index,
-							  te->n_data_elts,
-							  te->n_data_elt_bytes);
-		      if (te->n_data_bytes < sizeof (te->inline_event_data))
-			clib_memcpy_fast (data, te->inline_event_data,
-					  te->n_data_bytes);
-		      else
-			{
-			  clib_memcpy_fast (data, te->event_data_as_vector,
-					    te->n_data_bytes);
-			  vec_free (te->event_data_as_vector);
-			}
-		      pool_put (nm->signal_timed_event_data_pool, te);
-		    }
-		  else
-		    {
-		      cpu_time_now = clib_cpu_time_now ();
-		      cpu_time_now =
-			dispatch_suspended_process (vm, di, cpu_time_now);
-		    }
-		}
-	      _vec_len (nm->data_from_advancing_timing_wheel) = 0;
-	    }
-	}
+				  if (vlib_timing_wheel_data_is_timed_event (d))
+				  {
+					  vlib_signal_timed_event_data_t *te =
+							  pool_elt_at_index (nm->signal_timed_event_data_pool,
+									  di);
+					  vlib_node_t *n =
+							  vlib_get_node (vm, te->process_node_index);
+					  vlib_process_t *p =
+							  vec_elt (nm->processes, n->runtime_index);
+					  void *data;
+					  data =
+							  vlib_process_signal_event_helper (nm, n, p,
+									  te->event_type_index,
+									  te->n_data_elts,
+									  te->n_data_elt_bytes);
+					  if (te->n_data_bytes < sizeof (te->inline_event_data))
+					  {
+						  clib_memcpy_fast (data, te->inline_event_data,
+								  te->n_data_bytes);
+					  }
+					  else
+					  {
+						  clib_memcpy_fast (data, te->event_data_as_vector,
+								  te->n_data_bytes);
+						  vec_free (te->event_data_as_vector);
+					  }
+					  pool_put (nm->signal_timed_event_data_pool, te);
+				  }
+				  else
+				  {
+					  cpu_time_now = clib_cpu_time_now ();
+					  cpu_time_now =
+							  dispatch_suspended_process (vm, di, cpu_time_now);
+				  }
+			  }
+			  _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+		  }
+      }
       vlib_increment_main_loop_counter (vm);
 
       /* Record time stamp in case there are no enabled nodes and above
@@ -2012,38 +2044,45 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   clib_time_init (&vm->clib_time);
 
   /* Turn on event log. */
+  //初始化event log
   if (!vm->elog_main.event_ring_size)
-    vm->elog_main.event_ring_size = 128 << 10;
+  {
+	  vm->elog_main.event_ring_size = 128 << 10;
+  }
   elog_init (&vm->elog_main, vm->elog_main.event_ring_size);
   elog_enable_disable (&vm->elog_main, 1);
 
   /* Default name. */
+  //如果未设置，则为其设置默认名称
   if (!vm->name)
-    vm->name = "VLIB";
+  {
+	  vm->name = "VLIB";
+  }
 
+  //物理内存初始化
   if ((error = vlib_physmem_init (vm)))
-    {
+  {
       clib_error_report (error);
       goto done;
-    }
-
-  if ((error = vlib_buffer_main_init (vm)))
-    {
-      clib_error_report (error);
-      goto done;
-    }
-
-  if ((error = vlib_thread_init (vm)))
-    {
-      clib_error_report (error);
-      goto done;
-    }
+  }
 
   if ((error = vlib_map_stat_segment_init (vm)))
-    {
+  {
       clib_error_report (error);
       goto done;
-    }
+  }
+
+  if ((error = vlib_buffer_main_init (vm)))
+  {
+      clib_error_report (error);
+      goto done;
+  }
+
+  if ((error = vlib_thread_init (vm)))
+  {
+      clib_error_report (error);
+      goto done;
+  }
 
   /* Register static nodes so that init functions may use them. */
   vlib_register_all_static_nodes (vm);
@@ -2051,46 +2090,56 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   /* Set seed for random number generator.
      Allow user to specify seed to make random sequence deterministic. */
   if (!unformat (input, "seed %wd", &vm->random_seed))
+  {
     vm->random_seed = clib_cpu_time_now ();
+  }
   clib_random_buffer_init (&vm->random_buffer, vm->random_seed);
 
   /* Initialize node graph. */
   if ((error = vlib_node_main_init (vm)))
-    {
+  {
       /* Arrange for graph hook up error to not be fatal when debugging. */
       if (CLIB_DEBUG > 0)
-	clib_error_report (error);
+      {
+    	  	  clib_error_report (error);
+      }
       else
-	goto done;
-    }
+      {
+    	  	  goto done;
+      }
+  }
 
   /* Direct call / weak reference, for vlib standalone use-cases */
   if ((error = vpe_api_init (vm)))
-    {
+  {
       clib_error_report (error);
       goto done;
-    }
+  }
 
   if ((error = vlibmemory_init (vm)))
-    {
+  {
       clib_error_report (error);
       goto done;
-    }
+  }
 
   if ((error = map_api_segment_init (vm)))
-    {
+  {
       clib_error_report (error);
       goto done;
-    }
+  }
 
   /* See unix/main.c; most likely already set up */
   //初始化init函数查找的hash表
   if (vm->init_functions_called == 0)
-    vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+  {
+	  vm->init_functions_called = hash_create (0, /* value bytes */ 0);
+  }
 
   //调用所有初始化函数
   if ((error = vlib_call_all_init_functions (vm)))
-    goto done;
+  {
+	  goto done;
+  }
 
   nm->timing_wheel = clib_mem_alloc_aligned (sizeof (TWT (tw_timer_wheel)),
 					     CLIB_CACHE_LINE_BYTES);
@@ -2111,7 +2160,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 
   //记录退出点
   switch (clib_setjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_NONE))
-    {
+  {
     case VLIB_MAIN_LOOP_EXIT_NONE:
       vm->main_loop_exit_set = 1;
       break;
@@ -2122,11 +2171,13 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
     default:
       error = vm->main_loop_error;
       goto done;
-    }
+  }
 
   //调用其它非早期配置函数
   if ((error = vlib_call_all_config_functions (vm, input, 0 /* is_early */ )))
-    goto done;
+  {
+	  goto done;
+  }
 
   /* Call all main loop enter functions. */
   {
@@ -2134,7 +2185,9 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
     clib_error_t *sub_error;
     sub_error = vlib_call_all_main_loop_enter_functions (vm);
     if (sub_error)
+    {
       clib_error_report (sub_error);
+    }
   }
 
   //做主的loop
@@ -2143,7 +2196,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 done:
   /* Call all exit functions. */
   {
-      //触发main_loop离开前钩子函数
+    //触发main_loop离开前钩子函数
     clib_error_t *sub_error;
     sub_error = vlib_call_all_main_loop_exit_functions (vm);
     if (sub_error)
@@ -2151,7 +2204,9 @@ done:
   }
 
   if (error)
+  {
     clib_error_report (error);
+  }
 
   return 0;
 }
@@ -2161,15 +2216,12 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 				      unformat_input_t * input,
 				      vlib_cli_command_t * cmd, int rx_tx)
 {
-#define PCAP_DEF_PKT_TO_CAPTURE (100)
-
   unformat_input_t _line_input, *line_input = &_line_input;
   pcap_main_t *pm = &vm->dispatch_pcap_main;
-  u8 *filename;
-  u8 *chroot_filename = 0;
-  u32 max = 0;
+  u8 *filename = 0;
+  u32 max = 1000;
   int enabled = 0;
-  int errorFlag = 0;
+  int is_error = 0;
   clib_error_t *error = 0;
   u32 node_index, add;
   vlib_trace_main_t *tm;
@@ -2190,7 +2242,7 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	  else
 	    {
 	      vlib_cli_output (vm, "pcap dispatch capture already on...");
-	      errorFlag = 1;
+	      is_error = 1;
 	      break;
 	    }
 	}
@@ -2214,7 +2266,7 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	  else
 	    {
 	      vlib_cli_output (vm, "pcap tx capture already off...");
-	      errorFlag = 1;
+	      is_error = 1;
 	      break;
 	    }
 	}
@@ -2225,7 +2277,7 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	      vlib_cli_output
 		(vm,
 		 "can't change max value while pcap tx capture active...");
-	      errorFlag = 1;
+	      is_error = 1;
 	      break;
 	    }
 	  pm->n_packets_to_capture = max;
@@ -2238,7 +2290,7 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	    {
 	      vlib_cli_output
 		(vm, "can't change file while pcap tx capture active...");
-	      errorFlag = 1;
+	      is_error = 1;
 	      break;
 	    }
 	}
@@ -2283,32 +2335,27 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
 				     format_unformat_error, line_input);
-	  errorFlag = 1;
+	  is_error = 1;
 	  break;
 	}
     }
   unformat_free (line_input);
 
-
-  if (errorFlag == 0)
+  if (is_error == 0)
     {
-      /* Since no error, save configured values. */
-      if (chroot_filename)
-	{
-	  if (pm->file_name)
-	    vec_free (pm->file_name);
-	  vec_add1 (chroot_filename, 0);
-	  pm->file_name = (char *) chroot_filename;
-	}
+      /* Clean up from previous run */
+      vec_free (pm->file_name);
+      vec_free (pm->pcap_data);
 
-      if (max)
-	pm->n_packets_to_capture = max;
+      memset (pm, 0, sizeof (*pm));
+      pm->n_packets_to_capture = max;
 
       if (enabled)
 	{
-	  if (pm->file_name == 0)
-	    pm->file_name = (char *) format (0, "/tmp/dispatch.pcap%c", 0);
+	  if (filename == 0)
+	    filename = format (0, "/tmp/dispatch.pcap%c", 0);
 
+	  pm->file_name = (char *) filename;
 	  pm->n_packets_captured = 0;
 	  pm->packet_type = PCAP_PACKET_TYPE_vpp;
 	  if (pm->lock == 0)
@@ -2317,8 +2364,6 @@ pcap_dispatch_trace_command_internal (vlib_main_t * vm,
 	  vlib_cli_output (vm, "pcap dispatch capture on...");
 	}
     }
-  else if (chroot_filename)
-    vec_free (chroot_filename);
 
   return error;
 }

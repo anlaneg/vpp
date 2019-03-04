@@ -253,14 +253,12 @@ tcp_options_write (u8 * data, tcp_options_t * opts)
   if (tcp_opts_sack (opts))
     {
       int i;
-      u32 n_sack_blocks = clib_min (vec_len (opts->sacks),
-				    TCP_OPTS_MAX_SACK_BLOCKS);
 
-      if (n_sack_blocks != 0)
+      if (opts->n_sack_blocks != 0)
 	{
 	  *data++ = TCP_OPTION_SACK_BLOCK;
-	  *data++ = 2 + n_sack_blocks * TCP_OPTION_LEN_SACK_BLOCK;
-	  for (i = 0; i < n_sack_blocks; i++)
+	  *data++ = 2 + opts->n_sack_blocks * TCP_OPTION_LEN_SACK_BLOCK;
+	  for (i = 0; i < opts->n_sack_blocks; i++)
 	    {
 	      buf = clib_host_to_net_u32 (opts->sacks[i].start);
 	      clib_memcpy_fast (data, &buf, seq_len);
@@ -269,7 +267,7 @@ tcp_options_write (u8 * data, tcp_options_t * opts)
 	      clib_memcpy_fast (data, &buf, seq_len);
 	      data += seq_len;
 	    }
-	  opts_len += 2 + n_sack_blocks * TCP_OPTION_LEN_SACK_BLOCK;
+	  opts_len += 2 + opts->n_sack_blocks * TCP_OPTION_LEN_SACK_BLOCK;
 	}
     }
 
@@ -372,9 +370,13 @@ tcp_make_established_options (tcp_connection_t * tc, tcp_options_t * opts)
       if (vec_len (tc->snd_sacks))
 	{
 	  opts->flags |= TCP_OPTS_FLAG_SACK;
-	  opts->sacks = tc->snd_sacks;
-	  opts->n_sack_blocks = clib_min (vec_len (tc->snd_sacks),
+	  if (tc->snd_sack_pos >= vec_len (tc->snd_sacks))
+	    tc->snd_sack_pos = 0;
+	  opts->sacks = &tc->snd_sacks[tc->snd_sack_pos];
+	  opts->n_sack_blocks = vec_len (tc->snd_sacks) - tc->snd_sack_pos;
+	  opts->n_sack_blocks = clib_min (opts->n_sack_blocks,
 					  TCP_OPTS_MAX_SACK_BLOCKS);
+	  tc->snd_sack_pos += opts->n_sack_blocks;
 	  len += 2 + TCP_OPTION_LEN_SACK_BLOCK * opts->n_sack_blocks;
 	}
     }
@@ -1250,14 +1252,34 @@ tcp_send_acks (tcp_worker_ctx_t * wrk)
     {
       tc = tcp_connection_get (pending_acks[i], thread_index);
       tc->flags &= ~TCP_CONN_SNDACK;
-      n_acks = clib_max (1, tc->pending_dupacks);
+      if (!tc->pending_dupacks)
+	{
+	  tcp_send_ack (tc);
+	  continue;
+	}
+
       /* If we're supposed to send dupacks but have no ooo data
        * send only one ack */
-      if (tc->pending_dupacks && !vec_len (tc->snd_sacks))
-	n_acks = 1;
+      if (!vec_len (tc->snd_sacks))
+	{
+	  tcp_send_ack (tc);
+	  continue;
+	}
+
+      /* Start with first sack block */
+      tc->snd_sack_pos = 0;
+
+      /* Generate enough dupacks to cover all sack blocks. Do not generate
+       * more sacks than the number of packets received. But do generate at
+       * least 3, i.e., the number needed to signal congestion, if needed. */
+      n_acks = vec_len (tc->snd_sacks) / TCP_OPTS_MAX_SACK_BLOCKS;
+      n_acks = clib_min (n_acks, tc->pending_dupacks);
+      n_acks = clib_max (n_acks, clib_min (tc->pending_dupacks, 3));
       for (j = 0; j < n_acks; j++)
 	tcp_send_ack (tc);
+
       tc->pending_dupacks = 0;
+      tc->snd_sack_pos = 0;
     }
   _vec_len (wrk->pending_acks) = 0;
 }
@@ -1318,8 +1340,8 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	return 0;
       *b = vlib_get_buffer (vm, bi);
       data = tcp_init_buffer (vm, *b);
-      n_bytes = stream_session_peek_bytes (&tc->connection, data, offset,
-					   max_deq_bytes);
+      n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
+					    max_deq_bytes);
       ASSERT (n_bytes == max_deq_bytes);
       b[0]->current_length = n_bytes;
       tcp_push_hdr_i (tc, *b, tc->state, /* compute opts */ 0, /* burst */ 0);
@@ -1348,9 +1370,9 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 
       *b = vlib_get_buffer (vm, wrk->tx_buffers[--n_bufs]);
       data = tcp_init_buffer (vm, *b);
-      n_bytes = stream_session_peek_bytes (&tc->connection, data, offset,
-					   bytes_per_buffer -
-					   TRANSPORT_MAX_HDRS_LEN);
+      n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
+					    bytes_per_buffer -
+					    TRANSPORT_MAX_HDRS_LEN);
       b[0]->current_length = n_bytes;
       b[0]->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
       b[0]->total_length_not_including_first_buffer = 0;
@@ -1365,8 +1387,9 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	  chain_b = vlib_get_buffer (vm, chain_bi);
 	  chain_b->current_data = 0;
 	  data = vlib_buffer_get_current (chain_b);
-	  n_peeked = stream_session_peek_bytes (&tc->connection, data,
-						offset + n_bytes, len_to_deq);
+	  n_peeked = session_tx_fifo_peek_bytes (&tc->connection, data,
+						 offset + n_bytes,
+						 len_to_deq);
 	  ASSERT (n_peeked == len_to_deq);
 	  n_bytes += n_peeked;
 	  chain_b->current_length = n_peeked;
@@ -1417,7 +1440,7 @@ tcp_prepare_retransmit_segment (tcp_worker_ctx_t * wrk,
   /*
    * Make sure we can retransmit something
    */
-  available_bytes = session_tx_fifo_max_dequeue (&tc->connection);
+  available_bytes = transport_max_tx_dequeue (&tc->connection);
   ASSERT (available_bytes >= offset);
   available_bytes -= offset;
   if (!available_bytes)
@@ -1694,7 +1717,7 @@ tcp_timer_persist_handler (u32 index)
       || tc->snd_wnd > tc->snd_mss)
     return;
 
-  available_bytes = session_tx_fifo_max_dequeue (&tc->connection);
+  available_bytes = transport_max_tx_dequeue (&tc->connection);
   offset = tc->snd_una_max - tc->snd_una;
 
   /* Reprogram persist if no new bytes available to send. We may have data
@@ -1731,7 +1754,7 @@ tcp_timer_persist_handler (u32 index)
   max_snd_bytes =
     clib_min (tc->snd_mss, tm->bytes_per_buffer - TRANSPORT_MAX_HDRS_LEN);
   n_bytes =
-    stream_session_peek_bytes (&tc->connection, data, offset, max_snd_bytes);
+    session_tx_fifo_peek_bytes (&tc->connection, data, offset, max_snd_bytes);
   b->current_length = n_bytes;
   ASSERT (n_bytes != 0 && (tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT)
 			   || tc->snd_nxt == tc->snd_una_max
@@ -1833,7 +1856,7 @@ tcp_fast_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   sb = &tc->sack_sb;
   hole = scoreboard_get_hole (sb, sb->cur_rxt_hole);
 
-  max_deq = session_tx_fifo_max_dequeue (&tc->connection);
+  max_deq = transport_max_tx_dequeue (&tc->connection);
   max_deq -= tc->snd_una_max - tc->snd_una;
 
   while (snd_space > 0 && n_segs < burst_size)
@@ -1960,7 +1983,7 @@ send_unsent:
   if (snd_space < tc->snd_mss || tc->snd_mss == 0)
     goto done;
 
-  max_deq = session_tx_fifo_max_dequeue (&tc->connection);
+  max_deq = transport_max_tx_dequeue (&tc->connection);
   max_deq -= tc->snd_una_max - tc->snd_una;
   if (max_deq)
     {

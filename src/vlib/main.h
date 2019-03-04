@@ -58,11 +58,21 @@
 #define VLIB_ELOG_MAIN_LOOP 0
 #endif
 
+typedef struct
+{
+  int pcap_enable;
+  u32 pcap_sw_if_index;
+  pcap_main_t pcap_main;
+} vnet_pcap_t;
+
 typedef struct vlib_main_t
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Instruction level timing state. */
   clib_time_t clib_time;
+  /* Offset from main thread time */
+  f64 time_offset;
+  f64 time_last_barrier_release;
 
   /* Time stamp of last node dispatch. */
   u64 cpu_time_last_node_dispatch;
@@ -134,6 +144,15 @@ typedef struct vlib_main_t
   pcap_main_t dispatch_pcap_main;
   uword dispatch_pcap_enable;
   u8 *pcap_buffer;
+
+  /* pcap rx / tx tracing */
+  vnet_pcap_t pcap[VLIB_N_RX_TX];
+
+  int pcap_enable;
+  pcap_main_t pcap_main;
+  u8 *pcap_filename;
+  u32 pcap_sw_if_index;
+  u32 pcap_pkts_to_capture;
 
   /* Error handling. */
   vlib_error_main_t error_main;
@@ -235,7 +254,7 @@ void vlib_worker_loop (vlib_main_t * vm);
 always_inline f64
 vlib_time_now (vlib_main_t * vm)
 {
-  return clib_time_now (&vm->clib_time);
+  return clib_time_now (&vm->clib_time) + vm->time_offset;
 }
 
 always_inline f64

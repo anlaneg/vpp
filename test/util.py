@@ -1,18 +1,20 @@
 """ test framework utilities """
 
+import abc
 import socket
+from socket import AF_INET6
+import six
 import sys
 import os.path
-from abc import abstractmethod, ABCMeta
-from scapy.utils6 import in6_mactoifaceid
 
 from scapy.layers.l2 import Ether
-from scapy.packet import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet6 import IPv6, IPv6ExtHdrFragment, IPv6ExtHdrRouting,\
     IPv6ExtHdrHopByHop
+from scapy.packet import Raw
 from scapy.utils import hexdump
-from socket import AF_INET6
+from scapy.utils6 import in6_mactoifaceid
+
 from io import BytesIO
 from vpp_papi import mac_pton
 
@@ -53,6 +55,7 @@ def ip4n_range(ip4n, s, e):
             for ip in ip4_range(ip4, s, e))
 
 
+# wrapper around scapy library function.
 def mk_ll_addr(mac):
     euid = in6_mactoifaceid(mac)
     addr = "fe80::" + euid
@@ -93,11 +96,9 @@ def check_core_path(logger, core_path):
 
 
 class NumericConstant(object):
-    __metaclass__ = ABCMeta
 
     desc_dict = {}
 
-    @abstractmethod
     def __init__(self, value):
         self._value = value
 

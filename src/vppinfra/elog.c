@@ -194,6 +194,7 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   return l;
 }
 
+//track注册
 word
 elog_track_register (elog_main_t * em, elog_track_t * t)
 {
@@ -475,9 +476,11 @@ elog_nsec_per_clock (elog_main_t * em)
 					    &em->init_time));
 }
 
+//elog申请
 void
 elog_alloc (elog_main_t * em, u32 n_events)
 {
+  //如果已初始化，则释放，并重新初始化
   if (em->event_ring)
     vec_free (em->event_ring);
 
@@ -489,6 +492,7 @@ elog_alloc (elog_main_t * em, u32 n_events)
   vec_resize_aligned (em->event_ring, n_events, CLIB_CACHE_LINE_BYTES);
 }
 
+//elog初始化
 void
 elog_init (elog_main_t * em, u32 n_events)
 {

@@ -114,6 +114,8 @@ _CLIB_MARCH_FN_REGISTRATION(fn)
 clib_march_fn_registration *fn##_march_fn_registrations = 0; \
 _CLIB_MARCH_FN_REGISTRATION(fn)
 #endif
+
+//x86_64位cpu支持的功能flags
 #define foreach_x86_64_flags \
 _ (sse3,     1, ecx, 0)   \
 _ (ssse3,    1, ecx, 9)   \
@@ -187,6 +189,7 @@ clib_get_cpuid (const u32 lev, u32 * eax, u32 * ebx, u32 * ecx, u32 * edx)
 
 
 #define _(flag, func, reg, bit) \
+/*检查cpu是否支持功能flag*/\
 static inline int							\
 clib_cpu_supports_ ## flag()						\
 {									\

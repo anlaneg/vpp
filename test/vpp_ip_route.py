@@ -4,9 +4,9 @@
   object abstractions for representing IP routes in VPP
 """
 
-from vpp_object import *
+from vpp_object import VppObject
 from socket import inet_pton, inet_ntop, AF_INET, AF_INET6
-from vpp_ip import *
+from vpp_ip import DpoProto, VppIpPrefix
 
 # from vnet/vnet/mpls/mpls_types.h
 MPLS_IETF_MAX_LABEL = 0xfffff
@@ -36,7 +36,7 @@ class MplsLspMode:
 
 
 def ip_to_dpo_proto(addr):
-    if addr.version is 6:
+    if addr.version == 6:
         return DpoProto.DPO_PROTO_IP6
     else:
         return DpoProto.DPO_PROTO_IP4
@@ -317,7 +317,6 @@ class VppRoutePath(object):
     def encode(self):
         return {'next_hop': self.nh_addr,
                 'weight': 1,
-                'afi': 0,
                 'preference': 0,
                 'table_id': self.nh_table_id,
                 'next_hop_id': self.next_hop_id,
