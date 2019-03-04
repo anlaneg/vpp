@@ -42,6 +42,7 @@
 #include <vppinfra/hash.h>
 #include <vppinfra/math.h>
 
+//针对em->lock加锁
 static inline void
 elog_lock (elog_main_t * em)
 {
@@ -50,6 +51,7 @@ elog_lock (elog_main_t * em)
       ;
 }
 
+//针对em->lock解锁
 static inline void
 elog_unlock (elog_main_t * em)
 {
@@ -61,6 +63,7 @@ elog_unlock (elog_main_t * em)
 }
 
 /* Non-inline version. */
+//非inline版本，申请一个event
 void *
 elog_event_data (elog_main_t * em,
 		 elog_event_type_t * type, elog_track_t * track, u64 cpu_time)
@@ -69,28 +72,33 @@ elog_event_data (elog_main_t * em,
 }
 
 static void
-new_event_type (elog_main_t * em, uword i)
+new_event_type (elog_main_t * em, uword i/*event_type编号*/)
 {
   elog_event_type_t *t = vec_elt_at_index (em->event_types, i);
 
+  //如果hash未创建，则创建它
   if (!em->event_type_by_format)
     em->event_type_by_format =
       hash_create_vec ( /* size */ 0, sizeof (u8), sizeof (uword));
 
+  //添加此type的format到event type index的映射
   t->type_index_plus_one = i + 1;
   hash_set_mem (em->event_type_by_format, t->format, i);
 }
 
+//查找t对应的event type index,如果查找失败，则创建它
 static uword
 find_or_create_type (elog_main_t * em, elog_event_type_t * t)
 {
+  //通过type format查找event type index
   uword *p = hash_get_mem (em->event_type_by_format, t->format);
   uword i;
 
   if (p)
-    i = p[0];
+    i = p[0];//拿到对应的index
   else
     {
+      //如果未找到对应的type,则创建它
       i = vec_len (em->event_types);
       vec_add1 (em->event_types, t[0]);
       new_event_type (em, i);
@@ -109,6 +117,7 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   elog_lock (em);
 
   /* Multiple simultaneous registration attempts, */
+  //如果t的type索引已赋值，则直接返回
   if (t->type_index_plus_one > 0)
     {
       elog_unlock (em);
@@ -117,6 +126,7 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
 
   l = vec_len (em->event_types);
 
+  //为其设置type索引
   t->type_index_plus_one = 1 + l;
 
   ASSERT (t->format);
@@ -128,25 +138,32 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
       uword i, l;
       char *this_arg;
 
+      //遍历format字符串，取出format指定格式化标识符
       l = strlen (t->format);
       for (i = 0; i < l; i++)
 	{
+      //非%,跳过
 	  if (t->format[i] != '%')
 	    continue;
+	  //最后一个字符为'%'时跳过
 	  if (i + 1 >= l)
 	    continue;
+	  //防止%%转议
 	  if (t->format[i + 1] == '%')	/* %% */
 	    continue;
 
+	  //取格式化符后面的字节
 	  switch (t->format[i + 1])
 	    {
 	    default:
 	    case 'd':
 	    case 'x':
 	    case 'u':
+	      //32位整数
 	      this_arg = "i4";	/* size of u32 */
 	      break;
 	    case 'f':
+	      //
 	      this_arg = "f8";	/* defaults to f64 */
 	      break;
 	    case 's':
@@ -154,19 +171,24 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
 	      break;
 	    }
 
+	  //记录format对应的格式化符号
 	  t->format_args =
 	    (char *) format ((u8 *) t->format_args, "%s", this_arg);
 	}
 
       /* Null terminate. */
+      //添加字符符终止符
       vec_add1 (t->format_args, 0);
     }
 
+  //注册此event type
   vec_add1 (em->event_types, t[0]);
 
+  //使用最后一个位置（即当加入的event type)
   t = em->event_types + l;
 
   /* Make copies of strings for hashing etc. */
+  //构造format参数
   if (t->function)
     t->format = (char *) format (0, "%s %s%c", t->function, t->format, 0);
   else
@@ -175,6 +197,7 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   t->format_args = (char *) format (0, "%s%c", t->format_args, 0);
 
   /* Construct string table. */
+  //构造枚举类型对应的字面值
   {
     uword i;
     t->n_enum_strings = static_type->n_enum_strings;
@@ -219,6 +242,7 @@ elog_track_register (elog_main_t * em, elog_track_t * t)
   return l;
 }
 
+//解析p指出的两位１０进制数字，如果解析成功，结果由number返回，返回消耗的字节数，如果解析失败，结果为０
 static uword
 parse_2digit_decimal (char *p, uword * number)
 {
@@ -226,6 +250,7 @@ parse_2digit_decimal (char *p, uword * number)
   u8 digits[2];
 
   digits[0] = digits[1] = 0;
+  //解析两位的数字
   while (p[i] >= '0' && p[i] <= '9')
     {
       if (i >= 2)
@@ -234,6 +259,7 @@ parse_2digit_decimal (char *p, uword * number)
       i++;
     }
 
+  //发现１或者２位的数字
   if (i >= 1 && i <= 2)
     {
       if (i == 1)
@@ -243,9 +269,12 @@ parse_2digit_decimal (char *p, uword * number)
       return i;
     }
   else
+    //解析失败，返回０
     return 0;
 }
 
+//分析fmt,result中存放format格式串（即％号之后的格式化符号，例如"-2.3ld"，如果result_len长度不足时，仅存放result_len长度个字符）
+//s中保存%之前的数据，返回值为格式化符号最后一个字符到format指针长度
 static u8 *
 fixed_format (u8 * s, char *fmt, char *result, uword * result_len)
 {
@@ -253,46 +282,54 @@ fixed_format (u8 * s, char *fmt, char *result, uword * result_len)
   char *percent;
   uword l = 0;
 
+  //使f指向有效的%符，如果未遇着，则指向'\0'
   while (1)
     {
       if (f[0] == 0)
-	break;
+	break;//空串或者串结束，跳出
       if (f[0] == '%' && f[1] != '%')
-	break;
-      f++;
+	break;//遇着格式化符号，但非%转议，跳出
+      f++;//前移
     }
+
+  //如果遇着%或者遇着‘\0'，则f与fmt之间的字符加入s
   if (f > fmt)
     vec_add (s, fmt, f - fmt);
 
+  //未遇到%号，退出，返回字符串长度
   if (f[0] != '%')
     goto done;
 
   /* Skip percent. */
-  percent = f++;
+  percent = f++;//跳过%号（记录%号位置）
 
   /* Skip possible +-= justification. */
-  f += f[0] == '+' || f[0] == '-' || f[0] == '=';
+  f += f[0] == '+' || f[0] == '-' || f[0] == '=';//跳过对齐方式
 
   /* Skip possible X.Y width. */
-  while ((f[0] >= '0' && f[0] <= '9') || f[0] == '.')
+  while ((f[0] >= '0' && f[0] <= '9') || f[0] == '.')//跳过宽度
     f++;
 
   /* Skip wlL as in e.g. %Ld. */
-  f += f[0] == 'w' || f[0] == 'l' || f[0] == 'L';
+  f += f[0] == 'w' || f[0] == 'l' || f[0] == 'L';//跳过修饰符
 
   /* Finally skip format letter. */
-  f += f[0] != 0;
+  f += f[0] != 0;//跳过format字符，如果有的话
 
+  //选择两者最小的前缀长度，并自％号位置copy，将其填充到result中
   ASSERT (*result_len > f - percent);
   l = clib_min (f - percent, *result_len - 1);
   clib_memcpy (result, percent, l);
   result[l] = 0;
 
 done:
+  //返回前缀长度
   *result_len = f - fmt;
   return s;
 }
 
+//va按收两个参数，1.em 用于提供event元数据;2.e 用于提供对应的event
+//此函数负责按event指定的type解析event数据，并将其格式化为字符串s,并返回
 u8 *
 format_elog_event (u8 * s, va_list * va)
 {
@@ -303,6 +340,7 @@ format_elog_event (u8 * s, va_list * va)
   void *d = (u8 *) e->data;
   char arg_format[64];
 
+  //取event 类型
   t = vec_elt_at_index (em->event_types, e->type);
 
   f = t->format;
@@ -312,9 +350,11 @@ format_elog_event (u8 * s, va_list * va)
       uword n_bytes = 0, n_digits, f_bytes = 0;
 
       f_bytes = sizeof (arg_format);
+      //取格式化符号
       s = fixed_format (s, f, arg_format, &f_bytes);
-      f += f_bytes;
+      f += f_bytes;//准备下一次分析
 
+      //无format参数情况时，f当前一定达到结尾
       if (a == 0 || a[0] == 0)
 	{
 	  /* Format must also be at end. */
@@ -325,6 +365,7 @@ format_elog_event (u8 * s, va_list * va)
       /* Don't go past end of event data. */
       ASSERT (d < (void *) (e->data + sizeof (e->data)));
 
+      //format参数前可能有两位的整数，将其转换为n_bytes
       n_digits = parse_2digit_decimal (a + 1, &n_bytes);
       switch (a[0])
 	{
@@ -336,27 +377,30 @@ format_elog_event (u8 * s, va_list * va)
 	    u64 l = 0;
 
 	    if (n_bytes == 1)
-	      i = ((u8 *) d)[0];
+	      i = ((u8 *) d)[0];//取单字节
 	    else if (n_bytes == 2)
-	      i = clib_mem_unaligned (d, u16);
+	      i = clib_mem_unaligned (d, u16);//取双字节
 	    else if (n_bytes == 4)
-	      i = clib_mem_unaligned (d, u32);
+	      i = clib_mem_unaligned (d, u32);//取4字节
 	    else if (n_bytes == 8)
-	      l = clib_mem_unaligned (d, u64);
+	      l = clib_mem_unaligned (d, u64);//取8字节
 	    else
-	      ASSERT (0);
+	      ASSERT (0);//格式化错误
 	    if (a[0] == 't')
 	      {
+	        //取枚举对应的字符串
 		char *e =
 		  vec_elt (t->enum_strings_vector, n_bytes == 8 ? l : i);
 		s = format (s, arg_format, e);
 	      }
 	    else if (a[0] == 'T')
 	      {
+	        //取字符串表
 		char *e =
 		  vec_elt_at_index (em->string_table, n_bytes == 8 ? l : i);
 		s = format (s, arg_format, e);
 	      }
+	    //按整数格式解析l
 	    else if (n_bytes == 8)
 	      s = format (s, arg_format, l);
 	    else
@@ -396,6 +440,8 @@ format_elog_event (u8 * s, va_list * va)
   return s;
 }
 
+//按收3个参数;1.em 用于提供event元数据;2.e 对应的event
+//用于输出event对应的track名称
 u8 *
 format_elog_track_name (u8 * s, va_list * va)
 {
@@ -421,6 +467,7 @@ format_elog_track (u8 * s, va_list * args)
   {
     if (e->track != track_index)
       continue;
+    //按格式输出event发生时的时间＋dt,输出event对应的格式后字符串
     s = format (s, "%U%18.9f: %U\n", format_white_space, indent, e->time + dt,
 		format_elog_event, em, e);
   }
@@ -428,6 +475,7 @@ format_elog_track (u8 * s, va_list * args)
   return s;
 }
 
+//获取当前时间填充et
 void
 elog_time_now (elog_time_stamp_t * et)
 {
@@ -455,17 +503,20 @@ elog_time_now (elog_time_stamp_t * et)
   et->os_nsec = os_time_now_nsec;
 }
 
+//os时间差
 always_inline i64
 elog_time_stamp_diff_os_nsec (elog_time_stamp_t * t1, elog_time_stamp_t * t2)
 {
   return (i64) t1->os_nsec - (i64) t2->os_nsec;
 }
 
+//cpu时间差
 always_inline i64
 elog_time_stamp_diff_cpu (elog_time_stamp_t * t1, elog_time_stamp_t * t2)
 {
   return (i64) t1->cpu - (i64) t2->cpu;
 }
+
 
 always_inline f64
 elog_nsec_per_clock (elog_main_t * em)
@@ -476,7 +527,7 @@ elog_nsec_per_clock (elog_main_t * em)
 					    &em->init_time));
 }
 
-//elog申请
+//elog空间申请
 void
 elog_alloc (elog_main_t * em, u32 n_events)
 {
@@ -500,6 +551,7 @@ elog_init (elog_main_t * em, u32 n_events)
 
   em->lock = 0;
 
+  //申请支持n_events个时间的elog
   if (n_events > 0)
     elog_alloc (em, n_events);
 
@@ -515,6 +567,7 @@ elog_init (elog_main_t * em, u32 n_events)
 }
 
 /* Returns number of events in ring and start index. */
+//返回ring中总事件数目，及起始索引
 static uword
 elog_event_range (elog_main_t * em, uword * lo)
 {
@@ -522,6 +575,7 @@ elog_event_range (elog_main_t * em, uword * lo)
   u64 i = em->n_total_events;
 
   /* Ring never wrapped? */
+  //当前事件数量未达或已达到最大值
   if (i <= (u64) l)
     {
       if (lo)
@@ -530,30 +584,38 @@ elog_event_range (elog_main_t * em, uword * lo)
     }
   else
     {
+      //事件数量超过l时，取余求首个位置
       if (lo)
 	*lo = i & (l - 1);
       return l;
     }
 }
 
+//自em中peek所有事件（仅peek,不出队）
 elog_event_t *
 elog_peek_events (elog_main_t * em)
 {
   elog_event_t *e, *f, *es = 0;
   uword i, j, n;
 
+  //获取事件数目，及左侧索引j
   n = elog_event_range (em, &j);
   for (i = 0; i < n; i++)
     {
-      vec_add2 (es, e, 1);
+      vec_add2 (es, e, 1);//空间申请
+
+      //获取j号元素
       f = vec_elt_at_index (em->event_ring, j);
+      //将j号元素给值给e
       e[0] = f[0];
 
       /* Convert absolute time from cycles to seconds from start. */
+      //时间设置
       e->time =
 	(e->time_cycles -
 	 em->init_time.cpu) * em->cpu_timer.seconds_per_clock;
 
+      //指向下一个元素
       j = (j + 1) & (em->event_ring_size - 1);
     }
 
@@ -561,6 +623,7 @@ elog_peek_events (elog_main_t * em)
 }
 
 /* Add a formatted string to the string table. */
+//向em->string_table中添加一个格式化后的字符串
 u32
 elog_string (elog_main_t * em, char *fmt, ...)
 {
@@ -579,6 +642,7 @@ elog_string (elog_main_t * em, char *fmt, ...)
   return offset;
 }
 
+//提取em中event设置在em->events
 elog_event_t *
 elog_get_events (elog_main_t * em)
 {
@@ -603,18 +667,20 @@ maybe_fix_string_table_offset (elog_event_t * e,
     {
       uword n_bytes = 0, n_digits;
 
+      //遇到字符串终止符，退出
       if (a[0] == 0)
 	break;
 
       /* Don't go past end of event data. */
       ASSERT (d < (void *) (e->data + sizeof (e->data)));
 
+      //获取2位的整数，解释为参数位宽
       n_digits = parse_2digit_decimal (a + 1, &n_bytes);
       switch (a[0])
 	{
 	case 'T':
 	  ASSERT (n_bytes == 4);
-	  clib_mem_unaligned (d, u32) += offset;
+	  clib_mem_unaligned (d, u32) += offset;//按类型跳offset
 	  break;
 
 	case 'i':
@@ -629,11 +695,12 @@ maybe_fix_string_table_offset (elog_event_t * e,
 	}
 
       ASSERT (n_digits > 0 && n_digits <= 2);
-      a += 1 + n_digits;
-      d += n_bytes;
+      a += 1 + n_digits;//跳过参数
+      d += n_bytes;//跳过
     }
 }
 
+//两个event比较
 static int
 elog_cmp (void *a1, void *a2)
 {
@@ -669,13 +736,15 @@ elog_merge (elog_main_t * dst, u8 * dst_tag, elog_main_t * src, u8 * src_tag,
   elog_get_events (src);
   elog_get_events (dst);
 
+  //dst对应的字符表大小
   string_table_offset_for_src_events = vec_len (dst->string_table);
-  vec_append (dst->string_table, src->string_table);
+  vec_append (dst->string_table, src->string_table);//合入字符表
 
   l = vec_len (dst->events);
-  vec_append (dst->events, src->events);
+  vec_append (dst->events, src->events);//合入event
 
   /* Prepend the supplied tag (if any) to all dst track names */
+  //更新dst的tracks名称
   if (dst_tag)
     {
       for (i = 0; i < vec_len (dst->tracks); i++)
@@ -692,9 +761,11 @@ elog_merge (elog_main_t * dst, u8 * dst_tag, elog_main_t * src, u8 * src_tag,
   /*
    * Remember where we started allocating new tracks while merging
    */
+  //src对应的tracks表大小
   track_offset_for_src_tracks = vec_len (dst->tracks);
 
   /* Copy / tag source tracks */
+  //更新src tracks的名称，并将其注册进dst中
   for (i = 0; i < vec_len (src->tracks); i++)
     {
       elog_track_t *t = vec_elt_at_index (src->tracks, i);
@@ -819,6 +890,7 @@ elog_merge (elog_main_t * dst, u8 * dst_tag, elog_main_t * src, u8 * src_tag,
   }
 }
 
+//将elog event打成串
 static void
 serialize_elog_event (serialize_main_t * m, va_list * va)
 {
@@ -880,6 +952,7 @@ serialize_elog_event (serialize_main_t * m, va_list * va)
     }
 }
 
+//将串解成elog event
 static void
 unserialize_elog_event (serialize_main_t * m, va_list * va)
 {
@@ -984,6 +1057,7 @@ unserialize_elog_event (serialize_main_t * m, va_list * va)
     }
 }
 
+//将elog event type打成串
 static void
 serialize_elog_event_type (serialize_main_t * m, va_list * va)
 {

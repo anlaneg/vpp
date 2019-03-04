@@ -67,7 +67,7 @@ typedef struct
   };
 
   /** Event type index. */
-  u16 type;
+  u16 type;//类型索引
 
   /** Track for this event.  Tracks allow events to be sorted and
      displayed by track.  Think of 2 dimensional display with time and
@@ -75,17 +75,17 @@ typedef struct
   u16 track;
 
   /** 20-bytes of data follows, pads to 32 bytes. */
-  u8 data[20];
+  u8 data[20];//event对应的数据，其由event_type对应的format进行解释
 } elog_event_t;
 
 typedef struct
 {
   /** Type index plus one assigned to this type.
      This is used to mark type as seen. */
-  u32 type_index_plus_one;
+  u32 type_index_plus_one;//type_index加１
 
   /** String table as a vector constructed when type is registered. */
-  char **enum_strings_vector;
+  char **enum_strings_vector;//构造的枚举字符串vector
 
   /** Format string. (example: "my-event (%d,%d)"). */
   char *format;
@@ -97,16 +97,16 @@ typedef struct
      't' means argument is an index into enum string table for this type.
      'e' is a float,
      'f' is a double. */
-  char *format_args;
+  char *format_args;//指出参数格式
 
   /** Function name generating event. */
   char *function;
 
   /** Number of elements in string enum table. */
-  u32 n_enum_strings;
+  u32 n_enum_strings;//枚举字符串数目
 
   /** String table for enum/number to string formatting. */
-  char *enum_strings[];
+  char *enum_strings[];//数字对应的字符串
 } elog_event_type_t;
 
 typedef struct
@@ -122,10 +122,10 @@ typedef struct
 typedef struct
 {
   /** CPU cycle counter. */
-  u64 cpu;
+  u64 cpu;//cpu cycle计数，例如rdtsc指令
 
   /** OS timer in nano secs since epoch 3/30/2017, see elog_time_now() */
-  u64 os_nsec;
+  u64 os_nsec;//os时间
 } elog_time_stamp_t;
 
 typedef struct
@@ -148,10 +148,10 @@ typedef struct
   elog_event_t *event_ring;//存放event的buffer
 
   /** Vector of event types. */
-  elog_event_type_t *event_types;
+  elog_event_type_t *event_types;//记录所有event type
 
   /** Hash table mapping type format to type index. */
-  uword *event_type_by_format;
+  uword *event_type_by_format;//通过format索引event type index
 
   /** Events may refer to strings in string table. */
   char *string_table;
@@ -169,14 +169,14 @@ typedef struct
   elog_time_stamp_t init_time/*初始化时间*/, serialize_time;
 
   /** SMP lock, non-zero means locking required */
-  uword *lock;
+  uword *lock;//非０时需要加锁
 
   /** Use serialize_time and init_time to give estimate for
       cpu clock frequency. */
   f64 nsec_per_cpu_clock;
 
   /** Vector of events converted to generic form after collection. */
-  elog_event_t *events;
+  elog_event_t *events;//记录peek到的event
 } elog_main_t;
 
 /** @brief Return number of events in the event-log buffer
@@ -286,6 +286,7 @@ elog_is_enabled (elog_main_t * em)
     @param cpu_time u64 current cpu tick value
     @returns event to be filled in
 */
+//申请一个event
 always_inline void *
 elog_event_data_inline (elog_main_t * em,
 			elog_event_type_t * type,
@@ -299,6 +300,7 @@ elog_event_data_inline (elog_main_t * em,
   if (PREDICT_FALSE (!elog_is_enabled (em)))
     return em->dummy_event.data;
 
+  //如添加，则相应的type,track索引取值
   type_index = (word) type->type_index_plus_one - 1;
   track_index = (word) track->track_index_plus_one - 1;
   if (PREDICT_FALSE ((type_index | track_index) < 0))
@@ -312,13 +314,15 @@ elog_event_data_inline (elog_main_t * em,
   ASSERT (track_index < vec_len (em->tracks));
   ASSERT (is_pow2 (vec_len (em->event_ring)));
 
+  //分配event index
   if (em->lock)
     ei = clib_atomic_fetch_add (&em->n_total_events, 1);
   else
     ei = em->n_total_events++;
 
   ei &= em->event_ring_size - 1;
-  e = vec_elt_at_index (em->event_ring, ei);//在ei位置添加event
+  //分配ei位置对应的event（申请）
+  e = vec_elt_at_index (em->event_ring, ei);
 
   //填充event
   e->time_cycles = cpu_time;
@@ -396,10 +400,12 @@ always_inline void
 elog_track (elog_main_t * em, elog_event_type_t * type, elog_track_t * track,
 	    u32 data)
 {
+    //申请一个event
   u32 *d = elog_event_data_not_inline (em,
 				       type,
 				       track,
 				       clib_cpu_time_now ());
+  //设置event数据为data
   d[0] = data;
 }
 

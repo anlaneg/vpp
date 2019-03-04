@@ -312,6 +312,7 @@ vlib_thread_init (vlib_main_t * vm)
     }
   else
     {
+      //将当前线程绑定在tm->main_lcore对应的cpu上
       cpu_set_t cpuset;
       CPU_ZERO (&cpuset);
       CPU_SET (tm->main_lcore, &cpuset);
@@ -332,6 +333,7 @@ vlib_thread_init (vlib_main_t * vm)
   w->thread_id = pthread_self ();
   tm->n_vlib_mains = 1;
 
+  //设置线程的调度策略
   if (tm->sched_policy != ~0)
     {
       struct sched_param sched_param;
@@ -370,13 +372,16 @@ vlib_thread_init (vlib_main_t * vm)
 
       if (tr->coremask)
 	{
+      //指明了要使用的cpu
 	  uword c;
           /* *INDENT-OFF* */
           clib_bitmap_foreach (c, tr->coremask, ({
+              //检查要求的cpu c是否位于有效cpu集合中
             if (clib_bitmap_get(avail_cpu, c) == 0)
               return clib_error_return (0, "cpu %u is not available to be used"
                                         " for the '%s' thread",c, tr->name);
 
+            //指明标号为c的cpu被拿走
             avail_cpu = clib_bitmap_set(avail_cpu, c, 0);
           }));
 /* *INDENT-ON* */
@@ -384,6 +389,7 @@ vlib_thread_init (vlib_main_t * vm)
 	}
       else
 	{
+      //没有指明要占用的cpu,但指明了要占用cpu的数目，按顺序为其设置cpu掩码
 	  for (j = 0; j < tr->count; j++)
 	    {
 	      uword c = clib_bitmap_first_set (avail_cpu);
@@ -393,6 +399,7 @@ vlib_thread_init (vlib_main_t * vm)
 					  " the '%s' thread", tr->name);
 
 	      avail_cpu = clib_bitmap_set (avail_cpu, c, 0);
+	      //设置分配的cpu掩码
 	      tr->coremask = clib_bitmap_set (tr->coremask, c, 1);
 	    }
 	}
@@ -408,6 +415,7 @@ vlib_thread_init (vlib_main_t * vm)
   return 0;
 }
 
+//申请frame queue
 vlib_frame_queue_t *
 vlib_frame_queue_alloc (int nelts)
 {
@@ -417,10 +425,12 @@ vlib_frame_queue_alloc (int nelts)
   clib_memset (fq, 0, sizeof (*fq));
   fq->nelts = nelts;
   fq->vector_threshold = 128;	// packets
+  //扩展fq->elts数组大小
   vec_validate_aligned (fq->elts, nelts - 1, CLIB_CACHE_LINE_BYTES);
 
   if (1)
     {
+      //对齐检查
       if (((uword) & fq->tail) & (CLIB_CACHE_LINE_BYTES - 1))
 	fformat (stderr, "WARNING: fq->tail unaligned\n");
       if (((uword) & fq->head) & (CLIB_CACHE_LINE_BYTES - 1))
@@ -433,6 +443,7 @@ vlib_frame_queue_alloc (int nelts)
 		 sizeof (fq->elts[0]));
       if (nelts & (nelts - 1))
 	{
+          //nelts必须为２的Ｎ次方
 	  fformat (stderr, "FATAL: nelts MUST be a power of 2\n");
 	  abort ();
 	}
@@ -1279,6 +1290,7 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 
   tr = tm->next;
 
+  //填充名称到tr的hash表
   while (tr)
     {
       hash_set_mem (tm->thread_registrations_by_name, tr->name, (uword) tr);
@@ -1287,6 +1299,7 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
+      //指明使用pthread
       if (unformat (input, "use-pthreads"))
 	tm->use_pthreads = 1;
       else if (unformat (input, "thread-prefix %v", &tm->thread_prefix))
@@ -1801,6 +1814,7 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
   for (i = 0; i < tm->n_vlib_mains; i++)
     {
       vlib_frame_queue_per_thread_data_t *ptd;
+      //申请可容纳frame_queue_nelts个元素的frame queue
       fq = vlib_frame_queue_alloc (frame_queue_nelts);
       vec_add1 (fqm->vlib_frame_queues, fq);
 

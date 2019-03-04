@@ -934,10 +934,12 @@ vlib_elog_main_loop_event (vlib_main_t * vm,
 	   (evm->elog_trace_graph_circuit &&
 	    node_index == evm->elog_trace_graph_circuit_node_index)))
 	{
+          //添加event,并设置其event数据为n_vectors
 	  elog_track (em,
 		      /* event type */
+	          //按node索引取event type
 		      vec_elt_at_index (is_return
-					? evm->node_return_elog_event_types
+					? evm->node_return_elog_event_types //return时event type
 					: evm->node_call_elog_event_types,
 					node_index),
 		      /* track */
@@ -1019,8 +1021,10 @@ format_buffer_metadata (u8 * s, va_list * args)
   return s;
 }
 
+//向pcap_buffer中加入数据X
 #define A(x) vec_add1(vm->pcap_buffer, (x))
 
+//走pcap trace，将报文加入到vm->pcap_buffer中
 static void
 dispatch_pcap_trace (vlib_main_t * vm,
 		     vlib_node_runtime_t * node, vlib_frame_t * frame)
@@ -1041,14 +1045,18 @@ dispatch_pcap_trace (vlib_main_t * vm,
   if (frame == 0 || frame->n_vectors == 0)
     return;
 
+  //取报文的buffer index数组，并将其转换为buffer指针
   from = vlib_frame_vector_args (frame);
   vlib_get_buffers (vm, from, bufs, frame->n_vectors);
   bufp = bufs;
 
+  //取对应的node
   n = vlib_get_node (vm, node->node_index);
 
+  //遍历每个报文
   for (i = 0; i < frame->n_vectors; i++)
     {
+      //需要capture的报文少于需要capture的报文时进入
       if (PREDICT_TRUE (pm->n_packets_captured < pm->n_packets_to_capture))
 	{
 	  b = bufp[i];
@@ -1056,6 +1064,7 @@ dispatch_pcap_trace (vlib_main_t * vm,
 	  vec_reset_length (vm->pcap_buffer);
 	  string_count = 0;
 
+	  //将packet加入到vm->pcap_buffer中
 	  /* Version, flags */
 	  A ((u8) VLIB_PCAP_MAJOR_VERSION);
 	  A ((u8) VLIB_PCAP_MINOR_VERSION);
@@ -1131,9 +1140,9 @@ dispatch_pcap_trace (vlib_main_t * vm,
 //节点调度
 static_always_inline u64
 dispatch_node (vlib_main_t * vm,
-	       vlib_node_runtime_t * node,
-	       vlib_node_type_t type,
-	       vlib_node_state_t dispatch_state,
+	       vlib_node_runtime_t * node/*要调度的node*/,
+	       vlib_node_type_t type/*要调度的node类型*/,
+	       vlib_node_state_t dispatch_state/*待调度节点的状态*/,
 	       vlib_frame_t * frame, u64 last_time_stamp)
 {
   uword n, v;
@@ -1142,22 +1151,22 @@ dispatch_node (vlib_main_t * vm,
   vlib_next_frame_t *nf;
   u64 pmc_before[2], pmc_after[2], pmc_delta[2];
 
+  //断言node->node_index号node的类型为$type
   if (CLIB_DEBUG > 0)
     {
       vlib_node_t *n = vlib_get_node (vm, node->node_index);
-      //断言node->node_index号node的类型为$type
       ASSERT (n->type == type);
     }
 
   /* Only non-internal nodes may be disabled. */
-  //状态与预期不同，则直接返回（仅非internal状态检查）
+  //如果非VLIB_NODE_TYPE_INTERNAL类型的node,则不调度与期待状态不符的node
   if (type != VLIB_NODE_TYPE_INTERNAL && node->state != dispatch_state)
     {
       ASSERT (type != VLIB_NODE_TYPE_INTERNAL);
       return last_time_stamp;
     }
 
-  //pre-input,input非interrupt时，每N次进入调用一次
+  //pre-input,input类型的node,非interrupt时，仅在node->input_main_loops_per_call为0时调度
   if ((type == VLIB_NODE_TYPE_PRE_INPUT || type == VLIB_NODE_TYPE_INPUT)
       && dispatch_state != VLIB_NODE_STATE_INTERRUPT)
     {
@@ -1172,6 +1181,7 @@ dispatch_node (vlib_main_t * vm,
     }
 
   /* Speculatively prefetch next frames. */
+  //如果node有后续节点，预取next frames
   if (node->n_next_nodes > 0)
     {
       nf = vec_elt_at_index (nm->next_frames, node->next_frame_index);
@@ -1181,7 +1191,7 @@ dispatch_node (vlib_main_t * vm,
   vm->cpu_time_last_node_dispatch = last_time_stamp;
 
   vlib_elog_main_loop_event (vm, node->node_index,
-			     last_time_stamp, frame ? frame->n_vectors : 0,
+			     last_time_stamp, frame ? frame->n_vectors : 0/*frame数目*/,
 			     /* is_after */ 0);
 
   vlib_node_runtime_perf_counter (vm, &pmc_before[0], &pmc_before[1]);
@@ -1195,14 +1205,18 @@ dispatch_node (vlib_main_t * vm,
     {
       int i;
       u32 *from;
+
+     //取buffer index数组，执行trajectory_trace回调
       from = vlib_frame_vector_args (frame);
       for (i = 0; i < frame->n_vectors; i++)
 	{
 	  vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
 	  add_trajectory_trace (b, node->node_index);
 	}
+      //如果开启了pcap,则执行pcap流程
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
 	dispatch_pcap_trace (vm, node, frame);
+
       //走node的function调用
       n = node->function (vm, node, frame);
     }
@@ -1210,6 +1224,7 @@ dispatch_node (vlib_main_t * vm,
     {
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
 	dispatch_pcap_trace (vm, node, frame);
+
       //走node的function调用
       n = node->function (vm, node, frame);
     }
@@ -1267,7 +1282,7 @@ dispatch_node (vlib_main_t * vm,
 	  !(node->flags &
 	    VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE))
 	{
-      //取相应的node
+      //取相应的node，将其更新为polling状态
 	  vlib_node_t *n = vlib_get_node (vm, node->node_index);
 	  n->state = VLIB_NODE_STATE_POLLING;
 	  node->state = VLIB_NODE_STATE_POLLING;
@@ -1571,7 +1586,7 @@ dispatch_process (vlib_main_t * vm,
       n_vectors = 0;
 
       //将process记录在suspended集合中
-      pool_get (nm->suspended_process_frames, pf);
+      pool_get (nm->suspended_process_frames, pf);//自pool内分配一个pf
       pf->node_runtime_index = node->runtime_index;
       pf->frame_index = f ? vlib_frame_index (vm, f) : ~0;
       pf->next_frame_index = ~0;
@@ -1764,7 +1779,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   {
       uword i;
       nm->current_process_index = ~0;
-      //顺序运行
+      //node注册时，已完成process生成，这里顺序运行
       for (i = 0; i < vec_len (nm->processes); i++)
       {
 	      cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
@@ -2026,6 +2041,7 @@ _(vpe_api_init)                                 \
 _(vlibmemory_init)                              \
 _(map_api_segment_init)
 
+//定义空的foreach_weak_reference_stub所有函数
 #define _(name)                                                 \
 clib_error_t *name (vlib_main_t *vm) __attribute__((weak));     \
 clib_error_t *name (vlib_main_t *vm) { return 0; }
@@ -2085,6 +2101,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   }
 
   /* Register static nodes so that init functions may use them. */
+  //所有nodes注册
   vlib_register_all_static_nodes (vm);
 
   /* Set seed for random number generator.

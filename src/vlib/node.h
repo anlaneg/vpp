@@ -469,10 +469,10 @@ vlib_next_frame_init (vlib_next_frame_t * nf)
 typedef struct
 {
   /* Node and runtime for this frame. */
-  u32 node_runtime_index;
+  u32 node_runtime_index;//node对应的index
 
   /* Frame index (in the heap). */
-  u32 frame_index;
+  u32 frame_index;//对应的frame buffer index
 
   /* Start of next frames for this node. */
   u32 next_frame_index;
@@ -523,6 +523,7 @@ typedef struct vlib_node_runtime_t
 					  called.  Allows some input nodes to
 					  be called more than others. */
 
+  //保存上一次dispatch此node时main loop的计数
   u32 main_loop_count_last_dispatch;	/**< Saved main loop counter of last
 					  dispatch of this node. */
 
@@ -580,6 +581,7 @@ typedef struct
 
 //返回此值时继续调用function
 #define VLIB_PROCESS_RETURN_LONGJMP_RETURN ((uword) ~0 - 0)
+//返回此值时此process将被挂起
 #define VLIB_PROCESS_RETURN_LONGJMP_SUSPEND ((uword) ~0 - 1)
 
   /* Where to longjmp to resume node after suspend. */
@@ -602,7 +604,7 @@ typedef struct
   u32 suspended_process_frame_index;//挂起进程frame索引
 
   /* Number of times this process was suspended. */
-  u32 n_suspends;//被挂起数目
+  u32 n_suspends;//被挂起的次数
 
   /* Vectors of pending event data indexed by event type index. */
   void **pending_event_data_by_type_index;
@@ -761,7 +763,7 @@ typedef struct
 
   /* Vector of process nodes.
      One for each node of type VLIB_NODE_TYPE_PROCESS. */
-  vlib_process_t **processes;
+  vlib_process_t **processes;//node注册时，将所有process类型的node创建相应的process
 
   /* Current running process or ~0 if no process running. */
   //记录当前正在运行的process

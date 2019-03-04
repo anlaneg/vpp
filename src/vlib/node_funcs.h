@@ -249,6 +249,7 @@ vlib_frame_no_append (vlib_frame_t * f)
   f->frame_flags |= VLIB_FRAME_NO_APPEND;
 }
 
+//将f转换为frame index
 always_inline u32
 vlib_frame_index (vlib_main_t * vm, vlib_frame_t * f)
 {
@@ -1074,14 +1075,20 @@ vlib_node_runtime_update_main_loop_vector_stats (vlib_main_t * vm,
   u32 i0, i1;
 
   ASSERT (is_pow2 (ARRAY_LEN (node->main_loop_vector_stats)));
+  //将main_loop_count映射到main_loop_vector_stats索引上
   i = ((vm->main_loop_count >> VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE)
        & (ARRAY_LEN (node->main_loop_vector_stats) - 1));
-  i0 = i ^ 0;
-  i1 = i ^ 1;
+
+  i0 = i ^ 0;//如果i尾部为1，则i0为1，否则0
+  i1 = i ^ 1;//如果i尾部为1，则i1为0，否则1
+
+  //main_loop_count_last_dispatch中记录的是上次dispatch此node时main_loop_count,计算两者之间的间隔
   d = ((vm->main_loop_count >> VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE)
        -
        (node->main_loop_count_last_dispatch >>
 	VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE));
+
+  //
   vi0 = node->main_loop_vector_stats[i0];
   vi1 = node->main_loop_vector_stats[i1];
   vi0 = d == 0 ? vi0 : 0;

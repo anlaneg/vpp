@@ -107,7 +107,7 @@ typedef struct
   const char *barrier_context;
   volatile u32 *node_reforks_required;
 
-  long lwp;
+  long lwp;//线程的标识符，通过gettid系统调用获得
   int cpu_id;//线程使用的cpu
   int core_id;//cpu_id对应的core_id
   int socket_id;//cpu_id对应的socket_id
@@ -141,7 +141,7 @@ typedef struct
 
   /* read-only, constant, shared */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline3);
-  vlib_frame_queue_elt_t *elts;//队列指针
+  vlib_frame_queue_elt_t *elts;//队列指针，指向缓冲区（vector)
   u32 nelts;//队列大小
 }
 vlib_frame_queue_t;
@@ -158,7 +158,8 @@ typedef struct
   u32 frame_queue_nelts;
   u32 queue_hi_thresh;
 
-  vlib_frame_queue_t **vlib_frame_queues;//按线程索引frame队列
+  //保存多个frame_queue的指针，属于frame_queue_main的队列
+  vlib_frame_queue_t **vlib_frame_queues;
   vlib_frame_queue_per_thread_data_t *per_thread_data;
 
   /* for frame queue tracing */
@@ -289,9 +290,9 @@ typedef struct
   vlib_thread_registration_t *next;//注册thread对应的初始化，例如创建新的线程
 
   /* Vector of registrations, w/ non-data-structure clones at the top */
-  vlib_thread_registration_t **registrations;
+  vlib_thread_registration_t **registrations;//收集所有的thread_registration
 
-  uword *thread_registrations_by_name;
+  uword *thread_registrations_by_name;//名称到vlib_thread_registration_t的索引hashtable
 
   vlib_worker_thread_t *worker_threads;
 
@@ -299,7 +300,7 @@ typedef struct
    * Launch all threads as pthreads,
    * not eal_rte_launch (strict affinity) threads
    */
-  int use_pthreads;
+  int use_pthreads;//指明是否使用pthread库
 
   /* Number of vlib_main / vnet_main clones */
   u32 n_vlib_mains;//vm数量
@@ -308,34 +309,34 @@ typedef struct
   u32 n_thread_stacks;
 
   /* Number of pthreads */
-  u32 n_pthreads;
+  u32 n_pthreads;//pthread线程数
 
   /* Number of threads */
-  u32 n_threads;
+  u32 n_threads;//非pthread线程数
 
   /* Number of cores to skip, must match the core mask */
   u32 skip_cores;//需要跳过的core数目，将自第一个有效cpu开始跳过
 
   /* Thread prefix name */
-  u8 *thread_prefix;
+  u8 *thread_prefix;//线程名称前缀
 
   /* main thread lcore */
-  u32 main_lcore;
+  u32 main_lcore;//主线程占用的core
 
   /* Bitmap of available CPU cores */
   uword *cpu_core_bitmap;
 
   /* Bitmap of available CPU sockets (NUMA nodes) */
-  uword *cpu_socket_bitmap;
+  uword *cpu_socket_bitmap;//在线node的bitmap
 
   /* Worker handoff queues */
-  vlib_frame_queue_main_t *frame_queue_mains;
+  vlib_frame_queue_main_t *frame_queue_mains;//用于管理队列
 
   /* worker thread initialization barrier */
   volatile u32 worker_thread_release;
 
   /* scheduling policy */
-  u32 sched_policy;
+  u32 sched_policy;//线程调度策略
 
   /* scheduling policy priority */
   u32 sched_priority;

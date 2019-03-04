@@ -81,7 +81,7 @@ typedef struct vlib_main_t
   u64 cpu_time_main_loop_start;
 
   /* Incremented once for each main loop. */
-  u32 main_loop_count;
+  u32 main_loop_count;//每main loop一次，则增加1
 
   /* Count of vectors processed this main loop. */
   u32 main_loop_vectors_processed;//已处理的统计计数
@@ -179,8 +179,8 @@ typedef struct vlib_main_t
   u32 elog_trace_graph_circuit_node_index;
 
   /* Node call and return event types. */
-  elog_event_type_t *node_call_elog_event_types;
-  elog_event_type_t *node_return_elog_event_types;
+  elog_event_type_t *node_call_elog_event_types;//调用时的event type(按node index索引）
+  elog_event_type_t *node_return_elog_event_types;//return时的event type(按node index索引）
 
   elog_event_type_t *error_elog_event_types;
 
@@ -358,6 +358,7 @@ vlib_increment_main_loop_counter (vlib_main_t * vm)
 {
   u32 i, c, n, v, is_wrap;
 
+  //记录main_loop的次数
   c = vm->main_loop_count++;
 
   is_wrap = (c & pow2_mask (VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE)) == 0;

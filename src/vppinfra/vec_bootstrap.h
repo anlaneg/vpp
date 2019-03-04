@@ -184,6 +184,7 @@ vec_aligned_header_end (void *v, uword header_bytes, uword align)
 #define vec_elt_at_index(v,i)			\
 ({						\
   ASSERT ((i) < vec_len (v));			\
+  /*取vector中第i个元素*/\
   (v) + (i);					\
 })
 

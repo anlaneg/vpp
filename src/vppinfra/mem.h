@@ -121,7 +121,7 @@ clib_mem_alloc_aligned_at_offset (uword size, uword align/*按align字节进行�
   p = mspace_get_aligned (heap, size, align, align_offset);
   if (PREDICT_FALSE (p == 0))
     {
-      //申请内存失败
+      //申请内存失败,如果需要调用os_out_of_memory报错，则调用
       if (os_out_of_memory_on_failure)
 	os_out_of_memory ();
       return 0;

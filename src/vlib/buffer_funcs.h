@@ -209,7 +209,7 @@ vlib_get_buffers_with_offset (vlib_main_t * vm, u32 * bi, void **b, int count,
     @param b - (vlib_buffer_t **) array to store buffer pointers
     @param count - (uword) number of elements
 */
-
+//由buffer index 转换为buffer指针
 static_always_inline void
 vlib_get_buffers (vlib_main_t * vm, u32 * bi, vlib_buffer_t ** b, int count)
 {

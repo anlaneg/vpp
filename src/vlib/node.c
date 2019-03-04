@@ -491,7 +491,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
 	   pointer vector. */
 	n->runtime_index = vec_len (nm->processes);
 
-	//添加进进程组
+	//添加进process组内
 	vec_add1 (nm->processes, p);
 
 	/* Paint first stack word with magic number so we can at least
