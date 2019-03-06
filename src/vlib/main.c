@@ -1547,6 +1547,7 @@ dispatch_process (vlib_main_t * vm,
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_runtime_t *node_runtime = &p->node_runtime;
+
   //获得process对应的node
   vlib_node_t *node = vlib_get_node (vm, node_runtime->node_index);
   u32 old_process_index;
@@ -1802,6 +1803,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       if (!is_main)
       {
     	  	  vlib_worker_thread_barrier_check ();
+    	  	  //遍历所有frame queue
     	  	  vec_foreach (fqm, tm->frame_queue_mains)
     	  	  {
     	  		  vlib_frame_queue_dequeue (vm, fqm);

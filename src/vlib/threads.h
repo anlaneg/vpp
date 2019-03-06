@@ -155,8 +155,8 @@ typedef struct
 typedef struct
 {
   u32 node_index;
-  u32 frame_queue_nelts;
-  u32 queue_hi_thresh;
+  u32 frame_queue_nelts;//队列数目
+  u32 queue_hi_thresh;//高位
 
   //保存多个frame_queue的指针，属于frame_queue_main的队列
   vlib_frame_queue_t **vlib_frame_queues;
@@ -330,7 +330,7 @@ typedef struct
   uword *cpu_socket_bitmap;//在线node的bitmap
 
   /* Worker handoff queues */
-  vlib_frame_queue_main_t *frame_queue_mains;//用于管理队列
+  vlib_frame_queue_main_t *frame_queue_mains;//用于提供frame队列数组
 
   /* worker thread initialization barrier */
   volatile u32 worker_thread_release;
