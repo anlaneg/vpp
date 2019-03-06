@@ -689,6 +689,7 @@ vlib_node_main_init (vlib_main_t * vm)
       {
 	n = vec_elt (nm->nodes, ni);
 
+	//没有node没有指明sibling_of节点，则跳出
 	if (!n->sibling_of)
 	  continue;
 

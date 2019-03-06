@@ -44,6 +44,7 @@ get_chunk (clib_pmalloc_page_t * pp, u32 index)
 static inline uword
 pmalloc_size2pages (uword size, u32 log2_page_sz)
 {
+  //1.使size按页对齐;2.换算成页数
   return round_pow2 (size, 1ULL << log2_page_sz) >> log2_page_sz;
 }
 
@@ -53,12 +54,14 @@ pmalloc_validate_numa_node (u32 * numa_node)
   if (*numa_node == CLIB_PMALLOC_NUMA_LOCAL)
     {
       u32 cpu;
+      //获取当前运行进程的cpu,node编号
       if (getcpu (&cpu, numa_node, 0) != 0)
 	return 1;
     }
   return 0;
 }
 
+//pmalloc初始化
 int
 clib_pmalloc_init (clib_pmalloc_main_t * pm, uword base_addr, uword size)
 {
@@ -68,6 +71,7 @@ clib_pmalloc_init (clib_pmalloc_main_t * pm, uword base_addr, uword size)
 
   ASSERT (pm->error == 0);
 
+  //获取默认页大小
   pagesize = clib_mem_get_default_hugepage_size ();
   pm->def_log2_page_sz = min_log2 (pagesize);
   pm->sys_log2_page_sz = min_log2 (sysconf (_SC_PAGESIZE));
@@ -89,6 +93,7 @@ clib_pmalloc_init (clib_pmalloc_main_t * pm, uword base_addr, uword size)
   if (base_addr)
     mmap_flags |= MAP_FIXED;
 
+  //通过mmap申请pmalloc内存
   pm->base = mmap (uword_to_pointer (base_addr, void *), size + pagesize,
 		   PROT_NONE, mmap_flags, -1, 0);
 
@@ -264,17 +269,22 @@ pmalloc_map_pages (clib_pmalloc_main_t * pm, clib_pmalloc_arena_t * a,
   int old_mpol = -1;
   long unsigned int mask[16] = { 0 };
   long unsigned int old_mask[16] = { 0 };
+
+  //页大小
   uword page_size = 1ULL << a->log2_subpage_sz;
+  //要申请的内存大小
   uword size = (uword) n_pages << pm->def_log2_page_sz;
 
   clib_error_free (pm->error);
 
+  //无法满足要求
   if (pm->max_pages <= vec_len (pm->pages))
     {
       pm->error = clib_error_return (0, "maximum number of pages reached");
       return 0;
     }
 
+  //需要申请大页
   if (a->log2_subpage_sz != pm->sys_log2_page_sz)
     {
       pm->error = clib_sysfs_prealloc_hugepages (numa_node,
@@ -288,10 +298,12 @@ pmalloc_map_pages (clib_pmalloc_main_t * pm, clib_pmalloc_arena_t * a,
   /* failure to get mempolicy means we can only proceed with numa 0 maps */
   if (rv == -1 && numa_node != 0)
     {
+      //获取mempolicy失败，非numa_node可能是参数错误，报错
       pm->error = clib_error_return_unix (0, "failed to get mempolicy");
       return 0;
     }
 
+  //指明内存申请policy,指明当前线程仅在此numa_node上申请内存
   mask[0] = 1 << numa_node;
   rv = set_mempolicy (MPOL_BIND, mask, sizeof (mask) * 8 + 1);
   if (rv == -1 && numa_node != 0)
@@ -308,18 +320,24 @@ pmalloc_map_pages (clib_pmalloc_main_t * pm, clib_pmalloc_arena_t * a,
 
   if (a->flags & CLIB_PMALLOC_ARENA_F_SHARED_MEM)
     {
+      //申请共享型内存
       mmap_flags |= MAP_SHARED;
       if (a->log2_subpage_sz != pm->sys_log2_page_sz)
+      {
+          //获取大页内存对应的fd
 	pm->error = clib_mem_create_hugetlb_fd ((char *) a->name, &a->fd);
+      }
       else
 	pm->error = clib_mem_create_fd ((char *) a->name, &a->fd);
       if (a->fd == -1)
 	goto error;
+      //申请size大小的内存
       if ((ftruncate (a->fd, size)) == -1)
 	goto error;
     }
   else
     {
+      //申请匿名页内存
       if (a->log2_subpage_sz != pm->sys_log2_page_sz)
 	mmap_flags |= MAP_HUGETLB;
 
@@ -327,6 +345,7 @@ pmalloc_map_pages (clib_pmalloc_main_t * pm, clib_pmalloc_arena_t * a,
       a->fd = -1;
     }
 
+  //通过mmap申请内存并设置权限
   va = pm->base + (((uword) vec_len (pm->pages)) << pm->def_log2_page_sz);
   if (mmap (va, size, PROT_READ | PROT_WRITE, mmap_flags, a->fd, 0) ==
       MAP_FAILED)
@@ -358,6 +377,7 @@ pmalloc_map_pages (clib_pmalloc_main_t * pm, clib_pmalloc_arena_t * a,
 
   clib_memset (va, 0, size);
 
+  //还原内存策略
   rv = set_mempolicy (old_mpol, old_mask, sizeof (old_mask) * 8 + 1);
   if (rv == -1 && numa_node != 0)
     {
@@ -429,19 +449,23 @@ clib_pmalloc_create_shared_arena (clib_pmalloc_main_t * pm, char *name,
   else if (log2_page_sz != pm->def_log2_page_sz &&
 	   log2_page_sz != pm->sys_log2_page_sz)
     {
+      //传入的页大小必须为默认页大小或者系统页大小
       pm->error = clib_error_create ("unsupported page size (%uKB)",
 				     1 << (log2_page_sz - 10));
       return 0;
     }
 
+  //获得需要申请的页数
   n_pages = pmalloc_size2pages (size, pm->def_log2_page_sz);
 
+  //检查是否满足分配
   if (n_pages + vec_len (pm->pages) > pm->max_pages)
     return 0;
 
   if (pmalloc_validate_numa_node (&numa_node))
     return 0;
 
+  //自pool中获取一个元素
   pool_get (pm->arenas, a);
   a->index = a - pm->arenas;
   a->name = format (0, "%s%c", name, 0);

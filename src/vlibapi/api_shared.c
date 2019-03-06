@@ -858,6 +858,7 @@ vl_msg_api_set_first_available_msg_id (u16 first_avail)
 {
   api_main_t *am = &api_main;
 
+  //定义首个有效的消息id
   am->first_available_msg_id = first_avail;
 }
 

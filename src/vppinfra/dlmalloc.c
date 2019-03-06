@@ -175,8 +175,8 @@ unsigned char _BitScanReverse(unsigned long *index, unsigned long mask);
 /* ------------------- size_t and alignment properties -------------------- */
 
 /* The byte and bit size of a size_t */
-#define SIZE_T_SIZE         (sizeof(size_t))
-#define SIZE_T_BITSIZE      (sizeof(size_t) << 3)
+#define SIZE_T_SIZE         (sizeof(size_t)) //size_t 字节数
+#define SIZE_T_BITSIZE      (sizeof(size_t) << 3) //size_t占用的bit数
 
 /* Some constants coerced to size_t */
 /* Annoying but necessary to avoid errors on some platforms */
@@ -184,18 +184,20 @@ unsigned char _BitScanReverse(unsigned long *index, unsigned long mask);
 #define SIZE_T_ONE          ((size_t)1)
 #define SIZE_T_TWO          ((size_t)2)
 #define SIZE_T_FOUR         ((size_t)4)
-#define TWO_SIZE_T_SIZES    (SIZE_T_SIZE<<1)
-#define FOUR_SIZE_T_SIZES   (SIZE_T_SIZE<<2)
-#define SIX_SIZE_T_SIZES    (FOUR_SIZE_T_SIZES+TWO_SIZE_T_SIZES)
+#define TWO_SIZE_T_SIZES    (SIZE_T_SIZE<<1) //两个size_t大小
+#define FOUR_SIZE_T_SIZES   (SIZE_T_SIZE<<2) //四个size_t 大小
+#define SIX_SIZE_T_SIZES    (FOUR_SIZE_T_SIZES+TWO_SIZE_T_SIZES) //六个size_t 大小
 #define HALF_MAX_SIZE_T     (MAX_SIZE_T / 2U)
 
 /* The bit mask value corresponding to MALLOC_ALIGNMENT */
+//以一个指针大小对齐
 #define CHUNK_ALIGN_MASK    (MALLOC_ALIGNMENT - SIZE_T_ONE)
 
 /* True if address a has acceptable alignment */
 #define is_aligned(A)       (((size_t)((A)) & (CHUNK_ALIGN_MASK)) == 0)
 
 /* the number of bytes to offset an address to align it */
+//如果A地址采用CHUNK_ALIGN_MASK对齐，则offset为0，否则算出对齐需要的offset
 #define align_offset(A)\
  ((((size_t)(A) & CHUNK_ALIGN_MASK) == 0)? 0 :\
   ((MALLOC_ALIGNMENT - ((size_t)(A) & CHUNK_ALIGN_MASK)) & CHUNK_ALIGN_MASK))
@@ -223,6 +225,7 @@ unsigned char _BitScanReverse(unsigned long *index, unsigned long mask);
 #endif /* MAP_ANON */
 #ifdef MAP_ANONYMOUS
 #define MMAP_FLAGS           (MAP_PRIVATE|MAP_ANONYMOUS)
+//通过mmap申请s大小的内存
 #define MMAP_DEFAULT(s)       mmap(0, (s), MMAP_PROT, MMAP_FLAGS, -1, 0)
 #else /* MAP_ANONYMOUS */
 /*
@@ -767,6 +770,7 @@ static int pthread_init_lock (MLOCK_T *lk) {
 
 struct malloc_chunk {
   size_t               prev_foot;  /* Size of previous chunk (if free).  */
+  //记录内存大小及使用标记
   size_t               head;       /* Size and inuse bits. */
   struct malloc_chunk* fd;         /* double links -- used only if free. */
   struct malloc_chunk* bk;
@@ -799,9 +803,12 @@ typedef unsigned int flag_t;           /* The type of various bit flag sets */
   ((MCHUNK_SIZE + CHUNK_ALIGN_MASK) & ~CHUNK_ALIGN_MASK)
 
 /* conversion from malloc headers to user pointers, and back */
+//将chunk指针转换为user memory指针（增加2个size_t大小）
 #define chunk2mem(p)        ((void*)((char*)(p)       + TWO_SIZE_T_SIZES))
+//将user memory指针转换为chunk指针
 #define mem2chunk(mem)      ((mchunkptr)((char*)(mem) - TWO_SIZE_T_SIZES))
 /* chunk associated with aligned address A */
+//A类char*类型，使其地址接chunk对齐
 #define align_as_chunk(A)   (mchunkptr)((A) + align_offset(chunk2mem(A)))
 
 /* Bounds on request (not chunk) sizes. */
@@ -809,6 +816,7 @@ typedef unsigned int flag_t;           /* The type of various bit flag sets */
 #define MIN_REQUEST         (MIN_CHUNK_SIZE - CHUNK_OVERHEAD - SIZE_T_ONE)
 
 /* pad request bytes into a usable size */
+//chunk故意浪费掉CHUNK_OVERHEAD个字节，并按CHUNK_ALIGN_MASK对齐
 #define pad_request(req) \
    (((req) + CHUNK_OVERHEAD + CHUNK_ALIGN_MASK) & ~CHUNK_ALIGN_MASK)
 
@@ -854,7 +862,9 @@ typedef unsigned int flag_t;           /* The type of various bit flag sets */
 #define chunk_minus_offset(p, s) ((mchunkptr)(((char*)(p)) - (s)))
 
 /* Ptr to next or previous physical malloc_chunk. */
+//指向下一个chunk
 #define next_chunk(p) ((mchunkptr)( ((char*)(p)) + ((p)->head & ~FLAG_BITS)))
+//指向上一个chunk
 #define prev_chunk(p) ((mchunkptr)( ((char*)(p)) - ((p)->prev_foot) ))
 
 /* extract next chunk's pinuse bit */
@@ -1198,7 +1208,7 @@ typedef struct malloc_state*    mstate;
 
 struct malloc_params {
   size_t magic;
-  size_t page_size;
+  size_t page_size;//页大小
   size_t granularity;
   size_t mmap_threshold;
   size_t trim_threshold;
@@ -1208,6 +1218,7 @@ struct malloc_params {
 static struct malloc_params mparams;
 
 /* Ensure mparams initialized */
+//确保mparams完成初始化，如果magic未初始化，则初始化mparams
 #define ensure_initialization() (void)(mparams.magic != 0 || init_mparams())
 
 #if !ONLY_MSPACES
@@ -1690,6 +1701,7 @@ static void post_fork_child(void)  { INITIAL_LOCK(&(gm)->mutex); }
 #endif /* LOCK_AT_FORK */
 
 /* Initialize mparams */
+//完成mparams初始化
 static int init_mparams(void) {
 #ifdef NEED_GLOBAL_LOCK_INIT
   if (malloc_global_mutex_status <= 0)
@@ -1697,12 +1709,14 @@ static int init_mparams(void) {
 #endif
 
   ACQUIRE_MALLOC_GLOBAL_LOCK();
+  //如果mparams未初始化，则初始化它，否则直接跳出
   if (mparams.magic == 0) {
     size_t magic;
     size_t psize;
     size_t gsize;
 
 #ifndef WIN32
+    //取内存页大小
     psize = malloc_getpagesize;
     gsize = ((DEFAULT_GRANULARITY != 0)? DEFAULT_GRANULARITY : psize);
 #else /* WIN32 */
@@ -1721,6 +1735,9 @@ static int init_mparams(void) {
        alignment must be at least 8.
        Alignment, min chunk size, and page size must all be powers of 2.
     */
+    //size_t需要与指针类型同样大小
+    //int 最少4字节
+    //对齐至少8字节
     if ((sizeof(size_t) != sizeof(char*)) ||
         (MAX_SIZE_T < MIN_CHUNK_SIZE)  ||
         (sizeof(int) < 4)  ||
@@ -1775,7 +1792,7 @@ static int init_mparams(void) {
       magic = DLM_MAGIC_CONSTANT;
 #endif
       /* Until memory modes commonly available, use volatile-write */
-      (*(volatile size_t *)(&(mparams.magic))) = magic;
+      (*(volatile size_t *)(&(mparams.magic))) = magic;//设置magic完成内存参数初始化
     }
   }
 
@@ -3994,14 +4011,19 @@ size_t dlmalloc_usable_size(void* mem) {
 
 #if MSPACES
 
+//初始化一段内存，内存起始起址为tbase,长度为tsize字节
 static mstate init_user_mstate(char* tbase, size_t tsize) {
   size_t msize = pad_request(sizeof(struct malloc_state));
   mchunkptr mn;
+  //使tbase指向user memory,再使其按chunk对齐
   mchunkptr msp = align_as_chunk(tbase);
+  //将chunk转换为memory指针(sizeof(msp)大小为32，但这里只跳过16字节）
   mstate m = (mstate)(chunk2mem(msp));
+
   memset(m, 0, msize);
   (void)INITIAL_LOCK(&m->mutex);
-  msp->head = (msize|INUSE_BITS);
+  msp->head = (msize|INUSE_BITS);//指明msp的占用size(这段内存被malloc_state占用了）
+
   m->seg.base = m->least_addr = tbase;
   m->seg.size = m->footprint = m->max_footprint = tsize;
   m->magic = mparams.magic;
@@ -4011,7 +4033,10 @@ static mstate init_user_mstate(char* tbase, size_t tsize) {
   m->exts = 0;
   disable_contiguous(m);
   init_bins(m);
+
+  //将m转换为chunk指针，获取其下一个chunk
   mn = next_chunk(mem2chunk(m));
+
   init_top(m, mn, (size_t)((tbase + tsize) - (char*)mn) - TOP_FOOT_SIZE);
   check_top_chunk(m, m->top);
   return m;
@@ -4022,12 +4047,15 @@ mspace create_mspace(size_t capacity, int locked) {
   size_t msize;
   ensure_initialization();
   msize = pad_request(sizeof(struct malloc_state));
+  //申请的capcity不能在加个foot后导致内存被用完
   if (capacity < (size_t) -(msize + TOP_FOOT_SIZE + mparams.page_size)) {
     size_t rs = ((capacity == 0)? mparams.granularity :
                  (capacity + TOP_FOOT_SIZE + msize));
     size_t tsize = granularity_align(rs);
+    //申请tsize大小的内存
     char* tbase = (char*)(CALL_MMAP(tsize));
     if (tbase != CMFAIL) {
+      //mmap内存成功，初始化它
       m = init_user_mstate(tbase, tsize);
       m->seg.sflags = USE_MMAP_BIT;
       set_lock(m, locked);

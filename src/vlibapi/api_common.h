@@ -271,7 +271,7 @@ typedef struct
   u8 *serialized_message_table_in_shmem;
 
   /** First available message ID, for theplugin msg allocator */
-  u16 first_available_msg_id;
+  u16 first_available_msg_id;//设置首个有效的消息id
 
   /** Message range by name hash */
   uword *msg_range_by_name;

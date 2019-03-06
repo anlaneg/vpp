@@ -92,8 +92,10 @@ vpe_main_init (vlib_main_t * vm)
   /*
    * Create the binary api plugin hashes before loading plugins
    */
+  //创建plugin需要的hash表
   vat_plugin_hash_create ();
 
+  //确定插件路径
   if (!vlib_plugin_path)
     vpp_find_plugin_path ();
 }
@@ -119,6 +121,7 @@ main (int argc, char *argv[])
 #if __x86_64__
   CLIB_UNUSED (const char *msg)
     = "ERROR: This binary requires CPU with %s extensions.\n";
+
 //当前cpu不支持对应的flag,则直接退出
 #define _(a,b)                                  \
     if (!clib_cpu_supports_ ## a ())            \
@@ -188,7 +191,7 @@ main (int argc, char *argv[])
       //读取一行数据，如果长度为０，则跳出
 	  if (fgets (inbuf, 4096, fp) == 0)
 	    break;
-	  p = strtok (inbuf, " \t\n");
+	  p = strtok (inbuf, " \t\n");//将inbuf按空字符划分token,逐次返回，将返回值加入到argv_中
 	  while (p != NULL)
 	    {
 	      //跳过注释行
@@ -215,7 +218,7 @@ main (int argc, char *argv[])
       argv_ = tmp;
       argv_[argc_] = NULL;
 
-      argc = argc_;
+      argc = argc_;//至此函数完成解析，则vpp参数将被修改
       argv = argv_;
     }
 
@@ -226,10 +229,10 @@ main (int argc, char *argv[])
    * Format: heapsize <nn>[mM][gG]
    */
 
-  //多个参数时，处理参数名及参数值提取
+  //多个参数时，处理参数名及参数值提取（全局参数解析）
   for (i = 1; i < (argc - 1); i++)
     {
-      //记录插件路径
+      //如果配置中指明了插件路径，则使用配置的插件路径
       if (!strncmp (argv[i], "plugin_path", 11))
 	{
 	  if (i < (argc - 1))
@@ -237,7 +240,7 @@ main (int argc, char *argv[])
 	}
       else if (!strncmp (argv[i], "heapsize", 8))
 	{
-      //记录配置的堆大小
+      //如果配置中指明了配置的堆大小，则使用配置的堆大小
 	  sizep = (u8 *) argv[i + 1];
 	  size = 0;
 	  while (*sizep >= '0' && *sizep <= '9')
@@ -248,7 +251,7 @@ main (int argc, char *argv[])
 	    }
 	  if (size == 0)
 	    {
-	      //配置的size为０，报错
+	      //配置的size为０，报错，并停止分析参数
 	      fprintf
 		(stderr,
 		 "warning: heapsize parse error '%s', use default %lld\n",
@@ -298,7 +301,7 @@ defaulted:
     }
   else
     {
-      //申请heap失败
+      //申请heap失败，报错后退出
       {
 	int rv __attribute__ ((unused)) =
 	  write (2, "Main heap allocation failure!\r\n", 31);

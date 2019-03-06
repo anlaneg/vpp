@@ -185,10 +185,10 @@ typedef struct vlib_main_t
   elog_event_type_t *error_elog_event_types;
 
   /* Seed for random number generator. */
-  uword random_seed;
+  uword random_seed;//配置的随机数种子
 
   /* Buffer of random data for various uses. */
-  clib_random_buffer_t random_buffer;
+  clib_random_buffer_t random_buffer;//产生随机数所需要的buffer
 
   /* Hash table to record which init functions have been called. */
   uword *init_functions_called;//hash表，用于保存已完成调用的初始化函数的指针

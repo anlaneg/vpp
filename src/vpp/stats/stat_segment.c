@@ -535,6 +535,7 @@ do_stat_segment_updates (stat_segment_main_t * sm)
     update_node_counters (sm);
 
   /* *INDENT-OFF* */
+  //遍历注册的所有gauges,调用其注册的回调，完成测量数据更新
   stat_segment_gauges_pool_t *g;
   pool_foreach(g, sm->gauges,
   ({
@@ -646,6 +647,7 @@ statseg_init (vlib_main_t * vm)
   return 0;
 }
 
+//注册测量函数（这个框架很有意思，事物有很多面，总是可以抽象出来个统一面来进行统一处理）
 clib_error_t *
 stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn,
 			     u32 caller_index)
@@ -667,7 +669,7 @@ stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn,
 
   memcpy (e.name, name, vec_len (name));
   index = vec_len (sm->directory_vector);
-  vec_add1 (sm->directory_vector, e);
+  vec_add1 (sm->directory_vector, e);//将e加入到目录vector中
 
   shared_header->directory_offset =
     stat_segment_offset (shared_header, sm->directory_vector);
@@ -676,6 +678,7 @@ stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn,
   clib_mem_set_heap (oldheap);
 
   /* Back on our own heap */
+  //记录gauge
   pool_get (sm->gauges, gauge);
   gauge->fn = update_fn;
   gauge->caller_index = caller_index;

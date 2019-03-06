@@ -44,16 +44,16 @@ typedef struct
 
 typedef struct
 {
-  u32 index;
+  u32 index;//元素索引号
   u32 flags;
 #define CLIB_PMALLOC_ARENA_F_SHARED_MEM (1 << 0)
-  int fd;
-  u32 numa_node;
+  int fd;//内存页对应的fd
+  u32 numa_node;//所属的node
   u32 first_page_index;
-  u32 log2_subpage_sz;
-  u32 subpages_per_page;
+  u32 log2_subpage_sz;//页大小
+  u32 subpages_per_page;//每页内有多少个子页（大页与4k页时有区别）
   u32 n_pages;
-  u8 *name;
+  u8 *name;//名称
   u32 *page_indices;
 } clib_pmalloc_arena_t;
 
@@ -64,16 +64,16 @@ typedef struct
 #define CLIB_PMALLOC_F_NO_PAGEMAP (1 << 0)
 
   /* base VA address */
-  u8 *base;
+  u8 *base;//内存起始位置
 
   /* default page size - typically 2M */
-  u32 def_log2_page_sz;
+  u32 def_log2_page_sz;//默认大页大小
 
   /* system page size - typically 4K */
-  u32 sys_log2_page_sz;
+  u32 sys_log2_page_sz;//系统页大小
 
   /* maximum number of pages, limited by VA preallocation size */
-  u32 max_pages;
+  u32 max_pages;//可支持的最大页数
 
   /* vector of pages - each page have own alloc pool and it can be split
      into subpages (i.e. 2M page build out of 512 4K pages) */
@@ -86,7 +86,7 @@ typedef struct
   /* alloc arenas are group of pages which share same attributes
      shared arenas are represented by FD and they are not grovable
      private arenas are growable */
-  clib_pmalloc_arena_t *arenas;
+  clib_pmalloc_arena_t *arenas;//负责提供arena的pool
 
   /* vector of per numa node alloc arena indices
      each numa node have own default privat alloc arena */

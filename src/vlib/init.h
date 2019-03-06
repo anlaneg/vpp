@@ -64,19 +64,19 @@ typedef clib_error_t *(vlib_config_function_t) (struct vlib_main_t * vm,
 typedef struct vlib_config_function_runtime_t
 {
   /* Function to call.  Set to null once function has already been called. */
-  vlib_config_function_t *function;
+  vlib_config_function_t *function;//配置函数
 
   /* Input for function. */
-  unformat_input_t input;
+  unformat_input_t input;//配置参数（运行时填充）
 
   /* next config function registration */
-  struct vlib_config_function_runtime_t *next_registration;
+  struct vlib_config_function_runtime_t *next_registration;//指向下一个配置函数
 
   /* To be invoked as soon as the clib heap is available */
-  u8 is_early;
+  u8 is_early;//是否为早期配置
 
   /* Name used to distinguish input on command line. */
-  char name[32];
+  char name[32];//配置模块名
 } vlib_config_function_runtime_t;
 
 //自first链上移除元素p,链表first的元素成员next,可指向下一个成员
@@ -219,9 +219,11 @@ static void __vlib_rm_config_function_##x (void)                \
   vlib_config_function_runtime_t                                \
     VLIB_CONFIG_FUNCTION_SYMBOL (x)                             \
   = {                                                           \
+    /*配置函数对应的模块名称，可由配置文件获得其对应的配置*/\
     .name = n,                                                  \
     /*指出配置函数名称*/\
     .function = x,                                              \
+    /*指明非早期配置*/\
     .is_early = 0,						\
   }
 #else

@@ -140,6 +140,7 @@ clib_mem_alloc (uword size)
 					   /* os_out_of_memory */ 1);
 }
 
+//内存申请（支持对齐）
 always_inline void *
 clib_mem_alloc_aligned (uword size, uword align)
 {
@@ -264,6 +265,7 @@ clib_mem_get_heap (void)
   return clib_mem_get_per_cpu_heap ();
 }
 
+//设置当前线程对应的heap
 always_inline void *
 clib_mem_set_heap (void *heap)
 {

@@ -98,7 +98,8 @@ vlib_call_all_main_loop_exit_functions (vlib_main_t * vm)
     (vm, vm->main_loop_exit_function_registrations, 1 /* call_once */ );
 }
 
-//调用所有vm->config_function_registerations回调
+//调用所有vm->config_function_registerations回调，完成所有模块的配置
+//is_early指出是否执行早期配置，input指出当前的所有配置输入
 clib_error_t *
 vlib_call_all_config_functions (vlib_main_t * vm,
 				unformat_input_t * input, int is_early)
@@ -113,7 +114,8 @@ vlib_call_all_config_functions (vlib_main_t * vm,
 
   c = vm->config_function_registrations;
 
-  //收集所有config_function的注册函数到all
+  //收集所有config_function的注册函数到all，初始化每个config_function的input
+  //收集所有config模块的名称
   while (c)
     {
       hash_set_mem (hash, c->name, vec_len (all));
@@ -126,12 +128,15 @@ vlib_call_all_config_functions (vlib_main_t * vm,
     {
       u8 *s, *v;
 
+      //解析出各模块的名称及其对应的详细配置，将详细配置传给模块
       if (!unformat (input, "%s %v", &s, &v) || !(p = hash_get_mem (hash, s)))
 	{
+      //解析失败，或者查找不到s对应的配置模块名，则认为是不认识的模块，报错
 	  error = clib_error_create ("unknown input `%s %v'", s, v);
 	  goto done;
 	}
 
+      //收集module $s的配置输入
       c = all[p[0]];
       if (vec_len (c->input.buffer) > 0)
 	  vec_add1 (c->input.buffer, ' ');
@@ -140,6 +145,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
       vec_free (s);
     }
 
+  //执行所有模块的配置初始化函数（is_early控制是否执行早期配置）
   for (i = 0; i < vec_len (all); i++)
     {
       c = all[i];
@@ -162,7 +168,7 @@ vlib_call_all_config_functions (vlib_main_t * vm,
     }
 
 done:
-    //释放input
+  //释放本函数构造的input
   for (i = 0; i < vec_len (all); i++)
     {
       c = all[i];

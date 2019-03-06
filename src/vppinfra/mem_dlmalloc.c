@@ -207,6 +207,7 @@ clib_mem_init (void *memory, uword memory_size)
 {
   u8 *heap;
 
+  //如果memory不存在，则创建mspace
   if (memory)
     {
       heap = create_mspace_with_base (memory, memory_size, 1 /* locked */ );
@@ -215,6 +216,7 @@ clib_mem_init (void *memory, uword memory_size)
   else
     heap = create_mspace (memory_size, 1 /* locked */ );
 
+  //指定当前cpu使用此heap
   clib_mem_set_heap (heap);
 
   if (mheap_trace_main.lock == 0)

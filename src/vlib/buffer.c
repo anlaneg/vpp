@@ -48,6 +48,7 @@
 #include <vlib/unix/unix.h>
 #include <vpp/stats/stat_segment.h>
 
+//每个numa上buffer的默认数目
 #define VLIB_BUFFER_DEFAULT_BUFFERS_PER_NUMA 16384
 #define VLIB_BUFFER_DEFAULT_BUFFERS_PER_NUMA_UNPRIV 8192
 
@@ -492,25 +493,31 @@ vlib_buffer_chain_append_data_with_alloc (vlib_main_t * vm,
   return copied;
 }
 
+//利用申请的内存构造buffer pool
 clib_error_t *
-vlib_buffer_pool_create (vlib_main_t * vm, u8 index, char *name,
-			 u32 data_size, u32 physmem_map_index)
+vlib_buffer_pool_create (vlib_main_t * vm, u8 index/*numa node编号*/, char *name,
+			 u32 data_size, u32 physmem_map_index/*对应的map内存的index*/)
 {
   vlib_buffer_main_t *bm = vm->buffer_main;
   vlib_buffer_pool_t *bp;
+  //通过index获取map的内存记录
   vlib_physmem_map_t *m = vlib_physmem_get_map (vm, physmem_map_index);
   uword start = pointer_to_uword (m->base);
+  //map的内存大小
   uword size = (uword) m->n_pages << m->log2_page_size;
   uword i, j;
   u32 alloc_size, n_alloc_per_page;;
 
+  //获取对应的buffer poll
   vec_validate_aligned (bm->buffer_pools, index, CLIB_CACHE_LINE_BYTES);
   bp = vec_elt_at_index (bm->buffer_pools, index);
 
+  //已创建，报错
   if (bp->start)
     return clib_error_return (0, "buffer with index %u already exists",
 			      index);
 
+  //不支持index大于255
   if (index >= 255)
     return clib_error_return (0, "buffer index must be < 255", index);
 
@@ -521,6 +528,7 @@ vlib_buffer_pool_create (vlib_main_t * vm, u8 index, char *name,
     }
   else if (start < bm->buffer_mem_start)
     {
+      //增加buffer size
       bm->buffer_mem_size += bm->buffer_mem_start - start;
       bm->buffer_mem_start = start;
       if (size > bm->buffer_mem_size)
@@ -528,17 +536,20 @@ vlib_buffer_pool_create (vlib_main_t * vm, u8 index, char *name,
     }
   else if (start > bm->buffer_mem_start)
     {
+      //增加buffer size
       uword new_size = start - bm->buffer_mem_start + size;
       if (new_size > bm->buffer_mem_size)
 	bm->buffer_mem_size = new_size;
     }
 
+  //buffer过大
   if ((u64) bm->buffer_mem_size >
       ((u64) 1 << (32 + CLIB_LOG2_CACHE_LINE_BYTES)))
     {
       clib_panic ("buffer memory size out of range!");
     }
 
+  //结构体填充
   bp->start = start;
   bp->size = size;
   bp->index = bp - bm->buffer_pools;
@@ -549,25 +560,31 @@ vlib_buffer_pool_create (vlib_main_t * vm, u8 index, char *name,
   bp->data_size = data_size;
   bp->numa_node = m->numa_node;
 
+  //保证线程缓存空间
   vec_validate_aligned (bp->threads, vec_len (vlib_mains) - 1,
 			CLIB_CACHE_LINE_BYTES);
 
+  //buffer的大小
   alloc_size = data_size + sizeof (vlib_buffer_t) + bm->ext_hdr_size;
+  //一页有多少个buffer
   n_alloc_per_page = (1ULL << m->log2_page_size) / alloc_size;
 
   /* preallocate buffer indices memory */
+  //保证申请buffer页个buffers
   vec_validate_aligned (bp->buffers, m->n_pages * n_alloc_per_page,
 			CLIB_CACHE_LINE_BYTES);
   vec_reset_length (bp->buffers);
 
   clib_spinlock_init (&bp->lock);
 
+  //将各buffer页入队到bp->buffers中
   for (j = 0; j < m->n_pages; j++)
     for (i = 0; i < n_alloc_per_page; i++)
       {
 	u8 *p;
 	u32 bi;
 
+	//每个buffer有一个扩展头＋buffer结构体空间+buffer数据空间
 	p = m->base + (j << m->log2_page_size) + i * alloc_size;
 	p += bm->ext_hdr_size;
 
@@ -579,6 +596,7 @@ vlib_buffer_pool_create (vlib_main_t * vm, u8 index, char *name,
 	vlib_get_buffer (vm, bi);
       }
 
+  //指明申请的buffer数
   bp->n_buffers = vec_len (bp->buffers);
 
   return 0;
@@ -657,6 +675,7 @@ vlib_buffer_worker_init (vlib_main_t * vm)
 
 VLIB_WORKER_INIT_FUNCTION (vlib_buffer_worker_init);
 
+//构造numa_node对应的buffer pool
 static clib_error_t *
 vlib_buffer_main_init_numa_node (struct vlib_main_t *vm, u32 numa_node)
 {
@@ -665,6 +684,7 @@ vlib_buffer_main_init_numa_node (struct vlib_main_t *vm, u32 numa_node)
   u32 physmem_map_index;
   uword n_pages, pagesize;
   u32 buffers_per_numa;
+  //buffer大小为：扩展头大小，buffer结构体大小，默认数据段大小
   u32 buffer_size = CLIB_CACHE_LINE_ROUND (bm->ext_hdr_size +
 					   sizeof (vlib_buffer_t) +
 					   vlib_buffer_get_default_data_size
@@ -674,14 +694,17 @@ vlib_buffer_main_init_numa_node (struct vlib_main_t *vm, u32 numa_node)
   pagesize = clib_mem_get_default_hugepage_size ();
   name = format (0, "buffers-numa-%d%c", numa_node, 0);
 
+  //每个numa上的buffer数
   buffers_per_numa = bm->buffers_per_numa ? bm->buffers_per_numa :
     VLIB_BUFFER_DEFAULT_BUFFERS_PER_NUMA;
 
 retry:
+  //首先计算一页可以存放多少buffer,再计算需要多少页来存储这些buffer
   n_pages = (buffers_per_numa - 1) / (pagesize / buffer_size) + 1;
-  error = vlib_physmem_shared_map_create (vm, (char *) name,
-					  n_pages * pagesize,
-					  min_log2 (pagesize), numa_node,
+  //申请这些页，并记录map到的内存对应的index
+  error = vlib_physmem_shared_map_create (vm, (char *) name/*buffer池名称*/,
+					  n_pages * pagesize,//需要使用的总内存
+					  min_log2 (pagesize), numa_node/*在哪个node上创建*/,
 					  &physmem_map_index);
 
   if (error && pagesize != clib_mem_get_page_size ())
@@ -702,11 +725,13 @@ retry:
   vec_reset_length (name);
   name = format (name, "default-numa-%d%c", numa_node, 0);
 
-  return vlib_buffer_pool_create (vm, numa_node, (char *) name,
+  //利用申请的内存构造buffer pool
+  return vlib_buffer_pool_create (vm, numa_node/*node编号*/, (char *) name,
 				  vlib_buffer_get_default_data_size (vm),
 				  physmem_map_index);
 }
 
+//申请并初始化buffer_main
 void
 vlib_buffer_main_alloc (vlib_main_t * vm)
 {
@@ -721,6 +746,7 @@ vlib_buffer_main_alloc (vlib_main_t * vm)
   bm->default_data_size = VLIB_BUFFER_DEFAULT_DATA_SIZE;
 }
 
+//获取各线程缓存的buffer数目
 static u32
 buffer_get_cached (vlib_buffer_pool_t * bp)
 {
@@ -770,17 +796,21 @@ buffer_gauges_update_available_fn (stat_segment_directory_entry_t * e,
   e->value = vec_len (bp->buffers);
 }
 
+//更新缓存的buffer数目
 static void
 buffer_gauges_update_cached_fn (stat_segment_directory_entry_t * e, u32 index)
 {
   vlib_main_t *vm = vlib_get_main ();
+  //取对应的buffer pool
   vlib_buffer_pool_t *bp = buffer_get_by_index (vm->buffer_main, index);
   if (!bp)
     return;
 
+  //记录各线程在此buffer上缓存的报文数
   e->value = buffer_get_cached (bp);
 }
 
+//初始化buffer
 clib_error_t *
 vlib_buffer_main_init (struct vlib_main_t * vm)
 {
@@ -799,24 +829,28 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
 
   clib_spinlock_init (&bm->buffer_known_hash_lockp);
 
+  //获取node范围
   err = clib_sysfs_read ("/sys/devices/system/node/possible", "%U",
 			 unformat_bitmap_list, &bmp);
   if (err)
     {
       /* no info from sysfs, assuming that only numa 0 exists */
       clib_error_free (err);
-      bmp = clib_bitmap_set (bmp, 0, 1);
+      bmp = clib_bitmap_set (bmp, 0, 1);//假设仅有node 0
     }
 
   /* *INDENT-OFF* */
+  //遍历每个numa node,在其上申请内存，并构造相应的buffer pool
   clib_bitmap_foreach (numa_node, bmp, {
       if ((err = vlib_buffer_main_init_numa_node(vm, numa_node)))
 	  goto done;
     });
   /* *INDENT-ON* */
 
+  //设置numa节点数
   bm->n_numa_nodes = clib_bitmap_last_set (bmp) + 1;
 
+  //遍历每个buffer pool，注册相应的测量函数
   vec_foreach (bp, bm->buffer_pools)
   {
     name = format (0, "/buffer/cached/%s%c", bp->name, 0);

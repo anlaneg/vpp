@@ -2190,8 +2190,8 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
   }
 
-  //调用其它非早期配置函数
-  if ((error = vlib_call_all_config_functions (vm, input, 0 /* is_early */ )))
+  //调用所有其它非早期配置函数
+  if ((error = vlib_call_all_config_functions (vm, input/*所有模块配置参数*/, 0 /* is_early */ )))
   {
 	  goto done;
   }

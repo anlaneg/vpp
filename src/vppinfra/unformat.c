@@ -179,18 +179,21 @@ di (unformat_input_t * i)
 /* Parse delimited vector string.  If string starts with { then string
    is delimited by balanced parenthesis.  Other string is delimited by
    white space.  {} were chosen since they are special to the shell. */
+//返回'{'与'}'之间的内容，通过string_return带回
 static uword
 unformat_string (unformat_input_t * input,
 		 uword delimiter_character,
 		 uword format_character, va_list * va)
 {
+  //string_return用于返回解析出来{ }之间的内容
   u8 **string_return = va_arg (*va, u8 **);
   u8 *s = 0;
   word paren = 0;
   word is_paren_delimited = 0;
-  word backslash = 0;
+  word backslash = 0;//标记遇到了'\'符号
   uword c;
 
+  //修改特殊的delimiter_character
   switch (delimiter_character)
     {
     case '%':
@@ -200,11 +203,13 @@ unformat_string (unformat_input_t * input,
       break;
     }
 
+  //取input中的一个字符
   while ((c = unformat_get_input (input)) != UNFORMAT_END_OF_INPUT)
     {
       word add_to_vector;
 
       /* Null return string means to skip over delimited input. */
+      //如果指明了要接收返回的字符串，则默认加入，否则默认不加入。
       add_to_vector = string_return != 0;
 
       if (backslash)
@@ -213,13 +218,14 @@ unformat_string (unformat_input_t * input,
 	switch (c)
 	  {
 	  case '\\':
-	    backslash = 1;
+	    backslash = 1;//标记遇到了'\',指明不加入vector
 	    add_to_vector = 0;
 	    break;
 
 	  case '{':
 	    if (paren == 0 && vec_len (s) == 0)
 	      {
+	        //首次遇到'{'符号,标记，指明不加入vector
 		is_paren_delimited = 1;
 		add_to_vector = 0;
 	      }
@@ -229,6 +235,7 @@ unformat_string (unformat_input_t * input,
 	  case '}':
 	    paren--;
 	    if (is_paren_delimited && paren == 0)
+	        //’{'匹配成功,且paren减为0，则收集结束
 	      goto done;
 	    break;
 
@@ -238,6 +245,7 @@ unformat_string (unformat_input_t * input,
 	  case '\r':
 	    if (!is_paren_delimited)
 	      {
+	        //遇到上面的空字符，但没有遇到'{'前，回退index,并返回
 		unformat_put_input (input);
 		goto done;
 	      }
@@ -246,11 +254,13 @@ unformat_string (unformat_input_t * input,
 	  default:
 	    if (!is_paren_delimited && c == delimiter_character)
 	      {
+	        //未遇到'{'，但遇到了分隔符，回退index,并返回
 		unformat_put_input (input);
 		goto done;
 	      }
 	  }
 
+      //如有需要，将其添加入s中
       if (add_to_vector)
 	vec_add1 (s, c);
     }
@@ -259,20 +269,25 @@ done:
   if (string_return)
     {
       /* Match the string { END-OF-INPUT as a single brace. */
+      //遇到过{，然后就结束了，在s中添加{
       if (c == UNFORMAT_END_OF_INPUT && vec_len (s) == 0 && paren == 1)
 	vec_add1 (s, '{');
 
       /* Don't match null string. */
+      //遇到空串
       if (c == UNFORMAT_END_OF_INPUT && vec_len (s) == 0)
 	return 0;
 
       /* Null terminate C string. */
+      //添加'\0'
       if (format_character == 's')
 	vec_add1 (s, 0);
 
+      //使用构造的s
       *string_return = s;
     }
   else
+    //用户不关心s,释放掉
     vec_free (s);		/* just to make sure */
 
   return 1;
@@ -795,6 +810,7 @@ do_percent (unformat_input_t * input, va_list * va, const char *f)
 
     case 's':
     case 'v':
+      //返回'{'，'}'之间的内容，如果是s，则添加‘\0'
       n = unformat_string (input, f[0], cf, va);
       break;
 

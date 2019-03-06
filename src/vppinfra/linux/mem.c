@@ -54,6 +54,7 @@ clib_mem_get_page_size (void)
   return getpagesize ();
 }
 
+//如果kernel不支持大页，则使用默认页大小，否则使用大页大小
 uword
 clib_mem_get_default_hugepage_size (void)
 {
@@ -75,6 +76,7 @@ clib_mem_get_default_hugepage_size (void)
 
   unformat_init_clib_file (&input, fd);
 
+  //获取大页尺寸
   while (unformat_check_input (&input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (&input, "Hugepagesize:%_%u kB", &size))
@@ -123,6 +125,7 @@ clib_mem_vm_randomize_va (uword * requested_va, u32 log2_page_size)
 #define MFD_HUGETLB 0x0004U
 #endif
 
+//创建普通页内存对应的fd
 clib_error_t *
 clib_mem_create_fd (char *name, int *fdp)
 {
@@ -143,12 +146,13 @@ clib_mem_create_fd (char *name, int *fdp)
   return 0;
 }
 
+//获得支持大页内存的fd
 clib_error_t *
 clib_mem_create_hugetlb_fd (char *name, int *fdp)
 {
   clib_error_t *err = 0;
   int fd = -1;
-  static int memfd_hugetlb_supported = 1;
+  static int memfd_hugetlb_supported = 1;//记录是否支持memfd
   char *mount_dir;
   char template[] = "/tmp/hugepage_mount.XXXXXX";
   u8 *filename;
@@ -157,6 +161,7 @@ clib_mem_create_hugetlb_fd (char *name, int *fdp)
 
   if (memfd_hugetlb_supported)
     {
+      //尝试调用memfd_create系统调用
       if ((fd = memfd_create (name, MFD_HUGETLB)) != -1)
 	goto done;
 
@@ -165,10 +170,14 @@ clib_mem_create_hugetlb_fd (char *name, int *fdp)
 	memfd_hugetlb_supported = 0;
     }
 
+  //不支持memfd时的操作处理
+
+  //1.创建临时目录
   mount_dir = mkdtemp (template);
   if (mount_dir == 0)
     return clib_error_return_unix (0, "mkdtemp \'%s\'", template);
 
+  //2.挂载大页在此目录
   if (mount ("none", (char *) mount_dir, "hugetlbfs", 0, NULL))
     {
       rmdir ((char *) mount_dir);
@@ -176,8 +185,11 @@ clib_mem_create_hugetlb_fd (char *name, int *fdp)
 				    mount_dir);
     }
 
+  //通过创建name文件，申请大页内存
   filename = format (0, "%s/%s%c", mount_dir, name, 0);
   fd = open ((char *) filename, O_CREAT | O_RDWR, 0755);
+
+  //延迟删除
   umount2 ((char *) mount_dir, MNT_DETACH);
   rmdir ((char *) mount_dir);
 
@@ -344,6 +356,7 @@ clib_mem_vm_ext_free (clib_mem_vm_alloc_t * a)
     }
 }
 
+//获取物理地址
 u64 *
 clib_mem_vm_get_paddr (void *mem, int log2_page_size, int n_pages)
 {

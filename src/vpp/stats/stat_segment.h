@@ -57,8 +57,9 @@ typedef struct
     uint64_t offset;
     uint64_t index;
     uint64_t value;
-  };
+  };//记录结果
   uint64_t offset_vector;
+  //目录名称
   char name[128]; // TODO change this to pointer to "somewhere"
 } stat_segment_directory_entry_t;
 
@@ -92,7 +93,7 @@ stat_segment_pointer (void *start, uint64_t offset)
 typedef void (*stat_segment_update_fn)(stat_segment_directory_entry_t * e, u32 i);
 
 typedef struct {
-  u32 directory_index;
+  u32 directory_index;//对应的directory索引
   stat_segment_update_fn fn;
   u32 caller_index;
 } stat_segment_gauges_pool_t;

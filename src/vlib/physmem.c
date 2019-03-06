@@ -39,8 +39,8 @@
 #endif
 
 clib_error_t *
-vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
-				u32 log2_page_sz, u32 numa_node,
+vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size/*需要的内存大小*/,
+				u32 log2_page_sz/*页大小*/, u32 numa_node/*申请的node*/,
 				u32 * map_index)
 {
   clib_pmalloc_main_t *pm = vm->physmem_main.pmalloc_main;
@@ -51,6 +51,7 @@ vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
   void *va;
   uword i;
 
+  //创建所需要的可share的内存
   va = clib_pmalloc_create_shared_arena (pm, name, size, log2_page_sz,
 					 numa_node);
 
@@ -61,6 +62,7 @@ vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
   a = clib_pmalloc_get_arena (pm, va);
 
   pool_get (vpm->maps, map);
+  //设置出参，映射的index
   *map_index = map->index = map - vpm->maps;
   map->base = va;
   map->fd = a->fd;
@@ -68,6 +70,7 @@ vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
   map->log2_page_size = a->log2_subpage_sz;
   map->numa_node = a->numa_node;
 
+  //获取每页的指针
   for (i = 0; i < a->n_pages; i++)
     {
       uword pa =
@@ -83,6 +86,7 @@ vlib_physmem_shared_map_create (vlib_main_t * vm, char *name, uword size,
   return error;
 }
 
+//通过index获取map的内存记录
 vlib_physmem_map_t *
 vlib_physmem_get_map (vlib_main_t * vm, u32 index)
 {
@@ -109,6 +113,7 @@ vlib_physmem_init (vlib_main_t * vm)
   if ((error = linux_vfio_init (vm)))
     return error;
 
+  //申请pmalloc
   p = clib_mem_alloc_aligned (sizeof (clib_pmalloc_main_t),
 			      CLIB_CACHE_LINE_BYTES);
   memset (p, 0, sizeof (clib_pmalloc_main_t));
@@ -117,6 +122,7 @@ vlib_physmem_init (vlib_main_t * vm)
   if (vpm->base_addr == 0)
     vpm->base_addr = VLIB_PHYSMEM_DEFAULT_BASE_ADDDR;
 
+  //初始化pmalloc
   clib_pmalloc_init (vpm->pmalloc_main, vpm->base_addr, 0);
 
   return error;

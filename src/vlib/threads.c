@@ -235,7 +235,7 @@ clib_sysfs_list_to_bitmap (char *filename)
 
 
 /* Called early in the init sequence */
-
+//执行vlib_thread_main初始化
 clib_error_t *
 vlib_thread_init (vlib_main_t * vm)
 {
@@ -247,6 +247,7 @@ vlib_thread_init (vlib_main_t * vm)
   u32 i;
   uword *avail_cpu;
 
+  //1.生成有效的cpu列表，并按配置执行cpu自动分配
   /* get bitmaps of active cpu cores and sockets */
   //提取在线cpu的bitmap
   tm->cpu_core_bitmap =
@@ -355,6 +356,7 @@ vlib_thread_init (vlib_main_t * vm)
       tr = tr->next;
     }
 
+  //2.针对注册的所有thead检查其的core分配情况或者为其自动分配
   //对注册的数组进行排序
   vec_sort_with_function (tm->registrations, sort_registrations_by_no_clone);
 

@@ -379,12 +379,12 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  uword start;
-  uword size;
-  uword log2_page_size;
+  uword start;//可分配的起始地址
+  uword size;//buffer大小
+  uword log2_page_size;//页大小
   u8 index;
   u32 numa_node;
-  u32 physmem_map_index;
+  u32 physmem_map_index;//map数据结构对应的索引
   u32 data_size;
 
   //buffer数组
@@ -410,7 +410,7 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Virtual memory address and size of buffer memory, used for calculating
      buffer index */
-  uword buffer_mem_start;//记录报文buffer起始地址
+  uword buffer_mem_start;//记录报文buffer内存起始地址
   uword buffer_mem_size;//buffer大小
   vlib_buffer_pool_t *buffer_pools;//buffer所属的pool数组
 
@@ -420,12 +420,12 @@ typedef struct
      has never been allocated. */
   uword *buffer_known_hash;
   clib_spinlock_t buffer_known_hash_lockp;
-  u32 n_numa_nodes;
+  u32 n_numa_nodes;//numa结点数目
 
   /* config */
-  u32 buffers_per_numa;
-  u16 ext_hdr_size;
-  u32 default_data_size;
+  u32 buffers_per_numa;//每个numa上的buffer数目
+  u16 ext_hdr_size;//buffer扩展头部大小
+  u32 default_data_size;//buffer默认的数据段大小
 
   /* logging */
   vlib_log_class_t log_default;

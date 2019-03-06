@@ -626,6 +626,7 @@ thread0 (uword arg)
 
   //将所有argv中所有参数合并为字符串
   unformat_init_command_line (&input, (char **) vm->argv);
+  //执行vlib_main
   i = vlib_main (vm, &input);
   unformat_free (&input);
 
@@ -661,12 +662,14 @@ vlib_unix_main (int argc, char *argv[])
 
   vm->argv = (u8 **) argv;
   vm->name = argv[0];
+  //获取当前cpu对应的heap_base
   vm->heap_base = clib_mem_get_heap ();
+  //使堆地址按VLIB_FRAME_ALIGN对齐
   vm->heap_aligned_base = (void *)
     (((uword) vm->heap_base) & ~(VLIB_FRAME_ALIGN - 1));
   ASSERT (vm->heap_base);
 
-  //将多个参数合关到一串字符串，并解析插件的配置
+  //将所有命令行参数合并到一串字符串，然后解析插件的配置
   unformat_init_command_line (&input, (char **) vm->argv);
   if ((e = vlib_plugin_config (vm, &input)))
     {
@@ -685,7 +688,7 @@ vlib_unix_main (int argc, char *argv[])
   if (vm->init_functions_called == 0)
     vm->init_functions_called = hash_create (0, /* value bytes */ 0);
 
-  //调用所有config_functions
+  //调用所有config_functions（早期）
   e = vlib_call_all_config_functions (vm, &input, 1 /* early */ );
   if (e != 0)
     {

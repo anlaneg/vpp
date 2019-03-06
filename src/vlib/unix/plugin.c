@@ -533,7 +533,7 @@ done:
   return error;
 }
 
-//解析插件总体配置及分散配置
+//解析插件总体配置及插件更具体的配置，初始化相应数据
 clib_error_t *
 vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -545,13 +545,14 @@ vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      //按"%s %v"格式解析
+      //按"%s %v"格式解析，在v中保存'{','}'之间的内部，在s中保存之前的字符串
       u8 *s, *v;
       if (unformat (input, "%s %v", &s, &v))
 	{
           //如果s为plugins,则为in.buffer添加空格分隔的v
 	  if (strncmp ((const char *) s, "plugins", 8) == 0)
 	    {
+	      //将plugins的配置添加到in.buffer中
 	      if (vec_len (in.buffer) > 0)
 		vec_add1 (in.buffer, ' ');
 	      vec_add (in.buffer, v, vec_len (v));
@@ -569,6 +570,7 @@ vlib_plugin_config (vlib_main_t * vm, unformat_input_t * input)
       vec_free (s);
     }
 done:
+  //将input指向in,准备解析plugins的配置
   input = &in;
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {

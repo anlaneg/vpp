@@ -44,13 +44,13 @@
 
 typedef struct
 {
-  int index;
-  int fd;
-  void *base;
-  u32 n_pages;
-  uword *page_table;
-  u32 log2_page_size;
-  u32 numa_node;
+  int index;//编号
+  int fd;//对应的fd
+  void *base;//起始地址
+  u32 n_pages;//页数目
+  uword *page_table;//记录各页指针
+  u32 log2_page_size;//页大小
+  u32 numa_node;//numa编号
 } vlib_physmem_map_t;
 
 typedef struct
