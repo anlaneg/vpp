@@ -2113,6 +2113,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   clib_random_buffer_init (&vm->random_buffer, vm->random_seed);
 
   /* Initialize node graph. */
+  //初始化node间关系
   if ((error = vlib_node_main_init (vm)))
   {
       /* Arrange for graph hook up error to not be fatal when debugging. */
@@ -2152,7 +2153,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 	  vm->init_functions_called = hash_create (0, /* value bytes */ 0);
   }
 
-  //调用所有初始化函数
+  //调用所有注册的初始化函数
   if ((error = vlib_call_all_init_functions (vm)))
   {
 	  goto done;
@@ -2183,7 +2184,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       break;
 
     case VLIB_MAIN_LOOP_EXIT_CLI:
-      goto done;
+      goto done;//通过cli退出
 
     default:
       error = vm->main_loop_error;
@@ -2207,7 +2208,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
     }
   }
 
-  //做主的loop
+  //执行main loop函数
   vlib_main_loop (vm);
 
 done:

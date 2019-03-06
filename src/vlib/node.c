@@ -668,6 +668,7 @@ vlib_node_get_nodes (vlib_main_t * vm, u32 max_threads, int include_stats,
   *stat_vmsp = stat_vms;
 }
 
+//节点关系初始化
 clib_error_t *
 vlib_node_main_init (vlib_main_t * vm)
 {
@@ -693,6 +694,7 @@ vlib_node_main_init (vlib_main_t * vm)
 	if (!n->sibling_of)
 	  continue;
 
+	//检查node对应的sibling_of对应的node是否存在
 	sib = vlib_get_node_by_name (vm, (u8 *) n->sibling_of);
 	if (!sib)
 	  {
@@ -702,18 +704,23 @@ vlib_node_main_init (vlib_main_t * vm)
 	  }
 
         /* *INDENT-OFF* */
+	//遍历sib节点对应的sibling_bitmap位图
 	clib_bitmap_foreach (si, sib->sibling_bitmap, ({
+	      //找到一个sib对应的sibling节点m
 	      vlib_node_t * m = vec_elt (nm->nodes, si);
 
 	      /* Connect all of sibling's siblings to us. */
+	      //节点n也将是其sibling
 	      m->sibling_bitmap = clib_bitmap_ori (m->sibling_bitmap, n->index);
 
 	      /* Connect us to all of sibling's siblings. */
+	      //节点m也将是n的sibling
 	      n->sibling_bitmap = clib_bitmap_ori (n->sibling_bitmap, si);
 	    }));
         /* *INDENT-ON* */
 
 	/* Connect sibling to us. */
+	//sib节点的兄弟及n节点的兄弟维护
 	sib->sibling_bitmap = clib_bitmap_ori (sib->sibling_bitmap, n->index);
 
 	/* Connect us to sibling. */

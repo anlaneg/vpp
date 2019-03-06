@@ -357,7 +357,7 @@ typedef struct vlib_node_t
   char *sibling_of;
 
   /* Bitmap of all of this node's siblings. */
-  uword *sibling_bitmap;
+  uword *sibling_bitmap;//指出此节点的兄弟节点有哪些
 
   /* Total number of vectors sent to each next node. */
   u64 *n_vectors_by_next_node;
