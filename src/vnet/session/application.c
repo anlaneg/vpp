@@ -525,13 +525,15 @@ application_alloc_and_init (app_init_args_t * a)
     }
   else
     {
-      if (options[APP_OPTIONS_FLAGS] & APP_OPTIONS_FLAGS_EVT_MQ_USE_EVENTFD)
-	{
-	  clib_warning ("mq eventfds can only be used if socket transport is "
-			"used for api");
-	  return VNET_API_ERROR_APP_UNSUPPORTED_CFG;
-	}
       seg_type = SSVM_SEGMENT_PRIVATE;
+    }
+
+  if ((options[APP_OPTIONS_FLAGS] & APP_OPTIONS_FLAGS_EVT_MQ_USE_EVENTFD)
+      && seg_type != SSVM_SEGMENT_MEMFD)
+    {
+      clib_warning ("mq eventfds can only be used if socket transport is "
+		    "used for binary api");
+      return VNET_API_ERROR_APP_UNSUPPORTED_CFG;
     }
 
   if (!application_verify_cfg (seg_type))
@@ -1120,8 +1122,7 @@ application_change_listener_owner (session_t * s, app_worker_t * app_wrk)
   hash_unset (old_wrk->listeners_table, listen_session_get_handle (s));
   if (session_transport_service_type (s) == TRANSPORT_SERVICE_CL
       && s->rx_fifo)
-    segment_manager_dealloc_fifos (s->rx_fifo->segment_index, s->rx_fifo,
-				   s->tx_fifo);
+    segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
 
   app = application_get (old_wrk->app_index);
   if (!app)
@@ -1169,12 +1170,6 @@ u8
 application_has_global_scope (application_t * app)
 {
   return app->flags & APP_OPTIONS_FLAGS_USE_GLOBAL_SCOPE;
-}
-
-u8
-application_use_mq_for_ctrl (application_t * app)
-{
-  return app->flags & APP_OPTIONS_FLAGS_USE_MQ_FOR_CTRL_MSGS;
 }
 
 static clib_error_t *

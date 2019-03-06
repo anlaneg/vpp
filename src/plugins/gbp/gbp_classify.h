@@ -1,4 +1,6 @@
 /*
+ * gbp.h : Group Based Policy
+ *
  * Copyright (c) 2018 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,48 +15,32 @@
  * limitations under the License.
  */
 
-#ifndef __GBP_LEARN_H__
-#define __GBP_LEARN_H__
+#ifndef __GBP_CLASSIFY_H__
+#define __GBP_CLASSIFY_H__
 
 #include <plugins/gbp/gbp.h>
 
-/**
- * The maximum learning rate per-hashed EP
- */
-#define GBP_ENDPOINT_HASH_LEARN_RATE (1e-2)
-
-typedef enum gbp_learn_mode_t_
+typedef enum gbp_src_classify_type_t_
 {
-  GBP_LEARN_MODE_L2,
-  GBP_LEARN_MODE_L3,
-} gbb_learn_mode_t;
+  GBP_SRC_CLASSIFY_NULL,
+  GBP_SRC_CLASSIFY_PORT,
+  GBP_SRC_CLASSIFY_LPM,
+} gbp_src_classify_type_t;
+
+#define GBP_SRC_N_CLASSIFY (GBP_SRC_CLASSIFY_LPM + 1)
 
 /**
  * Grouping of global data for the GBP source EPG classification feature
  */
-typedef struct gbp_learn_main_t_
+typedef struct gbp_src_classify_main_t_
 {
   /**
    * Next nodes for L2 output features
    */
-  u32 gl_l2_input_feat_next[32];
+  u32 l2_input_feat_next[GBP_SRC_N_CLASSIFY][32];
+} gbp_src_classify_main_t;
 
-  /**
-   * logger - VLIB log class
-   */
-  vlib_log_class_t gl_logger;
-
-  /**
-   * throttles for the DP leanring
-   */
-  throttle_t gl_l2_throttle;
-  throttle_t gl_l3_throttle;
-} gbp_learn_main_t;
-
-extern gbp_learn_main_t gbp_learn_main;
-
-extern void gbp_learn_enable (u32 sw_if_index, gbb_learn_mode_t mode);
-extern void gbp_learn_disable (u32 sw_if_index, gbb_learn_mode_t mode);
+extern gbp_src_classify_main_t gbp_src_classify_main;
 
 #endif
 

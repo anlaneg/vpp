@@ -332,8 +332,7 @@ static void
 vl_api_bind_sock_reply_t_handler (vl_api_bind_sock_reply_t * mp)
 {
   /* Expecting a similar message on mq. So ignore this */
-  VDBG (0, "bapi msg vpp handle 0x%llx, sid %u: bind retval: %u!",
-	mp->handle, mp->context, mp->retval);
+  VDBG (0, "bapi bind retval: %u!", mp->retval);
 }
 
 static void
@@ -352,18 +351,16 @@ vl_api_disconnect_session_reply_t_handler (vl_api_disconnect_session_reply_t *
 					   mp)
 {
   if (mp->retval)
-    clib_warning ("VCL<%d>: ERROR: sid %u: disconnect failed: %U",
-		  getpid (), mp->context, format_api_error,
-		  ntohl (mp->retval));
+    VDBG (0, "ERROR: sid %u: disconnect failed: %U", mp->context,
+	  format_api_error, ntohl (mp->retval));
 }
 
 static void
-vl_api_connect_session_reply_t_handler (vl_api_connect_sock_reply_t * mp)
+vl_api_connect_sock_reply_t_handler (vl_api_connect_sock_reply_t * mp)
 {
   if (mp->retval)
-    clib_warning ("VCL<%d>: ERROR: sid %u: connect failed: %U",
-		  getpid (), mp->context, format_api_error,
-		  ntohl (mp->retval));
+    VDBG (0, "ERROR: connect failed: %U", format_api_error,
+	  ntohl (mp->retval));
 }
 
 static void
@@ -395,7 +392,7 @@ static void
 _(SESSION_ENABLE_DISABLE_REPLY, session_enable_disable_reply)   	\
 _(BIND_SOCK_REPLY, bind_sock_reply)                             	\
 _(UNBIND_SOCK_REPLY, unbind_sock_reply)                         	\
-_(CONNECT_SESSION_REPLY, connect_session_reply)                        	\
+_(CONNECT_SOCK_REPLY, connect_sock_reply)                        	\
 _(DISCONNECT_SESSION_REPLY, disconnect_session_reply)			\
 _(APPLICATION_ATTACH_REPLY, application_attach_reply)           	\
 _(APPLICATION_DETACH_REPLY, application_detach_reply)           	\
@@ -458,7 +455,6 @@ vppcom_app_send_attach (void)
     (vcm->cfg.app_scope_local ? APP_OPTIONS_FLAGS_USE_LOCAL_SCOPE : 0) |
     (vcm->cfg.app_scope_global ? APP_OPTIONS_FLAGS_USE_GLOBAL_SCOPE : 0) |
     (app_is_proxy ? APP_OPTIONS_FLAGS_IS_PROXY : 0) |
-    APP_OPTIONS_FLAGS_USE_MQ_FOR_CTRL_MSGS |
     (vcm->cfg.use_mq_eventfd ? APP_OPTIONS_FLAGS_EVT_MQ_USE_EVENTFD : 0);
   bmp->options[APP_OPTIONS_PROXY_TRANSPORT] =
     (u64) ((vcm->cfg.app_proxy_transport_tcp ? 1 << TRANSPORT_PROTO_TCP : 0) |
@@ -549,7 +545,6 @@ vppcom_send_connect_sock (vcl_session_t * session)
   clib_memcpy_fast (cmp->ip, &session->transport.rmt_ip, sizeof (cmp->ip));
   cmp->port = session->transport.rmt_port;
   cmp->proto = session->session_type;
-  clib_memcpy_fast (cmp->options, session->options, sizeof (cmp->options));
   vl_msg_api_send_shmem (wrk->vl_input_queue, (u8 *) & cmp);
 }
 
@@ -588,7 +583,6 @@ vppcom_send_bind_sock (vcl_session_t * session)
   clib_memcpy_fast (bmp->ip, &session->transport.lcl_ip, sizeof (bmp->ip));
   bmp->port = session->transport.lcl_port;
   bmp->proto = session->session_type;
-  clib_memcpy_fast (bmp->options, session->options, sizeof (bmp->options));
   vl_msg_api_send_shmem (wrk->vl_input_queue, (u8 *) & bmp);
 }
 
