@@ -1630,6 +1630,7 @@ int
 vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 {
   u32 thread_id = vm->thread_index;
+  //取此线程对应的frame queues
   vlib_frame_queue_t *fq = fqm->vlib_frame_queues[thread_id];
   vlib_frame_queue_elt_t *elt;
   u32 *from, *to;
@@ -1691,9 +1692,10 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	  return processed;
 	}
 
-      //取当前读头实体
+      //取当前读头实体（读者头前移一位）
       elt = fq->elts + ((fq->head + 1) & (fq->nelts - 1));
 
+      //数据无效，不再继续出队，返回已出队数目
       if (!elt->valid)
 	{
 	  fq->head_hint = fq->head;
@@ -1712,6 +1714,7 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 
       n_left_to_node = elt->n_vectors;
 
+      //将elf中的buffer index填充到frame中
       while (n_left_to_node >= 4)
 	{
 	  to[0] = from[0];
@@ -1732,9 +1735,10 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	}
 
       vectors += elt->n_vectors;
-      f->n_vectors = elt->n_vectors;
+      f->n_vectors = elt->n_vectors;//指明frame中元素
       vlib_put_frame_to_node (vm, fqm->node_index, f);
 
+      //指明元素无效，移动读者头向前移动
       elt->valid = 0;
       elt->n_vectors = 0;
       elt->msg_type = 0xfefefefe;
@@ -1745,6 +1749,7 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
       /*
        * Limit the number of packets pushed into the graph
        */
+      //收取的vector大于fq的上限，停止收取
       if (vectors >= fq->vector_threshold)
 	{
 	  fq->head_hint = fq->head;

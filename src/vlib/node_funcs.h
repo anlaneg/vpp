@@ -214,6 +214,7 @@ vlib_get_process_from_node (vlib_main_t * vm, vlib_node_t * node)
 }
 
 /* Fetches frame with given handle. */
+//自heap_aligned_base上合上frame_index就可以得到frame
 always_inline vlib_frame_t *
 vlib_get_frame_no_check (vlib_main_t * vm, uword frame_index)
 {
@@ -235,6 +236,7 @@ vlib_frame_index_no_check (vlib_main_t * vm, vlib_frame_t * f)
   return i / VLIB_FRAME_ALIGN;
 }
 
+//通过frame index获得frame
 always_inline vlib_frame_t *
 vlib_get_frame (vlib_main_t * vm, uword frame_index)
 {

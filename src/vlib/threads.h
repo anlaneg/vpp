@@ -73,9 +73,9 @@ typedef enum
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  volatile u32 valid;
+  volatile u32 valid;//元素是否有效
   u32 msg_type;
-  u32 n_vectors;
+  u32 n_vectors;//指明存放的buffer_index数目
   u32 last_n_vectors;
 
   /* 256 * 4 = 1024 bytes, even mult of cache line size */
@@ -128,7 +128,7 @@ typedef struct
 
   /* dequeue side */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
-  volatile u64 head;
+  volatile u64 head;//读者头指针
   u64 dequeues;
   u64 dequeue_ticks;
   u64 dequeue_vectors;
@@ -154,7 +154,7 @@ typedef struct
 
 typedef struct
 {
-  u32 node_index;
+  u32 node_index;//所属的numa node
   u32 frame_queue_nelts;//队列数目
   u32 queue_hi_thresh;//高位
 
