@@ -54,7 +54,7 @@ int
 tls_add_vpp_q_rx_evt (session_t * s)
 {
   if (svm_fifo_set_event (s->rx_fifo))
-    session_send_io_evt_to_thread (s->rx_fifo, FIFO_EVENT_APP_RX);
+    session_send_io_evt_to_thread (s->rx_fifo, SESSION_IO_EVT_RX);
   return 0;
 }
 
@@ -62,7 +62,7 @@ int
 tls_add_vpp_q_builtin_rx_evt (session_t * s)
 {
   if (svm_fifo_set_event (s->rx_fifo))
-    session_send_io_evt_to_thread (s->rx_fifo, FIFO_EVENT_BUILTIN_RX);
+    session_send_io_evt_to_thread (s->rx_fifo, SESSION_IO_EVT_BUILTIN_RX);
   return 0;
 }
 
@@ -70,7 +70,7 @@ int
 tls_add_vpp_q_tx_evt (session_t * s)
 {
   if (svm_fifo_set_event (s->tx_fifo))
-    session_send_io_evt_to_thread (s->tx_fifo, FIFO_EVENT_APP_TX);
+    session_send_io_evt_to_thread (s->tx_fifo, SESSION_IO_EVT_TX);
   return 0;
 }
 
@@ -79,14 +79,14 @@ tls_add_vpp_q_builtin_tx_evt (session_t * s)
 {
   if (svm_fifo_set_event (s->tx_fifo))
     session_send_io_evt_to_thread_custom (s, s->thread_index,
-					  FIFO_EVENT_BUILTIN_TX);
+					  SESSION_IO_EVT_BUILTIN_TX);
   return 0;
 }
 
 static inline int
 tls_add_app_q_evt (app_worker_t * app, session_t * app_session)
 {
-  return app_worker_lock_and_send_event (app, app_session, FIFO_EVENT_APP_RX);
+  return app_worker_lock_and_send_event (app, app_session, SESSION_IO_EVT_RX);
 }
 
 u32
@@ -202,7 +202,6 @@ tls_notify_app_accept (tls_ctx_t * ctx)
   app_session->connection_index = ctx->tls_ctx_handle;
   app_session->session_type = app_listener->session_type;
   app_session->listener_index = app_listener->session_index;
-  app_session->t_app_index = tls_main.app_index;
   app_session->session_state = SESSION_STATE_ACCEPTING;
 
   if ((rv = app_worker_init_accepted (app_session)))
@@ -240,7 +239,6 @@ tls_notify_app_connected (tls_ctx_t * ctx, u8 is_failed)
   app_session->connection_index = ctx->tls_ctx_handle;
   app_session->session_type =
     session_type_from_proto_and_ip (TRANSPORT_PROTO_TLS, ctx->tcp_is_ip4);
-  app_session->t_app_index = tls_main.app_index;
 
   if (app_worker_init_connected (app_wrk, app_session))
     goto failed;
@@ -415,17 +413,6 @@ tls_session_accept_callback (session_t * tls_session)
 }
 
 int
-tls_app_tx_callback (session_t * app_session)
-{
-  tls_ctx_t *ctx;
-  if (PREDICT_FALSE (app_session->session_state == SESSION_STATE_CLOSED))
-    return 0;
-  ctx = tls_ctx_get (app_session->connection_index);
-  tls_ctx_write (ctx, app_session);
-  return 0;
-}
-
-int
 tls_app_rx_callback (session_t * tls_session)
 {
   tls_ctx_t *ctx;
@@ -501,7 +488,6 @@ static session_cb_vft_t tls_app_cb_vft = {
   .add_segment_callback = tls_add_segment_callback,
   .del_segment_callback = tls_del_segment_callback,
   .builtin_app_rx_callback = tls_app_rx_callback,
-  .builtin_app_tx_callback = tls_app_tx_callback,
 };
 /* *INDENT-ON* */
 
@@ -663,6 +649,18 @@ tls_listener_get (u32 listener_index)
   return &ctx->connection;
 }
 
+int
+tls_custom_tx_callback (void *session)
+{
+  session_t *app_session = (session_t *) session;
+  tls_ctx_t *ctx;
+  if (PREDICT_FALSE (app_session->session_state == SESSION_STATE_CLOSED))
+    return 0;
+  ctx = tls_ctx_get (app_session->connection_index);
+  tls_ctx_write (ctx, app_session);
+  return 0;
+}
+
 u8 *
 format_tls_ctx (u8 * s, va_list * args)
 {
@@ -735,6 +733,7 @@ const static transport_proto_vft_t tls_proto = {
   .stop_listen = tls_stop_listen,
   .get_connection = tls_connection_get,
   .get_listener = tls_listener_get,
+  .custom_tx = tls_custom_tx_callback,
   .tx_type = TRANSPORT_TX_INTERNAL,
   .service_type = TRANSPORT_SERVICE_APP,
   .format_connection = format_tls_connection,

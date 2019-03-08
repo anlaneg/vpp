@@ -26,6 +26,7 @@
 #include <vnet/ipsec/ah.h>
 
 ipsec_main_t ipsec_main;
+ipsec_proto_main_t ipsec_proto_main;
 
 static void
 ipsec_rand_seed (void)
@@ -136,7 +137,7 @@ ipsec_register_ah_backend (vlib_main_t * vm, ipsec_main_t * im,
 {
   ipsec_ah_backend_t *b;
   pool_get (im->ah_backends, b);
-  b->name = format (NULL, "%s", name);
+  b->name = format (0, "%s%c", name, 0);
 
   ipsec_add_node (vm, ah4_encrypt_node_name, "ipsec4-output-feature",
 		  &b->ah4_encrypt_node_index, &b->ah4_encrypt_next_index);
@@ -164,7 +165,7 @@ ipsec_register_esp_backend (vlib_main_t * vm, ipsec_main_t * im,
 {
   ipsec_esp_backend_t *b;
   pool_get (im->esp_backends, b);
-  b->name = format (NULL, "%s", name);
+  b->name = format (0, "%s%c", name, 0);
 
   ipsec_add_node (vm, esp4_encrypt_node_name, "ipsec4-output-feature",
 		  &b->esp4_encrypt_node_index, &b->esp4_encrypt_next_index);
@@ -239,7 +240,6 @@ ipsec_init (vlib_main_t * vm)
 {
   clib_error_t *error;
   ipsec_main_t *im = &ipsec_main;
-  vlib_thread_main_t *tm = vlib_get_thread_main ();
 
   ipsec_rand_seed ();
 
@@ -251,9 +251,6 @@ ipsec_init (vlib_main_t * vm)
   im->spd_index_by_spd_id = hash_create (0, sizeof (uword));
   im->sa_index_by_sa_id = hash_create (0, sizeof (uword));
   im->spd_index_by_sw_if_index = hash_create (0, sizeof (uword));
-
-  vec_validate_aligned (im->empty_buffers, tm->n_vlib_mains - 1,
-			CLIB_CACHE_LINE_BYTES);
 
   vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
   ASSERT (node);

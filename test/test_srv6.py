@@ -1224,7 +1224,7 @@ class TestSRv6(VppTestCase):
 
         # add classify table
         # mask on dst ip address prefix a7::/8
-        mask = '{:0<16}'.format('ff')
+        mask = '{!s:0<16}'.format('ff')
         r = self.vapi.classify_add_del_table(
             1,
             binascii.unhexlify(mask),
@@ -1239,7 +1239,7 @@ class TestSRv6(VppTestCase):
                                     'sr-pl-rewrite-insert')
         inacl_next_node_index = r.node_index
 
-        match = '{:0<16}'.format('a7')
+        match = '{!s:0<16}'.format('a7')
         r = self.vapi.classify_add_del_session(
             1,
             table_index,
@@ -2080,7 +2080,7 @@ class TestSRv6(VppTestCase):
         # but packet[Raw] gives the complete payload
         # (incl L2 header) for the T.Encaps L2 case
         try:
-            payload_info = self.payload_to_info(str(packet[Raw]))
+            payload_info = self.payload_to_info(packet[Raw])
 
         except:
             # remote L2 header from packet[Raw]:

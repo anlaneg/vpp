@@ -74,9 +74,9 @@ session_mq_accepted_reply_handler (void *data)
 
   if (!session_has_transport (s))
     {
+      s->session_state = SESSION_STATE_READY;
       if (ct_session_connect_notify (s))
 	return;
-      s->session_state = SESSION_STATE_READY;
     }
   else
     {
@@ -820,19 +820,17 @@ session_tx_fifo_dequeue_internal (vlib_main_t * vm,
 				  session_event_t * e, int *n_tx_pkts)
 {
   session_t *s = wrk->ctx.s;
-  application_t *app;
 
-  if (PREDICT_FALSE (s->session_state == SESSION_STATE_CLOSED))
+  if (PREDICT_FALSE (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED))
     return 0;
-  app = application_get (s->t_app_index);
   svm_fifo_unset_event (s->tx_fifo);
-  return app->cb_fns.builtin_app_tx_callback (s);
+  return transport_custom_tx (session_get_transport_proto (s), s);
 }
 
 always_inline session_t *
 session_event_get_session (session_event_t * e, u8 thread_index)
 {
-  return session_get_if_valid (e->fifo->master_session_index, thread_index);
+  return session_get_if_valid (e->session_index, thread_index);
 }
 
 static void
@@ -1104,7 +1102,7 @@ session_node_cmp_event (session_event_t * e, svm_fifo_t * f)
     case SESSION_IO_EVT_RX:
     case SESSION_IO_EVT_TX:
     case SESSION_IO_EVT_BUILTIN_RX:
-      if (e->fifo == f)
+      if (e->session_index == f->master_session_index)
 	return 1;
       break;
     case SESSION_CTRL_EVT_CLOSE:
@@ -1231,6 +1229,26 @@ VLIB_REGISTER_NODE (session_queue_process_node) =
   .function = session_queue_process,
   .type = VLIB_NODE_TYPE_PROCESS,
   .name = "session-queue-process",
+  .state = VLIB_NODE_STATE_DISABLED,
+};
+/* *INDENT-ON* */
+
+static_always_inline uword
+session_queue_pre_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
+				vlib_frame_t * frame)
+{
+  session_main_t *sm = &session_main;
+  if (!sm->wrk[0].vpp_event_queue)
+    return 0;
+  return session_queue_node_fn (vm, node, frame);
+}
+
+/* *INDENT-OFF* */
+VLIB_REGISTER_NODE (session_queue_pre_input_node) =
+{
+  .function = session_queue_pre_input_inline,
+  .type = VLIB_NODE_TYPE_PRE_INPUT,
+  .name = "session-queue-main",
   .state = VLIB_NODE_STATE_DISABLED,
 };
 /* *INDENT-ON* */

@@ -543,7 +543,7 @@ app_send_io_evt_rx (app_worker_t * app_wrk, session_t * s, u8 lock)
       return app->cb_fns.builtin_app_rx_callback (s);
     }
 
-  if (svm_fifo_has_event (s->rx_fifo) || svm_fifo_is_empty (s->rx_fifo))
+  if (svm_fifo_has_event (s->rx_fifo))
     return 0;
 
   mq = app_wrk->event_queue;
@@ -562,7 +562,7 @@ app_send_io_evt_rx (app_worker_t * app_wrk, session_t * s, u8 lock)
   ASSERT (!svm_msg_q_msg_is_invalid (&msg));
 
   evt = (session_event_t *) svm_msg_q_msg_data (mq, &msg);
-  evt->fifo = s->rx_fifo;
+  evt->session_index = s->rx_fifo->client_session_index;
   evt->event_type = SESSION_IO_EVT_RX;
 
   (void) svm_fifo_set_event (s->rx_fifo);
@@ -599,7 +599,7 @@ app_send_io_evt_tx (app_worker_t * app_wrk, session_t * s, u8 lock)
 
   evt = (session_event_t *) svm_msg_q_msg_data (mq, &msg);
   evt->event_type = SESSION_IO_EVT_TX;
-  evt->fifo = s->tx_fifo;
+  evt->session_index = s->tx_fifo->client_session_index;
 
   return app_enqueue_evt (mq, &msg, lock);
 }
@@ -608,9 +608,8 @@ app_send_io_evt_tx (app_worker_t * app_wrk, session_t * s, u8 lock)
 typedef int (app_send_evt_handler_fn) (app_worker_t *app,
 				       session_t *s,
 				       u8 lock);
-static app_send_evt_handler_fn * const app_send_evt_handler_fns[3] = {
+static app_send_evt_handler_fn * const app_send_evt_handler_fns[2] = {
     app_send_io_evt_rx,
-    0,
     app_send_io_evt_tx,
 };
 /* *INDENT-ON* */

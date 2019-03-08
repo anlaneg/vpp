@@ -15,11 +15,22 @@
 
 import struct
 import collections
-from enum import IntEnum
+import sys
+
+if sys.version_info <= (3, 4):
+    from aenum import IntEnum
+else:
+    from enum import IntEnum
+
+if sys.version_info <= (3, 6):
+    from aenum import IntFlag
+else:
+    from enum import IntFlag
+
 import logging
 from . import vpp_format
 import ipaddress
-import sys
+
 import socket
 
 #
@@ -276,7 +287,7 @@ class VPPEnumType(object):
                 continue
             ename, evalue = f
             e_hash[ename] = evalue
-        self.enum = IntEnum(name, e_hash)
+        self.enum = IntFlag(name, e_hash)
         types[name] = self
 
     def __getattr__(self, name):

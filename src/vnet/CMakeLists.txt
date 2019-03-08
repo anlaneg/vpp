@@ -39,6 +39,11 @@ list(APPEND VNET_SOURCES
   misc.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  interface_output.c
+  interface_stats.c
+)
+
 list(APPEND VNET_HEADERS
   api_errno.h
   buffer.h
@@ -74,6 +79,10 @@ list(APPEND VNET_SOURCES
   policer/policer_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  policer/node_funcs.c
+)
+
 list(APPEND VNET_HEADERS
   policer/police.h
   policer/policer.h
@@ -91,6 +100,12 @@ list(APPEND VNET_SOURCES
   cop/ip4_whitelist.c
   cop/ip6_whitelist.c
   cop/cop_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  cop/node1.c
+  cop/ip4_whitelist.c
+  cop/ip6_whitelist.c
 )
 
 list(APPEND VNET_HEADERS
@@ -268,6 +283,10 @@ list(APPEND VNET_SOURCES
   vxlan/vxlan_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  vxlan/encap.c
+)
+
 list(APPEND VNET_HEADERS
   vxlan/vxlan.h
   vxlan/vxlan_packet.h
@@ -286,6 +305,11 @@ list(APPEND VNET_SOURCES
   geneve/encap.c
   geneve/decap.c
   geneve/geneve_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  geneve/encap.c
+  geneve/decap.c
 )
 
 list(APPEND VNET_HEADERS
@@ -343,6 +367,11 @@ list(APPEND VNET_SOURCES
   classify/flow_classify_node.c
   classify/vnet_classify.h
   classify/classify_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  classify/ip_classify.c
+  classify/flow_classify_node.c
 )
 
 list(APPEND VNET_HEADERS
@@ -549,6 +578,12 @@ list(APPEND VNET_SOURCES
   tcp/tcp.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  tcp/tcp_input.c
+  tcp/tcp_output.c
+  tcp/tcp_syn_filter4.c
+)
+
 list(APPEND VNET_HEADERS
   tcp/tcp_packet.h
   tcp/tcp_timer.h
@@ -573,6 +608,11 @@ list(APPEND VNET_SOURCES
   udp/udp_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  udp/udp_local.c
+  udp/udp_encap_node.c
+)
+
 list(APPEND VNET_HEADERS
   udp/udp_error.def
   udp/udp.h
@@ -590,7 +630,13 @@ list(APPEND VNET_SOURCES
   sctp/sctp_pg.c
   sctp/sctp_input.c
   sctp/sctp_output.c
+  sctp/sctp_output_node.c
   sctp/sctp_format.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  sctp/sctp_output_node.c
+  sctp/sctp_input.c
 )
 
 list(APPEND VNET_HEADERS
@@ -635,6 +681,10 @@ list(APPEND VNET_SOURCES
   ipip/sixrd.c
   ipip/ipip_api.c
   ipip/ipip_cli.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  ipip/node.c
 )
 
 list(APPEND VNET_HEADERS
@@ -704,6 +754,11 @@ list(APPEND VNET_SOURCES
   vxlan-gbp/vxlan_gbp_packet.c
 )
 
+list (APPEND VNET_MULTIARCH_SOURCES
+  vxlan-gbp/decap.c
+  vxlan-gbp/encap.c
+)
+
 list(APPEND VNET_HEADERS
   vxlan-gbp/vxlan_gbp.h
   vxlan-gbp/vxlan_gbp_packet.h
@@ -721,6 +776,10 @@ list(APPEND VNET_SOURCES
   vxlan-gpe/encap.c
   vxlan-gpe/decap.c
   vxlan-gpe/vxlan_gpe_api.c
+)
+
+list (APPEND VNET_MULTIARCH_SOURCES
+  vxlan-gpe/decap.c
 )
 
 list(APPEND VNET_HEADERS
@@ -930,6 +989,10 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_SOURCES
   span/span_api.c
   span/span.c
+  span/node.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
   span/node.c
 )
 

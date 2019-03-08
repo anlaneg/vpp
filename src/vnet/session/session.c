@@ -66,7 +66,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
     case SESSION_IO_EVT_TX:
     case SESSION_IO_EVT_TX_FLUSH:
     case SESSION_IO_EVT_BUILTIN_RX:
-      evt->fifo = data;
+      evt->session_index = *(u32 *) data;
       break;
     case SESSION_IO_EVT_BUILTIN_TX:
     case SESSION_CTRL_EVT_CLOSE:
@@ -85,7 +85,8 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
 int
 session_send_io_evt_to_thread (svm_fifo_t * f, session_evt_type_t evt_type)
 {
-  return session_send_evt_to_thread (f, 0, f->master_thread_index, evt_type);
+  return session_send_evt_to_thread (&f->master_session_index, 0,
+				     f->master_thread_index, evt_type);
 }
 
 int
@@ -123,13 +124,6 @@ session_program_transport_close (session_t * s)
   u32 thread_index = vlib_get_thread_index ();
   session_worker_t *wrk;
   session_event_t *evt;
-
-  if (!session_has_transport (s))
-    {
-      /* Polling may not be enabled on main thread so close now */
-      session_transport_close (s);
-      return;
-    }
 
   /* If we are in the handler thread, or being called with the worker barrier
    * held, just append a new event to pending disconnects vector. */
@@ -485,7 +479,7 @@ session_notify_subscribers (u32 app_index, session_t * s,
  * @return 0 on success or negative number if failed to send notification.
  */
 static inline int
-session_enqueue_notify (session_t * s)
+session_enqueue_notify_inline (session_t * s)
 {
   app_worker_t *app_wrk;
 
@@ -512,6 +506,12 @@ session_enqueue_notify (session_t * s)
 				       s->rx_fifo, SESSION_IO_EVT_RX);
 
   return 0;
+}
+
+int
+session_enqueue_notify (session_t * s)
+{
+  return session_enqueue_notify_inline (s);
 }
 
 int
@@ -562,7 +562,11 @@ session_main_flush_enqueue_events (u8 transport_proto, u32 thread_index)
 	  errors++;
 	  continue;
 	}
-      if (PREDICT_FALSE (session_enqueue_notify (s)))
+
+      if (svm_fifo_has_event (s->rx_fifo) || svm_fifo_is_empty (s->rx_fifo))
+	continue;
+
+      if (PREDICT_FALSE (session_enqueue_notify_inline (s)))
 	errors++;
     }
 

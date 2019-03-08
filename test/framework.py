@@ -746,16 +746,18 @@ class VppTestCase(unittest.TestCase):
                                    info.ip, info.proto)
 
     @staticmethod
-    def payload_to_info(payload):
+    def payload_to_info(payload, payload_field='load'):
         """
         Convert packet payload to _PacketInfo object
 
         :param payload: packet payload
-
+        :type:  <class 'scapy.packet.Raw'>
+        :param: payload_field: packet fieldname of payload "load" for
+                <class 'scapy.packet.Raw'>
         :returns: _PacketInfo object containing de-serialized data from payload
 
         """
-        numbers = payload.split()
+        numbers = getattr(payload, payload_field).split()
         info = _PacketInfo()
         info.index = int(numbers[0])
         info.src = int(numbers[1])
@@ -1163,7 +1165,7 @@ class VppTestResult(unittest.TestResult):
                     if isinstance(test, unittest.suite._ErrorHolder):
                         test_name = str(test)
                     else:
-                        test_name = "'{}' ({})".format(
+                        test_name = "'{!s}' ({!s})".format(
                             get_testcase_doc_name(test), test.id())
                     self.current_test_case_info.core_crash_test = test_name
                 self.core_crash_test_cases_info.add(

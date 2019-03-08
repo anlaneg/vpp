@@ -15,7 +15,7 @@
 
 #include <plugins/gbp/gbp_bridge_domain.h>
 #include <plugins/gbp/gbp_endpoint.h>
-#include <plugins/gbp/gbp_sclass.h>
+#include <plugins/gbp/gbp_learn.h>
 
 #include <vnet/dpo/dvr_dpo.h>
 #include <vnet/fib/fib_table.h>
@@ -125,7 +125,7 @@ format_gbp_bridge_domain_flags (u8 * s, va_list * args)
     }
   else
     {
-      s = format (s, "noe");
+      s = format (s, "none");
     }
   return (s);
 }
@@ -210,14 +210,13 @@ gbp_bridge_domain_add_and_lock (u32 bd_id,
 	  set_int_l2_mode (vlib_get_main (), vnet_get_main (),
 			   MODE_L2_BRIDGE, gb->gb_uu_fwd_sw_if_index,
 			   bd_index, L2_BD_PORT_TYPE_UU_FWD, 0, 0);
-	  gbp_sclass_enable_l2 (gb->gb_uu_fwd_sw_if_index);
 	}
       if (~0 != gb->gb_bm_flood_sw_if_index)
 	{
 	  set_int_l2_mode (vlib_get_main (), vnet_get_main (),
 			   MODE_L2_BRIDGE, gb->gb_bm_flood_sw_if_index,
 			   bd_index, L2_BD_PORT_TYPE_NORMAL, 0, 0);
-	  gbp_sclass_enable_l2 (gb->gb_bm_flood_sw_if_index);
+	  gbp_learn_enable (gb->gb_bm_flood_sw_if_index, GBP_LEARN_MODE_L2);
 	}
 
       /*
@@ -267,14 +266,13 @@ gbp_bridge_domain_unlock (index_t index)
 	  set_int_l2_mode (vlib_get_main (), vnet_get_main (),
 			   MODE_L3, gb->gb_uu_fwd_sw_if_index,
 			   gb->gb_bd_index, L2_BD_PORT_TYPE_UU_FWD, 0, 0);
-	  gbp_sclass_disable_l2 (gb->gb_uu_fwd_sw_if_index);
 	}
       if (~0 != gb->gb_bm_flood_sw_if_index)
 	{
 	  set_int_l2_mode (vlib_get_main (), vnet_get_main (),
 			   MODE_L3, gb->gb_bm_flood_sw_if_index,
 			   gb->gb_bd_index, L2_BD_PORT_TYPE_NORMAL, 0, 0);
-	  gbp_sclass_disable_l2 (gb->gb_bm_flood_sw_if_index);
+	  gbp_learn_enable (gb->gb_bm_flood_sw_if_index, GBP_LEARN_MODE_L2);
 	}
 
       gbp_bridge_domain_db_remove (gb);
