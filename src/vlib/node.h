@@ -211,7 +211,7 @@ static __clib_unused vlib_node_registration_t __clib_unused_##x
 #define CLIB_MARCH_VARIANT_STR _CLIB_MARCH_VARIANT_STR(CLIB_MARCH_VARIANT)
 #endif
 
-//定义node的函数
+//定义node的报文处理函数
 //声明函数node##_fn,定义node##_fun_registration变量
 #define VLIB_NODE_FN(node)						\
 uword CLIB_MARCH_SFX (node##_fn)();					\
@@ -223,9 +223,11 @@ static vlib_node_fn_registration_t					\
 static void __clib_constructor						\
 CLIB_MARCH_SFX (node##_multiarch_register) (void)			\
 {									\
+	/*引用我们需要设置的node*/\
   extern vlib_node_registration_t node;					\
   vlib_node_fn_registration_t *r;					\
   r = & CLIB_MARCH_SFX (node##_fn_registration);			\
+  /*设置默认的优先级，如果用户指定更高的优先级，则运行时可以被用户设置的function所替代*/\
   r->priority = CLIB_MARCH_FN_PRIORITY();				\
   r->name = CLIB_MARCH_VARIANT_STR;					\
   r->next_registration = node.node_fn_registrations;			\

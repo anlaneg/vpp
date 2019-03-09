@@ -264,15 +264,17 @@ l2fib_make_key (const u8 * mac_address, u16 bd_index)
 
 static_always_inline void
 l2fib_lookup_1 (BVT (clib_bihash) * mac_table,
-		l2fib_entry_key_t * cached_key,
-		l2fib_entry_result_t * cached_result,
+		l2fib_entry_key_t * cached_key,//缓存的key,用于优化查询
+		l2fib_entry_result_t * cached_result,//缓存key对应的cached结果
 		u8 * mac0,
 		u16 bd_index0,
-		l2fib_entry_key_t * key0, l2fib_entry_result_t * result0)
+		l2fib_entry_key_t * key0/*用于记录产生的key*/, l2fib_entry_result_t * result0/*用于记录产生的result*/)
 {
   /* set up key */
+  //将mac地址与接口index合并为u64，并给于raw
   key0->raw = l2fib_make_key (mac0, bd_index0);
 
+  //与cache的相等时，直接使result得到cached_result
   if (key0->raw == cached_key->raw)
     {
       /* Hit in the one-entry cache */
@@ -281,13 +283,16 @@ l2fib_lookup_1 (BVT (clib_bihash) * mac_table,
   else
     {
       /* Do a regular mac table lookup */
+	  //未在cache中找到，执行常规查询
       BVT (clib_bihash_kv) kv;
 
       kv.key = key0->raw;
       kv.value = ~0ULL;
+      //在mac_table中执行查询，获得查询到的value
       BV (clib_bihash_search_inline) (mac_table, &kv);
       result0->raw = kv.value;
 
+      //更新cached_key，cached_result执行优化
       /* Update one-entry cache */
       cached_key->raw = key0->raw;
       cached_result->raw = result0->raw;

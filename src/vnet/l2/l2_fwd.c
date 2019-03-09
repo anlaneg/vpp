@@ -134,25 +134,28 @@ l2fwd_process (vlib_main_t * vm,
 	       vlib_node_runtime_t * node,
 	       l2fwd_main_t * msm,
 	       vlib_error_main_t * em,
-	       vlib_buffer_t * b0,
-	       u32 sw_if_index0, l2fib_entry_result_t * result0, u16 * next0)
+	       vlib_buffer_t * b0/*报文*/,
+	       u32 sw_if_index0/*报文入接口*/, l2fib_entry_result_t * result0/*fdb查询结果*/, u16 * next0/*下级node索引*/)
 {
   int try_flood = result0->raw == ~0;
   int flood_error;
 
   if (PREDICT_FALSE (try_flood))
     {
+	  //result0未命中fdb表，报文需要flood
       flood_error = L2FWD_ERROR_FLOOD;
     }
   else
     {
+	  //fdb表被命中，报文按fdb进行转发
       /* lookup hit, forward packet  */
 #ifdef COUNTERS
       em->counters[node_counter_base_index + L2FWD_ERROR_HIT] += 1;
 #endif
 
+      //指明此报文发方向为fdb对应的输出结果
       vnet_buffer (b0)->sw_if_index[VLIB_TX] = result0->fields.sw_if_index;
-      *next0 = L2FWD_NEXT_L2_OUTPUT;
+      *next0 = L2FWD_NEXT_L2_OUTPUT;//指定一级node为l2_output
       int l2fib_seq_num_valid = 1;
 
       /* check l2fib seq num for stale entries */
@@ -175,12 +178,14 @@ l2fwd_process (vlib_main_t * vm,
       /* perform reflection check */
       else if (PREDICT_FALSE (sw_if_index0 == result0->fields.sw_if_index))
 	{
+    	  //报文的入接口与其通过fdb查询后结果相同，由于是l2层转发，故丢弃报文
 	  b0->error = node->errors[L2FWD_ERROR_REFLECT_DROP];
 	  *next0 = L2FWD_NEXT_DROP;
 	}
       /* perform filter check */
       else if (PREDICT_FALSE (l2fib_entry_result_is_set_FILTER (result0)))
 	{
+    	  //报文被设置filter,故报文需要丢弃
 	  b0->error = node->errors[L2FWD_ERROR_FILTER_DROP];
 	  *next0 = L2FWD_NEXT_DROP;
 	}
@@ -233,7 +238,7 @@ l2fwd_process (vlib_main_t * vm,
     }
 }
 
-
+//执行fdb表询，按fdb查询结果执行转发
 static_always_inline uword
 l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		   vlib_frame_t * frame, int do_trace)
@@ -243,8 +248,8 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_node_t *n = vlib_get_node (vm, l2fwd_node.index);
   CLIB_UNUSED (u32 node_counter_base_index) = n->error_heap_index;
   vlib_error_main_t *em = &vm->error_main;
-  l2fib_entry_key_t cached_key;
-  l2fib_entry_result_t cached_result;
+  l2fib_entry_key_t cached_key;//缓存上次查询的key
+  l2fib_entry_result_t cached_result;//缓存上次查询key的结果
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 nexts[VLIB_FRAME_SIZE], *next;
 
@@ -279,11 +284,13 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       }
 
       /* RX interface handles */
+      //取4个报文的入接口
       sw_if_index0 = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
       sw_if_index1 = vnet_buffer (b[1])->sw_if_index[VLIB_RX];
       sw_if_index2 = vnet_buffer (b[2])->sw_if_index[VLIB_RX];
       sw_if_index3 = vnet_buffer (b[3])->sw_if_index[VLIB_RX];
 
+      //取buffer的以太头
       h0 = vlib_buffer_get_current (b[0]);
       h1 = vlib_buffer_get_current (b[1]);
       h2 = vlib_buffer_get_current (b[2]);
@@ -293,6 +300,7 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       em->counters[node_counter_base_index + L2FWD_ERROR_L2FWD] += 4;
 #endif
       /* *INDENT-OFF* */
+      //执行一次性查询4个报文的fdb表项
       l2fib_lookup_4 (msm->mac_table, &cached_key, &cached_result,
                       h0->dst_address, h1->dst_address,
                       h2->dst_address, h3->dst_address,
@@ -371,18 +379,21 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       l2fib_entry_key_t key0;
       l2fib_entry_result_t result0;
 
+      //取报文的入接口
       sw_if_index0 = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
 
+      //取报文以太头
       h0 = vlib_buffer_get_current (b[0]);
 
       /* process 1 pkt */
 #ifdef COUNTERS
       em->counters[node_counter_base_index + L2FWD_ERROR_L2FWD] += 1;
 #endif
+      //针对h0的目的mac,查询mac表，
       l2fib_lookup_1 (msm->mac_table, &cached_key, &cached_result,
 		      h0->dst_address, vnet_buffer (b[0])->l2.bd_index, &key0,
 		      /* not used */ &result0);
-      l2fwd_process (vm, node, msm, em, b[0], sw_if_index0, &result0, next);
+      l2fwd_process (vm, node, msm, em, b[0], sw_if_index0/*报文的入接口*/, &result0/*mac查询结果*/, next);
 
       if (do_trace && PREDICT_FALSE (b[0]->flags & VLIB_BUFFER_IS_TRACED))
 	{
@@ -405,7 +416,7 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return frame->n_vectors;
 }
 
-//定义l2fwd_node函数，并将其赋值给extern vlib_node_registration_t node
+//定义l2fwd_node节点的处理函数，并将其赋值给extern vlib_node_registration_t node
 //负责node处理
 VLIB_NODE_FN (l2fwd_node) (vlib_main_t * vm,
 			   vlib_node_runtime_t * node, vlib_frame_t * frame)

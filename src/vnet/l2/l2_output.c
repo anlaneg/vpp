@@ -288,6 +288,7 @@ l2output_process_batch (vlib_main_t * vm, vlib_node_runtime_t * node,
 				   l2_efp, l2_vtr, l2_pbb, 1, 1);
 }
 
+//定义l2output的node逻辑处理函数，执行报文输出
 VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
 			      vlib_node_runtime_t * node,
 			      vlib_frame_t * frame)
@@ -444,6 +445,7 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//定义l2output_node
 VLIB_REGISTER_NODE (l2output_node) = {
   .name = "l2-output",
   .vector_size = sizeof (u32),

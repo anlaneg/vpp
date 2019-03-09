@@ -66,6 +66,7 @@ typedef struct BV (clib_bihash_value)
 {
   union
   {
+	//多个kv结构
     BVT (clib_bihash_kv) kvp[BIHASH_KVP_PER_PAGE];
     u64 next_free_as_u64;
   };
@@ -115,6 +116,7 @@ STATIC_ASSERT_SIZEOF (BVT (clib_bihash_shared_header), 8 * sizeof (u64));
 
 typedef struct
 {
+  //hash表对应的桶指针
   BVT (clib_bihash_bucket) * buckets;
   volatile u32 *alloc_lock;
 
@@ -209,6 +211,7 @@ static inline void *BV (clib_bihash_get_value) (BVT (clib_bihash) * h,
   return (void *) vp;
 }
 
+//如果其没有值，则offset为0
 static inline int BV (clib_bihash_bucket_is_empty)
   (BVT (clib_bihash_bucket) * b)
 {
@@ -262,16 +265,18 @@ format_function_t BV (format_bihash_kvp);
 format_function_t BV (format_bihash_lru);
 
 static inline int BV (clib_bihash_search_inline_with_hash)
-  (BVT (clib_bihash) * h, u64 hash, BVT (clib_bihash_kv) * key_result)
+  (BVT (clib_bihash) * h, u64 hash/*hash值*/, BVT (clib_bihash_kv) * key_result/*入参及出参，获得输出的结果*/)
 {
   u32 bucket_index;
   BVT (clib_bihash_value) * v;
   BVT (clib_bihash_bucket) * b;
   int i, limit;
 
+  //通过hash值获取到其对应的桶
   bucket_index = hash & (h->nbuckets - 1);
   b = &h->buckets[bucket_index];
 
+  //检查此桶如果无value,则返回-1
   if (PREDICT_FALSE (BV (clib_bihash_bucket_is_empty) (b)))
     return -1;
 
@@ -284,6 +289,7 @@ static inline int BV (clib_bihash_search_inline_with_hash)
 
   hash >>= h->log2_nbuckets;
 
+  //取桶内的值
   v = BV (clib_bihash_get_value) (h, b->offset);
 
   /* If the bucket has unresolvable collisions, use linear search */
@@ -292,6 +298,7 @@ static inline int BV (clib_bihash_search_inline_with_hash)
   if (PREDICT_FALSE (b->linear_search))
     limit <<= b->log2_pages;
 
+  //遍历v->kvp,检查是否key相等，如果key相等，将返顺v->kvp[i]
   for (i = 0; i < limit; i++)
     {
       if (BV (clib_bihash_key_compare) (v->kvp[i].key, key_result->key))
@@ -308,9 +315,11 @@ static inline int BV (clib_bihash_search_inline)
 {
   u64 hash;
 
+  //产生hash值
   hash = BV (clib_bihash_hash) (key_result);
 
-  return BV (clib_bihash_search_inline_with_hash) (h, hash, key_result);
+  //按hash查询对应值
+  return BV (lib_bihash_search_inline_with_hash) (h, hash, key_result);
 }
 
 static inline void BV (clib_bihash_prefetch_bucket)

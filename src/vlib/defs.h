@@ -43,8 +43,8 @@
 /* Receive or transmit. */
 typedef enum
 {
-  VLIB_RX,
-  VLIB_TX,
+  VLIB_RX,//收方向
+  VLIB_TX,//发方向
   VLIB_N_RX_TX = 2,		/* Used to size arrays. */
 } vlib_rx_or_tx_t;
 
