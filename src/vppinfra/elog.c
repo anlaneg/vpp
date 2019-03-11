@@ -108,6 +108,7 @@ find_or_create_type (elog_main_t * em, elog_event_type_t * t)
 }
 
 /* External function to register types. */
+//event type注册
 word
 elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
 {
@@ -117,12 +118,12 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   elog_lock (em);
 
   /* Multiple simultaneous registration attempts, */
-  //如果t的type索引已赋值，则直接返回
+  //如果t的type索引已赋值，则返回对应的type index
   if (t->type_index_plus_one > 0)
-    {
+  {
       elog_unlock (em);
       return t->type_index_plus_one - 1;
-    }
+  }
 
   l = vec_len (em->event_types);
 
@@ -145,33 +146,36 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
       //非%,跳过
 	  if (t->format[i] != '%')
 	    continue;
+
 	  //最后一个字符为'%'时跳过
 	  if (i + 1 >= l)
 	    continue;
+
 	  //防止%%转议
 	  if (t->format[i + 1] == '%')	/* %% */
 	    continue;
 
-	  //取格式化符后面的字节
+	  //取格式化符后面的字节(只解决有一个％的情况）
 	  switch (t->format[i + 1])
 	    {
 	    default:
 	    case 'd':
 	    case 'x':
 	    case 'u':
-	      //32位整数
+	      //此种情况下传入的参数为32位整数
 	      this_arg = "i4";	/* size of u32 */
 	      break;
 	    case 'f':
-	      //
+	      //此种情况下传入的参数为64位浮点数
 	      this_arg = "f8";	/* defaults to f64 */
 	      break;
 	    case 's':
+	      //默认传入的是以'\0'结束的s
 	      this_arg = "s0";	/* defaults to null terminated string. */
 	      break;
 	    }
 
-	  //记录format对应的格式化符号
+	  //记录format对应的格式化符号，将其附加到t->format_args中
 	  t->format_args =
 	    (char *) format ((u8 *) t->format_args, "%s", this_arg);
 	}
@@ -188,7 +192,7 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   t = em->event_types + l;
 
   /* Make copies of strings for hashing etc. */
-  //构造format参数
+  //构造format参数（防用户传入的format未包含'\0')
   if (t->function)
     t->format = (char *) format (0, "%s %s%c", t->function, t->format, 0);
   else
@@ -197,14 +201,16 @@ elog_event_type_register (elog_main_t * em, elog_event_type_t * t)
   t->format_args = (char *) format (0, "%s%c", t->format_args, 0);
 
   /* Construct string table. */
-  //构造枚举类型对应的字面值
+  //copy构造枚举类型对应的字面值
   {
     uword i;
     t->n_enum_strings = static_type->n_enum_strings;
     for (i = 0; i < t->n_enum_strings; i++)
-      {
+    {
 	if (!static_type->enum_strings[i])
+	    //如指明为空，则改为"MISSING"
 	  static_type->enum_strings[i] = "MISSING";
+	//将对应的字符串加入
 	vec_add1 (t->enum_strings_vector,
 		  (char *) format (0, "%s%c", static_type->enum_strings[i],
 				   0));
@@ -231,6 +237,7 @@ elog_track_register (elog_main_t * em, elog_track_t * t)
 
   ASSERT (t->name);
 
+  //将track加入到em->tracks中
   vec_add1 (em->tracks, t[0]);
 
   t = em->tracks + l;
@@ -451,6 +458,7 @@ format_elog_track_name (u8 * s, va_list * va)
   return format (s, "%s", t->name);
 }
 
+//将参数指定的elog_main中有所有event格式化进s
 u8 *
 format_elog_track (u8 * s, va_list * args)
 {
@@ -462,6 +470,7 @@ format_elog_track (u8 * s, va_list * args)
 
   indent = format_get_indent (s) + 1;
 
+  //取出em中所有缓存的events,并遍历它
   es = elog_peek_events (em);
   vec_foreach (e, es)
   {
@@ -619,6 +628,7 @@ elog_peek_events (elog_main_t * em)
       j = (j + 1) & (em->event_ring_size - 1);
     }
 
+  //返回收集到的em->event_ring元素
   return es;
 }
 
@@ -632,6 +642,7 @@ elog_string (elog_main_t * em, char *fmt, ...)
 
   va_start (va, fmt);
   offset = vec_len (em->string_table);
+  //向em->string_table中添加字符串
   em->string_table = (char *) va_format ((u8 *) em->string_table, fmt, &va);
   va_end (va);
 
@@ -639,6 +650,7 @@ elog_string (elog_main_t * em, char *fmt, ...)
   if (vec_end (em->string_table)[-1] != 0)
     vec_add1 (em->string_table, 0);
 
+  //返回新添加字符串对应的索引
   return offset;
 }
 

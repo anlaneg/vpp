@@ -99,6 +99,7 @@ void TW (tw_search_trace) (TWT (tw_timer_wheel) * tw, u32 handle)
 }
 #endif /* TW_START_STOP_TRACE_SIZE > 0 */
 
+//将pool_index及timer_id合并到u32数组中
 static inline u32
 TW (make_internal_timer_handle) (u32 pool_index, u32 timer_id)
 {
@@ -115,23 +116,28 @@ TW (make_internal_timer_handle) (u32 pool_index, u32 timer_id)
   return handle;
 }
 
+//将new_index号
 static inline void
-timer_addhead (TWT (tw_timer) * pool, u32 head_index, u32 new_index)
+timer_addhead (TWT (tw_timer) * pool, u32 head_index/*头部索引*/, u32 new_index)
 {
+  //取head
   TWT (tw_timer) * head = pool_elt_at_index (pool, head_index);
   TWT (tw_timer) * old_first;
   u32 old_first_index;
   TWT (tw_timer) * new;
 
+  //自pool中获取节点
   new = pool_elt_at_index (pool, new_index);
 
   if (PREDICT_FALSE (head->next == head_index))
     {
+      //head链表当前为空，将next_index加入
       head->next = head->prev = new_index;
       new->next = new->prev = head_index;
       return;
     }
 
+  //取出前一个元素及后一个元素，将其设置上正确的next,prev
   old_first_index = head->next;
   old_first = pool_elt_at_index (pool, old_first_index);
 
@@ -141,6 +147,7 @@ timer_addhead (TWT (tw_timer) * pool, u32 head_index, u32 new_index)
   head->next = new_index;
 }
 
+//timer移除，移除elt对应的index
 static inline void
 timer_remove (TWT (tw_timer) * pool, TWT (tw_timer) * elt)
 {
@@ -158,7 +165,7 @@ timer_remove (TWT (tw_timer) * pool, TWT (tw_timer) * elt)
 }
 
 static inline void
-timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval)
+timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/)
 {
 #if TW_TIMER_WHEELS > 1
   u16 slow_ring_offset;
@@ -300,12 +307,15 @@ TW (tw_timer_start) (TWT (tw_timer_wheel) * tw, u32 user_id, u32 timer_id,
 
   ASSERT (interval);
 
+  //取一个timer
   pool_get (tw->timers, t);
   clib_memset (t, 0xff, sizeof (*t));
 
+  //填充timer的user_handle
   t->user_handle = TW (make_internal_timer_handle) (user_id, timer_id);
 
   timer_add (tw, t, interval);
+  //返回添加的timer索引号
   return t - tw->timers;
 }
 

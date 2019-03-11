@@ -525,6 +525,7 @@ do {									\
     @endcode
     use of @c pool_elt_at_index is strongly suggested.
  */
+//按索引取pool上元素
 #define pool_elt_at_index(p,i)			\
 ({						\
   typeof (p) _e = (p) + (i);			\

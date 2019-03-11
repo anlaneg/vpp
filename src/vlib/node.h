@@ -286,7 +286,7 @@ typedef struct vlib_node_t
   u8 *name;//node名称
 
   /* Node name index in elog string table. */
-  u32 name_elog_string;
+  u32 name_elog_string;//node名称在elog索引表中的索引
 
   /* Total statistics for this node. */
   vlib_node_stats_t stats_total;
@@ -472,7 +472,7 @@ vlib_next_frame_init (vlib_next_frame_t * nf)
 typedef struct
 {
   /* Node and runtime for this frame. */
-  u32 node_runtime_index;//node对应的index
+  u32 node_runtime_index;//被挂起的node对应的index
 
   /* Frame index (in the heap). */
   u32 frame_index;//对应的frame buffer index
@@ -584,7 +584,7 @@ typedef struct
 
 //返回此值时继续调用function
 #define VLIB_PROCESS_RETURN_LONGJMP_RETURN ((uword) ~0 - 0)
-//返回此值时此process将被挂起
+//返回此值时需要将对应的process挂起
 #define VLIB_PROCESS_RETURN_LONGJMP_SUSPEND ((uword) ~0 - 1)
 
   /* Where to longjmp to resume node after suspend. */
@@ -604,10 +604,10 @@ typedef struct
   /* Size of process stack. */
   u16 log2_n_stack_bytes;//process栈空间大小
 
-  u32 suspended_process_frame_index;//挂起进程frame索引
+  u32 suspended_process_frame_index;//此process被挂起时对应的frame索引
 
   /* Number of times this process was suspended. */
-  u32 n_suspends;//被挂起的次数
+  u32 n_suspends;//此process被挂起的次数
 
   /* Vectors of pending event data indexed by event type index. */
   void **pending_event_data_by_type_index;

@@ -84,8 +84,8 @@ typedef struct vlib_main_t
   u32 main_loop_count;//每main loop一次，则增加1
 
   /* Count of vectors processed this main loop. */
-  u32 main_loop_vectors_processed;//已处理的统计计数
-  u32 main_loop_nodes_processed;
+  u32 main_loop_vectors_processed;//已处理的报文数
+  u32 main_loop_nodes_processed;//已处理的node数
 
   /* Circular buffer of input node vector counts.
      Indexed by low bits of
@@ -142,6 +142,7 @@ typedef struct vlib_main_t
 
   /* Pcap dispatch trace main */
   pcap_main_t dispatch_pcap_main;
+  //是否开启了pcap功能
   uword dispatch_pcap_enable;
   u8 *pcap_buffer;
 

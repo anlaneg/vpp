@@ -82,13 +82,13 @@ typedef struct
 {
   /** Type index plus one assigned to this type.
      This is used to mark type as seen. */
-  u32 type_index_plus_one;//type_index加１
+  u32 type_index_plus_one;//类型编号，type_index加１
 
   /** String table as a vector constructed when type is registered. */
   char **enum_strings_vector;//构造的枚举字符串vector
 
   /** Format string. (example: "my-event (%d,%d)"). */
-  char *format;
+  char *format;//格式化字符串
 
   /** Specifies how arguments to format are parsed from event data.
      String of characters '0' '1' or '2' '3' to specify log2 size of data
@@ -97,7 +97,7 @@ typedef struct
      't' means argument is an index into enum string table for this type.
      'e' is a float,
      'f' is a double. */
-  char *format_args;//指出参数格式
+  char *format_args;//指出event data参数格式，完成如何解析问题
 
   /** Function name generating event. */
   char *function;
@@ -305,6 +305,7 @@ elog_event_data_inline (elog_main_t * em,
   track_index = (word) track->track_index_plus_one - 1;
   if (PREDICT_FALSE ((type_index | track_index) < 0))
     {
+      //如果未赋值，则加入后获取注册分配的index
       if (type_index < 0)
 	type_index = elog_event_type_register (em, type);
       if (track_index < 0)
@@ -324,12 +325,13 @@ elog_event_data_inline (elog_main_t * em,
   //分配ei位置对应的event（申请）
   e = vec_elt_at_index (em->event_ring, ei);
 
-  //填充event
+  //填充event内存字段
   e->time_cycles = cpu_time;
   e->type = type_index;
   e->track = track_index;
 
   /* Return user data for caller to fill in. */
+  //返回用户填充用的data buffer
   return e->data;
 }
 
@@ -356,6 +358,7 @@ elog_event_data_not_inline (elog_main_t * em,
 {
   /* Return the user dummy memory to scribble data into. */
   if (PREDICT_FALSE (!elog_is_enabled (em)))
+    //elog未开启，返回dummy event数据
     return em->dummy_event.data;
   return elog_event_data (em, type, track, cpu_time);
 }
@@ -400,12 +403,13 @@ always_inline void
 elog_track (elog_main_t * em, elog_event_type_t * type, elog_track_t * track,
 	    u32 data)
 {
-    //申请一个event
+  //添加event,并为其设置data
+  //申请一个event
   u32 *d = elog_event_data_not_inline (em,
 				       type,
 				       track,
 				       clib_cpu_time_now ());
-  //设置event数据为data
+  //设置event数据为一个u32的data
   d[0] = data;
 }
 
@@ -426,6 +430,7 @@ elog_track_inline (elog_main_t * em, elog_event_type_t * type,
   d[0] = data;
 }
 
+//依据相应的type,track创建event,并返回其用户可使用的buffer
 always_inline void *
 elog_data (elog_main_t * em, elog_event_type_t * type, elog_track_t * track)
 {
@@ -443,6 +448,7 @@ elog_data_inline (elog_main_t * em, elog_event_type_t * type,
 #define __ELOG_TYPE_VAR(f) f
 #define __ELOG_TRACK_VAR(f) f
 
+//申明一个elog类型
 #define ELOG_TYPE_DECLARE(f) static elog_event_type_t __ELOG_TYPE_VAR(f)
 
 #define ELOG_TYPE_INIT_FORMAT_AND_FUNCTION(fmt,func) \
@@ -485,7 +491,9 @@ elog_data_inline (elog_main_t * em, elog_event_type_t * type,
   elog_data_inline ((em), &__ELOG_TYPE_VAR(f), &__ELOG_TRACK_VAR(track))
 
 /* Shorthand with default track. */
+//注册f对应的event type,注册em->defaut_track对应的trace，并创建event,返回event对应的用户buffer（20字节空间)
 #define ELOG_DATA(em,f) elog_data ((em), &__ELOG_TYPE_VAR (f), &(em)->default_track)
+//inline版本的ELOG_DATA定义
 #define ELOG_DATA_INLINE(em,f) elog_data_inline ((em), &__ELOG_TYPE_VAR (f), &(em)->default_track)
 
 /** @brief add a string to the event-log string table

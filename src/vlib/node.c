@@ -60,13 +60,16 @@ vlib_get_node_by_name (vlib_main_t * vm, u8 * name)
 static void
 node_set_elog_name (vlib_main_t * vm, uword node_index)
 {
+  //获取对应的node
   vlib_node_t *n = vlib_get_node (vm, node_index);
   elog_event_type_t *t;
 
+  //设置call event type的format
   t = vec_elt_at_index (vm->node_call_elog_event_types, node_index);
   vec_free (t->format);
   t->format = (char *) format (0, "%v-call: %%d%c", n->name, 0);
 
+  //设置return event type的format
   t = vec_elt_at_index (vm->node_return_elog_event_types, node_index);
   vec_free (t->format);
   t->format = (char *) format (0, "%v-return: %%d%c", n->name, 0);
@@ -303,7 +306,7 @@ vlib_node_add_named_next_with_slot (vlib_main_t * vm,
 }
 
 static void
-node_elog_init (vlib_main_t * vm, uword ni)
+node_elog_init (vlib_main_t * vm, uword ni/*node index*/)
 {
   elog_event_type_t t;
 
@@ -312,11 +315,14 @@ node_elog_init (vlib_main_t * vm, uword ni)
   /* 2 event types for this node: one when node function is called.
      One when it returns. */
   vec_validate (vm->node_call_elog_event_types, ni);
+  //定义node对应的call event type
   vm->node_call_elog_event_types[ni] = t;
 
   vec_validate (vm->node_return_elog_event_types, ni);
+  //定义node对应的return event type
   vm->node_return_elog_event_types[ni] = t;
 
+  //设置call,return event事件
   node_set_elog_name (vm, ni);
 }
 

@@ -145,6 +145,7 @@ typedef struct
   };
 
   /** user timer handle */
+  //记录了user_id,timer_id数
   u32 user_handle;
 } TWT (tw_timer);
 
@@ -180,7 +181,7 @@ typedef CLIB_PACKED (struct
 typedef struct
 {
   /** Timer pool */
-  TWT (tw_timer) * timers;
+  TWT (tw_timer) * timers;//负责分配timer对象
 
   /** Next time the wheel should run */
   f64 next_run_time;

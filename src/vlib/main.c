@@ -692,6 +692,7 @@ vlib_node_runtime_update_stats (vlib_main_t * vm,
   return r;
 }
 
+//调用回调vlib_node_runtime_perf_counter_cb
 static inline void
 vlib_node_runtime_perf_counter (vlib_main_t * vm, u64 * pmc0, u64 * pmc1)
 {
@@ -873,6 +874,7 @@ elog_show_buffer_internal (vlib_main_t * vm, u32 n_events_to_show)
   dt = (em->init_time.cpu - vm->clib_time.init_cpu_time)
     * vm->clib_time.seconds_per_clock;
 
+  //自em中取出所有存在buffer中的event,并显示它
   es = elog_peek_events (em);
   vlib_cli_output (vm, "%d of %d events in buffer, logger %s", vec_len (es),
 		   em->event_ring_size,
@@ -925,10 +927,11 @@ vlib_gdb_show_event_log (void)
   elog_show_buffer_internal (vlib_get_main (), (u32) ~ 0);
 }
 
+//如果需要trace,则向em中添加event并记录待处理的frame,及处理完成的frame数目
 static inline void
 vlib_elog_main_loop_event (vlib_main_t * vm,
-			   u32 node_index,
-			   u64 time, u32 n_vectors, u32 is_return)
+			   u32 node_index/*node索引*/,
+			   u64 time, u32 n_vectors, u32 is_return/*是否after调用*/)
 {
   vlib_main_t *evm = &vlib_global_main;
   elog_main_t *em = &evm->elog_main;
@@ -936,33 +939,34 @@ vlib_elog_main_loop_event (vlib_main_t * vm,
     evm->elog_trace_graph_circuit;
 
   if (PREDICT_FALSE (enabled && n_vectors))
-    {
+  {
       if (PREDICT_FALSE (!elog_is_enabled (em)))
-	{
-	  evm->elog_trace_graph_dispatch = 0;
-	  evm->elog_trace_graph_circuit = 0;
-	  return;
-	}
+	  {
+          evm->elog_trace_graph_dispatch = 0;
+          evm->elog_trace_graph_circuit = 0;
+          return;
+	  }
       if (PREDICT_TRUE
 	  (evm->elog_trace_graph_dispatch ||
 	   (evm->elog_trace_graph_circuit &&
 	    node_index == evm->elog_trace_graph_circuit_node_index)))
-	{
+	  {
           //添加event,并设置其event数据为n_vectors
-	  elog_track (em,
+          elog_track (em,
 		      /* event type */
-	          //按node索引取event type
+	          /*return event type及call event type均按node索引存入event type*/
 		      vec_elt_at_index (is_return
 					? evm->node_return_elog_event_types //return时event type
 					: evm->node_call_elog_event_types,
 					node_index),
 		      /* track */
+			  /*使用哪个track*/
 		      (vm->thread_index ?
 		       &vlib_worker_threads[vm->thread_index].elog_track
 		       : &em->default_track),
-		      /* data to log */ n_vectors);
-	}
-    }
+		      /* data to log 采用n_vectors记录event 数组*/ n_vectors);
+	  }
+   }
 }
 
 #if VLIB_BUFFER_TRACE_TRAJECTORY > 0
@@ -1167,47 +1171,49 @@ dispatch_node (vlib_main_t * vm,
 
   //断言node->node_index号node的类型为$type
   if (CLIB_DEBUG > 0)
-    {
+  {
       vlib_node_t *n = vlib_get_node (vm, node->node_index);
       ASSERT (n->type == type);
-    }
+  }
 
   /* Only non-internal nodes may be disabled. */
   //如果非VLIB_NODE_TYPE_INTERNAL类型的node,则不调度与期待状态不符的node
   if (type != VLIB_NODE_TYPE_INTERNAL && node->state != dispatch_state)
-    {
+  {
       ASSERT (type != VLIB_NODE_TYPE_INTERNAL);
       return last_time_stamp;
-    }
+  }
 
   //pre-input,input类型的node,非interrupt时，仅在node->input_main_loops_per_call为0时调度
   if ((type == VLIB_NODE_TYPE_PRE_INPUT || type == VLIB_NODE_TYPE_INPUT)
       && dispatch_state != VLIB_NODE_STATE_INTERRUPT)
-    {
+  {
       u32 c = node->input_main_loops_per_call;
       /* Only call node when count reaches zero. */
       if (c)
-	{
+      {
           //未达到0，不进入下面处理，返回
-	  node->input_main_loops_per_call = c - 1;
-	  return last_time_stamp;
-	}
-    }
+          node->input_main_loops_per_call = c - 1;
+          return last_time_stamp;
+      }
+  }
 
   /* Speculatively prefetch next frames. */
   //如果node有后续节点，预取next frames
   if (node->n_next_nodes > 0)
-    {
+  {
       nf = vec_elt_at_index (nm->next_frames, node->next_frame_index);
       CLIB_PREFETCH (nf, 4 * sizeof (nf[0]), WRITE);
-    }
+  }
 
   vm->cpu_time_last_node_dispatch = last_time_stamp;
 
+  //记录node->node_index待处理的frame数目
   vlib_elog_main_loop_event (vm, node->node_index,
 			     last_time_stamp, frame ? frame->n_vectors : 0/*frame数目*/,
 			     /* is_after */ 0);
 
+  //执行vlib_node_runtime_perf_counter_cb回调
   vlib_node_runtime_perf_counter (vm, &pmc_before[0], &pmc_before[1]);
 
   /*
@@ -1216,32 +1222,34 @@ dispatch_node (vlib_main_t * vm,
    * which nodes they've visited... See ixge.c...
    */
   if (VLIB_BUFFER_TRACE_TRAJECTORY && frame)
-    {
+  {
       int i;
       u32 *from;
 
-     //取buffer index数组，执行trajectory_trace回调
+      //取buffer index数组，执行trajectory_trace回调
       from = vlib_frame_vector_args (frame);
       for (i = 0; i < frame->n_vectors; i++)
-	{
-	  vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
-	  add_trajectory_trace (b, node->node_index);
-	}
+      {
+          vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
+          add_trajectory_trace (b, node->node_index);
+      }
+
       //如果开启了pcap,则执行pcap流程
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
-	dispatch_pcap_trace (vm, node, frame);
+          dispatch_pcap_trace (vm, node, frame);
 
-      //走node的function调用
+      //执行node的function调用
       n = node->function (vm, node, frame);
-    }
+  }
   else
-    {
+  {
+      //如果开启了pcap,则执行pcap流程
       if (PREDICT_FALSE (vm->dispatch_pcap_enable))
-	dispatch_pcap_trace (vm, node, frame);
+          dispatch_pcap_trace (vm, node, frame);
 
-      //走node的function调用
+      //执行node的function调用
       n = node->function (vm, node, frame);
-    }
+  }
 
   t = clib_cpu_time_now ();
 
@@ -1249,8 +1257,10 @@ dispatch_node (vlib_main_t * vm,
    * To validate accounting: pmc_delta = t - pmc_before;
    * perf ticks should equal clocks/pkt...
    */
+  //执行vlib_node_runtime_perf_counter_cb回调
   vlib_node_runtime_perf_counter (vm, &pmc_after[0], &pmc_after[1]);
 
+  //计算两者之间的差值
   pmc_delta[0] = pmc_after[0] - pmc_before[0];
   pmc_delta[1] = pmc_after[1] - pmc_before[1];
 
@@ -1268,15 +1278,17 @@ dispatch_node (vlib_main_t * vm,
 
   /* When in interrupt mode and vector rate crosses threshold switch to
      polling mode. */
+  //node转态转换
   if (PREDICT_FALSE ((dispatch_state == VLIB_NODE_STATE_INTERRUPT)
 		     || (dispatch_state == VLIB_NODE_STATE_POLLING
 			 && (node->flags
 			     &
 			     VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE))))
-    {
+  {
       /* *INDENT-OFF* */
+      //申明elog对应的event type
       ELOG_TYPE_DECLARE (e) =
-        {
+      {
           .function = (char *) __FUNCTION__,
           .format = "%s vector length %d, switching to %s",
           .format_args = "T4i4t4",
@@ -1284,74 +1296,76 @@ dispatch_node (vlib_main_t * vm,
           .enum_strings = {
             "interrupt", "polling",
           },
-        };
+      };
       /* *INDENT-ON* */
       struct
       {
-	u32 node_name, vector_length, is_polling;
+          u32 node_name, vector_length, is_polling;
       } *ed;
 
       if ((dispatch_state == VLIB_NODE_STATE_INTERRUPT
 	   && v >= nm->polling_threshold_vector_length) &&
 	  !(node->flags &
 	    VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE))
-	{
-      //取相应的node，将其更新为polling状态
-	  vlib_node_t *n = vlib_get_node (vm, node->node_index);
-	  n->state = VLIB_NODE_STATE_POLLING;
-	  node->state = VLIB_NODE_STATE_POLLING;
-	  node->flags &=
-	    ~VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE;
-	  node->flags |= VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE;
-	  nm->input_node_counts_by_state[VLIB_NODE_STATE_INTERRUPT] -= 1;
-	  nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] += 1;
+      {
+          //取相应的node，将其更新为polling状态
+          vlib_node_t *n = vlib_get_node (vm, node->node_index);
+          n->state = VLIB_NODE_STATE_POLLING;
+          node->state = VLIB_NODE_STATE_POLLING;
+          node->flags &=
+                  ~VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE;
+          node->flags |= VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE;
+          nm->input_node_counts_by_state[VLIB_NODE_STATE_INTERRUPT] -= 1;
+          nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] += 1;
 
-	  if (PREDICT_FALSE (vlib_global_main.elog_trace_graph_dispatch))
-	    {
-	      vlib_worker_thread_t *w = vlib_worker_threads
-		+ vm->thread_index;
+          if (PREDICT_FALSE (vlib_global_main.elog_trace_graph_dispatch))
+          {
+              vlib_worker_thread_t *w = vlib_worker_threads
+                      + vm->thread_index;
 
-	      ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
+              //注册对应的event,并对此event数据进行设置
+              ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
 				    w->elog_track);
-	      ed->node_name = n->name_elog_string;
-	      ed->vector_length = v;
-	      ed->is_polling = 1;
-	    }
-	}
+              ed->node_name = n->name_elog_string;
+              ed->vector_length = v;
+              ed->is_polling = 1;
+          }
+      }
       else if (dispatch_state == VLIB_NODE_STATE_POLLING
 	       && v <= nm->interrupt_threshold_vector_length)
-	{
-	  vlib_node_t *n = vlib_get_node (vm, node->node_index);
-	  if (node->flags &
-	      VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE)
-	    {
-	      /* Switch to interrupt mode after dispatch in polling one more time.
-	         This allows driver to re-enable interrupts. */
-	      n->state = VLIB_NODE_STATE_INTERRUPT;
-	      node->state = VLIB_NODE_STATE_INTERRUPT;
-	      node->flags &=
-		~VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE;
-	      nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] -= 1;
-	      nm->input_node_counts_by_state[VLIB_NODE_STATE_INTERRUPT] += 1;
+      {
+          vlib_node_t *n = vlib_get_node (vm, node->node_index);
+          if (node->flags &
+                  VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE)
+          {
+              /* Switch to interrupt mode after dispatch in polling one more time.
+	             This allows driver to re-enable interrupts. */
+              n->state = VLIB_NODE_STATE_INTERRUPT;
+              node->state = VLIB_NODE_STATE_INTERRUPT;
+              node->flags &=
+                      ~VLIB_NODE_FLAG_SWITCH_FROM_INTERRUPT_TO_POLLING_MODE;
+              nm->input_node_counts_by_state[VLIB_NODE_STATE_POLLING] -= 1;
+              nm->input_node_counts_by_state[VLIB_NODE_STATE_INTERRUPT] += 1;
 
-	    }
-	  else
-	    {
-	      vlib_worker_thread_t *w = vlib_worker_threads
-		+ vm->thread_index;
-	      node->flags |=
-		VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE;
-	      if (PREDICT_FALSE (vlib_global_main.elog_trace_graph_dispatch))
-		{
-		  ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
+          }
+          else
+          {
+              vlib_worker_thread_t *w = vlib_worker_threads
+                      + vm->thread_index;
+              node->flags |=
+                      VLIB_NODE_FLAG_SWITCH_FROM_POLLING_TO_INTERRUPT_MODE;
+              if (PREDICT_FALSE (vlib_global_main.elog_trace_graph_dispatch))
+              {
+                  //注册对应的event,并对此event数据进行设置
+                  ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
 					w->elog_track);
-		  ed->node_name = n->name_elog_string;
-		  ed->vector_length = v;
-		  ed->is_polling = 0;
-		}
-	    }
-	}
-    }
+                  ed->node_name = n->name_elog_string;
+                  ed->vector_length = v;
+                  ed->is_polling = 0;
+              }
+          }
+      }
+  }
 
   return t;
 }
@@ -1370,18 +1384,18 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   /* See comment below about dangling references to nm->pending_frames */
   p = nm->pending_frames + pending_frame_index;
 
-  //取internal类型的p
+  //pending的节点总为internal类型的node
   n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INTERNAL],
 			p->node_runtime_index);
 
   f = vlib_get_frame (vm, p->frame_index);
   if (p->next_frame_index == VLIB_PENDING_FRAME_NO_NEXT_FRAME)
-    {
+  {
       /* No next frame: so use dummy on stack. */
       nf = &nf_dummy;
       nf->flags = f->frame_flags & VLIB_NODE_FLAG_TRACE;
       nf->frame_index = ~p->frame_index;
-    }
+  }
   else
     nf = vec_elt_at_index (nm->next_frames, p->next_frame_index);
 
@@ -1391,12 +1405,12 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
      dispatched. */
   restore_frame_index = ~0;
   if (nf->frame_index == p->frame_index)
-    {
+  {
       nf->frame_index = ~0;
       nf->flags &= ~VLIB_FRAME_IS_ALLOCATED;
       if (!(n->flags & VLIB_NODE_FLAG_FRAME_NO_FREE_AFTER_DISPATCH))
 	restore_frame_index = p->frame_index;
-    }
+  }
 
   /* Frame must be pending. */
   ASSERT (f->frame_flags & VLIB_FRAME_PENDING);
@@ -1409,6 +1423,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   n->flags |= (nf->flags & VLIB_FRAME_TRACE) ? VLIB_NODE_FLAG_TRACE : 0;
   nf->flags &= ~VLIB_FRAME_TRACE;
 
+  //调度内部node
   last_time_stamp = dispatch_node (vm, n,
 				   VLIB_NODE_TYPE_INTERNAL,
 				   VLIB_NODE_STATE_POLLING,
@@ -1418,7 +1433,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
 
   /* Frame is ready to be used again, so restore it. */
   if (restore_frame_index != ~0)
-    {
+  {
       /*
        * We musn't restore a frame that is flagged to be freed. This
        * shouldn't happen since frames to be freed post dispatch are
@@ -1446,27 +1461,27 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
       nf->flags |= VLIB_FRAME_IS_ALLOCATED;
 
       if (~0 == nf->frame_index)
-	{
-	  /* no new frame has been assigned to this node, use the saved one */
-	  nf->frame_index = restore_frame_index;
-	  f->n_vectors = 0;
-	}
+      {
+          /* no new frame has been assigned to this node, use the saved one */
+          nf->frame_index = restore_frame_index;
+          f->n_vectors = 0;
+      }
       else
-	{
-	  /* The node has gained a frame, implying packets from the current frame
+      {
+          /* The node has gained a frame, implying packets from the current frame
 	     were re-queued to this same node. we don't need the saved one
 	     anymore */
-	  vlib_frame_free (vm, n, f);
-	}
-    }
+         vlib_frame_free (vm, n, f);
+      }
+  }
   else
-    {
+  {
       if (f->frame_flags & VLIB_FRAME_FREE_AFTER_DISPATCH)
-	{
-	  ASSERT (!(n->flags & VLIB_NODE_FLAG_FRAME_NO_FREE_AFTER_DISPATCH));
-	  vlib_frame_free (vm, n, f);
-	}
-    }
+      {
+          ASSERT (!(n->flags & VLIB_NODE_FLAG_FRAME_NO_FREE_AFTER_DISPATCH));
+          vlib_frame_free (vm, n, f);
+      }
+  }
 
   return last_time_stamp;
 }
@@ -1478,6 +1493,7 @@ vlib_process_stack_is_valid (vlib_process_t * p)
   return p->stack[0] == VLIB_PROCESS_STACK_MAGIC;
 }
 
+//进程bootstrap对应的参数
 typedef struct
 {
   vlib_main_t *vm;
@@ -1531,18 +1547,20 @@ vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
   //记录跳转点
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
-      //调用bootstrap函数，完成node的function调用
-      //注意，在调用中使用的栈为进程专有的栈空间
+    //调用bootstrap函数，完成node的function调用
+    //注意，在调用中使用的栈为进程专有的栈空间
     r = clib_calljmp (vlib_process_bootstrap, pointer_to_uword (&a),
 		      (void *) p->stack + (1 << p->log2_n_stack_bytes));
 
   return r;
 }
 
+//process 恢复函数
 static_always_inline uword
 vlib_process_resume (vlib_process_t * p)
 {
   uword r;
+  //清除suspend标记
   p->flags &= ~(VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK
 		| VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT
 		| VLIB_PROCESS_RESUME_PENDING);
@@ -1568,6 +1586,8 @@ dispatch_process (vlib_main_t * vm,
   u64 t;
   uword n_vectors, is_suspend;
 
+  //不处于polling状态的node不处理
+  //等待clock,等待event的process不处理
   if (node->state != VLIB_NODE_STATE_POLLING
       || (p->flags & (VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK
 		      | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT)))
@@ -1576,32 +1596,35 @@ dispatch_process (vlib_main_t * vm,
   //指明node处于running状态
   p->flags |= VLIB_PROCESS_IS_RUNNING;
 
+  //????
   t = last_time_stamp;
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t,
 			     f ? f->n_vectors : 0, /* is_after */ 0);
 
   /* Save away current process for suspend. */
-  //指出当前处理的进程index
+  //保存旧的正在运行的进程index,指明新的正在运行的进程index
   old_process_index = nm->current_process_index;
   nm->current_process_index = node->runtime_index;
 
   //启动各process,使其运行一遍
   n_vectors = vlib_process_startup (vm, p, f);
 
+  //还原旧的process index
   nm->current_process_index = old_process_index;
 
+  //断言，返回值为longjmp_return的会循环调用function,故不应走到此处
   ASSERT (n_vectors != VLIB_PROCESS_RETURN_LONGJMP_RETURN);
 
   //node挂起处理
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
   if (is_suspend)
-    {
+  {
       vlib_pending_frame_t *pf;
 
       n_vectors = 0;
 
-      //将process记录在suspended集合中
-      pool_get (nm->suspended_process_frames, pf);//自pool内分配一个pf
+      //自pool内分配一个pf,用于填充待suspend的进程
+      pool_get (nm->suspended_process_frames, pf);
       pf->node_runtime_index = node->runtime_index;
       pf->frame_index = f ? vlib_frame_index (vm, f) : ~0;
       pf->next_frame_index = ~0;
@@ -1609,24 +1632,27 @@ dispatch_process (vlib_main_t * vm,
       p->n_suspends += 1;
       p->suspended_process_frame_index = pf - nm->suspended_process_frames;
 
-      //process为等待clock而挂起
+      //process被suspend时需要待待clock
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
-	{
-	  TWT (tw_timer_wheel) * tw =
-	    (TWT (tw_timer_wheel) *) nm->timing_wheel;
-	  p->stop_timer_handle =
-	    TW (tw_timer_start) (tw,
+	  {
+          TWT (tw_timer_wheel) * tw =
+                  (TWT (tw_timer_wheel) *) nm->timing_wheel;
+          p->stop_timer_handle =
+                  TW (tw_timer_start) (tw,
 				 vlib_timing_wheel_data_set_suspended_process
 				 (node->runtime_index) /* [sic] pool idex */ ,
 				 0 /* timer_id */ ,
 				 p->resume_clock_interval);
-	}
-    }
+	  }
+  }
   else
+  {
     p->flags &= ~VLIB_PROCESS_IS_RUNNING;
+  }
 
   t = clib_cpu_time_now ();
 
+  //????
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t, is_suspend,
 			     /* is_after */ 1);
 
@@ -1647,7 +1673,7 @@ vlib_start_process (vlib_main_t * vm, uword process_index)
   dispatch_process (vm, p, /* frame */ 0, /* cpu_time_now */ 0);
 }
 
-//使进程p恢复执行
+//使process（$process_index）恢复执行
 static u64
 dispatch_suspended_process (vlib_main_t * vm,
 			    uword process_index/*进程索引*/, u64 last_time_stamp)
@@ -1662,14 +1688,16 @@ dispatch_suspended_process (vlib_main_t * vm,
 
   t = last_time_stamp;
 
-  //获取process，如果其未running,返回时间
+  //获取对应的process，如果其没有running标记,则返回时间
   p = vec_elt (nm->processes, process_index);
   if (PREDICT_FALSE (!(p->flags & VLIB_PROCESS_IS_RUNNING)))
     return last_time_stamp;
 
+  //处于suspend状态的process一定在等待clock或者等待event
   ASSERT (p->flags & (VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK
 		      | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT));
 
+  //取suspend状态process对应的frame信息
   pf = pool_elt_at_index (nm->suspended_process_frames,
 			  p->suspended_process_frame_index);
 
@@ -1680,10 +1708,12 @@ dispatch_suspended_process (vlib_main_t * vm,
   //取待处理的frame
   f = pf->frame_index != ~0 ? vlib_get_frame (vm, pf->frame_index) : 0;
 
+  //process trace事件
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t,
 			     f ? f->n_vectors : 0, /* is_after */ 0);
 
   /* Save away current process for suspend. */
+  //指明当前运行的process index
   nm->current_process_index = node->runtime_index;
 
   //更新p的恢复点，并使之自此处恢复
@@ -1692,24 +1722,26 @@ dispatch_suspended_process (vlib_main_t * vm,
 
   nm->current_process_index = ~0;
 
+  //检查process是否需要再次被suspend
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
   if (is_suspend)
-    {
+  {
       /* Suspend it again. */
       n_vectors = 0;
       p->n_suspends += 1;
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
-	{
-	  p->stop_timer_handle =
-	    TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+	  {
+          p->stop_timer_handle =
+                  TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 				 vlib_timing_wheel_data_set_suspended_process
 				 (node->runtime_index) /* [sic] pool idex */ ,
 				 0 /* timer_id */ ,
 				 p->resume_clock_interval);
-	}
-    }
+	  }
+  }
   else
     {
+      //process被运行完成，清除running标记，归还占用的suspend_process_frames元素
       p->flags &= ~VLIB_PROCESS_IS_RUNNING;
       pool_put_index (nm->suspended_process_frames,
 		      p->suspended_process_frame_index);
@@ -1717,6 +1749,8 @@ dispatch_suspended_process (vlib_main_t * vm,
     }
 
   t = clib_cpu_time_now ();
+
+  //process trace事件
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t, !is_suspend,
 			     /* is_after */ 1);
 
@@ -1984,6 +2018,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 				  }
 				  else
 				  {
+				      //恢复被挂起的process
 					  cpu_time_now = clib_cpu_time_now ();
 					  cpu_time_now =
 							  dispatch_suspended_process (vm, di, cpu_time_now);
