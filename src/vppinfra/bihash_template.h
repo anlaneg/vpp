@@ -309,7 +309,6 @@ static inline int BV (clib_bihash_search_inline_with_hash)
     }
   return -1;
 }
-
 static inline int BV (clib_bihash_search_inline)
   (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * key_result)
 {
@@ -319,7 +318,7 @@ static inline int BV (clib_bihash_search_inline)
   hash = BV (clib_bihash_hash) (key_result);
 
   //按hash查询对应值
-  return BV (lib_bihash_search_inline_with_hash) (h, hash, key_result);
+  return BV (clib_bihash_search_inline_with_hash) (h, hash, key_result);
 }
 
 static inline void BV (clib_bihash_prefetch_bucket)
