@@ -118,7 +118,7 @@ Expired timer callback:
 typedef struct
 {
   /** next, previous pool indices */
-  u32 next;
+  u32 next;//用于实现timer链表
   u32 prev;
 
   union
@@ -127,20 +127,20 @@ typedef struct
     {
 #if (TW_TIMER_WHEELS == 3)
       /** fast ring offset, only valid in the slow ring */
-      u16 fast_ring_offset;
+      u16 fast_ring_offset;//低级索引offset
       /** slow ring offset, only valid in the glacier ring */
-      u16 slow_ring_offset;
+      u16 slow_ring_offset;//中级索引offset
 #endif
 #if (TW_TIMER_WHEELS == 2)
       /** fast ring offset, only valid in the slow ring */
-      u16 fast_ring_offset;
+      u16 fast_ring_offset;//低级索引offset
       /** slow ring offset, only valid in the glacier ring */
       u16 pad;
 #endif
     };
 
 #if (TW_OVERFLOW_VECTOR > 0)
-    u64 expiration_time;
+    u64 expiration_time;//timer过期时间
 #endif
   };
 
@@ -184,16 +184,16 @@ typedef struct
   TWT (tw_timer) * timers;//负责分配timer对象
 
   /** Next time the wheel should run */
-  f64 next_run_time;
+  f64 next_run_time;//下次运行的时间
 
   /** Last time the wheel ran */
-  f64 last_run_time;
+  f64 last_run_time;//上次运行时间
 
   /** Timer ticks per second */
   f64 ticks_per_second;
 
   /** Timer interval, also needed to avoid fp divide in speed path */
-  f64 timer_interval;
+  f64 timer_interval;//timer执行间隔
 
   /** current tick */
   u64 current_tick;
@@ -202,21 +202,23 @@ typedef struct
   u64 first_expires_tick;
 
   /** current wheel indices */
-  u32 current_index[TW_TIMER_WHEELS];
+  u32 current_index[TW_TIMER_WHEELS];//指出每个轮子的指针
 
   /** wheel arrays */
+  //轮子数据，指出每个轮子，每个轮子的刻度
   tw_timer_wheel_slot_t w[TW_TIMER_WHEELS][TW_SLOTS_PER_RING];
 
 #if TW_OVERFLOW_VECTOR > 0
-  tw_timer_wheel_slot_t overflow;
+  tw_timer_wheel_slot_t overflow;//超过wheel量程的timer链表
 #endif
 
 #if TW_FAST_WHEEL_BITMAP > 0
   /** Fast wheel slot occupancy bitmap */
-  uword *fast_slot_bitmap;
+  uword *fast_slot_bitmap;//指出fast_wheel上对应的有timer的bitmap
 #endif
 
   /** expired timer callback, receives a vector of handles */
+  //timer的过期回调
   void (*expired_timer_callback) (u32 * expired_timer_handles);
 
   /** vectors of expired timers */

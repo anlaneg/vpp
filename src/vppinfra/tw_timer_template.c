@@ -12,6 +12,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <vppinfra/error.h>
+#include "tw_timer_16t_2w_512sl.h"
 
 /** @file
  *  @brief TW timer implementation TEMPLATE ONLY, do not compile directly
@@ -20,6 +22,7 @@
  */
 #if TW_START_STOP_TRACE_SIZE > 0
 
+//设置tw->trace_index处对应的trace
 void TW (tw_timer_trace) (TWT (tw_timer_wheel) * tw, u32 timer_id,
 			  u32 pool_index, u32 handle)
 {
@@ -120,7 +123,7 @@ TW (make_internal_timer_handle) (u32 pool_index, u32 timer_id)
 static inline void
 timer_addhead (TWT (tw_timer) * pool, u32 head_index/*头部索引*/, u32 new_index)
 {
-  //取head
+  //取要插入timer的head
   TWT (tw_timer) * head = pool_elt_at_index (pool, head_index);
   TWT (tw_timer) * old_first;
   u32 old_first_index;
@@ -155,9 +158,11 @@ timer_remove (TWT (tw_timer) * pool, TWT (tw_timer) * elt)
 
   ASSERT (elt->user_handle != ~0);
 
+  //找它的next,它的prev
   next_elt = pool_elt_at_index (pool, elt->next);
   prev_elt = pool_elt_at_index (pool, elt->prev);
 
+  //更新elt
   next_elt->prev = elt->prev;
   prev_elt->next = elt->next;
 
@@ -168,16 +173,16 @@ static inline void
 timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/)
 {
 #if TW_TIMER_WHEELS > 1
-  u16 slow_ring_offset;
-  u32 carry;
+  u16 slow_ring_offset;//中层索引
+  u32 carry;//是否产生进位
 #endif
 #if TW_TIMER_WHEELS > 2
-  u16 glacier_ring_offset;
+  u16 glacier_ring_offset;//高层索引
 #endif
 #if TW_OVERFLOW_VECTOR > 0
   u64 interval_plus_time_to_wrap, triple_wrap_mask;
 #endif
-  u16 fast_ring_offset;
+  u16 fast_ring_offset;//低层索引
   tw_timer_wheel_slot_t *ts;
 
   /* Factor interval into 1..3 wheel offsets */
@@ -189,11 +194,13 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
    * until the next triple-wrap exceeds one full revolution
    * of all three wheels.
    */
+  //interval是相对时间，算上当前时间，获得绝对时间
   triple_wrap_mask = (1 << (3 * TW_RING_SHIFT)) - 1;
   interval_plus_time_to_wrap =
     interval + (tw->current_tick & triple_wrap_mask);
   if ((interval_plus_time_to_wrap >= 1 << (3 * TW_RING_SHIFT)))
     {
+	  //过期时间超过wheel的量程，将其直接添加在tw->overflow链表上即可
       t->expiration_time = tw->current_tick + interval;
       ts = &tw->overflow;
       timer_addhead (tw->timers, ts->head_index, t - tw->timers);
@@ -201,16 +208,20 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
       TW (tw_timer_trace) (tw, timer_id, user_id, t - tw->timers);
 #endif
       return;
-    }
+
 #endif
 
+  //计算高层索引值
   glacier_ring_offset = interval >> (2 * TW_RING_SHIFT);
   ASSERT ((u64) glacier_ring_offset < TW_SLOTS_PER_RING);
+  //减小interval
   interval -= (((u64) glacier_ring_offset) << (2 * TW_RING_SHIFT));
 #endif
 #if TW_TIMER_WHEELS > 1
+  //计算中层索引值
   slow_ring_offset = interval >> TW_RING_SHIFT;
   ASSERT ((u64) slow_ring_offset < TW_SLOTS_PER_RING);
+  //减少interval
   interval -= (((u64) slow_ring_offset) << TW_RING_SHIFT);
 #endif
   fast_ring_offset = interval & TW_RING_MASK;
@@ -222,33 +233,41 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
    * the actual position is (0, ...)
    */
 
+  //加上当前最快轮子的刻度
   fast_ring_offset += tw->current_index[TW_TIMER_RING_FAST] & TW_RING_MASK;
 
 #if TW_TIMER_WHEELS > 1
+  //如果最快轮子的刻度大于TW_SLOTS_PER_RING，则需要进位
   carry = fast_ring_offset >= TW_SLOTS_PER_RING ? 1 : 0;
-  fast_ring_offset %= TW_SLOTS_PER_RING;
+  fast_ring_offset %= TW_SLOTS_PER_RING;//低级索引
+  //计算较高位的偏移量（需要考虑进位问题）
   slow_ring_offset += (tw->current_index[TW_TIMER_RING_SLOW] & TW_RING_MASK)
     + carry;
-  carry = slow_ring_offset >= TW_SLOTS_PER_RING ? 1 : 0;
-  slow_ring_offset %= TW_SLOTS_PER_RING;
+  carry = slow_ring_offset >= TW_SLOTS_PER_RING ? 1 : 0;//较高位偏移量
+  slow_ring_offset %= TW_SLOTS_PER_RING;//中级索引
 #endif
 
 #if TW_TIMER_WHEELS > 2
+  //计算最高位的偏移量（需要考虑进位问题）
   glacier_ring_offset +=
     (tw->current_index[TW_TIMER_RING_GLACIER] & TW_RING_MASK) + carry;
-  glacier_ring_offset %= TW_SLOTS_PER_RING;
+  glacier_ring_offset %= TW_SLOTS_PER_RING;//高级索引
 #endif
 
 #if TW_TIMER_WHEELS > 2
   if (glacier_ring_offset !=
       (tw->current_index[TW_TIMER_RING_GLACIER] & TW_RING_MASK))
     {
+	  //高级索引指出，此timer的过期时间比较大，
+	  //我们在timer上记录它的slow_ring_offset及fast_ring_offset
       /* We'll need slow and fast ring offsets later */
       t->slow_ring_offset = slow_ring_offset;
       t->fast_ring_offset = fast_ring_offset;
 
+      //定位至对应的ts
       ts = &tw->w[TW_TIMER_RING_GLACIER][glacier_ring_offset];
 
+      //将timer存放在ts对应的链表位置，指明存放的timer索引
       timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 #if TW_START_STOP_TRACE_SIZE > 0
       TW (tw_timer_trace) (tw, timer_id, user_id, t - tw->timers);
@@ -262,6 +281,7 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
   if (slow_ring_offset !=
       (tw->current_index[TW_TIMER_RING_SLOW] & TW_RING_MASK))
     {
+	  //中级索引指出，此timer需要添加进slow轮上
       /* We'll need the fast ring offset later... */
       t->fast_ring_offset = fast_ring_offset;
 
@@ -278,11 +298,13 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
 #endif
 
   /* Timer expires less than one fast-ring revolution from now */
+  //timer需要添加到低级索引上
   ts = &tw->w[TW_TIMER_RING_FAST][fast_ring_offset];
 
   timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 
 #if TW_FAST_WHEEL_BITMAP
+  //指明fast_ring_offset对应的位置为1，表示此索引上有元素
   tw->fast_slot_bitmap = clib_bitmap_set (tw->fast_slot_bitmap,
 					  fast_ring_offset, 1);
 #endif
@@ -328,17 +350,22 @@ int TW (scan_for_handle) (TWT (tw_timer_wheel) * tw, u32 handle)
   u32 next_index;
   int rv = 0;
 
+  //遍历每个wheel
   for (i = 0; i < TW_TIMER_WHEELS; i++)
     {
-      for (j = 0; j < TW_SLOTS_PER_RING; j++)
+      //遍历每个wheel中的刻度
+	  for (j = 0; j < TW_SLOTS_PER_RING; j++)
 	{
+	  //刻度处的链表头
 	  ts = &tw->w[i][j];
 	  head = pool_elt_at_index (tw->timers, ts->head_index);
 	  next_index = head->next;
 
+	  //遍历每个链表头
 	  while (next_index != ts->head_index)
 	    {
-	      t = pool_elt_at_index (tw->timers, next_index);
+	      //取对应的timer，检查是否为对应的handle,如是，则rv=1
+		  t = pool_elt_at_index (tw->timers, next_index);
 	      if (next_index == handle)
 		{
 		  clib_warning ("handle %d found in ring %d slot %d",
@@ -510,6 +537,7 @@ void TW (tw_timer_wheel_free) (TWT (tw_timer_wheel) * tw)
  * @param f64 now the current time, e.g. from vlib_time_now(vm)
  * @returns u32 * vector of expired user handles
  */
+//调整轮子，并调用过期timer的回调函数
 static inline
   u32 * TW (tw_timer_expire_timers_internal) (TWT (tw_timer_wheel) * tw,
 					      f64 now,
@@ -562,6 +590,7 @@ static inline
 	  u32 new_glacier_ring_offset, new_slow_ring_offset;
 	  u32 new_fast_ring_offset;
 
+	  //处理overflow上挂载的timer,由于时间变换，需要将其按时间放到轮子上
 	  ts = &tw->overflow;
 	  head = pool_elt_at_index (tw->timers, ts->head_index);
 	  next_index = head->next;
@@ -704,7 +733,8 @@ static inline
        */
       if (PREDICT_FALSE (fast_wheel_index == TW_SLOTS_PER_RING))
 	{
-	  slow_wheel_index %= TW_SLOTS_PER_RING;
+	  //需要将slow wheel上的元素添加到fast轮子上
+      slow_wheel_index %= TW_SLOTS_PER_RING;
 	  ts = &tw->w[TW_TIMER_RING_SLOW][slow_wheel_index];
 
 	  head = pool_elt_at_index (tw->timers, ts->head_index);
@@ -773,6 +803,7 @@ static inline
       if (callback_vector_arg == 0 && vec_len (callback_vector))
 	{
 	  /* The callback is optional. We return the u32 * handle vector */
+    	  //有多个timer被触发，调用回调
 	  if (tw->expired_timer_callback)
 	    {
 	      tw->expired_timer_callback (callback_vector);

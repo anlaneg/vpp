@@ -156,7 +156,7 @@ typedef union
 
     /** Specifies index into trace buffer if VLIB_PACKET_IS_TRACED flag is
       * set. */
-    u32 trace_index;
+    u32 trace_index;//指向trace_index
 
     /** Only valid for first buffer in chain. Current length plus total length
       * given here give total number of bytes in buffer chain. */
