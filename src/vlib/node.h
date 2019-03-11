@@ -409,7 +409,7 @@ typedef struct vlib_frame_t
   u16 flags;
 
   /* Number of scalar bytes in arguments. */
-  u8 scalar_size;
+  u8 scalar_size;//frame后面多少偏移量到参数
 
   /* Number of bytes per vector argument. */
   u8 vector_size;
@@ -447,6 +447,7 @@ typedef struct
 #define VLIB_FRAME_IS_ALLOCATED	VLIB_NODE_FLAG_IS_OUTPUT
 
   /* Set when frame has been added to pending vector. */
+  //标记报文被加入到pending中
 #define VLIB_FRAME_PENDING VLIB_NODE_FLAG_IS_DROP
 
   /* Set when frame is to be freed after dispatch. */
@@ -477,7 +478,7 @@ typedef struct
   u32 frame_index;//对应的frame buffer index
 
   /* Start of next frames for this node. */
-  u32 next_frame_index;
+  u32 next_frame_index;//下一个frame index
 
   /* Special value for next_frame_index when there is no next frame. */
 #define VLIB_PENDING_FRAME_NO_NEXT_FRAME ((u32) ~0)
@@ -564,7 +565,7 @@ typedef struct
   u32 n_alloc_frames;
 
   /* Vector of free frame indices for this scalar/vector size. */
-  u32 *free_frame_indices;
+  u32 *free_frame_indices;//空闲的frame index数组
 } vlib_frame_size_t;
 
 typedef struct

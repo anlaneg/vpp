@@ -95,6 +95,7 @@ static vlib_frame_size_t *
 get_frame_size_info (vlib_node_main_t * nm,
 		     u32 n_scalar_bytes, u32 n_vector_bytes)
 {
+  //将n_scalar_bytes,n_vector_bytes合成key,在nm->frame_size_hash中查找
   uword key = (n_scalar_bytes << 16) | n_vector_bytes;
   uword *p, i;
 
@@ -103,6 +104,8 @@ get_frame_size_info (vlib_node_main_t * nm,
     i = p[0];
   else
     {
+      //未在nm->frame_size_hash中查找到key,创建相应的key
+      //取最后一个frame_size
       i = vec_len (nm->frame_sizes);
       vec_validate (nm->frame_sizes, i);
       hash_set (nm->frame_size_hash, key, i);
@@ -127,11 +130,13 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   scalar_size = to_node->scalar_size;
   vector_size = to_node->vector_size;
 
+  //获得frame_size
   fs = get_frame_size_info (nm, scalar_size, vector_size);
   n = vlib_frame_bytes (scalar_size, vector_size);
   if ((l = vec_len (fs->free_frame_indices)) > 0)
     {
       /* Allocate from end of free list. */
+      //取最后一个frame index
       fi = fs->free_frame_indices[l - 1];
       f = vlib_get_frame_no_check (vm, fi);
       _vec_len (fs->free_frame_indices) = l - 1;
@@ -180,6 +185,7 @@ vlib_frame_alloc (vlib_main_t * vm, vlib_node_runtime_t * from_node_runtime,
 				   /* frame_flags */ 0);
 }
 
+//申请frame,其从属于to_node_index号node
 vlib_frame_t *
 vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index)
 {
@@ -189,6 +195,7 @@ vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index)
   return vlib_get_frame (vm, fi);
 }
 
+//将frame加入，指定为to_node_index的待处理报文
 void
 vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index, vlib_frame_t * f)
 {
@@ -207,6 +214,7 @@ vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index, vlib_frame_t * f)
   f->frame_flags |= VLIB_FRAME_PENDING;
   p->frame_index = vlib_frame_index (vm, f);
   p->node_runtime_index = to_node->runtime_index;
+  //指明下一个frame索引
   p->next_frame_index = VLIB_PENDING_FRAME_NO_NEXT_FRAME;
 }
 

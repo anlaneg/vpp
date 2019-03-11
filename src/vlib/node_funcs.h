@@ -223,6 +223,7 @@ vlib_get_frame_no_check (vlib_main_t * vm, uword frame_index)
   return f;
 }
 
+//获取f对应的frame index
 always_inline u32
 vlib_frame_index_no_check (vlib_main_t * vm, vlib_frame_t * f)
 {
@@ -230,9 +231,11 @@ vlib_frame_index_no_check (vlib_main_t * vm, vlib_frame_t * f)
 
   ASSERT (((uword) f & (VLIB_FRAME_ALIGN - 1)) == 0);
 
+  //记算偏移量
   i = ((u8 *) f - (u8 *) vm->heap_aligned_base);
   ASSERT ((i / VLIB_FRAME_ALIGN) <= 0xFFFFFFFFULL);
 
+  //按VLIB_FRAME_ALIGN取frame index
   return i / VLIB_FRAME_ALIGN;
 }
 
