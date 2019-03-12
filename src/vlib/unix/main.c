@@ -91,6 +91,7 @@ static u8 *syslog_msg = 0;
 static int last_signum = 0;
 static uword last_faulting_address = 0;
 
+//unix信号处理函数
 static void
 unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
 {
@@ -100,9 +101,11 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
   last_signum = signum;
   last_faulting_address = (uword) si->si_addr;
 
+  //记录收到哪种信号
   syslog_msg = format (syslog_msg, "received signal %U, PC %U",
 		       format_signal, signum, format_ucontext_pc, uc);
 
+  //记录段错误发生的地址
   if (signum == SIGSEGV)
     syslog_msg = format (syslog_msg, ", faulting address %p", si->si_addr);
 
@@ -112,6 +115,7 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
     case SIGTERM:
       if (unix_main.vlib_main->main_loop_exit_set)
 	{
+      //收到terminal信号，标记main loop退出
 	  syslog (LOG_ERR | LOG_DAEMON, "received SIGTERM, exiting...");
 	  unix_main.vlib_main->main_loop_exit_now = 1;
 	}
@@ -125,7 +129,7 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
     case SIGHUP:
     case SIGFPE:
     case SIGABRT:
-      fatal = 1;
+      fatal = 1;//标记收到错误信号
       break;
 
       /* by default, print a message and continue */
@@ -139,9 +143,11 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
 
   if (fatal)
     {
+      //显示错误日志
       syslog (LOG_ERR | LOG_DAEMON, "%s", syslog_msg);
 
       /* Address of callers: outer first, inner last. */
+      //显示堆栈
       uword callers[15];
       uword n_callers = clib_backtrace (callers, ARRAY_LEN (callers), 0);
       int i;
@@ -157,8 +163,10 @@ unix_signal_handler (int signum, siginfo_t * si, ucontext_t * uc)
 	}
 
       /* have to remove SIGABRT to avoid recusive - os_exit calling abort() */
+      //还原abort信号处理函数
       unsetup_signal_handlers (SIGABRT);
 
+      //退出进程
       os_exit (1);
     }
   else
@@ -175,6 +183,7 @@ setup_signal_handlers (unix_main_t * um)
   /* give a big enough buffer for msg, most likely it can avoid vec_resize  */
   vec_alloc (syslog_msg, 2048);
 
+  //注册前32个信号
   for (i = 1; i < 32; i++)
     {
       clib_memset (&sa, 0, sizeof (sa));
@@ -188,19 +197,20 @@ setup_signal_handlers (unix_main_t * um)
 	case SIGSTOP:
 	case SIGUSR1:
 	case SIGUSR2:
-	  continue;
+	  continue;//这些信号跳过
 
 	  /* ignore SIGPIPE, SIGCHLD */
 	case SIGPIPE:
 	case SIGCHLD:
 	  sa.sa_sigaction = (void *) SIG_IGN;
-	  break;
+	  break;//这些信号忽略
 
 	  /* catch and handle all other signals */
 	default:
 	  break;
 	}
 
+      //注册信号处理函数
       if (sigaction (i, &sa, 0) < 0)
 	return clib_error_return_unix (0, "sigaction %U", format_signal, i);
     }
@@ -491,6 +501,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 				  vlib_default_runtime_dir, 0);
     }
 
+  //注册信号处理
   error = setup_signal_handlers (um);
   if (error)
     return error;

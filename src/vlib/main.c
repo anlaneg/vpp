@@ -54,38 +54,46 @@ CJ_GLOBAL_LOG_PROTOTYPE;
 
 u32 wraps;
 
+//获取frame需要的总字段
 always_inline u32
 vlib_frame_bytes (u32 n_scalar_bytes, u32 n_vector_bytes)
 {
   u32 n_bytes;
 
   /* Make room for vlib_frame_t plus scalar arguments. */
+  //对齐n_scalar_bytes所需要的字节
   n_bytes = vlib_frame_vector_byte_offset (n_scalar_bytes);
 
   /* Make room for vector arguments.
      Allocate a few extra slots of vector data to support
      speculative vector enqueues which overflow vector data in next frame. */
 #define VLIB_FRAME_SIZE_EXTRA 4
+  //存放vector参数
   n_bytes += (VLIB_FRAME_SIZE + VLIB_FRAME_SIZE_EXTRA) * n_vector_bytes;
 
   /* Magic number is first 32bit number after vector data.
      Used to make sure that vector data is never overrun. */
 #define VLIB_FRAME_MAGIC (0xabadc0ed)
+  //存放magic
   n_bytes += sizeof (u32);
 
   /* Pad to cache line. */
+  //使cacheline对齐
   n_bytes = round_pow2 (n_bytes, CLIB_CACHE_LINE_BYTES);
 
   return n_bytes;
 }
 
+//获取frame中magic的字段
 always_inline u32 *
 vlib_frame_find_magic (vlib_frame_t * f, vlib_node_t * node)
 {
   void *p = f;
 
+  //加上vlib_frame_t结构体大小及node->scalar_size并对齐后大小
   p += vlib_frame_vector_byte_offset (node->scalar_size);
 
+  //加上vector_size个(vlib_frame_size+vlib_frame_size_extra)
   p += (VLIB_FRAME_SIZE + VLIB_FRAME_SIZE_EXTRA) * node->vector_size;
 
   return p;
@@ -120,6 +128,7 @@ get_frame_size_info (vlib_node_main_t * nm,
 #endif
 }
 
+//申请to_node_index节点适用的frame
 static u32
 vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
 			  u32 frame_flags)
@@ -130,26 +139,33 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   vlib_frame_t *f;
   u32 fi, l, n, scalar_size, vector_size;
 
-  //取node
+  //通过索引取vpp node
   to_node = vlib_get_node (vm, to_node_index);
 
   scalar_size = to_node->scalar_size;
   vector_size = to_node->vector_size;
 
-  //获得frame_size
+  //获得frame_size信息，如果没有则创建（准备利用其来申请空闲frame)
   fs = get_frame_size_info (nm, scalar_size, vector_size);
+
+  //获取这种frame实际需要的长度
   n = vlib_frame_bytes (scalar_size, vector_size);
+
+  //检查fs是否有空闲的free可用于分配
   if ((l = vec_len (fs->free_frame_indices)) > 0)
     {
       /* Allocate from end of free list. */
-      //取最后一个frame index
+      //有空闲，取这种frame size上空闲的index
       fi = fs->free_frame_indices[l - 1];
       f = vlib_get_frame_no_check (vm, fi);
+      //使空闲减1
       _vec_len (fs->free_frame_indices) = l - 1;
     }
   else
     {
+      //没有free的frame可以分配，申请n个字节，做为frame
       f = clib_mem_alloc_aligned_no_fail (n, VLIB_FRAME_ALIGN);
+      //将f转换为frame index
       fi = vlib_frame_index_no_check (vm, f);
     }
 
@@ -161,6 +177,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   {
     u32 *magic;
 
+    //设置magic
     magic = vlib_frame_find_magic (f, to_node);
     *magic = VLIB_FRAME_MAGIC;
   }
@@ -191,7 +208,7 @@ vlib_frame_alloc (vlib_main_t * vm, vlib_node_runtime_t * from_node_runtime,
 				   /* frame_flags */ 0);
 }
 
-//申请frame,其从属于to_node_index号node
+//申请适用于to_node_index的frame
 vlib_frame_t *
 vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index)
 {
@@ -1635,6 +1652,7 @@ dispatch_process (vlib_main_t * vm,
       //process被suspend时需要待待clock
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
 	  {
+          //启动定时器，等待p->resume_clock_interval
           TWT (tw_timer_wheel) * tw =
                   (TWT (tw_timer_wheel) *) nm->timing_wheel;
           p->stop_timer_handle =
@@ -1731,6 +1749,7 @@ dispatch_suspended_process (vlib_main_t * vm,
       p->n_suspends += 1;
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
 	  {
+          //启动timer，用于执行process挂起（通过sleep 一段时间完成）
           p->stop_timer_handle =
                   TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 				 vlib_timing_wheel_data_set_suspended_process
@@ -1851,7 +1870,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       if (!is_main)
       {
     	  	  vlib_worker_thread_barrier_check ();
-    	  	  //遍历所有frame queue main
+    	  	  //遍历所有handoff队列
     	  	  vec_foreach (fqm, tm->frame_queue_mains)
     	  	  {
     	  		  vlib_frame_queue_dequeue (vm, fqm);
@@ -1963,6 +1982,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 			  ed = ELOG_DATA (&vlib_global_main.elog_main, es);
 		  }
 
+		  //通过给定vector nm->data_from_advancing_timing_wheel收集所有已过期定时器，执行定时器维护
 		  nm->data_from_advancing_timing_wheel =
 				  TW (tw_timer_expire_timers_vec)
 				  ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm),
@@ -1972,16 +1992,20 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
 		  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
 		  {
+		      //创建ee event
 			  ed = ELOG_DATA (&vlib_global_main.elog_main, ee);
+			  //记录过期定时器数目
 			  ed->nready_procs =
 					  _vec_len (nm->data_from_advancing_timing_wheel);
 		  }
 
+		  //如果存在过期了的定时器，触发这些定时器
 		  if (PREDICT_FALSE
 				  (_vec_len (nm->data_from_advancing_timing_wheel) > 0))
 		  {
 			  uword i;
 
+			  //遍历过期了的定时器
 			  for (i = 0; i < _vec_len (nm->data_from_advancing_timing_wheel);
 					  i++)
 			  {
@@ -1990,6 +2014,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
 				  if (vlib_timing_wheel_data_is_timed_event (d))
 				  {
+				      //事件触发类timer
+				      //通过索引查找到相应的te
 					  vlib_signal_timed_event_data_t *te =
 							  pool_elt_at_index (nm->signal_timed_event_data_pool,
 									  di);
@@ -2018,15 +2044,19 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 				  }
 				  else
 				  {
-				      //恢复被挂起的process
+				      //process被挂起时间到，恢复被挂起的process
 					  cpu_time_now = clib_cpu_time_now ();
 					  cpu_time_now =
 							  dispatch_suspended_process (vm, di, cpu_time_now);
 				  }
 			  }
+
+			  //指明所有过期timer均被处理
 			  _vec_len (nm->data_from_advancing_timing_wheel) = 0;
 		  }
       }
+
+      //处理统计，响应main loop退出标记
       vlib_increment_main_loop_counter (vm);
 
       /* Record time stamp in case there are no enabled nodes and above
@@ -2210,13 +2240,16 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 	  goto done;
   }
 
+  //定义定时器
   nm->timing_wheel = clib_mem_alloc_aligned (sizeof (TWT (tw_timer_wheel)),
 					     CLIB_CACHE_LINE_BYTES);
 
+  //设置定时器临时缓存buffer
   vec_validate (nm->data_from_advancing_timing_wheel, 10);
   _vec_len (nm->data_from_advancing_timing_wheel) = 0;
 
   /* Create the process timing wheel */
+  //初始化定时器
   TW (tw_timer_wheel_init) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 			    0 /* no callback */ ,
 			    10e-6 /* timer period 10us */ ,

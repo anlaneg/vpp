@@ -74,7 +74,7 @@ typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   volatile u32 valid;//元素是否有效
-  u32 msg_type;
+  u32 msg_type;//消息类型（常等于VLIB_FRAME_QUEUE_ELT_DISPATCH_FRAME）
   u32 n_vectors;//指明存放的buffer_index数目
   u32 last_n_vectors;
 
@@ -154,7 +154,7 @@ typedef struct
 
 typedef struct
 {
-  u32 node_index;//所属的numa node
+  u32 node_index;//所属的vpp node
   u32 frame_queue_nelts;//队列数目
   u32 queue_hi_thresh;//高位
 
@@ -330,7 +330,8 @@ typedef struct
   uword *cpu_socket_bitmap;//在线node的bitmap
 
   /* Worker handoff queues */
-  vlib_frame_queue_main_t *frame_queue_mains;//用于提供frame队列数组
+  //工作线程之间handoff型队列（N个）
+  vlib_frame_queue_main_t *frame_queue_mains;
 
   /* worker thread initialization barrier */
   volatile u32 worker_thread_release;

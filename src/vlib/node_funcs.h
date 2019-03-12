@@ -67,7 +67,7 @@ vlib_get_node (vlib_main_t * vm, u32 i)
  @param next_index graph arc index
  @return pointer to the vlib_node_t at the end of the indicated arc
 */
-
+//按索引取node_index的对应next_node
 always_inline vlib_node_t *
 vlib_get_next_node (vlib_main_t * vm, u32 node_index, u32 next_index)
 {
@@ -84,7 +84,7 @@ vlib_get_next_node (vlib_main_t * vm, u32 node_index, u32 next_index)
  @param node_index index of node
  @return pointer to the indicated vlib_node_runtime_t
 */
-
+//给定node_index获得其对应的node_runtime
 always_inline vlib_node_runtime_t *
 vlib_node_get_runtime (vlib_main_t * vm, u32 node_index)
 {
@@ -92,10 +92,12 @@ vlib_node_get_runtime (vlib_main_t * vm, u32 node_index)
   vlib_node_t *n = vec_elt (nm->nodes, node_index);
   vlib_process_t *p;
   if (n->type != VLIB_NODE_TYPE_PROCESS)
+    //非process情况，通过runtime_index获得
     return vec_elt_at_index (nm->nodes_by_type[n->type], n->runtime_index);
   else
     {
       p = vec_elt (nm->processes, n->runtime_index);
+      //process通过process内部结束
       return &p->node_runtime;
     }
 }
@@ -105,7 +107,7 @@ vlib_node_get_runtime (vlib_main_t * vm, u32 node_index)
  @param node_index index of the node
  @return pointer to the indicated vlib_node_runtime_t private data
 */
-
+//给定node_index获取其对应的runtime_data
 always_inline void *
 vlib_node_get_runtime_data (vlib_main_t * vm, u32 node_index)
 {
@@ -119,7 +121,7 @@ vlib_node_get_runtime_data (vlib_main_t * vm, u32 node_index)
  @param runtime_data arbitrary runtime private data
  @param n_runtime_data_bytes size of runtime private data
 */
-
+//给定node_index设置其对应的runtime_data
 always_inline void
 vlib_node_set_runtime_data (vlib_main_t * vm, u32 node_index,
 			    void *runtime_data, u32 n_runtime_data_bytes)
@@ -144,6 +146,7 @@ vlib_node_set_runtime_data (vlib_main_t * vm, u32 node_index,
  @param node_index index of the node
  @param new_state new state for node, see vlib_node_state_t
 */
+//更新指定node的状态
 always_inline void
 vlib_node_set_state (vlib_main_t * vm, u32 node_index,
 		     vlib_node_state_t new_state)
@@ -155,10 +158,12 @@ vlib_node_set_state (vlib_main_t * vm, u32 node_index,
   n = vec_elt (nm->nodes, node_index);
   if (n->type == VLIB_NODE_TYPE_PROCESS)
     {
+      //设置process的状态
       vlib_process_t *p = vec_elt (nm->processes, n->runtime_index);
       r = &p->node_runtime;
 
       /* When disabling make sure flags are cleared. */
+      //清除waiting,pending标记
       p->flags &= ~(VLIB_PROCESS_RESUME_PENDING
 		    | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK
 		    | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT);
@@ -175,6 +180,7 @@ vlib_node_set_state (vlib_main_t * vm, u32 node_index,
       nm->input_node_counts_by_state[new_state] += 1;
     }
 
+  //更新node,runtime对应的状态
   n->state = new_state;
   r->state = new_state;
 }
@@ -184,6 +190,7 @@ vlib_node_set_state (vlib_main_t * vm, u32 node_index,
  @param node_index index of the node
  @return state for node, see vlib_node_state_t
 */
+//获取指定node的状态
 always_inline vlib_node_state_t
 vlib_node_get_state (vlib_main_t * vm, u32 node_index)
 {
@@ -193,6 +200,7 @@ vlib_node_get_state (vlib_main_t * vm, u32 node_index)
   return n->state;
 }
 
+//将input类型的node引入到中断未决集合中
 always_inline void
 vlib_node_set_interrupt_pending (vlib_main_t * vm, u32 node_index)
 {
@@ -487,6 +495,7 @@ vlib_process_free_event_type (vlib_process_t * p, uword t,
   ASSERT (!pool_is_free_index (p->event_type_pool, t));
   pool_put_index (p->event_type_pool, t);
   if (is_one_time_event)
+    //丢掉标记位
     p->one_time_event_type_bitmap =
       clib_bitmap_andnoti (p->one_time_event_type_bitmap, t);
 }
@@ -745,6 +754,7 @@ vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
   return wakeup_time - vlib_time_now (vm);
 }
 
+//分配一个process event type结构
 always_inline vlib_process_event_type_t *
 vlib_process_new_event_type (vlib_process_t * p, uword with_type_opaque)
 {
@@ -754,6 +764,7 @@ vlib_process_new_event_type (vlib_process_t * p, uword with_type_opaque)
   return et;
 }
 
+//为指定process创建event
 always_inline uword
 vlib_process_create_one_time_event (vlib_main_t * vm, uword node_index,
 				    uword with_type_opaque)
@@ -764,8 +775,11 @@ vlib_process_create_one_time_event (vlib_main_t * vm, uword node_index,
   vlib_process_event_type_t *et;
   uword t;
 
+  //分配et
   et = vlib_process_new_event_type (p, with_type_opaque);
+  //获取et索引号
   t = et - p->event_type_pool;
+  //指明此et已被分配
   p->one_time_event_type_bitmap =
     clib_bitmap_ori (p->one_time_event_type_bitmap, t);
   return t;
@@ -793,6 +807,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
   uword p_flags, add_to_pending, delete_from_wheel;
   void *data_to_be_written_by_caller;
 
+  //必须为process
   ASSERT (n->type == VLIB_NODE_TYPE_PROCESS);
 
   //指定位置的event一定存在
@@ -823,7 +838,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
     data_to_be_written_by_caller = data_vec + l * n_data_elt_bytes;
   }
 
-  //指明有事件发生
+  //指明t号事件发生
   p->non_empty_event_type_bitmap =
     clib_bitmap_ori (p->non_empty_event_type_bitmap, t);
 
@@ -906,6 +921,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
 				   uword type_opaque,
 				   uword n_data_elts, uword n_data_elt_bytes)
 {
+  //取node_index对应的process
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_t *n = vlib_get_node (vm, node_index);
   vlib_process_t *p = vec_elt (nm->processes, n->runtime_index);
@@ -914,6 +930,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
   h = hash_get (p->event_type_index_by_type_opaque, type_opaque);
   if (!h)
     {
+      //不存在type_opaque对应的event,创建它
       vlib_process_event_type_t *et =
 	vlib_process_new_event_type (p, type_opaque);
       t = et - p->event_type_pool;
@@ -929,6 +946,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
     {
       vlib_signal_timed_event_data_t *te;
 
+      //自pool中分配一个te
       pool_get_aligned (nm->signal_timed_event_data_pool, te, sizeof (te[0]));
 
       te->n_data_elts = n_data_elts;
@@ -943,18 +961,21 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
       te->process_node_index = n->runtime_index;
       te->event_type_index = t;
 
+      //启动定时器
       p->stop_timer_handle =
 	TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 			     vlib_timing_wheel_data_set_timed_event
-			     (te - nm->signal_timed_event_data_pool),
+			     (te - nm->signal_timed_event_data_pool)/*指明参数为te索引*/,
 			     0 /* timer_id */ ,
 			     (vlib_time_now (vm) + dt) * 1e5);
 
       /* Inline data big enough to hold event? */
+      //如果内建的data足够用，则直接返回
       if (te->n_data_bytes < sizeof (te->inline_event_data))
 	return te->inline_event_data;
       else
 	{
+      //内建的data不够用，为其分配足量空间并返回
 	  te->event_data_as_vector = 0;
 	  vec_resize (te->event_data_as_vector, te->n_data_bytes);
 	  return te->event_data_as_vector;

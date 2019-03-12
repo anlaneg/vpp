@@ -12,8 +12,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <vppinfra/error.h>
-#include "tw_timer_16t_2w_512sl.h"
 
 /** @file
  *  @brief TW timer implementation TEMPLATE ONLY, do not compile directly
@@ -103,6 +101,8 @@ void TW (tw_search_trace) (TWT (tw_timer_wheel) * tw, u32 handle)
 #endif /* TW_START_STOP_TRACE_SIZE > 0 */
 
 //将pool_index及timer_id合并到u32数组中
+//(timer_id用来将一个定时器划分成多个定时器，同一时间仅支持一个定时器使用
+//这一过程通过TW_TIMERS_PER_OBJECT来标记）
 static inline u32
 TW (make_internal_timer_handle) (u32 pool_index, u32 timer_id)
 {
@@ -110,6 +110,8 @@ TW (make_internal_timer_handle) (u32 pool_index, u32 timer_id)
 
   ASSERT (timer_id < TW_TIMERS_PER_OBJECT);
 #if LOG2_TW_TIMERS_PER_OBJECT > 0
+  //pool_index在此情况占用32－LOG2_TW_TIMERS_PER_OBJECT位
+  //user_id在此情况下占用LOG2_TW_TIMERS_PER_OBJECT位
   ASSERT (pool_index < (1 << (32 - LOG2_TW_TIMERS_PER_OBJECT)));
 
   handle = (timer_id << (32 - LOG2_TW_TIMERS_PER_OBJECT)) | (pool_index);
@@ -321,9 +323,10 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
  * @param u64 interval timer interval in ticks
  * @returns handle needed to cancel the timer
  */
+//启动一个定时器
 u32
 TW (tw_timer_start) (TWT (tw_timer_wheel) * tw, u32 user_id, u32 timer_id,
-		     u64 interval)
+		     u64 interval/*过期间隔*/)
 {
   TWT (tw_timer) * t;
 
@@ -333,7 +336,7 @@ TW (tw_timer_start) (TWT (tw_timer_wheel) * tw, u32 user_id, u32 timer_id,
   pool_get (tw->timers, t);
   clib_memset (t, 0xff, sizeof (*t));
 
-  //填充timer的user_handle
+  //将timer_id,user_id构造成timer的user_handle
   t->user_handle = TW (make_internal_timer_handle) (user_id, timer_id);
 
   timer_add (tw, t, interval);
@@ -440,10 +443,11 @@ void TW (tw_timer_update) (TWT (tw_timer_wheel) * tw, u32 handle,
  *   expired timer handles. The callback is optional.
  * @param f64 timer_interval_in_seconds
  */
+//初始化timer
 void
 TW (tw_timer_wheel_init) (TWT (tw_timer_wheel) * tw,
-			  void *expired_timer_callback,
-			  f64 timer_interval_in_seconds, u32 max_expirations)
+			  void *expired_timer_callback/*过期回调*/,
+			  f64 timer_interval_in_seconds/*每秒触发数*/, u32 max_expirations/*一定最多容许的最大过期数*/)
 {
   int ring, slot;
   tw_timer_wheel_slot_t *ts;
@@ -463,6 +467,7 @@ TW (tw_timer_wheel_init) (TWT (tw_timer_wheel) * tw,
   vec_validate (tw->expired_timer_handles, 0);
   _vec_len (tw->expired_timer_handles) = 0;
 
+  //初始化wheel
   for (ring = 0; ring < TW_TIMER_WHEELS; ring++)
     {
       for (slot = 0; slot < TW_SLOTS_PER_RING; slot++)
@@ -537,10 +542,11 @@ void TW (tw_timer_wheel_free) (TWT (tw_timer_wheel) * tw)
  * @param f64 now the current time, e.g. from vlib_time_now(vm)
  * @returns u32 * vector of expired user handles
  */
-//调整轮子，并调用过期timer的回调函数
+//本函数实现了轮子定时器的维护，并收集已过期的定时器到callback_vector_arg(如果有指出的话，未指出，则采用timer内提供的vector)
+//当完成所有定时器维护及过期定时器收集后，返回所有过期的定时器。
 static inline
   u32 * TW (tw_timer_expire_timers_internal) (TWT (tw_timer_wheel) * tw,
-					      f64 now,
+					      f64 now/*当前时间*/,
 					      u32 * callback_vector_arg)
 {
   u32 nticks, i;
@@ -553,27 +559,32 @@ static inline
   u32 glacier_wheel_index __attribute__ ((unused));
 
   /* Shouldn't happen */
+  //当前时间小于timer需要发生的时间，跳出
   if (PREDICT_FALSE (now < tw->next_run_time))
     return callback_vector_arg;
 
   /* Number of ticks which have occurred */
+  //计算时间过去了多少ticks次，如果时间等于上一次发生的时间，则跳出
   nticks = tw->ticks_per_second * (now - tw->last_run_time);
   if (nticks == 0)
     return callback_vector_arg;
 
   /* Remember when we ran, compute next runtime */
+  //定义下次timer发生的时间
   tw->next_run_time = (now + tw->timer_interval);
 
   if (callback_vector_arg == 0)
-    {
+  {
+      //如果未给出参数，则使用expired_timer_handles做为callback_vector
       _vec_len (tw->expired_timer_handles) = 0;
       callback_vector = tw->expired_timer_handles;
-    }
+  }
   else
     callback_vector = callback_vector_arg;
 
   for (i = 0; i < nticks; i++)
-    {
+  {
+      //获取各index对应的值（低级索引，中级索引，高级索引）
       fast_wheel_index = tw->current_index[TW_TIMER_RING_FAST];
       if (TW_TIMER_WHEELS > 1)
 	slow_wheel_index = tw->current_index[TW_TIMER_RING_SLOW];
@@ -586,19 +597,23 @@ static inline
 			 && slow_wheel_index == TW_SLOTS_PER_RING
 			 && glacier_wheel_index == TW_SLOTS_PER_RING))
 	{
-	  u64 interval;
+	  //当三者达到某一个特定的值，统一将overflow链表上的timer向实际表盘上挂接
+      u64 interval;
 	  u32 new_glacier_ring_offset, new_slow_ring_offset;
 	  u32 new_fast_ring_offset;
 
 	  //处理overflow上挂载的timer,由于时间变换，需要将其按时间放到轮子上
 	  ts = &tw->overflow;
+	  //获得overflow链表头
 	  head = pool_elt_at_index (tw->timers, ts->head_index);
 	  next_index = head->next;
 
 	  /* Make slot empty */
+	  //使链表为空
 	  head->next = head->prev = ts->head_index;
 
 	  /* traverse slot, place timers wherever they go */
+	  //遍历链表内容
 	  while (next_index != head - tw->timers)
 	    {
 	      t = pool_elt_at_index (tw->timers, next_index);
@@ -607,11 +622,14 @@ static inline
 	      /* Remove from the overflow vector (hammer) */
 	      t->next = t->prev = ~0;
 
+	      //timer一定不是需要当前触发的
 	      ASSERT (t->expiration_time >= tw->current_tick);
 
+	      //剩余的触发时间
 	      interval = t->expiration_time - tw->current_tick;
 
 	      /* Right back onto the overflow vector? */
+	      //间隔仍然很大，需要仍放回到overflow中去
 	      if (interval >= (1 << (3 * TW_RING_SHIFT)))
 		{
 		  ts = &tw->overflow;
@@ -619,14 +637,15 @@ static inline
 		  continue;
 		}
 	      /* Compute ring offsets */
-	      new_glacier_ring_offset = interval >> (2 * TW_RING_SHIFT);
+	      //这种情况属于不需要放归回overflow中的，考虑放置在表盘上
+	      new_glacier_ring_offset = interval >> (2 * TW_RING_SHIFT);//高层索引
 
 	      interval -= (new_glacier_ring_offset << (2 * TW_RING_SHIFT));
 
 	      /* Note: the wheels are at (0,0,0), no add-with-carry needed */
-	      new_slow_ring_offset = interval >> TW_RING_SHIFT;
+	      new_slow_ring_offset = interval >> TW_RING_SHIFT;//中层索引
 	      interval -= (new_slow_ring_offset << TW_RING_SHIFT);
-	      new_fast_ring_offset = interval & TW_RING_MASK;
+	      new_fast_ring_offset = interval & TW_RING_MASK;//低层索引
 	      t->slow_ring_offset = new_slow_ring_offset;
 	      t->fast_ring_offset = new_fast_ring_offset;
 
@@ -635,32 +654,38 @@ static inline
 				 t->fast_ring_offset == 0 &&
 				 new_glacier_ring_offset == 0))
 		{
-		  vec_add1 (callback_vector, t->user_handle);
+		  //如果此timer恰好要过期，将其存入callback_vector
+	      vec_add1 (callback_vector, t->user_handle);
 #if TW_START_STOP_TRACE_SIZE > 0
 		  TW (tw_timer_trace) (tw, 0xfe, t->user_handle,
 				       t - tw->timers);
 #endif
+		  //timer空间归还
 		  pool_put (tw->timers, t);
 		}
 	      /* Timer moves to the glacier ring */
 	      else if (new_glacier_ring_offset)
 		{
-		  ts = &tw->w[TW_TIMER_RING_GLACIER][new_glacier_ring_offset];
+		  //需要存放在高层索引对应的表上
+	      ts = &tw->w[TW_TIMER_RING_GLACIER][new_glacier_ring_offset];
 		  timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 		}
 	      /* Timer moves to the slow ring */
 	      else if (t->slow_ring_offset)
 		{
 		  /* Add to slow ring */
+	      //需要存放在中层索引对应的表上
 		  ts = &tw->w[TW_TIMER_RING_SLOW][t->slow_ring_offset];
 		  timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 		}
 	      /* Timer timer moves to the fast ring */
 	      else
 		{
-		  ts = &tw->w[TW_TIMER_RING_FAST][t->fast_ring_offset];
+		  //需要存放在低层索引对应的表上
+	      ts = &tw->w[TW_TIMER_RING_FAST][t->fast_ring_offset];
 		  timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 #if TW_FAST_WHEEL_BITMAP
+		  //如有必要，设置相应的bitmap位
 		  tw->fast_slot_bitmap =
 		    clib_bitmap_set (tw->fast_slot_bitmap,
 				     t->fast_ring_offset, 1);
@@ -677,7 +702,8 @@ static inline
       if (PREDICT_FALSE (fast_wheel_index == TW_SLOTS_PER_RING
 			 && slow_wheel_index == TW_SLOTS_PER_RING))
 	{
-	  glacier_wheel_index %= TW_SLOTS_PER_RING;
+	  //此情况下，需要将timer从高层表盘，向中级表盘移动
+      glacier_wheel_index %= TW_SLOTS_PER_RING;
 	  ts = &tw->w[TW_TIMER_RING_GLACIER][glacier_wheel_index];
 
 	  head = pool_elt_at_index (tw->timers, ts->head_index);
@@ -699,7 +725,8 @@ static inline
 	      if (PREDICT_FALSE (t->slow_ring_offset == 0 &&
 				 t->fast_ring_offset == 0))
 		{
-		  vec_add1 (callback_vector, t->user_handle);
+	      //恰好要触发，直接加入到callback_vector中
+	      vec_add1 (callback_vector, t->user_handle);
 #if TW_START_STOP_TRACE_SIZE > 0
 		  TW (tw_timer_trace) (tw, 0xfe, t->user_handle,
 				       t - tw->timers);
@@ -709,7 +736,7 @@ static inline
 	      /* Timer expires during slow-wheel tick 0 */
 	      else if (PREDICT_FALSE (t->slow_ring_offset == 0))
 		{
-		  ts = &tw->w[TW_TIMER_RING_FAST][t->fast_ring_offset];
+	      ts = &tw->w[TW_TIMER_RING_FAST][t->fast_ring_offset];
 		  timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 #if TW_FAST_WHEEL_BITMAP
 		  tw->fast_slot_bitmap =
@@ -755,7 +782,8 @@ static inline
 	      /* Timer expires Right Now */
 	      if (PREDICT_FALSE (t->fast_ring_offset == 0))
 		{
-		  vec_add1 (callback_vector, t->user_handle);
+		  //恰好过期，将其添加到callback_vector
+	      vec_add1 (callback_vector, t->user_handle);
 #if TW_START_STOP_TRACE_SIZE > 0
 		  TW (tw_timer_trace) (tw, 0xfe, t->user_handle,
 				       t - tw->timers);
@@ -765,6 +793,7 @@ static inline
 	      else		/* typical case */
 		{
 		  /* Add to fast ring */
+	      //需要旧中层表盘，移动到低层表盘上
 		  ts = &tw->w[TW_TIMER_RING_FAST][t->fast_ring_offset];
 		  timer_addhead (tw->timers, ts->head_index, t - tw->timers);
 #if TW_FAST_WHEEL_BITMAP
@@ -778,9 +807,11 @@ static inline
 #endif
 
       /* Handle the fast ring */
+      //刻度位于fast_wheel_index的所有timer过期
       fast_wheel_index %= TW_SLOTS_PER_RING;
       ts = &tw->w[TW_TIMER_RING_FAST][fast_wheel_index];
 
+      //取出对应刻度上所有的timer链表
       head = pool_elt_at_index (tw->timers, ts->head_index);
       next_index = head->next;
 
@@ -788,6 +819,7 @@ static inline
       head->next = head->prev = ts->head_index;
 
       /* Construct vector of expired timer handles to give the user */
+      //遍历这个timer链表，使其全部过期（即加入到callback_vector中）
       while (next_index != ts->head_index)
 	{
 	  t = pool_elt_at_index (tw->timers, next_index);
@@ -800,10 +832,11 @@ static inline
 	}
 
       /* If any timers expired, tell the user */
+      //用户没有指明callback_vector,且本次有定时器触发，故直接触发
       if (callback_vector_arg == 0 && vec_len (callback_vector))
 	{
 	  /* The callback is optional. We return the u32 * handle vector */
-    	  //有多个timer被触发，调用回调
+      //有多个timer被触发，且指明了timer调用回调，则直接触发
 	  if (tw->expired_timer_callback)
 	    {
 	      tw->expired_timer_callback (callback_vector);
@@ -813,26 +846,28 @@ static inline
 	}
 
 #if TW_FAST_WHEEL_BITMAP
+      //清除timer对应的位
       tw->fast_slot_bitmap = clib_bitmap_set (tw->fast_slot_bitmap,
 					      fast_wheel_index, 0);
 #endif
 
       tw->current_tick++;
-      fast_wheel_index++;
-      tw->current_index[TW_TIMER_RING_FAST] = fast_wheel_index;
+      fast_wheel_index++;//低层表盘指针移动一位
+      tw->current_index[TW_TIMER_RING_FAST] = fast_wheel_index;//记录索引
 
 #if TW_TIMER_WHEELS > 1
       if (PREDICT_FALSE (fast_wheel_index == TW_SLOTS_PER_RING))
-	slow_wheel_index++;
+	slow_wheel_index++;//驱动中层表盘指针移动一位
       tw->current_index[TW_TIMER_RING_SLOW] = slow_wheel_index;
 #endif
 
 #if TW_TIMER_WHEELS > 2
       if (PREDICT_FALSE (slow_wheel_index == TW_SLOTS_PER_RING))
-	glacier_wheel_index++;
+	glacier_wheel_index++;//驱动高层表盘指针移动一位
       tw->current_index[TW_TIMER_RING_GLACIER] = glacier_wheel_index;
 #endif
 
+      //存入的timer数量大于要求获取的数量，跳出
       if (vec_len (callback_vector) >= tw->max_expirations)
 	break;
     }
@@ -840,15 +875,18 @@ static inline
   if (callback_vector_arg == 0)
     tw->expired_timer_handles = callback_vector;
 
+  //上一次处理到的时间点
   tw->last_run_time += i * tw->timer_interval;
   return callback_vector;
 }
 
+//返回过期定时器（执行定时器维户）
 u32 *TW (tw_timer_expire_timers) (TWT (tw_timer_wheel) * tw, f64 now)
 {
   return TW (tw_timer_expire_timers_internal) (tw, now, 0 /* no vector */ );
 }
 
+//通过给定参数，收集过期定时器（执行定时器维护）
 u32 *TW (tw_timer_expire_timers_vec) (TWT (tw_timer_wheel) * tw, f64 now,
 				      u32 * vec)
 {

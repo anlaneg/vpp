@@ -305,7 +305,7 @@ typedef struct vlib_node_t
   u32 runtime_index;//节点的运行索引（例如process索引号）
 
   /* Runtime data for this node. */
-  void *runtime_data;
+  void *runtime_data;//runtime对应的私有data
 
   /* Node flags. */
   u16 flags;
@@ -330,7 +330,7 @@ typedef struct vlib_node_t
   u8 state;
 
   /* Number of bytes of run time data. */
-  u8 runtime_data_bytes;
+  u8 runtime_data_bytes;//runtime_data对应的字节长度
 
   /* protocol at b->data[b->current_data] upon entry to the dispatch fn */
   u8 protocol_hint;
@@ -339,6 +339,7 @@ typedef struct vlib_node_t
   u16 n_errors;//node对应的错误号数目
 
   /* Size of scalar and vector arguments in bytes. */
+  //此node要求的frame的scalar_size,vector_size
   u16 scalar_size, vector_size;
 
   /* Handle/index in error heap for this node. */
@@ -415,9 +416,10 @@ typedef struct vlib_frame_t
   u8 vector_size;
 
   /* Number of vector elements currently in frame. */
-  u16 n_vectors;//当前有多少个vector元素
+  u16 n_vectors;//当前frame有多少个vector元素
 
   /* Scalar and vector arguments to next node. */
+  //其后为scalar size ,vector argument,magic
   u8 arguments[0];
 } vlib_frame_t;
 
@@ -562,10 +564,10 @@ vlib_node_runtime_t;
 typedef struct
 {
   /* Number of allocated frames for this scalar/vector size. */
-  u32 n_alloc_frames;
+  u32 n_alloc_frames;//空闲数目
 
   /* Vector of free frame indices for this scalar/vector size. */
-  u32 *free_frame_indices;//空闲的frame index数组
+  u32 *free_frame_indices;//同种frame size的空闲的frame index数组
 } vlib_frame_size_t;
 
 typedef struct
@@ -632,7 +634,7 @@ typedef struct
   u64 resume_clock_interval;
 
   /* Handle from timer code, to cancel an unexpired timer */
-  u32 stop_timer_handle;
+  u32 stop_timer_handle;//记录timer索引，用于timer取消
 
   /* Default output function and its argument for any CLI outputs
      within the process. */
@@ -693,7 +695,7 @@ typedef struct
     u8 inline_event_data[64 - 3 * sizeof (u32) - 2 * sizeof (u16)];
 
     /* Vector of event data used only when data does not fit inline. */
-    u8 *event_data_as_vector;
+    u8 *event_data_as_vector;//防止inline空间不足时，使用此来指向动态分配的空间
   };
 }
 vlib_signal_timed_event_data_t;
@@ -704,12 +706,14 @@ vlib_timing_wheel_data_is_timed_event (u32 d)
   return d & 1;
 }
 
+//通过偶数表示process挂起
 always_inline u32
 vlib_timing_wheel_data_set_suspended_process (u32 i)
 {
   return 0 + 2 * i;
 }
 
+//通过奇数来表示event事件
 always_inline u32
 vlib_timing_wheel_data_set_timed_event (u32 i)
 {
@@ -735,10 +739,11 @@ typedef struct
 
   /* Nodes segregated by type for cache locality.
      Does not apply to nodes of type VLIB_NODE_TYPE_INTERNAL. */
+  //非process类型的node对应的runtime
   vlib_node_runtime_t *nodes_by_type[VLIB_N_NODE_TYPE];
 
   /* Node runtime indices for input nodes with pending interrupts. */
-  u32 *pending_interrupt_node_runtime_indices;
+  u32 *pending_interrupt_node_runtime_indices;//指出有哪些input node处于中断未决状态
   clib_spinlock_t pending_interrupt_lock;
 
   /* Input nodes are switched from/to interrupt to/from polling mode
@@ -754,12 +759,12 @@ typedef struct
   vlib_pending_frame_t *pending_frames;
 
   /* Timing wheel for scheduling time-based node dispatch. */
-  void *timing_wheel;
+  void *timing_wheel;//定时器（未指明过期回调）
 
   vlib_signal_timed_event_data_t *signal_timed_event_data_pool;
 
   /* Opaque data vector added via timing_wheel_advance. */
-  u32 *data_from_advancing_timing_wheel;
+  u32 *data_from_advancing_timing_wheel;//缓存当前timing_wheel已过期定时器
 
   /* CPU time of next process to be ready on timing wheel. */
   f64 time_next_process_ready;
@@ -786,6 +791,7 @@ typedef struct
   uword *frame_size_hash;
 
   /* Per-size frame allocation information. */
+  //按不同frame_size划分的空闲frame集合
   vlib_frame_size_t *frame_sizes;
 
   /* Time of last node runtime stats clear. */

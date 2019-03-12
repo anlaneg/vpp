@@ -1628,11 +1628,13 @@ vlib_worker_thread_barrier_release (vlib_main_t * vm)
  * If so, pull the packets off the frames and put them to
  * the handoff node.
  */
+//对fqm中保存的本线程队列进行出队操作，将出队的frame传递给fqm对应的node
 int
 vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 {
   u32 thread_id = vm->thread_index;
-  //取此线程对应的frame queues
+
+  //取其它线程传给此线程的报文队列
   vlib_frame_queue_t *fq = fqm->vlib_frame_queues[thread_id];
   vlib_frame_queue_elt_t *elt;
   u32 *from, *to;
@@ -1688,6 +1690,7 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 
   while (1)
     {
+      //出队完成，退出
       if (fq->head == fq->tail)
 	{
 	  fq->head_hint = fq->head;
@@ -1704,12 +1707,14 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	  return processed;
 	}
 
+      //对应的frame index
       from = elt->buffer_index;
       msg_type = elt->msg_type;
 
       ASSERT (msg_type == VLIB_FRAME_QUEUE_ELT_DISPATCH_FRAME);
       ASSERT (elt->n_vectors <= VLIB_FRAME_SIZE);
 
+      //申请适用于fqm->node_index的frame
       f = vlib_get_frame_to_node (vm, fqm->node_index);
 
       to = vlib_frame_vector_args (f);
@@ -1737,7 +1742,9 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	}
 
       vectors += elt->n_vectors;
-      f->n_vectors = elt->n_vectors;//指明frame中元素
+      //指明frame中元素数
+      f->n_vectors = elt->n_vectors;
+      //将出队的frame赋给fqm->node_index
       vlib_put_frame_to_node (vm, fqm->node_index, f);
 
       //指明元素无效，移动读者头向前移动
@@ -1811,8 +1818,10 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
 
   ASSERT (frame_queue_nelts >= 8);
 
+  //分析一个fqm空间
   vec_add2 (tm->frame_queue_mains, fqm, 1);
 
+  //填充fqm
   fqm->node_index = node_index;
   fqm->frame_queue_nelts = frame_queue_nelts;
   fqm->queue_hi_thresh = frame_queue_nelts - 2;
@@ -1823,10 +1832,11 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
   for (i = 0; i < tm->n_vlib_mains; i++)
     {
       vlib_frame_queue_per_thread_data_t *ptd;
-      //申请可容纳frame_queue_nelts个元素的frame queue
+      //针对每个vm,申请一个可容纳frame_queue_nelts个元素的frame queue
       fq = vlib_frame_queue_alloc (frame_queue_nelts);
       vec_add1 (fqm->vlib_frame_queues, fq);
 
+      //取各线程对应的私有数据
       ptd = vec_elt_at_index (fqm->per_thread_data, i);
       vec_validate (ptd->handoff_queue_elt_by_thread_index,
 		    tm->n_vlib_mains - 1);
@@ -1835,6 +1845,7 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
 			       (vlib_frame_queue_t *) (~0));
     }
 
+  //返回创建的fqm对应的索引
   return (fqm - tm->frame_queue_mains);
 }
 

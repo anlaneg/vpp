@@ -187,7 +187,7 @@ typedef struct
   f64 next_run_time;//下次运行的时间
 
   /** Last time the wheel ran */
-  f64 last_run_time;//上次运行时间
+  f64 last_run_time;//上次已处理到的过期时间（可能小于next_run_time)
 
   /** Timer ticks per second */
   f64 ticks_per_second;
@@ -196,7 +196,7 @@ typedef struct
   f64 timer_interval;//timer执行间隔
 
   /** current tick */
-  u64 current_tick;
+  u64 current_tick;//记录当前的tick
 
   /** first expiration time */
   u64 first_expires_tick;
@@ -205,7 +205,8 @@ typedef struct
   u32 current_index[TW_TIMER_WHEELS];//指出每个轮子的指针
 
   /** wheel arrays */
-  //轮子数据，指出每个轮子，每个轮子的刻度
+  //轮子数据，指出每个轮子，每个轮子的刻度,在每个刻度上有一个链表索引，
+  //此索引指向timers成员对应的定时器
   tw_timer_wheel_slot_t w[TW_TIMER_WHEELS][TW_SLOTS_PER_RING];
 
 #if TW_OVERFLOW_VECTOR > 0
@@ -218,14 +219,14 @@ typedef struct
 #endif
 
   /** expired timer callback, receives a vector of handles */
-  //timer的过期回调
+  //timer的过期回调（接收一组timer handles)
   void (*expired_timer_callback) (u32 * expired_timer_handles);
 
   /** vectors of expired timers */
-  u32 *expired_timer_handles;
+  u32 *expired_timer_handles;//用于存放过期的timer
 
   /** maximum expirations */
-  u32 max_expirations;
+  u32 max_expirations;//最多收集多少个timer
 
   /** current trace index */
 #if TW_START_STOP_TRACE_SIZE > 0

@@ -84,8 +84,8 @@ typedef struct vlib_main_t
   u32 main_loop_count;//每main loop一次，则增加1
 
   /* Count of vectors processed this main loop. */
-  u32 main_loop_vectors_processed;//已处理的报文数
-  u32 main_loop_nodes_processed;//已处理的node数
+  u32 main_loop_vectors_processed;//在一个loop中已处理的报文数
+  u32 main_loop_nodes_processed;//在一个loop中已处理的node数
 
   /* Circular buffer of input node vector counts.
      Indexed by low bits of
@@ -103,8 +103,10 @@ typedef struct vlib_main_t
   /* Jump target to exit main loop with given code. */
   u32 main_loop_exit_set;
   /* Set e.g. in the SIGTERM signal handler, checked in a safe place... */
+  //收到信号后，标记需要退出main loop时，置为1
   volatile u32 main_loop_exit_now;
-  clib_longjmp_t main_loop_exit;//用于跳转至main_loop
+  //用于跳转至main_loop
+  clib_longjmp_t main_loop_exit;
 #define VLIB_MAIN_LOOP_EXIT_NONE 0
 #define VLIB_MAIN_LOOP_EXIT_PANIC 1
   /* Exit via CLI. */
@@ -195,7 +197,7 @@ typedef struct vlib_main_t
   uword *init_functions_called;//hash表，用于保存已完成调用的初始化函数的指针
 
   /* thread, cpu and numa_node indices */
-  u32 thread_index;
+  u32 thread_index;//线程索引
   u32 cpu_id;
   u32 numa_node;//所属的node
 
@@ -379,6 +381,7 @@ vlib_increment_main_loop_counter (vlib_main_t * vm)
   vm->vector_counts_per_main_loop[i] = v;
   vm->node_counts_per_main_loop[i] = n;
 
+  //如果标记为需要退出main loop,则跳出
   if (PREDICT_FALSE (vm->main_loop_exit_now))
     clib_longjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_CLI);
 }

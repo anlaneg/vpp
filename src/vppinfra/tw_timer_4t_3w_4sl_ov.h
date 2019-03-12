@@ -29,14 +29,22 @@
 #undef TW_TIMER_ALLOW_DUPLICATE_STOP
 #undef TW_START_STOP_TRACE_SIZE
 
+//指明使用3个轮子
 #define TW_TIMER_WHEELS 3
+//指明每个轮子上有4个刻度
 #define TW_SLOTS_PER_RING 4
+//每几位映射一层刻度
 #define TW_RING_SHIFT 2
+//ring mask用于实现wrap
 #define TW_RING_MASK (TW_SLOTS_PER_RING -1)
+//容许用户占用2个bit来表示4种不同定时器（实现定时器复用）
 #define TW_TIMERS_PER_OBJECT 4
+//指明占两个bit位来实现定时器复用
 #define LOG2_TW_TIMERS_PER_OBJECT 2
 #define TW_SUFFIX _4t_3w_4sl_ov
+//指明启用overflow功能（即容许timer过期时间超过量程）
 #define TW_OVERFLOW_VECTOR 1
+//指明不启用fast_wheel的bitmap标识
 #define TW_FAST_WHEEL_BITMAP 0
 #define TW_TIMER_ALLOW_DUPLICATE_STOP 0
 
