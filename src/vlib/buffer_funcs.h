@@ -222,7 +222,7 @@ vlib_get_buffers (vlib_main_t * vm, u32 * bi, vlib_buffer_t ** b, int count)
     @param p - (void *) buffer pointer
     @return - (u32) buffer index
 */
-
+//将p指向的buffer指针转换为buffer index
 always_inline u32
 vlib_get_buffer_index (vlib_main_t * vm, void *p)
 {
@@ -245,6 +245,7 @@ vlib_get_buffer_index (vlib_main_t * vm, void *p)
     @param count - (uword) number of elements
     @param offset - (i32) offset applied to each pointer
 */
+//将
 static_always_inline void
 vlib_get_buffer_indices_with_offset (vlib_main_t * vm, void **b, u32 * bi,
 				     uword count, i32 offset)
@@ -283,6 +284,7 @@ vlib_get_buffer_indices_with_offset (vlib_main_t * vm, void **b, u32 * bi,
   while (count >= 4)
     {
       /* equivalent non-nector implementation */
+      //将bufer指针转换为buffer index,并填充到bi变量中
       bi[0] = vlib_get_buffer_index (vm, ((u8 *) b[0]) + offset);
       bi[1] = vlib_get_buffer_index (vm, ((u8 *) b[1]) + offset);
       bi[2] = vlib_get_buffer_index (vm, ((u8 *) b[2]) + offset);

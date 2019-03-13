@@ -152,14 +152,17 @@ typedef struct
   vlib_frame_queue_t **congested_handoff_queue_by_thread_index;
 } vlib_frame_queue_per_thread_data_t;
 
+//从属于node的frame队列
 typedef struct
 {
   u32 node_index;//所属的vpp node
   u32 frame_queue_nelts;//队列数目
   u32 queue_hi_thresh;//高位
 
-  //保存多个frame_queue的指针，属于frame_queue_main的队列
+  //保存多个frame_queue的指针数组,每个其它vlib main一个指针数组（共n-1)
+  //每个指针数组长度为vlib main个（共N个)
   vlib_frame_queue_t **vlib_frame_queues;
+  //保存多个thread_data，每个线程一个thread_data
   vlib_frame_queue_per_thread_data_t *per_thread_data;
 
   /* for frame queue tracing */
@@ -404,10 +407,15 @@ vlib_worker_thread_barrier_check (void)
 {
   if (PREDICT_FALSE (*vlib_worker_threads->wait_at_barrier))
     {
+      //需要等待一个barrier
+
       vlib_main_t *vm = vlib_get_main ();
+
+      //取当前线程index
       u32 thread_index = vm->thread_index;
       f64 t = vlib_time_now (vm);
 
+      //如果相应的elog被打开，则构造当前线程对应的elog
       if (PREDICT_FALSE (vlib_worker_threads->barrier_elog_enabled))
 	{
 	  vlib_worker_thread_t *w = vlib_worker_threads + thread_index;
@@ -423,17 +431,21 @@ vlib_worker_thread_barrier_check (void)
 	    u32 thread_index;
 	  } __clib_packed *ed;
 
+	  //填充elog数据
 	  ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
 				w->elog_track);
 	  ed->thread_index = thread_index;
 	}
 
+      //使workers_at_barrier+=1
       clib_atomic_fetch_add (vlib_worker_threads->workers_at_barrier, 1);
       if (CLIB_DEBUG > 0)
 	{
 	  vm = vlib_get_main ();
 	  vm->parked_at_barrier = 1;
 	}
+
+      //等待wait_at_barrier为0后开始运行
       while (*vlib_worker_threads->wait_at_barrier)
 	;
 

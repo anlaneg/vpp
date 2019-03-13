@@ -428,10 +428,10 @@ eth_input_adv_and_flags_x1 (vlib_buffer_t ** b, int is_l3)
     vnet_buffer (b[0])->l2.l2_len = adv;
 }
 
-
+//以太头解析
 static_always_inline void
-eth_input_get_etype_and_tags (vlib_buffer_t ** b, u16 * etype, u64 * tags,
-			      u64 * dmacs, int offset, int dmac_check)
+eth_input_get_etype_and_tags (vlib_buffer_t ** b, u16 * etype/*出参，记录以太头类型*/, u64 * tags/*出参，记录以太头后8字节长度*/,
+			      u64 * dmacs/*出参，记录以太头前8个字节(目的mac+srcmac{2字节})*/, int offset, int dmac_check/*是否记录dmac*/)
 {
   ethernet_header_t *e;
   e = vlib_buffer_get_current (b[offset]);
@@ -615,18 +615,20 @@ eth_input_tag_lookup (vlib_main_t * vm, vnet_main_t * vnm,
 
 STATIC_ASSERT (VLIB_FRAME_SIZE % 8 == 0,
 	       "VLIB_FRAME_SIZE must be power of 8");
+
+//解析报文，并将报文送给next node
 static_always_inline void
 eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 			 vnet_hw_interface_t * hi,
 			 u32 * buffer_indices, u32 n_packets, int main_is_l3,
-			 int ip4_cksum_ok, int dmac_check)
+			 int ip4_cksum_ok, int dmac_check/*是否记录dmac*/)
 {
   ethernet_main_t *em = &ethernet_main;
   u16 nexts[VLIB_FRAME_SIZE], *next;
-  u16 etypes[VLIB_FRAME_SIZE], *etype = etypes;
-  u64 dmacs[VLIB_FRAME_SIZE], *dmac = dmacs;
-  u8 dmacs_bad[VLIB_FRAME_SIZE];
-  u64 tags[VLIB_FRAME_SIZE], *tag = tags;
+  u16 etypes[VLIB_FRAME_SIZE]/*记录以太头下层协议类型*/, *etype = etypes;
+  u64 dmacs[VLIB_FRAME_SIZE]/*记录以太头目的mac*/, *dmac = dmacs;
+  u8 dmacs_bad[VLIB_FRAME_SIZE]/*记录目的mac检查结果*/;
+  u64 tags[VLIB_FRAME_SIZE]/*记录以太头后8字节可能为vlan头*/, *tag = tags;
   u16 slowpath_indices[VLIB_FRAME_SIZE];
   u16 n_slowpath, i;
   u16 next_ip4, next_ip6, next_mpls, next_l2;
@@ -636,11 +638,12 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
   u16 et_vlan = clib_host_to_net_u16 (ETHERNET_TYPE_VLAN);
   u16 et_dot1ad = clib_host_to_net_u16 (ETHERNET_TYPE_DOT1AD);
   i32 n_left = n_packets;
-  vlib_buffer_t *b[20];
+  vlib_buffer_t *b[20];//记录buffer指针
   u32 *from;
 
   from = buffer_indices;
 
+  //以太头解析
   while (n_left >= 20)
     {
       vlib_buffer_t **ph = b + 16, **pd = b + 8;
@@ -650,6 +653,7 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       vlib_prefetch_buffer_header (ph[0], LOAD);
       vlib_prefetch_buffer_data (pd[0], LOAD);
+      //处理0号报文以太头的分析
       eth_input_get_etype_and_tags (b, etype, tag, dmac, 0, dmac_check);
 
       vlib_prefetch_buffer_header (ph[1], LOAD);
@@ -703,10 +707,12 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
       from += 1;
     }
 
+  //执行目的mac检查
   if (dmac_check)
     {
       u64 mask = clib_net_to_host_u64 (0xFFFFFFFFFFFF0000);
       u64 igbit = clib_net_to_host_u64 (0x0100000000000000);
+      /*入接口mac地址*/
       u64 hwaddr = (*(u64 *) hi->hw_address) & mask;
       u64 *dmac = dmacs;
       u8 *dmac_bad = dmacs_bad;
@@ -743,11 +749,13 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  r2 = dmac[2] & mask;
 	  r3 = dmac[3] & mask;
 
+	  //目的mac检查：“检查目的mac是否不等于入接口mac不为组播mac”
 	  r0 = (r0 != hwaddr) && ((r0 & igbit) == 0);
 	  r1 = (r1 != hwaddr) && ((r1 & igbit) == 0);
 	  r2 = (r2 != hwaddr) && ((r2 & igbit) == 0);
 	  r3 = (r3 != hwaddr) && ((r3 & igbit) == 0);
 
+	  //记录检查结果
 	  dmac_bad[0] = r0;
 	  dmac_bad[1] = r1;
 	  dmac_bad[2] = r2;
@@ -761,10 +769,10 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 #endif
     }
 
-  next_ip4 = em->l3_next.input_next_ip4;
-  next_ip6 = em->l3_next.input_next_ip6;
-  next_mpls = em->l3_next.input_next_mpls;
-  next_l2 = em->l2_next;
+  next_ip4 = em->l3_next.input_next_ip4;//ipv4协议的下级处理
+  next_ip6 = em->l3_next.input_next_ip6;//ipv6协议的下级处理
+  next_mpls = em->l3_next.input_next_mpls;//mpls协议的下级处理
+  next_l2 = em->l2_next;//其它l2的下级处理
 
   if (next_ip4 == ETHERNET_INPUT_NEXT_IP4_INPUT && ip4_cksum_ok)
     next_ip4 = ETHERNET_INPUT_NEXT_IP4_INPUT_NCS;
@@ -832,6 +840,7 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  continue;
 	}
 #endif
+      //如果是ipv4,ipv6,mpls则去往相应的下层node索引
       if (main_is_l3 && etype[0] == et_ip4)
 	next[0] = next_ip4;
       else if (main_is_l3 && etype[0] == et_ip6)
@@ -840,9 +849,11 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 	next[0] = next_mpls;
       else if (main_is_l3 == 0 &&
 	       etype[0] != et_vlan && etype[0] != et_dot1ad)
+          //非vlan,802.1ad去往l2层node索引
 	next[0] = next_l2;
       else
 	{
+      //其它不认识的走慢路
 	  next[0] = 0;
 	  slowpath_indices[n_slowpath++] = i;
 	}
@@ -855,6 +866,7 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (n_slowpath)
     {
+      //有需要走慢路的区分node的报文
       vnet_main_t *vnm = vnet_get_main ();
       n_left = n_slowpath;
       u16 *si = slowpath_indices;
@@ -871,10 +883,11 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
       while (n_left)
 	{
 	  i = si[0];
-	  u16 etype = etypes[i];
+	  u16 etype = etypes[i];//取以太网类型
 
 	  if (etype == et_vlan)
 	    {
+	      //收到vlan报文
 	      vlib_buffer_t *b = vlib_get_buffer (vm, buffer_indices[i]);
 	      eth_input_tag_lookup (vm, vnm, node, hi, tags[i], nexts + i, b,
 				    &dot1q_lookup, dmacs_bad[i], 0,
@@ -883,6 +896,7 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    }
 	  else if (etype == et_dot1ad)
 	    {
+	      //收到802.1ad报文
 	      vlib_buffer_t *b = vlib_get_buffer (vm, buffer_indices[i]);
 	      eth_input_tag_lookup (vm, vnm, node, hi, tags[i], nexts + i, b,
 				    &dot1ad_lookup, dmacs_bad[i], 1,
@@ -895,10 +909,12 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 		{
 		  last_unknown_etype = etype;
 		  etype = clib_host_to_net_u16 (etype);
+		  //按以太网类型查找next node索引
 		  last_unknown_next = eth_input_next_by_type (etype);
 		}
 	      if (dmac_check && main_is_l3 && dmacs_bad[i])
 		{
+	      //这些报文目的mac是接口mac或者是组播mac，送给ETHERNET_INPUT_NEXT_PUNT
 		  vlib_buffer_t *b = vlib_get_buffer (vm, buffer_indices[i]);
 		  b->error = node->errors[ETHERNET_ERROR_L3_MAC_MISMATCH];
 		  nexts[i] = ETHERNET_INPUT_NEXT_PUNT;
@@ -912,10 +928,12 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  si++;
 	}
 
+      //完成统计
       eth_input_update_if_counters (vm, vnm, &dot1q_lookup);
       eth_input_update_if_counters (vm, vnm, &dot1ad_lookup);
     }
 
+  //将报文送给next-node
   vlib_buffer_enqueue_to_next (vm, node, buffer_indices, nexts, n_packets);
 }
 
@@ -1483,6 +1501,7 @@ ethernet_input_inline (vlib_main_t * vm,
     }
 }
 
+//定义ethernet_input_node对应的处理函数
 VLIB_NODE_FN (ethernet_input_node) (vlib_main_t * vm,
 				    vlib_node_runtime_t * node,
 				    vlib_frame_t * frame)

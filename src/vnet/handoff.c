@@ -147,6 +147,7 @@ worker_handoff_node_fn (vlib_main_t * vm,
       b += 1;
     }
 
+  //报文送给其它线程
   n_enq = vlib_buffer_enqueue_to_thread (vm, hm->frame_queue_index, from,
 					 thread_indices, frame->n_vectors, 1);
 

@@ -49,9 +49,11 @@ dpdk_process_subseq_segs (vlib_main_t * vm, vlib_buffer_t * b,
   mb_seg = mb->next;
   b_chain = b;
 
+  //1块时不处理
   if (mb->nb_segs < 2)
     return 0;
 
+  //指明非首片长度
   b->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
   b->total_length_not_including_first_buffer = 0;
 
@@ -143,7 +145,7 @@ dpdk_prefetch_buffer_x4 (struct rte_mbuf *mb[])
     - per-interface redirection, controlled by
       <code>xd->per_interface_next_index</code>
 */
-
+//收集mbuf的offload flags,返回这count个flags对应的全集
 static_always_inline u8
 dpdk_ol_flags_extract (struct rte_mbuf **mb, u8 * flags, int count)
 {
@@ -165,6 +167,7 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
 {
   u32 n_left = n_rx_packets;
   vlib_buffer_t *b[4];
+  //获得自驱动收取到的报文
   struct rte_mbuf **mb = ptd->mbufs;
   uword n_bytes = 0;
   u8 *flags, or_flags = 0;
@@ -174,16 +177,19 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
   flags = ptd->flags;
 
   /* copy template into local variable - will save per packet load */
+  //加载此批次报文的buffer_template(报文具有的相同属性）
   vlib_buffer_copy_template (&bt, &ptd->buffer_template);
   while (n_left >= 8)
     {
       dpdk_prefetch_buffer_x4 (mb + 4);
 
+      //将mbuf转换为vlib_buffer
       b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
       b[1] = vlib_buffer_from_rte_mbuf (mb[1]);
       b[2] = vlib_buffer_from_rte_mbuf (mb[2]);
       b[3] = vlib_buffer_from_rte_mbuf (mb[3]);
 
+      //采用模板填充buffer的前64字段
       vlib_buffer_copy_template (b[0], &bt);
       vlib_buffer_copy_template (b[1], &bt);
       vlib_buffer_copy_template (b[2], &bt);
@@ -194,6 +200,7 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
       or_flags |= dpdk_ol_flags_extract (mb, flags, 4);
       flags += 4;
 
+      //更新current_data,current_length
       b[0]->current_data = mb[0]->data_off - RTE_PKTMBUF_HEADROOM;
       n_bytes += b[0]->current_length = mb[0]->data_len;
 
@@ -208,6 +215,7 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
 
       if (maybe_multiseg)
 	{
+      //如果开启了巨大帧，则处理多片情况
 	  n_bytes += dpdk_process_subseq_segs (vm, b[0], mb[0], &bt);
 	  n_bytes += dpdk_process_subseq_segs (vm, b[1], mb[1], &bt);
 	  n_bytes += dpdk_process_subseq_segs (vm, b[2], mb[2], &bt);
@@ -243,6 +251,7 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
       n_left -= 1;
     }
 
+  //返回报文总大小，flags
   *or_flagsp = or_flags;
   return n_bytes;
 }
@@ -282,8 +291,8 @@ dpdk_process_flow_offload (dpdk_device_t * xd, dpdk_per_thread_data_t * ptd,
 }
 
 static_always_inline u32
-dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
-		   vlib_node_runtime_t * node, u32 thread_index, u16 queue_id)
+dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd/*所属的设备*/,
+		   vlib_node_runtime_t * node, u32 thread_index, u16 queue_id/*队列id*/)
 {
   uword n_rx_packets = 0, n_rx_bytes;
   u32 n_left, n_trace;
@@ -300,35 +309,41 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
 						  thread_index);
   vlib_buffer_t *bt = &ptd->buffer_template;
 
+  //网卡不处于admin_up,跳过
   if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) == 0)
     return 0;
 
   /* get up to DPDK_RX_BURST_SZ buffers from PMD */
+  //总是尝试收取DPDK_RX_BURST_SZ个包
   while (n_rx_packets < DPDK_RX_BURST_SZ)
     {
+      //通过dpdk收取设备xd上queue_id队列的报文
       n = rte_eth_rx_burst (xd->port_id, queue_id,
 			    ptd->mbufs + n_rx_packets,
 			    DPDK_RX_BURST_SZ - n_rx_packets);
       n_rx_packets += n;
 
       if (n < 32)
-	break;
+	break;//防止队列中的确没有报文的情况
     }
 
+  //未收取到报文，跳出
   if (n_rx_packets == 0)
     return 0;
 
   /* Update buffer template */
-  vnet_buffer (bt)->sw_if_index[VLIB_RX] = xd->sw_if_index;
-  bt->error = node->errors[DPDK_ERROR_NONE];
+  //针对这一批量的packet更新tempate
+  vnet_buffer (bt)->sw_if_index[VLIB_RX] = xd->sw_if_index;//设置入接口
+  bt->error = node->errors[DPDK_ERROR_NONE];//设置error
   /* as DPDK is allocating empty buffers from mempool provided before interface
      start for each queue, it is safe to store this in the template */
-  bt->buffer_pool_index = xd->buffer_pool_for_queue[queue_id];
-  bt->ref_count = 1;
+  bt->buffer_pool_index = xd->buffer_pool_for_queue[queue_id];//设置buffer queue对应的index
+  bt->ref_count = 1;//引用计数
   vnet_buffer (bt)->feature_arc_index = 0;
   bt->current_config_index = 0;
 
   /* receive burst of packets from DPDK PMD */
+  //如果置了此值，则更新next_index
   if (PREDICT_FALSE (xd->per_interface_next_index != ~0))
     next_index = xd->per_interface_next_index;
 
@@ -337,6 +352,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
   if (PREDICT_FALSE (vnet_device_input_have_features (xd->sw_if_index)))
     vnet_feature_start_device_input_x1 (xd->sw_if_index, &next_index, bt);
 
+  //获取offload flags全集，获取收取报文的总字节数
   if (xd->flags & DPDK_DEVICE_FLAG_MAYBE_MULTISEG)
     n_rx_bytes = dpdk_process_rx_burst (vm, ptd, n_rx_packets, 1, &or_flags);
   else
@@ -344,6 +360,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
 
   if (PREDICT_FALSE (or_flags & PKT_RX_FDIR))
     {
+      //开启了FDIR
       /* some packets will need to go to different next nodes */
       for (n = 0; n < n_rx_packets; n++)
 	ptd->next[n] = next_index;
@@ -366,6 +383,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
     {
       u32 *to_next, n_left_to_next;
 
+      //获取下层node可使用的frame（即to_next),并将本node用的buffer转换为buffer index填充到to_next中
       vlib_get_new_next_frame (vm, node, next_index, to_next, n_left_to_next);
       vlib_get_buffer_indices_with_offset (vm, (void **) ptd->mbufs, to_next,
 					   n_rx_packets,
@@ -376,6 +394,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
 	  vlib_next_frame_t *nf;
 	  vlib_frame_t *f;
 	  ethernet_input_frame_t *ef;
+	  //获取相应的frame,并填充标记（frame index已添加充）
 	  nf = vlib_node_runtime_get_next_frame (vm, node, next_index);
 	  f = vlib_get_frame (vm, nf->frame_index);
 	  f->flags = ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX;
@@ -448,6 +467,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
   return n_rx_packets;
 }
 
+//定义dpdk_input_node的处理函数（input节点进入时f为NULL）
 VLIB_NODE_FN (dpdk_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 				vlib_frame_t * f)
 {
@@ -456,6 +476,7 @@ VLIB_NODE_FN (dpdk_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   uword n_rx_packets = 0;
   vnet_device_input_runtime_t *rt = (void *) node->runtime_data;
   vnet_device_and_queue_t *dq;
+  //取此node现在运行在哪个线程上
   u32 thread_index = node->thread_index;
 
   /*
@@ -464,9 +485,12 @@ VLIB_NODE_FN (dpdk_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   /* *INDENT-OFF* */
   foreach_device_and_queue (dq, rt->devices_and_queues)
     {
+      //取所属的设备
       xd = vec_elt_at_index(dm->devices, dq->dev_instance);
+      //如果此设备属于bond的slave，则跳过
       if (PREDICT_FALSE (xd->flags & DPDK_DEVICE_FLAG_BOND_SLAVE))
 	continue;	/* Do not poll slave to a bonded interface */
+      //促使dpdk收取设备xd上dq->queue_id的报文
       n_rx_packets += dpdk_device_input (vm, dm, xd, node, thread_index,
 					 dq->queue_id);
     }

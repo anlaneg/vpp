@@ -1248,6 +1248,7 @@ ip4_reass_init_function (vlib_main_t * vm)
   ASSERT (node);
   rm->ip4_drop_idx = node->index;
 
+  //创建frame队列，使用默认大小
   rm->fq_index = vlib_frame_queue_main_init (ip4_reass_node.index, 0);
   rm->fq_feature_index =
     vlib_frame_queue_main_init (ip4_reass_node_feature.index, 0);

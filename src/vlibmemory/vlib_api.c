@@ -562,6 +562,7 @@ vl_api_rpc_call_reply_t_handler (vl_api_rpc_call_reply_t * mp)
   clib_warning ("unimplemented");
 }
 
+//提供强符号的pending_rpc请求处理
 void
 vl_api_send_pending_rpc_requests (vlib_main_t * vm)
 {

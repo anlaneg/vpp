@@ -535,6 +535,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
     rt->n_next_nodes = r->n_next_nodes;
     rt->next_frame_index = vec_len (nm->next_frames);
 
+    //将nm->next_frames扩大rt->n_next_nodes个，并逐个初始化它们
     vec_resize (nm->next_frames, rt->n_next_nodes);
     for (i = 0; i < rt->n_next_nodes; i++)
       vlib_next_frame_init (nm->next_frames + rt->next_frame_index + i);

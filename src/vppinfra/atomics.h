@@ -20,14 +20,19 @@
 /* Legacy __sync builtins */
 
 /* Full Barrier */
+//原子操作，return a;a+=b;
 #define clib_atomic_fetch_add(a, b) __sync_fetch_and_add(a, b)
+//原子操作 return a;a-=b;
 #define clib_atomic_fetch_sub(a, b) __sync_fetch_and_sub(a, b)
+//原子操作 return a;a&=b;
 #define clib_atomic_fetch_and(a, b) __sync_fetch_and_and(a, b)
 #define clib_atomic_fetch_xor(a, b) __sync_fetch_and_xor(a, b)
 #define clib_atomic_fetch_or(a, b) __sync_fetch_and_or(a, b)
 #define clib_atomic_fetch_nand(a, b) __sync_fetch_nand(a, b)
 
+//原子操作,a+=b;return a;
 #define clib_atomic_add_fetch(a, b) __sync_add_and_fetch(a, b)
+//原子操作,a-=b;return a;
 #define clib_atomic_sub_fetch(a, b) __sync_sub_and_fetch(a, b)
 #define clib_atomic_and_fetch(a, b) __sync_and_and_fetch(a, b)
 #define clib_atomic_xor_fetch(a, b) __sync_xor_and_fetch(a, b)

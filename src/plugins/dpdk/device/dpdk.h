@@ -209,7 +209,7 @@ typedef struct
   u32 sw_if_index;
 
   /* next node index if we decide to steal the rx graph arc */
-  u32 per_interface_next_index;
+  u32 per_interface_next_index;//指明此接口的进来的报文对应的下一级node
 
   dpdk_pmd_t pmd:8;
   i8 cpu_socket;
@@ -392,6 +392,7 @@ extern dpdk_config_main_t dpdk_config_main;
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  //缓存收取到的报文
   struct rte_mbuf *mbufs[DPDK_RX_BURST_SZ];
   u32 buffers[DPDK_RX_BURST_SZ];
   u16 next[DPDK_RX_BURST_SZ];
@@ -404,7 +405,7 @@ typedef struct
 {
 
   /* Devices */
-  dpdk_device_t *devices;
+  dpdk_device_t *devices;//保存所有dpdk设备
   dpdk_device_and_queue_t **devices_by_hqos_cpu;
   dpdk_per_thread_data_t *per_thread_data;
 

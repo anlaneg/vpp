@@ -747,6 +747,7 @@ start_workers (vlib_main_t * vm)
       /* We'll need the rpc vector lock... */
       clib_spinlock_init (&vm->pending_rpc_lock);
 
+      //将barrier初始化为0
       /* Ask for an initial barrier sync */
       *vlib_worker_threads->workers_at_barrier = 0;
       *vlib_worker_threads->wait_at_barrier = 1;
@@ -885,6 +886,7 @@ start_workers (vlib_main_t * vm)
 				 CLIB_CACHE_LINE_BYTES);
 	      vec_foreach (rt, nm_clone->nodes_by_type[VLIB_NODE_TYPE_INPUT])
 	      {
+	          //获得对应的node
 		vlib_node_t *n = vlib_get_node (vm, rt->node_index);
 		rt->thread_index = vm_clone->thread_index;
 		/* copy initial runtime_data from node */
@@ -1489,9 +1491,11 @@ vlib_worker_thread_barrier_sync_int (vlib_main_t * vm, const char *func_name)
 
   deadline = now + BARRIER_SYNC_TIMEOUT;
 
+  //标明需要等待barrier
   *vlib_worker_threads->wait_at_barrier = 1;
   while (*vlib_worker_threads->workers_at_barrier != count)
     {
+      //等待barrier通过，如果到达超时仍未通过，则告警并主动panic
       if ((now = vlib_time_now (vm)) > deadline)
 	{
 	  fformat (stderr, "%s: worker thread deadlock\n", __FUNCTION__);
@@ -1806,19 +1810,20 @@ VLIB_REGISTER_THREAD (worker_thread_reg, static) = {
 /* *INDENT-ON* */
 
 u32
-vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
+vlib_frame_queue_main_init (u32 node_index/*vpp node索引*/, u32 frame_queue_nelts)
 {
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vlib_frame_queue_main_t *fqm;
   vlib_frame_queue_t *fq;
   int i;
 
+  //如果未指明队列大小，则使用默认值
   if (frame_queue_nelts == 0)
     frame_queue_nelts = FRAME_QUEUE_NELTS;
 
   ASSERT (frame_queue_nelts >= 8);
 
-  //申请一个fqm空间
+  //申请一个frame 队列空间
   vec_add2 (tm->frame_queue_mains, fqm, 1);
 
   //填充fqm
@@ -1826,11 +1831,13 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
   fqm->frame_queue_nelts = frame_queue_nelts;
   fqm->queue_hi_thresh = frame_queue_nelts - 2;
 
+  //仅需要N-1个（我们与其它线程通信，故需要N-1个）
   vec_validate (fqm->vlib_frame_queues, tm->n_vlib_mains - 1);
   vec_validate (fqm->per_thread_data, tm->n_vlib_mains - 1);
+  //共申请n_vlib_mains个队列
   _vec_len (fqm->vlib_frame_queues) = 0;
   for (i = 0; i < tm->n_vlib_mains; i++)
-    {
+  {
       vlib_frame_queue_per_thread_data_t *ptd;
       //针对每个vm,申请一个可容纳frame_queue_nelts个元素的frame queue
       fq = vlib_frame_queue_alloc (frame_queue_nelts);
@@ -1838,12 +1845,14 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
 
       //取各线程对应的私有数据
       ptd = vec_elt_at_index (fqm->per_thread_data, i);
+
+      //确保长度
       vec_validate (ptd->handoff_queue_elt_by_thread_index,
 		    tm->n_vlib_mains - 1);
       vec_validate_init_empty (ptd->congested_handoff_queue_by_thread_index,
 			       tm->n_vlib_mains - 1,
 			       (vlib_frame_queue_t *) (~0));
-    }
+  }
 
   //返回创建的fqm对应的索引
   return (fqm - tm->frame_queue_mains);

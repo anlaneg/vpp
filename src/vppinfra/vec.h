@@ -859,6 +859,7 @@ do {									\
   uword _v(l1) = vec_len (v1);						\
   uword _v(l2) = vec_len (v2);						\
 									\
+  /*在v1中扩度v2对应的长度，并将v2合入到v1中*/\
   v1 = _vec_resize ((v1), _v(l2),					\
 		    (_v(l1) + _v(l2)) * sizeof ((v1)[0]), 0, 0);	\
   clib_memcpy_fast ((v1) + _v(l1), (v2), _v(l2) * sizeof ((v2)[0]));		\

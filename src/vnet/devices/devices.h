@@ -58,8 +58,8 @@ typedef struct
 typedef struct
 {
   u32 hw_if_index;
-  u32 dev_instance;
-  u16 queue_id;
+  u32 dev_instance;//所属的设备id
+  u16 queue_id;//所属的queue id
   vnet_hw_interface_rx_mode mode;
   u32 interrupt_pending;
 } vnet_device_and_queue_t;

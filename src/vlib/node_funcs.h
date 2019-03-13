@@ -308,6 +308,7 @@ vlib_frame_scalar_args (vlib_frame_t * f)
   return vlib_frame_vector_args (f) - f->scalar_size;
 }
 
+//取出n节点下next_index对应的next_frame结构
 always_inline vlib_next_frame_t *
 vlib_node_runtime_get_next_frame (vlib_main_t * vm,
 				  vlib_node_runtime_t * n, u32 next_index)
@@ -316,6 +317,7 @@ vlib_node_runtime_get_next_frame (vlib_main_t * vm,
   vlib_next_frame_t *nf;
 
   ASSERT (next_index < n->n_next_nodes);
+  //取出n节点对应的next_frame,再取出next_index（即下级node的索引）获得下级node对应的next_frame
   nf = vec_elt_at_index (nm->next_frames, n->next_frame_index + next_index);
 
   if (CLIB_DEBUG > 0)
@@ -360,12 +362,15 @@ vlib_frame_t *vlib_get_next_frame_internal (vlib_main_t * vm,
 					    u32 next_index,
 					    u32 alloc_new_frame);
 
+//申请或者获得next_index可用的frame,获得此frame可使用的vector指针及可存放的大小
 #define vlib_get_next_frame_macro(vm,node,next_index,vectors,n_vectors_left,alloc_new_frame) \
 do {									\
+    /*取出或者申请next_index可用的frame*/\
   vlib_frame_t * _f							\
     = vlib_get_next_frame_internal ((vm), (node), (next_index),		\
 				    (alloc_new_frame));			\
   u32 _n = _f->n_vectors;						\
+  /*获得此frame可使用的vector指针及可存放的大小*/\
   (vectors) = vlib_frame_vector_args (_f) + _n * sizeof ((vectors)[0]); \
   (n_vectors_left) = VLIB_FRAME_SIZE - _n;				\
 } while (0)
@@ -383,6 +388,7 @@ do {									\
  @return @c vectors -- pointer to next available vector slot
  @return @c n_vectors_left -- number of vector slots available
 */
+//获得可供next_index使用的vectors及可存放的报文数
 #define vlib_get_next_frame(vm,node,next_index,vectors,n_vectors_left)	\
   vlib_get_next_frame_macro (vm, node, next_index,			\
 			     vectors, n_vectors_left,			\

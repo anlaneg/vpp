@@ -330,13 +330,16 @@ generic_buffer_node_inline (vlib_main_t * vm,
 
 static_always_inline void
 vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
-			     u32 * buffers, u16 * nexts, uword count)
+			     u32 * buffers/*报文索引*/, u16 * nexts/*报文去向哪个node*/, uword count/*报文数量*/)
 {
   u32 *to_next, n_left_to_next, max;
   u16 next_index;
 
+  //取出下一级index
   next_index = nexts[0];
+  //取可供下一级index使用的to_next buffer及可使用的buffer长度
   vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
+  //获得可存入的报文数
   max = clib_min (n_left_to_next, count);
 
   while (count)
@@ -344,6 +347,8 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
       u32 n_enqueued;
       if ((nexts[0] != next_index) || n_left_to_next == 0)
 	{
+      //与之前的不相等或者不足以存放frame了
+      //申请新的frame
 	  vlib_put_next_frame (vm, node, next_index, n_left_to_next);
 	  next_index = nexts[0];
 	  vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
@@ -424,6 +429,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       if (n_enqueued >= 4)
 	{
+      //优化，最好情况下直接将此4个给to_next
 	  vlib_buffer_copy_indices (to_next, buffers, 4);
 	  nexts += 4;
 	  to_next += 4;
@@ -435,6 +441,7 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 	}
 
       /* copy */
+      //将报文交给next node
       to_next[0] = buffers[0];
 
       /* next */

@@ -243,7 +243,7 @@ typedef struct vlib_main_t
   f64 barrier_no_close_before;
 
   /* RPC requests, main thread only */
-  uword *pending_rpc_requests;
+  uword *pending_rpc_requests;//记录本线程收到的rpc请求
   uword *processing_rpc_requests;
   clib_spinlock_t pending_rpc_lock;
 

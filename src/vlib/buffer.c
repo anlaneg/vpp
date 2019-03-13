@@ -864,7 +864,7 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
   /* *INDENT-OFF* */
   //遍历每个numa node,在其上申请内存，并构造相应的buffer pool
   clib_bitmap_foreach (numa_node, bmp,
-    {
+  {
       u8 *index = bm->default_buffer_pool_index_for_numa + numa_node;
       index[0] = ~0;
       if ((err = vlib_buffer_main_init_numa_node (vm, numa_node, index)))
@@ -872,7 +872,7 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
 	  clib_error_report (err);
 	  clib_error_free (err);
 	  continue;
-	}
+  }
 
       if (first_valid_buffer_pool_index == 0xff)
         first_valid_buffer_pool_index = index[0];

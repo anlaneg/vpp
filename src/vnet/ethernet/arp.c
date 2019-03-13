@@ -2617,6 +2617,7 @@ send_ip4_garp_w_addr (vlib_main_t * vm,
       u32 *to_next = vlib_frame_vector_args (f);
       to_next[0] = bi;
       f->n_vectors = 1;
+      //将报文交给处理此接口输出的node来处理
       vlib_put_frame_to_node (vm, hi->output_node_index, f);
     }
 }

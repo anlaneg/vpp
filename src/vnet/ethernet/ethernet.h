@@ -249,9 +249,9 @@ typedef struct
   u32 *sparse_index_by_input_next_index;
 
   /* cached next indexes for common ethertypes */
-  u32 input_next_ip4;
-  u32 input_next_ip6;
-  u32 input_next_mpls;
+  u32 input_next_ip4;//ipv4的下级node索引
+  u32 input_next_ip6;//ipv6的下级node索引
+  u32 input_next_mpls;//mpls的下级node索引
 } next_by_ethertype_t;
 
 typedef struct
@@ -259,10 +259,10 @@ typedef struct
   vlib_main_t *vlib_main;
 
   /* next node index for the L3 input node of each ethertype */
-  next_by_ethertype_t l3_next;
+  next_by_ethertype_t l3_next;//3层协议的下级node处理
 
   /* next node index for L2 interfaces */
-  u32 l2_next;
+  u32 l2_next;//2层接口的下级node索引
 
   /* flag and next node index for L3 redirect */
   u32 redirect_l3;

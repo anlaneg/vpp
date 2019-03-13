@@ -426,7 +426,7 @@ typedef struct vlib_frame_t
 typedef struct
 {
   /* Frame index. */
-  u32 frame_index;
+  u32 frame_index;//对应的frame index
 
   /* Node runtime for this next. */
   u32 node_runtime_index;
@@ -446,6 +446,7 @@ typedef struct
 #define VLIB_FRAME_OWNER (1 << 15)
 
   /* Set when frame has been allocated for this next. */
+  //标明frame_index字段有效
 #define VLIB_FRAME_IS_ALLOCATED	VLIB_NODE_FLAG_IS_OUTPUT
 
   /* Set when frame has been added to pending vector. */
@@ -517,6 +518,7 @@ typedef struct vlib_node_runtime_t
   u32 perf_counter1_ticks_since_last_overflow; /**< Perf counter 1 ticks */
   u32 perf_counter_vectors_since_last_overflow;	/**< Perf counter vectors */
 
+  //此node在next_frames列表中的起始偏移量
   u32 next_frame_index;			/**< Start of next frames for this
 					  node. */
 
@@ -546,8 +548,10 @@ typedef struct vlib_node_runtime_t
 					  zero before first run of this
 					  node. */
 
+  //node所属的thread
   u16 thread_index;			/**< thread this node runs on */
 
+  //node的私有数据
   u8 runtime_data[0];			/**< Function dependent
 					  node-runtime data. This data is
 					  thread local, and it is not
