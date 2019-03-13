@@ -168,10 +168,12 @@ clib_mem_alloc_aligned_or_null (uword size, uword align)
 
 /* Memory allocator which panics when it fails.
    Use macro so that clib_panic macro can expand __FUNCTION__ and __LINE__. */
+//申请size字节
 #define clib_mem_alloc_aligned_no_fail(size,align)				\
 ({										\
   uword _clib_mem_alloc_size = (size);						\
   void * _clib_mem_alloc_p;							\
+  /*申请_clib_mem_alloc_size个字节*/\
   _clib_mem_alloc_p = clib_mem_alloc_aligned (_clib_mem_alloc_size, (align));	\
   if (! _clib_mem_alloc_p)							\
     clib_panic ("failed to allocate %d bytes", _clib_mem_alloc_size);		\

@@ -1818,7 +1818,7 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
 
   ASSERT (frame_queue_nelts >= 8);
 
-  //分析一个fqm空间
+  //申请一个fqm空间
   vec_add2 (tm->frame_queue_mains, fqm, 1);
 
   //填充fqm

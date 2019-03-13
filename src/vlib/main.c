@@ -1870,7 +1870,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       if (!is_main)
       {
     	  	  vlib_worker_thread_barrier_check ();
-    	  	  //遍历所有handoff队列
+    	  	  //遍历所有handoff队列,处理所有frame_queue发送给vm线程的报文
     	  	  vec_foreach (fqm, tm->frame_queue_mains)
     	  	  {
     	  		  vlib_frame_queue_dequeue (vm, fqm);

@@ -274,7 +274,7 @@ vlib_frame_index (vlib_main_t * vm, vlib_frame_t * f)
 /* Byte alignment for vector arguments. */
 #define VLIB_FRAME_VECTOR_ALIGN (1 << 4)
 
-//获取对齐后的标量大小
+//获取vlib_frame_t后面添加scalar_size并对齐所需要的大小
 always_inline u32
 vlib_frame_vector_byte_offset (u32 scalar_size)
 {
@@ -290,7 +290,7 @@ vlib_frame_vector_byte_offset (u32 scalar_size)
 always_inline void *
 vlib_frame_vector_args (vlib_frame_t * f)
 {
-    //取出vlib_frame对应的标量参数
+    //取出vlib_frame对应的scalar_size
   return (void *) f + vlib_frame_vector_byte_offset (f->scalar_size);
 }
 

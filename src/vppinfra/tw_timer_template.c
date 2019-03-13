@@ -210,7 +210,7 @@ timer_add (TWT (tw_timer_wheel) * tw, TWT (tw_timer) * t, u64 interval/*间隔*/
       TW (tw_timer_trace) (tw, timer_id, user_id, t - tw->timers);
 #endif
       return;
-
+    }
 #endif
 
   //计算高层索引值
