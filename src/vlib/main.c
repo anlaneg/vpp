@@ -239,6 +239,7 @@ vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index, vlib_frame_t * f)
 
   f->frame_flags |= VLIB_FRAME_PENDING;
   p->frame_index = vlib_frame_index (vm, f);
+  //指出报文属于哪个node
   p->node_runtime_index = to_node->runtime_index;
   //指明无下一个frame索引
   p->next_frame_index = VLIB_PENDING_FRAME_NO_NEXT_FRAME;
@@ -1196,7 +1197,7 @@ dispatch_node (vlib_main_t * vm,
 	       vlib_node_runtime_t * node/*要调度的node*/,
 	       vlib_node_type_t type/*要调度的node类型*/,
 	       vlib_node_state_t dispatch_state/*待调度节点的状态*/,
-	       vlib_frame_t * frame, u64 last_time_stamp)
+	       vlib_frame_t * frame/*需要本node处理的报文*/, u64 last_time_stamp)
 {
   uword n, v;
   u64 t;
@@ -1406,7 +1407,7 @@ dispatch_node (vlib_main_t * vm,
 }
 
 static u64
-dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
+dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index/*pending_frame索引*/,
 		       u64 last_time_stamp)
 {
   vlib_node_main_t *nm = &vm->node_main;
@@ -1417,10 +1418,10 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   vlib_pending_frame_t *p;
 
   /* See comment below about dangling references to nm->pending_frames */
-  //取出待处理的帧
+  //按索引取出待处理的帧
   p = nm->pending_frames + pending_frame_index;
 
-  //取得此帧对应的node,可被挂起的pending的节点总为internal类型的node
+  //取得此帧对应的node,这些节点均为internal类型的（可被挂起的pending的节点总为internal类型的node)
   n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INTERNAL],
 			p->node_runtime_index);
 
@@ -1460,7 +1461,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   n->flags |= (nf->flags & VLIB_FRAME_TRACE) ? VLIB_NODE_FLAG_TRACE : 0;
   nf->flags &= ~VLIB_FRAME_TRACE;
 
-  //调度内部node
+  //调度内部节点n,使其处理f
   last_time_stamp = dispatch_node (vm, n,
 				   VLIB_NODE_TYPE_INTERNAL,
 				   VLIB_NODE_STATE_POLLING,
@@ -1581,7 +1582,7 @@ vlib_process_startup (vlib_main_t * vm, vlib_process_t * p, vlib_frame_t * f)
   a.process = p;
   a.frame = f;
 
-  //记录跳转点
+  //记录跳转点（如果以return方式跳转到此点，则进程将被重启）
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
     //调用bootstrap函数，完成node的function调用
@@ -1602,7 +1603,8 @@ vlib_process_resume (vlib_process_t * p)
 		| VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT
 		| VLIB_PROCESS_RESUME_PENDING);
 
-  //保存恢复位置
+  //保存恢复位置（如果以return方式跳转到此点，则process回到上次的保存点，继续运行;如果以
+  //suspend方式跳回，则此函数退出后检查p->flags，检查是否需要挂起
   r = clib_setjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_RETURN);
   if (r == VLIB_PROCESS_RETURN_LONGJMP_RETURN)
     clib_longjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_RESUME);
@@ -1898,6 +1900,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
     	  	  //遍历所有handoff队列,处理所有frame_queue发送给vm线程的报文
     	  	  vec_foreach (fqm, tm->frame_queue_mains)
     	  	  {
+    	  	      //将frame_queue中的元素出队，并将其交给pending_frames
+    	  	      //（后续pending_frame节点所属的Node会处理它）
     	  		  vlib_frame_queue_dequeue (vm, fqm);
     	  	  }
     	  	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
@@ -1934,12 +1938,14 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       }
 
       /* Next handle interrupts. */
+      //如果存在有interrupt的input类型node,则调度它们
       {
     	  	  /* unlocked read, for performance */
     	  	  uword l = _vec_len (nm->pending_interrupt_node_runtime_indices);
     	  	  uword i;
     	  	  if (PREDICT_FALSE (l > 0))
     	  	  {
+    	  	      //存在未绝的interrupt节点
     	  		  u32 *tmp;
     	  		  if (!is_main)
     	  		  {
@@ -1957,10 +1963,13 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
     	  		  {
     	  			  clib_spinlock_unlock (&nm->pending_interrupt_lock);
     	  		  }
+
+    	  		  //遍历每个处于interrupt状态的input节点
     	  		  for (i = 0; i < l; i++)
     	  		  {
     	  			  n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INPUT],
 				      last_node_runtime_indices[i]);
+    	  			  //调度这些状态的input节点
     	  			  cpu_time_now =
     	  					  dispatch_node (vm, n, VLIB_NODE_TYPE_INPUT,
     	  							  VLIB_NODE_STATE_INTERRUPT,
@@ -1969,10 +1978,12 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
     	  		  }
     	  	  }
       }
+
       /* Input nodes may have added work to the pending vector.
          Process pending vector until there is nothing left.
          All pending vectors will be processed from input -> output. */
-      //存在一些被挂起的帧，遍历这些帧，促使其对应的node处理它们
+      //上面我们将frame_queue中的报文存入到了pending_frames中，现在遍历这些pending_frames
+      //使其相应的node处理它们
       for (i = 0; i < _vec_len (nm->pending_frames); i++)
       {
     	  	  cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
@@ -1980,6 +1991,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       /* Reset pending vector for next iteration. */
       _vec_len (nm->pending_frames) = 0;
 
+      //node范围定时器超时处理
       if (is_main)
       {
           /* *INDENT-OFF* */
@@ -2005,6 +2017,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
 		  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
 		  {
+		      //记录定时器开始事件
 			  ed = ELOG_DATA (&vlib_global_main.elog_main, es);
 		  }
 
@@ -2018,7 +2031,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
 		  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
 		  {
-		      //创建ee event
+		      //记录定时器触发数目事件
 			  ed = ELOG_DATA (&vlib_global_main.elog_main, ee);
 			  //记录过期定时器数目
 			  ed->nready_procs =
@@ -2201,6 +2214,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
   }
 
+  //线程初始化（所有注册的线程将被启动）
   if ((error = vlib_thread_init (vm)))
   {
       clib_error_report (error);

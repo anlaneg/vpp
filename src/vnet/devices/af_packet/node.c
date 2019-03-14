@@ -345,6 +345,7 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   return n_rx_packets;
 }
 
+//定义af_packet input节点处理函数
 VLIB_NODE_FN (af_packet_input_node) (vlib_main_t * vm,
 				     vlib_node_runtime_t * node,
 				     vlib_frame_t * frame)

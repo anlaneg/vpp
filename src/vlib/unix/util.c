@@ -45,11 +45,12 @@
 #include <fcntl.h>
 #include <dirent.h>
 
+//通过f函数，遍历dir_name指定的目录下的文件或者目录（scan_dirs控制是否扫描目录）
 clib_error_t *
 foreach_directory_file (char *dir_name,
 			clib_error_t * (*f) (void *arg, u8 * path_name,
 					     u8 * file_name), void *arg,
-			int scan_dirs)
+			int scan_dirs/*是否需要扫描目录*/)
 {
   DIR *d;
   struct dirent *e;
@@ -72,6 +73,7 @@ foreach_directory_file (char *dir_name,
 	break;
       if (scan_dirs)
 	{
+      //如果需要扫描目录，则在e时目录时仅跳过'.','..'两种目录
 	  if (e->d_type == DT_DIR
 	      && (!strncmp (e->d_name, ".", 1) ||
 		  !strncmp (e->d_name, "..", 2)))
@@ -79,12 +81,16 @@ foreach_directory_file (char *dir_name,
 	}
       else
 	{
+      //如果不需要扫描目录，则跳过所有目录
 	  if (e->d_type == DT_DIR)
 	    continue;
 	}
 
+      //生成对应的全路径
       s = format (s, "%s/%s", dir_name, e->d_name);
+      //生成对应的文件名
       t = format (t, "%s", e->d_name);
+      //调用遍历函数
       error = f (arg, s, t);
       _vec_len (s) = 0;
       _vec_len (t) = 0;

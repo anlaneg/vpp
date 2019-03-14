@@ -31,12 +31,14 @@
  * Return 1 if to skip the delay loop because we are suspending
  * the calling vlib process instead.
  */
+//使admin_up_down_process_node process延迟us后处理
 static int
 rte_delay_us_override (unsigned us)
 {
   vlib_main_t *vm;
 
   /* Don't bother intercepting for short delays */
+  //时间比较少，直接返回，交给上层处理
   if (us < 10)
     return 0;
 
@@ -55,13 +57,16 @@ rte_delay_us_override (unsigned us)
       vm = vlib_get_main ();
       if (vlib_in_process_context (vm))
 	{
+       //如果当前处于process上下文，则获取关联的process
 	  /* Only suspend for the admin_down_process */
 	  vlib_process_t *proc = vlib_get_current_process (vm);
 	  if (!(proc->flags & VLIB_PROCESS_IS_RUNNING) ||
 	      (proc->node_runtime.node_index !=
 	       admin_up_down_process_node.index))
+	      //如果当前不是admin_up_down的处理process节点，则返回0
 	    return 0;
 
+	  //否则保存恢复点，跳转到return点执行suspend
 	  f64 delay = 1e-6 * us;
 	  vlib_process_suspend (vm, delay);
 	  return 1;
@@ -73,6 +78,7 @@ rte_delay_us_override (unsigned us)
 static void
 rte_delay_us_override_cb (unsigned us)
 {
+  //如果返回0，则使用dpdk提供的延迟函数，等待us时间
   if (rte_delay_us_override (us) == 0)
     rte_delay_us_block (us);
 }
@@ -90,12 +96,13 @@ static clib_error_t * dpdk_main_init (vlib_main_t * vm)
     return error;
 
   /* register custom delay function */
-  //注册delay函数
+  //注册delay函数，用于admin_up_down_process_node process延迟us时间
   rte_delay_us_callback_register (rte_delay_us_override_cb);
 
   return error;
 }
 
+//dpdk初始化入口（在插件初始化之前）
 VLIB_INIT_FUNCTION (dpdk_main_init);
 
 

@@ -357,9 +357,13 @@ typedef struct
   /* Config stuff */
   u8 **eal_init_args;
   u8 *eal_init_args_str;
+  //使用的uio驱动名称
   u8 *uio_driver_name;
+  //是否无多个segment情况（开启巨大帧时为0)
   u8 no_multi_seg;
+  //是否开启了tcp,udp的checksum检查
   u8 enable_tcp_udp_checksum;
+  //发送方是否不执行tx checksum offload
   u8 no_tx_checksum_offload;
 
   /* Required config parameters */
@@ -377,10 +381,13 @@ typedef struct
 
   /* per-device config */
   dpdk_device_config_t default_devconf;
-  dpdk_device_config_t *dev_confs;//各设备对应的配置
+  //各设备对应的配置
+  dpdk_device_config_t *dev_confs;
+  //通过pci地址查找设备配置index
   uword *device_config_index_by_pci_addr;
 
   /* devices blacklist by pci vendor_id, device_id */
+  //设备黑名单
   u32 *blacklist_by_pci_vendor_and_device;
 
 } dpdk_config_main_t;

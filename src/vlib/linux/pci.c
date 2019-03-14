@@ -198,6 +198,7 @@ clib_error_t *pci_bus_init (vlib_main_t * vm);
 
 linux_pci_main_t linux_pci_main;
 
+//通过pci地址获取设备的详细信息
 vlib_pci_device_info_t *
 vlib_pci_get_device_info (vlib_main_t * vm, vlib_pci_addr_t * addr,
 			  clib_error_t ** error)
@@ -382,6 +383,7 @@ directory_exists (char *path)
   return S_ISDIR (s.st_mode);
 }
 
+//为设备addr绑定驱动uio_drv_name
 clib_error_t *
 vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 		      char *uio_drv_name)
@@ -392,18 +394,21 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
   struct dirent *e;
   vlib_pci_device_info_t *di;
   int fd, clear_driver_override = 0;
+  //设备的pci路径
   u8 *dev_dir_name = format (0, "%s/%U", sysfs_pci_dev_path,
 			     format_vlib_pci_addr, addr);
-
+  //取设备信息
   di = vlib_pci_get_device_info (vm, addr, &error);
 
   if (error)
     return error;
 
+  //auto情况下选用module
   if (strncmp ("auto", uio_drv_name, 5) == 0)
     {
       int vfio_pci_loaded = 0;
 
+      //如果有vfio_pci模块
       if (directory_exists ("/sys/module/vfio_pci"))
 	vfio_pci_loaded = 1;
 
@@ -443,10 +448,12 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	}
     }
 
+  //构造此设备驱动属性路径link路径
   s = format (s, "%v/driver%c", dev_dir_name, 0);
   driver_name = clib_sysfs_link_to_name ((char *) s);
   vec_reset_length (s);
 
+  //检查此驱动是否已计划绑定的驱动
   if (driver_name &&
       ((strcmp ("vfio-pci", (char *) driver_name) == 0) ||
        (strcmp ("uio_pci_generic", (char *) driver_name) == 0) ||
@@ -473,11 +480,13 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
       goto done;
     }
 
+  //读取/sys/class/net目录
   while ((e = readdir (dir)))
     {
       struct ifreq ifr;
       struct ethtool_drvinfo drvinfo;
 
+      //跳过子，父目录
       if (e->d_name[0] == '.')	/* skip . and .. */
 	continue;
 
@@ -486,6 +495,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
       ifr.ifr_data = (char *) &drvinfo;
       clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
 
+      //获取driver的信息
       drvinfo.cmd = ETHTOOL_GDRVINFO;
       if (ioctl (fd, SIOCETHTOOL, &ifr) < 0)
 	{
@@ -496,12 +506,14 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	  continue;
 	}
 
+      //drver信息与s不相等，跳过
       if (strcmp ((char *) s, drvinfo.bus_info))
 	continue;
 
       clib_memset (&ifr, 0, sizeof (ifr));
       clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
 
+      //获取接口flags
       if (ioctl (fd, SIOCGIFFLAGS, &ifr) < 0)
 	{
 	  error = clib_error_return_unix (0, "ioctl fetch intf %s flags",
@@ -510,6 +522,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	  goto done;
 	}
 
+      //接口现在up,报错
       if (ifr.ifr_flags & IFF_UP)
 	{
 	  error = clib_error_return (0, "Skipping PCI device %U as host "
@@ -523,10 +536,12 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
   close (fd);
   vec_reset_length (s);
 
+  //先unbind写入pci设备对应的地址
   s = format (s, "%v/driver/unbind%c", dev_dir_name, 0);
   clib_sysfs_write ((char *) s, "%U", format_vlib_pci_addr, addr);
   vec_reset_length (s);
 
+  //如果有driver_override，则向其中写入需要绑定的driver名称
   s = format (s, "%v/driver_override%c", dev_dir_name, 0);
   if (access ((char *) s, F_OK) == 0)
     {
@@ -535,6 +550,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
     }
   else
     {
+      //如果没有，则向uio driver中置要接管的设备id
       vec_reset_length (s);
       s = format (s, "%s/%s/new_id%c", sysfs_pci_drv_path, uio_drv_name, 0);
       clib_sysfs_write ((char *) s, "0x%04x 0x%04x", di->vendor_id,
@@ -542,10 +558,12 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
     }
   vec_reset_length (s);
 
+  //在驱动的bind函数中置pci设备地址
   s = format (s, "%s/%s/bind%c", sysfs_pci_drv_path, uio_drv_name, 0);
   clib_sysfs_write ((char *) s, "%U", format_vlib_pci_addr, addr);
   vec_reset_length (s);
 
+  //清空driver_override
   if (clear_driver_override)
     {
       s = format (s, "%v/driver_override%c", dev_dir_name, 0);
@@ -1375,6 +1393,7 @@ init_device_from_registered (vlib_main_t * vm, vlib_pci_device_info_t * di)
   pool_put (lpm->linux_pci_devices, p);
 }
 
+//通过文件名称，解析pci设备的domain,bus,slot,function字段，填充到arg对应的vector中
 static clib_error_t *
 scan_pci_addr (void *arg, u8 * dev_dir_name, u8 * ignored)
 {
@@ -1385,6 +1404,7 @@ scan_pci_addr (void *arg, u8 * dev_dir_name, u8 * ignored)
   unformat_init_string (&input, (char *) dev_dir_name,
 			vec_len (dev_dir_name));
 
+  //通过文件名称，解析pci设备的domain,bus,slot,function
   if (!unformat (&input, "/sys/bus/pci/devices/%U",
 		 unformat_vlib_pci_addr, &addr))
     err = clib_error_return (0, "unformat error `%v`", dev_dir_name);
@@ -1398,6 +1418,7 @@ scan_pci_addr (void *arg, u8 * dev_dir_name, u8 * ignored)
   return 0;
 }
 
+//按domain,bus,slot,function对两个pci地址进行排序
 static int
 pci_addr_cmp (void *v1, void *v2)
 {
@@ -1423,11 +1444,13 @@ pci_addr_cmp (void *v1, void *v2)
   return 0;
 }
 
+//获取当前linux中已识别的所有pci地址
 vlib_pci_addr_t *
 vlib_pci_get_all_dev_addrs ()
 {
   vlib_pci_addr_t *addrs = 0;
   clib_error_t *err;
+  //扫描pci/devices下所有文件
   err = foreach_directory_file ((char *) sysfs_pci_dev_path, scan_pci_addr,
 				&addrs, /* scan_dirs */ 0);
   if (err)
@@ -1436,6 +1459,7 @@ vlib_pci_get_all_dev_addrs ()
       return 0;
     }
 
+  //对扫描到的pci设备按pci的domin,bus,slot,function进行排序
   vec_sort_with_function (addrs, pci_addr_cmp);
 
   return addrs;

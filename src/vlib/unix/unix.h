@@ -72,7 +72,7 @@ typedef struct
   u8 *startup_config_filename;//启动时的配置文件
 
   /* runtime directory path */
-  u8 *runtime_dir;
+  u8 *runtime_dir;//运行时目录路径
 
   /* pidfile filename */
   u8 *pidfile;

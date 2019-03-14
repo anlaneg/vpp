@@ -418,14 +418,14 @@ dpdk_buffer_pools_create (vlib_main_t * vm)
   struct rte_mempool_ops ops = { };
 
   //将alloc,free,get_count均置为空实现
+  //注册入队，出队函数
+  //注册mempool的操作集vpp
   strncpy (ops.name, "vpp", 4);
   ops.alloc = dpdk_ops_vpp_alloc;
   ops.free = dpdk_ops_vpp_free;
   ops.get_count = dpdk_ops_vpp_get_count;
-  //注册入队，出队函数
   ops.enqueue = CLIB_MARCH_FN_POINTER (dpdk_ops_vpp_enqueue);
   ops.dequeue = CLIB_MARCH_FN_POINTER (dpdk_ops_vpp_dequeue);
-  //注册mempool的操作集
   rte_mempool_register_ops (&ops);
 
   //构造vpp-no-cache ops（没看出大的变换，此实现是一次性转换index并入队）

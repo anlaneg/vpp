@@ -75,7 +75,7 @@ typedef struct vlib_main_t
   f64 time_last_barrier_release;
 
   /* Time stamp of last node dispatch. */
-  u64 cpu_time_last_node_dispatch;
+  u64 cpu_time_last_node_dispatch;//上次dispatch node的时间
 
   /* Time stamp when main loop was entered (time 0). */
   u64 cpu_time_main_loop_start;
@@ -202,6 +202,7 @@ typedef struct vlib_main_t
   u32 numa_node;//所属的node
 
   /* List of init functions to call, setup by constructors */
+  //所有静态node定义完成后，此链上所有函数将被调用
   _vlib_init_function_list_elt_t *init_function_registrations;
   _vlib_init_function_list_elt_t *worker_init_function_registrations;
   //在main_loop函数进入前需要调用的注册函数

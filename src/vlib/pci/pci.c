@@ -120,6 +120,7 @@ show_pci_fn (vlib_main_t * vm,
   return 0;
 }
 
+//解析pci地址
 uword
 unformat_vlib_pci_addr (unformat_input_t * input, va_list * args)
 {

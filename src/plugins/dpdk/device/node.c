@@ -483,6 +483,7 @@ VLIB_NODE_FN (dpdk_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
    * Poll all devices on this cpu for input/interrupts.
    */
   /* *INDENT-OFF* */
+  //遍历每个设备的每个队列
   foreach_device_and_queue (dq, rt->devices_and_queues)
     {
       //取所属的设备
@@ -505,7 +506,7 @@ VLIB_REGISTER_NODE (dpdk_input_node) = {
   .sibling_of = "device-input",
 
   /* Will be enabled if/when hardware is detected. */
-  .state = VLIB_NODE_STATE_DISABLED,
+  .state = VLIB_NODE_STATE_DISABLED,//默认处于disable状态
 
   .format_buffer = format_ethernet_header_with_length,
   .format_trace = format_dpdk_rx_trace,

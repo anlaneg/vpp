@@ -571,7 +571,9 @@ vl_api_send_pending_rpc_requests (vlib_main_t * vm)
   ASSERT (vm != vm_global);
 
   clib_spinlock_lock_if_init (&vm_global->pending_rpc_lock);
+  //将vm对应的rpc_request合入到global rpc_requests中
   vec_append (vm_global->pending_rpc_requests, vm->pending_rpc_requests);
+  //清空vm对应的rpc_request
   vec_reset_length (vm->pending_rpc_requests);
   clib_spinlock_unlock_if_init (&vm_global->pending_rpc_lock);
 }

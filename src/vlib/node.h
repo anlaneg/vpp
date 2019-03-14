@@ -475,7 +475,7 @@ vlib_next_frame_init (vlib_next_frame_t * nf)
 typedef struct
 {
   /* Node and runtime for this frame. */
-  u32 node_runtime_index;//被挂起的node对应的index
+  u32 node_runtime_index;//指出此pending_frame将由哪个node处理
 
   /* Frame index (in the heap). */
   u32 frame_index;//对应的frame buffer index
@@ -586,14 +586,17 @@ typedef struct
   vlib_node_runtime_t node_runtime;//对应的node
 
   /* Where to longjmp when process is done. */
+  //用于记录当前返回点，后面跳过来时将自此点考虑（1。return，则重启执行此process;2.suspend则添加相应定时器将进程挂起）
+  //目前此变量有两处跳转点保存：1。启动process时;2.恢复process时
   clib_longjmp_t return_longjmp;
 
-//返回此值时继续调用function
+//用于指出需要将进程重新调用
 #define VLIB_PROCESS_RETURN_LONGJMP_RETURN ((uword) ~0 - 0)
 //返回此值时需要将对应的process挂起
 #define VLIB_PROCESS_RETURN_LONGJMP_SUSPEND ((uword) ~0 - 1)
 
   /* Where to longjmp to resume node after suspend. */
+  //用于记录当前恢复点，后面跳过来时将自此点恢复（恢复后有两个动作1。继续执行;2.继续挂起
   clib_longjmp_t resume_longjmp;
 #define VLIB_PROCESS_RESUME_LONGJMP_SUSPEND 0
 #define VLIB_PROCESS_RESUME_LONGJMP_RESUME  1
@@ -747,7 +750,8 @@ typedef struct
   vlib_node_runtime_t *nodes_by_type[VLIB_N_NODE_TYPE];
 
   /* Node runtime indices for input nodes with pending interrupts. */
-  u32 *pending_interrupt_node_runtime_indices;//指出有哪些input node处于中断未决状态
+  //指出有哪些input node处于中断未决状态
+  u32 *pending_interrupt_node_runtime_indices;
   clib_spinlock_t pending_interrupt_lock;
 
   /* Input nodes are switched from/to interrupt to/from polling mode
@@ -760,6 +764,8 @@ typedef struct
   vlib_next_frame_t *next_frames;
 
   /* Vector of internal node's frames waiting to be called. */
+  //vector变量，存放需要传递给node（pending_frame中指出报文属于哪个node)
+  //的frame(这些报文将在node调度时被处理）
   vlib_pending_frame_t *pending_frames;
 
   /* Timing wheel for scheduling time-based node dispatch. */
@@ -778,7 +784,7 @@ typedef struct
   vlib_process_t **processes;//node注册时，将所有process类型的node创建相应的process
 
   /* Current running process or ~0 if no process running. */
-  //记录当前正在运行的process
+  //记录当前正在运行的process（通过此值可获知当前是否处于process上下文中）
   u32 current_process_index;
 
   /* Pool of pending process frames. */

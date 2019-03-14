@@ -959,6 +959,7 @@ start_workers (vlib_main_t * vm)
 		w->thread_mheap = main_heap;
 	      w->thread_stack =
 		vlib_thread_stack_init (w - vlib_worker_threads);
+	      //设置work对应的function
 	      w->thread_function = tr->function;
 	      w->thread_function_arg = w;
 	      w->instance_id = j;
@@ -1745,9 +1746,10 @@ vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
 	  n_left_to_node--;
 	}
 
-      vectors += elt->n_vectors;
       //指明frame中元素数
+      vectors += elt->n_vectors;
       f->n_vectors = elt->n_vectors;
+
       //将出队的frame赋给fqm->node_index
       vlib_put_frame_to_node (vm, fqm->node_index, f);
 
@@ -1809,6 +1811,7 @@ VLIB_REGISTER_THREAD (worker_thread_reg, static) = {
 };
 /* *INDENT-ON* */
 
+//为node_index对应的node申请可容纳frame_queue_nelts个元素的队列
 u32
 vlib_frame_queue_main_init (u32 node_index/*vpp node索引*/, u32 frame_queue_nelts)
 {
@@ -1863,6 +1866,7 @@ vlib_thread_cb_register (struct vlib_main_t *vm, vlib_thread_callbacks_t * cb)
 {
   vlib_thread_main_t *tm = vlib_get_thread_main ();
 
+  //如果已注册，则跳出
   if (tm->extern_thread_mgmt)
     return -1;
 

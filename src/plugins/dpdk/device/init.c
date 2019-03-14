@@ -202,7 +202,7 @@ dpdk_lib_init (dpdk_main_t * dm)
   vec_validate_aligned (dm->devices_by_hqos_cpu, tm->n_vlib_mains - 1,
 			CLIB_CACHE_LINE_BYTES);
 
-  //获得识别的接口数
+  //获得dpdk识别到的接口数
   nports = rte_eth_dev_count_avail ();
 
   if (nports < 1)
@@ -779,18 +779,22 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
   vlib_pci_addr_t *addr = 0, *addrs;
   int i;
 
+  //获取所有pci设备地址，并遍历
   addrs = vlib_pci_get_all_dev_addrs ();
   /* *INDENT-OFF* */
   vec_foreach (addr, addrs)
     {
     dpdk_device_config_t * devconf = 0;
     vec_reset_length (pci_addr);
+    //格式化为pci地址字符串形式
     pci_addr = format (pci_addr, "%U%c", format_vlib_pci_addr, addr, 0);
     if (d)
     {
       vlib_pci_free_device_info (d);
       d = 0;
       }
+
+    //获取此pci设备的详细信息
     d = vlib_pci_get_device_info (vm, addr, &error);
     if (error)
     {
@@ -798,23 +802,29 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       continue;
     }
 
+    //跳过非以太网设备
     if (d->device_class != PCI_CLASS_NETWORK_ETHERNET && d->device_class != PCI_CLASS_PROCESSOR_CO)
       continue;
 
     if (num_whitelisted)
       {
+        //在白名单中查找此pci设备对应的device_config
 	uword * p = hash_get (conf->device_config_index_by_pci_addr, addr->as_u32);
 
 	if (!p)
           {
           skipped:
+          //此pci设备未配置，跳过
             continue;
           }
 
+	//取得针对此设备的配置
 	devconf = pool_elt_at_index (conf->dev_confs, p[0]);
       }
 
     /* Enforce Device blacklist by vendor and device */
+    //在blacklist中查找此设备，如果此设备在blacklist中，但没有在whitelist中，则增加配置
+    //指明此设备被blacklist命中，如果在whitelist中，则以whitelist中的配置为准
     for (i = 0; i < vec_len (conf->blacklist_by_pci_vendor_and_device); i++)
       {
         u16 vendor, device;
@@ -842,6 +852,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       }
 
     /* virtio */
+    //virtio设备不处理
     if (d->vendor_id == 0x1af4 &&
             (d->device_id == VIRTIO_PCI_LEGACY_DEVICEID_NET ||
              d->device_id == VIRTIO_PCI_MODERN_DEVICEID_NET))
@@ -849,6 +860,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
     /* vmxnet3 */
     else if (d->vendor_id == 0x15ad && d->device_id == 0x07b0)
       {
+        //默认禁用vmxnet3设备
 	/*
 	 * For vmxnet3 PCI, unless it is explicitly specified in the whitelist,
 	 * the default is to put it in the blacklist.
@@ -896,16 +908,19 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       }
     else
       {
+        //非以上设备标明不支持
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "
 		      "at PCI address %s\n", (u16) d->vendor_id, (u16) d->device_id,
 		      pci_addr);
         continue;
       }
 
+    //为此设备绑定配置的驱动
     error = vlib_pci_bind_to_uio (vm, addr, (char *) conf->uio_driver_name);
 
     if (error)
       {
+        //错误处理，将其置入blacklist
 	if (devconf == 0)
 	  {
 	    pool_get (conf->dev_confs, devconf);
@@ -931,6 +946,7 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
   addrs = vlib_vmbus_get_all_dev_addrs ();
 
   /* *INDENT-OFF* */
+  //遍历所有vmbus下设备,将其绑定到uio
   vec_foreach (addr, addrs)
     {
       error = vlib_vmbus_bind_to_uio (addr);
@@ -1060,6 +1076,7 @@ dpdk_log_read_ready (clib_file_t * uf)
       uword len = vec_len (s);
       vec_resize (s, len + n_try);
 
+      //读取文件，并将其存入在s中
       n = read (uf->file_descriptor, s + len, n_try);
       if (n < 0 && errno != EAGAIN)
 	return clib_error_return_unix (0, "read");
@@ -1088,7 +1105,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   dpdk_device_config_t *devconf;
   vlib_pci_addr_t pci_addr;
   unformat_input_t sub_input;
-  uword default_hugepage_sz, x;
+  uword default_hugepage_sz/*默认的大页名称*/, x;
   u8 *s, *tmp = 0;
   u32 log_level;
   int ret, i;
@@ -1253,12 +1270,14 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	}
     }
 
+  //如果未配置uio驱动名称，则使用auto
   if (!conf->uio_driver_name)
     conf->uio_driver_name = format (0, "auto%c", 0);
 
   default_hugepage_sz = clib_mem_get_default_hugepage_size ();
 
   /* *INDENT-OFF* */
+  //遍历在线的node对应的bitmap，完成大页的预申请（至少n_pages个）
   clib_bitmap_foreach (x, tm->cpu_socket_bitmap, (
     {
       clib_error_t *e;
@@ -1315,9 +1334,11 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       conf->eal_init_args[4] = tmp;
     }
 
+  //pci网络设备绑定
   if (no_pci == 0 && geteuid () == 0)
     dpdk_bind_devices_to_uio (conf);
 
+  //vmbus设备绑定
   if (no_vmbus == 0 && geteuid () == 0)
     dpdk_bind_vmbus_devices_to_uio (conf);
 
@@ -1326,14 +1347,17 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       devconf->x = conf->default_devconf.x ;
 
   /* *INDENT-OFF* */
+  //遍历所有dev配置
   pool_foreach (devconf, conf->dev_confs, ({
 
     /* default per-device config items */
+      //如有必要使用默认配置
     foreach_dpdk_device_config_item
 
     /* add DPDK EAL whitelist/blacklist entry */
     if (num_whitelisted > 0 && devconf->is_blacklisted == 0)
       {
+        //构造参数，明确为dpdk指定白名单
 	tmp = format (0, "-w%c", 0);
 	vec_add1 (conf->eal_init_args, tmp);
 	tmp = format (0, "%U%c", format_vlib_pci_addr, &devconf->pci_addr, 0);
@@ -1341,6 +1365,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       }
     else if (num_whitelisted == 0 && devconf->is_blacklisted != 0)
       {
+        //构造参数，明确为dpdk指定黑名单
 	tmp = format (0, "-b%c", 0);
 	vec_add1 (conf->eal_init_args, tmp);
 	tmp = format (0, "%U%c", format_vlib_pci_addr, &devconf->pci_addr, 0);
@@ -1352,6 +1377,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 #undef _
 
   /* set master-lcore */
+  //设置master-locore
   tmp = format (0, "--master-lcore%c", 0);
   vec_add1 (conf->eal_init_args, tmp);
   tmp = format (0, "%u%c", tm->main_lcore, 0);
@@ -1373,7 +1399,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     {
       if (fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
 	{
-          //为rte的log注入File
+      //为rte的log注入File,指明输出
 	  FILE *f = fdopen (log_fds[1], "a");
 	  if (f && rte_openlog_stream (f) == 0)
 	    {
@@ -1517,7 +1543,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     }
 }
 
-//dpdk node处理
+//dpdk process node函数处理
 static uword
 dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 {
@@ -1683,6 +1709,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   return 0;
 }
 
+//注册dpdk process节点
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (dpdk_process_node,static) = {
     .function = dpdk_process,
@@ -1728,6 +1755,7 @@ dpdk_init (vlib_main_t * vm)
   dm->link_state_poll_interval = DPDK_LINK_POLL_INTERVAL;
 
   /* init CLI */
+  //初始化cli
   if ((error = vlib_call_init_function (vm, dpdk_cli_init)))
     return error;
 

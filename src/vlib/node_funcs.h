@@ -435,12 +435,14 @@ vlib_frame_t *vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index);
 void vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index,
 			     vlib_frame_t * f);
 
+//检查当前是否处理process上下文
 always_inline uword
 vlib_in_process_context (vlib_main_t * vm)
 {
   return vm->node_main.current_process_index != ~0;
 }
 
+//如果当前处理process上下文，则返回当前正在运行的进程
 always_inline vlib_process_t *
 vlib_get_current_process (vlib_main_t * vm)
 {
@@ -482,6 +484,7 @@ vlib_process_suspend (vlib_main_t * vm, f64 dt)
   if (vlib_process_suspend_time_is_zero (dt))
     return VLIB_PROCESS_RESUME_LONGJMP_RESUME;
 
+  //保存恢复点，如果以resume_longjmp跳转到此处，则会导致？？？
   p->flags |= VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK;
   r = clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
   if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
@@ -710,6 +713,7 @@ vlib_process_wait_for_event_with_type (vlib_main_t * vm,
       r =
 	clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
       if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
+          //有代码回到恢复点，但要求继续挂起，则前往return_longjmp,并挂起
 	clib_longjmp (&p->return_longjmp,
 		      VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
 

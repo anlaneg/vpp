@@ -490,10 +490,12 @@ next:
   vlib_put_next_frame (vm, node, next_index, n_left_to_next);
 }
 
+//将一组报文入队到frame queue中，thread_indices分别指出了报文所属的线程，drop_on_congestion用于指出队列为满时，是否丢弃
+//当前drop_on_congestion需要为1，因为无法返回不丢弃的报文
 static_always_inline u32
-vlib_buffer_enqueue_to_thread (vlib_main_t * vm, u32 frame_queue_index,
-			       u32 * buffer_indices, u16 * thread_indices,
-			       u32 n_packets, int drop_on_congestion)
+vlib_buffer_enqueue_to_thread (vlib_main_t * vm, u32 frame_queue_index/*指出队列index*/,
+			       u32 * buffer_indices/*指出N个包*/, u16 * thread_indices/*指出每个包所属的线程*/,
+			       u32 n_packets, int drop_on_congestion/*队列为满时是否丢包*/)
 {
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vlib_frame_queue_main_t *fqm;
@@ -505,63 +507,77 @@ vlib_buffer_enqueue_to_thread (vlib_main_t * vm, u32 frame_queue_index,
   u32 next_thread_index, current_thread_index = ~0;
   int i;
 
+  //通过队列索引取得队列管理，并取得当前线程对应的私有数据
   fqm = vec_elt_at_index (tm->frame_queue_mains, frame_queue_index);
   ptd = vec_elt_at_index (fqm->per_thread_data, vm->thread_index);
 
+  //使用循环将n_packets个报文（buffer_indices指出）写入到frame_queue_index中
+  //thread_indices指出了这此报文（buffer_indices)分别对应的是哪个线程
   while (n_left)
-    {
+  {
       next_thread_index = thread_indices[0];
 
       if (next_thread_index != current_thread_index)
 	{
 
+      //检查队列是否congrested,如果拥挤，则丢包
 	  if (drop_on_congestion &&
 	      is_vlib_frame_queue_congested
 	      (frame_queue_index, next_thread_index, fqm->queue_hi_thresh,
 	       ptd->congested_handoff_queue_by_thread_index))
-	    {
+	  {
 	      dbi[0] = buffer_indices[0];
 	      dbi++;
 	      n_drop++;
 	      goto next;
-	    }
+	  }
 
 	  if (hf)
 	    hf->n_vectors = VLIB_FRAME_SIZE - n_left_to_next_thread;
 
+	  //自队列中取一个element,准备写入
 	  hf = vlib_get_worker_handoff_queue_elt (frame_queue_index,
 						  next_thread_index,
 						  ptd->handoff_queue_elt_by_thread_index);
 
+	  //element中可写入的数目
 	  n_left_to_next_thread = VLIB_FRAME_SIZE - hf->n_vectors;
+	  //element中可写入的首个索引
 	  to_next_thread = &hf->buffer_index[hf->n_vectors];
+
+	  //记录thread_index，用于优化
 	  current_thread_index = next_thread_index;
 	}
 
+      //写入
       to_next_thread[0] = buffer_indices[0];
       to_next_thread++;
       n_left_to_next_thread--;
 
+      //element已经被消耗光了，将elem标记为满，准备下一次申请新的element
       if (n_left_to_next_thread == 0)
 	{
 	  hf->n_vectors = VLIB_FRAME_SIZE;
-	  vlib_put_frame_queue_elt (hf);
+	  vlib_put_frame_queue_elt (hf);//标明元素写入完成
 	  current_thread_index = ~0;
 	  ptd->handoff_queue_elt_by_thread_index[next_thread_index] = 0;
 	  hf = 0;
 	}
 
       /* next */
+      //开始下一个节点的写入
     next:
       thread_indices += 1;
       buffer_indices += 1;
       n_left -= 1;
     }
 
+  //设置最后一个hf中入队的元素数
   if (hf)
     hf->n_vectors = VLIB_FRAME_SIZE - n_left_to_next_thread;
 
   /* Ship frames to the thread nodes */
+  //指明元素有效，以使读者可读取
   for (i = 0; i < vec_len (ptd->handoff_queue_elt_by_thread_index); i++)
     {
       if (ptd->handoff_queue_elt_by_thread_index[i])
@@ -583,9 +599,11 @@ vlib_buffer_enqueue_to_thread (vlib_main_t * vm, u32 frame_queue_index,
 	(vlib_frame_queue_t *) (~0);
     }
 
+  //按要求，对因为队列满，丢掉需要丢包的包文
   if (drop_on_congestion && n_drop)
     vlib_buffer_free (vm, drop_list, n_drop);
 
+  //返回入队的报文数
   return n_packets - n_drop;
 }
 

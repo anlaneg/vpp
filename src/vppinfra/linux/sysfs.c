@@ -86,6 +86,7 @@ clib_sysfs_read (char *file_name, char *fmt, ...)
   return 0;
 }
 
+//获取link对应的实际路径，并返回其对应的文件名称
 u8 *
 clib_sysfs_link_to_name (char *link)
 {
@@ -113,6 +114,7 @@ clib_sysfs_link_to_name (char *link)
   return s;
 }
 
+//向sysfs文件系统中写入大页的申请量，完成大页内存的申请
 clib_error_t *
 clib_sysfs_set_nr_hugepages (int numa_node, int log2_page_size, int nr)
 {
@@ -163,6 +165,7 @@ done:
 }
 
 
+//读取指定类型的大页信息文件，获得包含的信息（例如nr文件，free文件）
 static clib_error_t *
 clib_sysfs_get_xxx_hugepages (char *type, int numa_node,
 			      int log2_page_size, int *val)
@@ -181,6 +184,7 @@ clib_sysfs_get_xxx_hugepages (char *type, int numa_node,
 
   p = format (p, "/sys/devices/system/node/node%u%c", numa_node, 0);
 
+  //首先检查node/nodeX,是否存在
   if (stat ((char *) p, &sb) == 0)
     {
       if (S_ISDIR (sb.st_mode) == 0)
@@ -206,6 +210,7 @@ clib_sysfs_get_xxx_hugepages (char *type, int numa_node,
       goto done;
     }
 
+  //读取指定大页大小的文件，例如nr_hugepages，返回其包含的值
   _vec_len (p) -= 1;
   p = format (p, "/hugepages/hugepages-%ukB/%s_hugepages%c", page_size,
 	      type, 0);
@@ -216,18 +221,21 @@ done:
   return error;
 }
 
+//读取大页的free文件
 clib_error_t *
 clib_sysfs_get_free_hugepages (int numa_node, int log2_page_size, int *v)
 {
   return clib_sysfs_get_xxx_hugepages ("free", numa_node, log2_page_size, v);
 }
 
+//读取大页的nr文件
 clib_error_t *
 clib_sysfs_get_nr_hugepages (int numa_node, int log2_page_size, int *v)
 {
   return clib_sysfs_get_xxx_hugepages ("nr", numa_node, log2_page_size, v);
 }
 
+//读取指定尺寸大页的surplus文件
 clib_error_t *
 clib_sysfs_get_surplus_hugepages (int numa_node, int log2_page_size, int *v)
 {
@@ -235,30 +243,37 @@ clib_sysfs_get_surplus_hugepages (int numa_node, int log2_page_size, int *v)
 				       v);
 }
 
+//确保大页可提供至少nr个
 clib_error_t *
-clib_sysfs_prealloc_hugepages (int numa_node, int log2_page_size, int nr)
+clib_sysfs_prealloc_hugepages (int numa_node/*node编号*/, int log2_page_size, int nr)
 {
   clib_error_t *error = 0;
   int n, needed;
   uword page_size;
 
+  /*如果未指定页大小，则使用申请一个默认页*/
   if (log2_page_size == 0)
     log2_page_size = min_log2 (clib_mem_get_default_hugepage_size ());
 
   page_size = 1ULL << (log2_page_size - 10);
 
+  //取此尺寸下空闲的大页内存数目
   error = clib_sysfs_get_free_hugepages (numa_node, log2_page_size, &n);
   if (error)
     return error;
+
+  //如果请求的比现有的要少，则申请成功
   needed = nr - n;
   if (needed <= 0)
     return 0;
 
+  //获取此尺寸下总的大页内存数目
   error = clib_sysfs_get_nr_hugepages (numa_node, log2_page_size, &n);
   if (error)
     return error;
   clib_warning ("pre-allocating %u additional %uK hugepages on numa node %u",
 		needed, page_size, numa_node);
+  //写此尺寸下总的大页内存数目，完成内存申请
   return clib_sysfs_set_nr_hugepages (numa_node, log2_page_size, n + needed);
 }
 

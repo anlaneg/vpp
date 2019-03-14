@@ -120,15 +120,15 @@ typedef struct
 {
   /* enqueue side */
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  volatile u64 tail;
+  volatile u64 tail;//写者头指针（这个值是一直增加的）
   u64 enqueues;
   u64 enqueue_ticks;
   u64 enqueue_vectors;
-  u32 enqueue_full_events;
+  u32 enqueue_full_events;//记录队列满事件发生的次数
 
   /* dequeue side */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
-  volatile u64 head;//读者头指针
+  volatile u64 head;//读者头指针(这个值是一直增加的）
   u64 dequeues;
   u64 dequeue_ticks;
   u64 dequeue_vectors;
@@ -137,7 +137,7 @@ typedef struct
 
   /* dequeue hint to enqueue side */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline2);
-  volatile u64 head_hint;
+  volatile u64 head_hint;//上次退出出队函数时记录的head
 
   /* read-only, constant, shared */
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline3);
@@ -148,7 +148,9 @@ vlib_frame_queue_t;
 
 typedef struct
 {
+  //按thread线程存储申请的frame queue element(一次性填不满）
   vlib_frame_queue_elt_t **handoff_queue_elt_by_thread_index;
+  //按thread线程记录拥挤的队列
   vlib_frame_queue_t **congested_handoff_queue_by_thread_index;
 } vlib_frame_queue_per_thread_data_t;
 
@@ -157,7 +159,7 @@ typedef struct
 {
   u32 node_index;//所属的vpp node
   u32 frame_queue_nelts;//队列数目
-  u32 queue_hi_thresh;//高位
+  u32 queue_hi_thresh;//指出队列拥挤标准（高于此值则认为拥挤）
 
   //保存多个frame_queue的指针数组,每个其它vlib main一个指针数组（共n-1)
   //每个指针数组长度为vlib main个（共N个)
@@ -290,7 +292,8 @@ typedef struct
 typedef struct
 {
   /* Link list of registrations, built by constructors */
-  vlib_thread_registration_t *next;//注册thread对应的初始化，例如创建新的线程
+  //注册thread对应的初始化，例如创建新的线程
+  vlib_thread_registration_t *next;
 
   /* Vector of registrations, w/ non-data-structure clones at the top */
   vlib_thread_registration_t **registrations;//收集所有的thread_registration
@@ -469,6 +472,7 @@ vlib_worker_thread_barrier_check (void)
 
       if (PREDICT_FALSE (*vlib_worker_threads->node_reforks_required))
 	{
+      //构造log
 	  if (PREDICT_FALSE (vlib_worker_threads->barrier_elog_enabled))
 	    {
 	      t = vlib_time_now (vm) - t;
@@ -547,6 +551,7 @@ vlib_put_frame_queue_elt (vlib_frame_queue_elt_t * hf)
   hf->valid = 1;
 }
 
+//获取一个空闲的队列节点，准备写入
 static inline vlib_frame_queue_elt_t *
 vlib_get_frame_queue_elt (u32 frame_queue_index, u32 index)
 {
@@ -557,36 +562,45 @@ vlib_get_frame_queue_elt (u32 frame_queue_index, u32 index)
     vec_elt_at_index (tm->frame_queue_mains, frame_queue_index);
   u64 new_tail;
 
+  //取出index指明的frame queues
   fq = fqm->vlib_frame_queues[index];
   ASSERT (fq);
 
+  //向后移动tail变量
   new_tail = clib_atomic_add_fetch (&fq->tail, 1);
 
   /* Wait until a ring slot is available */
+  //如果当前队列为满，不能写入，等待
   while (new_tail >= fq->head_hint + fq->nelts)
     vlib_worker_thread_barrier_check ();
 
+  //取出此元素
   elt = fq->elts + (new_tail & (fq->nelts - 1));
 
   /* this would be very bad... */
+  //出队的还未来得及拿走数据，等待
   while (elt->valid)
     ;
 
+  //将元素初始化，准备写入
   elt->msg_type = VLIB_FRAME_QUEUE_ELT_DISPATCH_FRAME;
   elt->last_n_vectors = elt->n_vectors = 0;
 
   return elt;
 }
 
+//frame queue是否拥挤，如果拥挤，则将其加入到handoff_queue_by_worker_index中
 static inline vlib_frame_queue_t *
-is_vlib_frame_queue_congested (u32 frame_queue_index,
-			       u32 index,
+is_vlib_frame_queue_congested (u32 frame_queue_index/*队列管理索引*/,
+			       u32 index/*线程索引*/,
 			       u32 queue_hi_thresh,
 			       vlib_frame_queue_t **
 			       handoff_queue_by_worker_index)
 {
   vlib_frame_queue_t *fq;
   vlib_thread_main_t *tm = &vlib_thread_main;
+
+  //按索引取相应队列管理
   vlib_frame_queue_main_t *fqm =
     vec_elt_at_index (tm->frame_queue_mains, frame_queue_index);
 
@@ -594,14 +608,17 @@ is_vlib_frame_queue_congested (u32 frame_queue_index,
   if (fq != (vlib_frame_queue_t *) (~0))
     return fq;
 
+  //取线程对应的frame队列
   fq = fqm->vlib_frame_queues[index];
   ASSERT (fq);
 
+  //队列的写者头与上次退出出队时的fp->head_hint间差值已超过queue_hi_thresh，说明队列将满或已满
   if (PREDICT_FALSE (fq->tail >= (fq->head_hint + queue_hi_thresh)))
     {
       /* a valid entry in the array will indicate the queue has reached
        * the specified threshold and is congested
        */
+      //记录已满队列
       handoff_queue_by_worker_index[index] = fq;
       fq->enqueue_full_events++;
       return fq;
@@ -610,6 +627,7 @@ is_vlib_frame_queue_congested (u32 frame_queue_index,
   return NULL;
 }
 
+//如果handoff....中有元素可使用，则使用，否则获取一个并设置给handoff...并使用
 static inline vlib_frame_queue_elt_t *
 vlib_get_worker_handoff_queue_elt (u32 frame_queue_index,
 				   u32 vlib_worker_index,
@@ -621,8 +639,10 @@ vlib_get_worker_handoff_queue_elt (u32 frame_queue_index,
   if (handoff_queue_elt_by_worker_index[vlib_worker_index])
     return handoff_queue_elt_by_worker_index[vlib_worker_index];
 
+  //取一个节点
   elt = vlib_get_frame_queue_elt (frame_queue_index, vlib_worker_index);
 
+  //设置取出的节点
   handoff_queue_elt_by_worker_index[vlib_worker_index] = elt;
 
   return elt;

@@ -364,6 +364,7 @@ vmbus_addr_cmp (void *v1, void *v2)
   return uuid_compare (a1->guid, a2->guid);
 }
 
+//遍历vmbus下所有设备
 vlib_vmbus_addr_t *
 vlib_vmbus_get_all_dev_addrs ()
 {

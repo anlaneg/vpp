@@ -115,7 +115,7 @@ int vlib_load_new_plugins (plugin_main_t * pm, int from_early_init);
 void *vlib_get_plugin_symbol (char *plugin_name, char *symbol_name);
 u8 *vlib_get_vat_plugin_path (void);
 
-//定义plugin注册，置入相应section，并初始化
+//定义plugin注册变量，并使编译器将其置入相应section，并初始化
 #define VLIB_PLUGIN_REGISTER() \
   vlib_plugin_registration_t vlib_plugin_registration \
   __attribute__((__section__(".vlib_plugin_registration")))

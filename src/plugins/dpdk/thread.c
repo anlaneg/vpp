@@ -45,6 +45,10 @@
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
 
+//
+//此文件完成了线程的启动通知，促使其它线程开始执行fp回调函数
+//
+
 //调用dpdk的remote_launch完成线程工作启动
 static clib_error_t *
 dpdk_launch_thread (void *fp, vlib_worker_thread_t * w, unsigned lcore_id)
@@ -64,6 +68,7 @@ dpdk_thread_set_lcore (u32 thread, u16 lcore)
   return 0;
 }
 
+//实现dpdk线程启动通知，实现dpdk线程的core绑定
 static vlib_thread_callbacks_t callbacks = {
   .vlib_launch_thread_cb = &dpdk_launch_thread,
   .vlib_thread_set_lcore_cb = &dpdk_thread_set_lcore,
