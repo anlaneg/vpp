@@ -11,8 +11,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+#此Makefile通过检测系统版本，确认编译前需要安装的库，定义编译目标
+#
+#
+
+#workspace根目录
 export WS_ROOT=$(CURDIR)
+#build根目录
 export BR=$(WS_ROOT)/build-root
+#缓存目录
 CCACHE_DIR?=$(BR)/.ccache
 GDB?=gdb
 PLATFORM?=vpp
@@ -49,11 +56,12 @@ GDB_ARGS= -ex "handle SIGUSR1 noprint nostop"
 # We allow Darwin (MacOS) for docs generation; VPP build will still fail.
 #提取操作系统名称，系统版本
 ifneq ($(shell uname),Darwin)
+#非macos，则通过/etc/os-release获得os_id,os_version_id
 OS_ID        = $(shell grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 endif
 
-#针对系统要生成的包格式
+#针对系统要确定生成的包格式
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
 else ifeq ($(filter rhel centos fedora opensuse opensuse-leap opensuse-tumbleweed,$(OS_ID)),$(OS_ID))
@@ -70,6 +78,8 @@ DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6 check
 DEB_DEPENDS += libboost-all-dev libffi-dev python3-ply libmbedtls-dev
 DEB_DEPENDS += cmake ninja-build uuid-dev
+
+#针对不同操作系统定制依赖的DEB包
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += libssl-dev
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
@@ -91,6 +101,7 @@ RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
 RPM_DEPENDS += mbedtls-devel
 
+#针对不同操作系统定制依赖的RPM包
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
 	RPM_DEPENDS += subunit subunit-devel
@@ -128,6 +139,7 @@ RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
 RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
 
 ifeq ($(OS_ID),opensuse)
+#opensuse相关
 ifeq ($(SUSE_NAME),Tumbleweed)
 	RPM_SUSE_DEVEL_DEPS = libboost_headers1_68_0-devel-1.68.0  libboost_thread1_68_0-devel-1.68.0 gcc
 	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
@@ -150,6 +162,7 @@ endif
 
 RPM_SUSE_DEPENDS += $(RPM_SUSE_BUILDTOOLS_DEPS) $(RPM_SUSE_DEVEL_DEPS) $(RPM_SUSE_PYTHON_DEPS) $(RPM_SUSE_PLATFORM_DEPS)
 
+#如果存在startup.conf，则定义配置文件路径
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
 endif
@@ -162,6 +175,7 @@ endif
 
 TARGETS = vpp
 
+#决定是否需要编译sample-plugin
 ifneq ($(SAMPLE_PLUGIN),no)
 TARGETS += sample-plugin
 endif
@@ -256,12 +270,13 @@ help:
 	@echo " SAMPLE_PLUGIN     = $(SAMPLE_PLUGIN)"
 	@echo " DISABLED_PLUGINS  = $(DISABLED_PLUGINS)"
 
+#确保所有依赖的包是否已安装
 $(BR)/.deps.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
 	#安装依赖包
 	make install-dep
 endif
-#检查ubuntu或者redhat依赖的包时否均被完全安装了
+	#检查ubuntu或者redhat依赖的包时否均被完全安装了
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 	@MISSING=$$(apt-get install -y -qq -s $(DEB_DEPENDS) | grep "^Inst ") ; \
 	if [ -n "$$MISSING" ] ; then \
@@ -290,6 +305,7 @@ bootstrap:
 #此目标安装依赖包
 install-dep:
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
+	#ubuntu 系统处理
 ifeq ($(OS_VERSION_ID),14.04)
 	@sudo -E apt-get $(CONFIRM) $(FORCE) install software-properties-common
 endif
@@ -300,6 +316,7 @@ endif
 	@sudo -E apt-get update
 	@sudo -E apt-get $(APT_ARGS) $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
 else ifneq ("$(wildcard /etc/redhat-release)","")
+	#redhat系列系统处理
 ifeq ($(OS_ID),rhel)
 	@sudo -E yum-config-manager --enable rhel-server-rhscl-7-rpms
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
@@ -325,10 +342,11 @@ else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else
+	#不认识的系统处理
 	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS or openSUSE systems")
 endif
 
-#定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TAG=argv1
+#定义make 函数（这个坑太恶心了，$(call make , arg1,argv2 )将进入$(BR)目录编译，并传入TARGET=argv1
 define make
 	@make -C $(BR) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
 endef
@@ -458,6 +476,7 @@ retest:
 retest-debug:
 	$(call test,vpp,vpp_debug,retest)
 
+#如果未定义配置文件，则使用makefile定义的配置文件，否则使用定义的配置文件
 ifeq ("$(wildcard $(STARTUP_CONF))","")
 define run
 	@echo "WARNING: STARTUP_CONF not defined or file doesn't exist."
