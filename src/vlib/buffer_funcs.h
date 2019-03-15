@@ -104,7 +104,43 @@ vlib_buffer_get_default_data_size (vlib_main_t * vm)
 static_always_inline void
 vlib_buffer_copy_indices (u32 * dst, u32 * src, u32 n_indices)
 {
-  clib_memcpy_fast (dst, src, n_indices * sizeof (u32));
+#if defined(CLIB_HAVE_VEC512)
+  while (n_indices >= 16)
+    {
+      u32x16_store_unaligned (u32x16_load_unaligned (src), dst);
+      dst += 16;
+      src += 16;
+      n_indices -= 16;
+    }
+#endif
+
+#if defined(CLIB_HAVE_VEC256)
+  while (n_indices >= 8)
+    {
+      u32x8_store_unaligned (u32x8_load_unaligned (src), dst);
+      dst += 8;
+      src += 8;
+      n_indices -= 8;
+    }
+#endif
+
+#if defined(CLIB_HAVE_VEC128)
+  while (n_indices >= 4)
+    {
+      u32x4_store_unaligned (u32x4_load_unaligned (src), dst);
+      dst += 4;
+      src += 4;
+      n_indices -= 4;
+    }
+#endif
+
+  while (n_indices)
+    {
+      dst[0] = src[0];
+      dst += 1;
+      src += 1;
+      n_indices -= 1;
+    }
 }
 
 STATIC_ASSERT_OFFSET_OF (vlib_buffer_t, template_end, 64);
@@ -716,7 +752,7 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
   vlib_buffer_t bpi_vec = {.buffer_pool_index = ~0 };
   vlib_buffer_t flags_refs_mask = {
     .flags = VLIB_BUFFER_NEXT_PRESENT,
-    .ref_count = ~0
+    .ref_count = ~1
   };
 #endif
 
@@ -1009,6 +1045,27 @@ vlib_buffer_copy (vlib_main_t * vm, vlib_buffer_t * b)
     }
 
   return fd;
+}
+
+/* duplicate first buffer in chain */
+always_inline vlib_buffer_t *
+vlib_buffer_copy_no_chain (vlib_main_t * vm, vlib_buffer_t * b, u32 * di)
+{
+  vlib_buffer_t *d;
+
+  if ((vlib_buffer_alloc (vm, di, 1)) != 1)
+    return 0;
+
+  d = vlib_get_buffer (vm, *di);
+  /* 1st segment */
+  d->current_data = b->current_data;
+  d->current_length = b->current_length;
+  clib_memcpy_fast (d->opaque, b->opaque, sizeof (b->opaque));
+  clib_memcpy_fast (d->opaque2, b->opaque2, sizeof (b->opaque2));
+  clib_memcpy_fast (vlib_buffer_get_current (d),
+		    vlib_buffer_get_current (b), b->current_length);
+
+  return d;
 }
 
 /** \brief Create a maximum of 256 clones of buffer and store them

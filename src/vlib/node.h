@@ -236,10 +236,6 @@ CLIB_MARCH_SFX (node##_multiarch_register) (void)			\
     /*定义函数node##_fn*/\
 uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (node##_fn)
 
-
-/* FIXME to be removed */
-#define VLIB_NODE_FUNCTION_MULTIARCH(node, fn)
-
 always_inline vlib_node_registration_t *
 vlib_node_next_registered (vlib_node_registration_t * c)
 {

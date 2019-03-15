@@ -79,18 +79,16 @@ class VppBridgeDomain(VppObject):
         self.arp_term = arp_term
 
     def add_vpp_config(self):
-        self._test.vapi.bridge_domain_add_del(
-            self.bd_id,
-            is_add=1,
-            flood=self.flood,
-            uu_flood=self.uu_flood,
-            forward=self.forward,
-            learn=self.learn,
-            arp_term=self.arp_term)
+        self._test.vapi.bridge_domain_add_del(bd_id=self.bd_id,
+                                              flood=self.flood,
+                                              uu_flood=self.uu_flood,
+                                              forward=self.forward,
+                                              learn=self.learn,
+                                              arp_term=self.arp_term, is_add=1)
         self._test.registry.register(self, self._test.logger)
 
     def remove_vpp_config(self):
-        self._test.vapi.bridge_domain_add_del(self.bd_id, is_add=0)
+        self._test.vapi.bridge_domain_add_del(bd_id=self.bd_id, is_add=0)
 
     def query_vpp_config(self):
         return find_bridge_domain(self._test, self.bd_id)
@@ -113,18 +111,14 @@ class VppBridgeDomainPort(VppObject):
 
     def add_vpp_config(self):
         self._test.vapi.sw_interface_set_l2_bridge(
-            self.itf.sw_if_index,
-            self.bd.bd_id,
-            port_type=self.port_type,
-            enable=1)
+            rx_sw_if_index=self.itf.sw_if_index, bd_id=self.bd.bd_id,
+            port_type=self.port_type, enable=1)
         self._test.registry.register(self, self._test.logger)
 
     def remove_vpp_config(self):
         self._test.vapi.sw_interface_set_l2_bridge(
-            self.itf.sw_if_index,
-            self.bd.bd_id,
-            port_type=self.port_type,
-            enable=0)
+            rx_sw_if_index=self.itf.sw_if_index, bd_id=self.bd.bd_id,
+            port_type=self.port_type, enable=0)
 
     def query_vpp_config(self):
         return find_bridge_domain_port(self._test,
@@ -214,3 +208,32 @@ class VppL2FibEntry(VppObject):
 
     def object_id(self):
         return "L2-Fib-Entry-%s-%s-%s" % (self.bd, self.mac, self.itf)
+
+
+class VppL2Vtr(VppObject):
+
+    def __init__(self, test, itf, op):
+        self._test = test
+        self.itf = itf
+        self.op = op
+
+    def add_vpp_config(self):
+        self.itf.set_vtr(self.op)
+        self._test.registry.register(self, self._test.logger)
+
+    def remove_vpp_config(self):
+        self.itf.set_vtr(L2_VTR_OP.L2_DISABLED)
+
+    def query_vpp_config(self):
+        ds = self._test.vapi.sw_interface_dump()
+        d = self.itf.get_interface_config_from_dump(ds)
+
+        if d is not None:
+            return (d.vtr_op == self.op)
+        return False
+
+    def __str__(self):
+        return self.object_id()
+
+    def object_id(self):
+        return "L2-vtr-%s-%d" % (str(self.itf), self.op)

@@ -4,6 +4,7 @@ import random
 import socket
 import unittest
 
+import scapy.compat
 from scapy.contrib.mpls import MPLS
 from scapy.layers.inet import IP, UDP, TCP, ICMP, icmptypes, icmpcodes
 from scapy.layers.l2 import Ether, Dot1Q, ARP
@@ -95,8 +96,9 @@ class TestIPv4(VppTestCase):
         for i in self.interfaces:
             next_hop_address = i.local_ip4n
             for j in range(count / n_int):
-                self.vapi.ip_add_del_route(
-                    dest_addr, dest_addr_len, next_hop_address)
+                self.vapi.ip_add_del_route(dst_address=dest_addr,
+                                           dst_address_length=dest_addr_len,
+                                           next_hop_address=next_hop_address)
                 counter += 1
                 if counter / count * 100 > percent:
                     self.logger.info("Configure %d FIB entries .. %d%% done" %
@@ -310,9 +312,10 @@ class TestIPv4FibCrud(VppTestCase):
         dest_addr_len = 32
         n_next_hop_addr = socket.inet_pton(socket.AF_INET, next_hop_addr)
         for _ in range(count):
-            n_dest_addr = '{:08x}'.format(dest_addr).decode('hex')
-            self.vapi.ip_add_del_route(n_dest_addr, dest_addr_len,
-                                       n_next_hop_addr)
+            n_dest_addr = binascii.unhexlify('{:08x}'.format(dest_addr))
+            self.vapi.ip_add_del_route(dst_address=n_dest_addr,
+                                       dst_address_length=dest_addr_len,
+                                       next_hop_address=n_next_hop_addr)
             added_ips.append(socket.inet_ntoa(n_dest_addr))
             dest_addr += 1
         return added_ips
@@ -325,9 +328,11 @@ class TestIPv4FibCrud(VppTestCase):
         dest_addr_len = 32
         n_next_hop_addr = socket.inet_pton(socket.AF_INET, next_hop_addr)
         for _ in range(count):
-            n_dest_addr = '{:08x}'.format(dest_addr).decode('hex')
-            self.vapi.ip_add_del_route(n_dest_addr, dest_addr_len,
-                                       n_next_hop_addr, is_add=0)
+            n_dest_addr = binascii.unhexlify('{:08x}'.format(dest_addr))
+            self.vapi.ip_add_del_route(dst_address=n_dest_addr,
+                                       dst_address_length=dest_addr_len,
+                                       next_hop_address=n_next_hop_addr,
+                                       is_add=0)
             removed_ips.append(socket.inet_ntoa(n_dest_addr))
             dest_addr += 1
         return removed_ips
@@ -894,9 +899,13 @@ class TestIPLoadBalance(VppTestCase):
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
+        rxs = []
         for oo in outputs:
             rx = oo._get_capture(1)
             self.assertNotEqual(0, len(rx))
+            for r in rx:
+                rxs.append(r)
+        return rxs
 
     def send_and_expect_one_itf(self, input, pkts, itf):
         input.add_stream(pkts)
@@ -975,7 +984,7 @@ class TestIPLoadBalance(VppTestCase):
         #  - now only the stream with differing source address will
         #    load-balance
         #
-        self.vapi.set_ip_flow_hash(0, src=1, dst=1, sport=0, dport=0)
+        self.vapi.set_ip_flow_hash(vrf_id=0, src=1, dst=1, sport=0, dport=0)
 
         self.send_and_expect_load_balancing(self.pg0, src_ip_pkts,
                                             [self.pg1, self.pg2])
@@ -987,7 +996,7 @@ class TestIPLoadBalance(VppTestCase):
         #
         # change the flow hash config back to defaults
         #
-        self.vapi.set_ip_flow_hash(0, src=1, dst=1, sport=1, dport=1)
+        self.vapi.set_ip_flow_hash(vrf_id=0, src=1, dst=1, sport=1, dport=1)
 
         #
         # Recursive prefixes
@@ -1033,6 +1042,53 @@ class TestIPLoadBalance(VppTestCase):
                                              self.pg3, self.pg4])
 
         #
+        # bring down pg1 expect LB to adjust to use only those that are pu
+        #
+        self.pg1.link_down()
+
+        rx = self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                                 [self.pg2, self.pg3,
+                                                  self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
+
+        #
+        # bring down pg2 expect LB to adjust to use only those that are pu
+        #
+        self.pg2.link_down()
+
+        rx = self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                                 [self.pg3, self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
+
+        #
+        # bring the links back up - expect LB over all again
+        #
+        self.pg1.link_up()
+        self.pg2.link_up()
+
+        rx = self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                                 [self.pg1, self.pg2,
+                                                  self.pg3, self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
+
+        #
+        # The same link-up/down but this time admin state
+        #
+        self.pg1.admin_down()
+        self.pg2.admin_down()
+        rx = self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                                 [self.pg3, self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
+        self.pg1.admin_up()
+        self.pg2.admin_up()
+        self.pg1.resolve_arp()
+        self.pg2.resolve_arp()
+        rx = self.send_and_expect_load_balancing(self.pg0, src_pkts,
+                                                 [self.pg1, self.pg2,
+                                                  self.pg3, self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
+
+        #
         # Recursive prefixes
         #  - testing that 2 stages of load-balancing, no choices
         #
@@ -1055,10 +1111,40 @@ class TestIPLoadBalance(VppTestCase):
         route_1_1_1_2.add_vpp_config()
 
         #
-        # inject the packet on pg0 - expect load-balancing across all 4 paths
+        # inject the packet on pg0 - rx only on via routes output interface
         #
         self.vapi.cli("clear trace")
         self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg3)
+
+        #
+        # Add a LB route in the presence of a down link - expect no
+        # packets over the down link
+        #
+        self.pg3.link_down()
+
+        route_10_0_0_3 = VppIpRoute(self, "10.0.0.3", 32,
+                                    [VppRoutePath(self.pg3.remote_ip4,
+                                                  self.pg3.sw_if_index),
+                                     VppRoutePath(self.pg4.remote_ip4,
+                                                  self.pg4.sw_if_index)])
+        route_10_0_0_3.add_vpp_config()
+
+        port_pkts = []
+        for ii in range(257):
+            port_pkts.append(Ether(src=self.pg0.remote_mac,
+                                   dst=self.pg0.local_mac) /
+                             IP(dst="10.0.0.3", src="20.0.0.2") /
+                             UDP(sport=1234, dport=1234 + ii) /
+                             Raw('\xa5' * 100))
+
+        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg4)
+
+        # bring the link back up
+        self.pg3.link_up()
+
+        rx = self.send_and_expect_load_balancing(self.pg0, port_pkts,
+                                                 [self.pg3, self.pg4])
+        self.assertEqual(len(src_pkts), len(rx))
 
 
 class TestIPVlan0(VppTestCase):
@@ -1145,7 +1231,7 @@ class TestIPPunt(VppTestCase):
         #
         # add a policer
         #
-        policer = self.vapi.policer_add_del("ip4-punt", 400, 0, 10, 0,
+        policer = self.vapi.policer_add_del(b"ip4-punt", 400, 0, 10, 0,
                                             rate_type=1)
         self.vapi.ip_punt_police(policer.policer_index)
 
@@ -1166,7 +1252,7 @@ class TestIPPunt(VppTestCase):
         # remove the poilcer. back to full rx
         #
         self.vapi.ip_punt_police(policer.policer_index, is_add=0)
-        self.vapi.policer_add_del("ip4-punt", 400, 0, 10, 0,
+        self.vapi.policer_add_del(b"ip4-punt", 400, 0, 10, 0,
                                   rate_type=1, is_add=0)
         self.send_and_expect(self.pg0, pkts, self.pg1)
 

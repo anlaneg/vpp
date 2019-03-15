@@ -28,6 +28,7 @@ from socket import inet_pton, AF_INET, AF_INET6
 from random import choice, shuffle
 from pprint import pprint
 
+import scapy.compat
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether
 from scapy.layers.inet import IP, UDP, ICMP, TCP
@@ -71,12 +72,12 @@ class TestACLpluginL2L3(VppTestCase):
 
         # Create BD with MAC learning enabled and put interfaces to this BD
         cls.vapi.sw_interface_set_l2_bridge(
-            cls.loop0.sw_if_index, bd_id=cls.bd_id,
+            rx_sw_if_index=cls.loop0.sw_if_index, bd_id=cls.bd_id,
             port_type=L2_PORT_TYPE.BVI)
-        cls.vapi.sw_interface_set_l2_bridge(
-            cls.pg0.sw_if_index, bd_id=cls.bd_id)
-        cls.vapi.sw_interface_set_l2_bridge(
-            cls.pg1.sw_if_index, bd_id=cls.bd_id)
+        cls.vapi.sw_interface_set_l2_bridge(rx_sw_if_index=cls.pg0.sw_if_index,
+                                            bd_id=cls.bd_id)
+        cls.vapi.sw_interface_set_l2_bridge(rx_sw_if_index=cls.pg1.sw_if_index,
+                                            bd_id=cls.bd_id)
 
         # Configure IPv4 addresses on loopback interface and routed interface
         cls.loop0.config_ip4()
@@ -292,7 +293,6 @@ class TestACLpluginL2L3(VppTestCase):
             last_info[i.sw_if_index] = None
 
         dst_ip_sw_if_index = dst_ip_if.sw_if_index
-        return
 
         for packet in capture:
             l3 = IP if packet.haslayer(IP) else IPv6
@@ -308,14 +308,18 @@ class TestACLpluginL2L3(VppTestCase):
             # Scapy IPv6 stuff is too smart for its own good.
             # So we do this and coerce the ICMP into unknown type
             if packet.haslayer(UDP):
-                data = str(packet[UDP][Raw])
+                data = scapy.compat.raw(packet[UDP][Raw])
             else:
                 if l3 == IP:
-                    data = str(ICMP(str(packet[l3].payload))[Raw])
+                    data = scapy.compat.raw(ICMP(
+                        scapy.compat.raw(packet[l3].payload))[Raw])
                 else:
-                    data = str(ICMPv6Unknown(str(packet[l3].payload)).msgbody)
+                    data = scapy.compat.raw(ICMPv6Unknown(
+                        scapy.compat.raw(packet[l3].payload)).msgbody)
             udp_or_icmp = packet[l3].payload
-            payload_info = self.payload_to_info(data)
+            data_obj = Raw(data)
+            # FIXME: make framework believe we are on object
+            payload_info = self.payload_to_info(data_obj)
             packet_index = payload_info.index
 
             self.assertEqual(payload_info.dst, dst_ip_sw_if_index)
@@ -342,8 +346,6 @@ class TestACLpluginL2L3(VppTestCase):
                 if l4 == UDP:
                     self.assertEqual(udp_or_icmp.sport, saved_packet[l4].sport)
                     self.assertEqual(udp_or_icmp.dport, saved_packet[l4].dport)
-            else:
-                print("Saved packet is none")
             # self.assertEqual(ip.dst, host.ip4)
 
             # UDP:

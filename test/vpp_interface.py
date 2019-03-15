@@ -343,17 +343,17 @@ class VppInterface(object):
             suppress=suppress,
             send_unicast=send_unicast)
 
+    # TODO: This should accept ipaddress object.
     def ip6_ra_prefix(self, address, address_length, is_no=0,
                       off_link=0, no_autoconfig=0, use_default=0):
         """Configure IPv6 RA suppress on the VPP interface."""
         self.test.vapi.sw_interface_ip6nd_ra_prefix(
-            self.sw_if_index,
-            address,
-            address_length,
-            is_no=is_no,
-            off_link=off_link,
-            no_autoconfig=no_autoconfig,
-            use_default=use_default)
+            sw_if_index=self.sw_if_index,
+            prefix={'address': address,
+                    'address_length': address_length},
+            use_default=use_default,
+            off_link=off_link, no_autoconfig=no_autoconfig,
+            is_no=is_no)
 
     def admin_up(self):
         """Put interface ADMIN-UP."""
@@ -364,6 +364,14 @@ class VppInterface(object):
         """Put interface ADMIN-down."""
         self.test.vapi.sw_interface_set_flags(self.sw_if_index,
                                               admin_up_down=0)
+
+    def link_up(self):
+        """Put interface link-state-UP."""
+        self.test.vapi.cli("test interface link-state %s up" % self.name)
+
+    def link_down(self):
+        """Put interface link-state-down."""
+        self.test.vapi.cli("test interface link-state %s down" % self.name)
 
     def ip6_enable(self):
         """IPv6 Enable interface"""

@@ -32,9 +32,9 @@ class TestSCTP(VppTestCase):
             table_id += 1
 
         # Configure namespaces
-        self.vapi.app_namespace_add_del(namespace_id="0",
+        self.vapi.app_namespace_add_del(namespace_id=b"0",
                                         sw_if_index=self.loop0.sw_if_index)
-        self.vapi.app_namespace_add_del(namespace_id="1",
+        self.vapi.app_namespace_add_del(namespace_id=b"1",
                                         sw_if_index=self.loop1.sw_if_index)
 
     def tearDown(self):
@@ -66,7 +66,7 @@ class TestSCTP(VppTestCase):
                               "no-echo uri " + uri)
         if error:
             self.logger.critical(error)
-            self.assertEqual(error.find("failed"), -1)
+            self.assertNotIn("failed", error)
 
         error = self.vapi.cli("test echo client mbytes 10 no-return " +
                               " appns 1" +
@@ -76,7 +76,7 @@ class TestSCTP(VppTestCase):
                               " uri " + uri)
         if error:
             self.logger.critical(error)
-            self.assertEqual(error.find("failed"), -1)
+            self.assertNotIn("failed", error)
 
         # Delete inter-table routes
         ip_t01.remove_vpp_config()

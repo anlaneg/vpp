@@ -33,9 +33,9 @@ class TestSession(VppTestCase):
             table_id += 1
 
         # Configure namespaces
-        self.vapi.app_namespace_add_del(namespace_id="0",
+        self.vapi.app_namespace_add_del(namespace_id=b"0",
                                         sw_if_index=self.loop0.sw_if_index)
-        self.vapi.app_namespace_add_del(namespace_id="1",
+        self.vapi.app_namespace_add_del(namespace_id=b"1",
                                         sw_if_index=self.loop1.sw_if_index)
 
     def tearDown(self):
@@ -68,14 +68,14 @@ class TestSession(VppTestCase):
                               "private-segment-size 1m uri " + uri)
         if error:
             self.logger.critical(error)
-            self.assertEqual(error.find("failed"), -1)
+            self.assertNotIn("failed", error)
 
         error = self.vapi.cli("test echo client nclients 100 appns 1 " +
                               "no-output fifo-size 64 syn-timeout 2 " +
                               "private-segment-size 1m uri " + uri)
         if error:
             self.logger.critical(error)
-            self.assertEqual(error.find("failed"), -1)
+            self.assertNotIn("failed", error)
 
         if self.vpp_dead:
             self.assert_equal(0)
@@ -98,7 +98,7 @@ class TestSessionUnitTests(VppTestCase):
 
         if error:
             self.logger.critical(error)
-        self.assertEqual(error.find("failed"), -1)
+        self.assertNotIn("failed", error)
 
     def tearDown(self):
         super(TestSessionUnitTests, self).tearDown()

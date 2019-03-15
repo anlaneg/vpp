@@ -18,6 +18,8 @@ from threading import Thread, Event
 from inspect import getdoc, isclass
 from traceback import format_exception
 from logging import FileHandler, DEBUG, Formatter
+
+import scapy.compat
 from scapy.packet import Raw
 from hook import StepHook, PollHook, VppDiedError
 from vpp_pg_interface import VppPGInterface
@@ -390,7 +392,7 @@ class VppTestCase(unittest.TestCase):
             if os.path.exists(cls.stats_sock):
                 ok = True
                 break
-            time.sleep(0.8)
+            cls.sleep(0.8)
         if not ok:
             cls.logger.critical("Couldn't stat : {}".format(cls.stats_sock))
 
@@ -511,7 +513,11 @@ class VppTestCase(unittest.TestCase):
 
         if hasattr(cls, 'vpp'):
             if hasattr(cls, 'vapi'):
+                cls.logger.debug("Disconnecting class vapi client on %s",
+                                 cls.__name__)
                 cls.vapi.disconnect()
+                cls.logger.debug("Deleting class vapi attribute on %s",
+                                 cls.__name__)
                 del cls.vapi
             cls.vpp.poll()
             if cls.vpp.returncode is None:
@@ -519,6 +525,8 @@ class VppTestCase(unittest.TestCase):
                 cls.vpp.kill()
                 cls.logger.debug("Waiting for vpp to die")
                 cls.vpp.communicate()
+            cls.logger.debug("Deleting class vpp attribute on %s",
+                             cls.__name__)
             del cls.vpp
 
         if cls.vpp_startup_failed:
@@ -560,7 +568,6 @@ class VppTestCase(unittest.TestCase):
 
     def tearDown(self):
         """ Show various debug prints after each test """
-        super(VppTestCase, self).tearDown()
         self.logger.debug("--- tearDown() for %s.%s(%s) called ---" %
                           (self.__class__.__name__, self._testMethodName,
                            self._testMethodDoc))
@@ -751,9 +758,10 @@ class VppTestCase(unittest.TestCase):
         Convert packet payload to _PacketInfo object
 
         :param payload: packet payload
-        :type:  <class 'scapy.packet.Raw'>
-        :param: payload_field: packet fieldname of payload "load" for
+        :type payload:  <class 'scapy.packet.Raw'>
+        :param payload_field: packet fieldname of payload "load" for
                 <class 'scapy.packet.Raw'>
+        :type payload_field: str
         :returns: _PacketInfo object containing de-serialized data from payload
 
         """
@@ -848,14 +856,14 @@ class VppTestCase(unittest.TestCase):
 
     def assert_packet_checksums_valid(self, packet,
                                       ignore_zero_udp_checksums=True):
-        received = packet.__class__(str(packet))
+        received = packet.__class__(scapy.compat.raw(packet))
         self.logger.debug(
             ppp("Verifying packet checksums for packet:", received))
         udp_layers = ['UDP', 'UDPerror']
         checksum_fields = ['cksum', 'chksum']
         checksums = []
         counter = 0
-        temp = received.__class__(str(received))
+        temp = received.__class__(scapy.compat.raw(received))
         while True:
             layer = temp.getlayer(counter)
             if layer:
@@ -872,7 +880,7 @@ class VppTestCase(unittest.TestCase):
             counter = counter + 1
         if 0 == len(checksums):
             return
-        temp = temp.__class__(str(temp))
+        temp = temp.__class__(scapy.compat.raw(temp))
         for layer, cf in checksums:
             calc_sum = getattr(temp[layer], cf)
             self.assert_equal(
@@ -889,9 +897,10 @@ class VppTestCase(unittest.TestCase):
         received_packet_checksum = getattr(received_packet[layer], field_name)
         if ignore_zero_checksum and 0 == received_packet_checksum:
             return
-        recalculated = received_packet.__class__(str(received_packet))
+        recalculated = received_packet.__class__(
+            scapy.compat.raw(received_packet))
         delattr(recalculated[layer], field_name)
-        recalculated = recalculated.__class__(str(recalculated))
+        recalculated = recalculated.__class__(scapy.compat.raw(recalculated))
         self.assert_equal(received_packet_checksum,
                           getattr(recalculated[layer], field_name),
                           "packet checksum on layer: %s" % layer)
@@ -951,13 +960,26 @@ class VppTestCase(unittest.TestCase):
 
     @classmethod
     def sleep(cls, timeout, remark=None):
+
+        # /* Allow sleep(0) to maintain win32 semantics, and as decreed
+        #  * by Guido, only the main thread can be interrupted.
+        # */
+        # https://github.com/python/cpython/blob/6673decfa0fb078f60587f5cb5e98460eea137c2/Modules/timemodule.c#L1892  # noqa
+        if timeout == 0:
+            # yield quantum
+            if hasattr(os, 'sched_yield'):
+                os.sched_yield()
+            else:
+                time.sleep(0)
+            return
+
         if hasattr(cls, 'logger'):
             cls.logger.debug("Starting sleep for %es (%s)", timeout, remark)
         before = time.time()
         time.sleep(timeout)
         after = time.time()
         if hasattr(cls, 'logger') and after - before > 2 * timeout:
-            cls.logger.error("unexpected time.sleep() result - "
+            cls.logger.error("unexpected self.sleep() result - "
                              "slept for %es instead of ~%es!",
                              after - before, timeout)
         if hasattr(cls, 'logger'):
