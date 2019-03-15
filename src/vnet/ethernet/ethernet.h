@@ -49,9 +49,11 @@
 /* ethernet-input frame flags and scalar data */
 
 /* all packets in frame share same sw_if_index */
+//所有在frame中的报文含有相同的software interface index
 #define ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX (1 << 0)
 
 /* all ip4 packets in frame have correct ip4 checksum */
+//所有在frame中的ipv4报文均有正确的checksum
 #define ETH_INPUT_FRAME_F_IP4_CKSUM_OK (1 << 1)
 
 typedef struct

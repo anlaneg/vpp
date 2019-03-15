@@ -294,7 +294,7 @@ static_always_inline u32
 dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd/*所属的设备*/,
 		   vlib_node_runtime_t * node, u32 thread_index, u16 queue_id/*队列id*/)
 {
-  uword n_rx_packets = 0, n_rx_bytes;
+  uword n_rx_packets = 0/*收到的报文数*/, n_rx_bytes;
   u32 n_left, n_trace;
   u32 *buffers;
   u32 next_index = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
@@ -389,16 +389,19 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd/*所�
 					   n_rx_packets,
 					   sizeof (struct rte_mbuf));
 
+      //报文下一步去向ethernet input
       if (PREDICT_TRUE (next_index == VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT))
 	{
 	  vlib_next_frame_t *nf;
 	  vlib_frame_t *f;
 	  ethernet_input_frame_t *ef;
-	  //获取相应的frame,并填充标记（frame index已添加充）
+	  //获取node送next_index对应的传递frame,并填充标记（frame index已添加充）
 	  nf = vlib_node_runtime_get_next_frame (vm, node, next_index);
 	  f = vlib_get_frame (vm, nf->frame_index);
+	  //指明这些报文拥有相同的software interface index
 	  f->flags = ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX;
 
+	  //指出报文所属的software interface index,hardware interface index
 	  ef = vlib_frame_scalar_args (f);
 	  ef->sw_if_index = xd->sw_if_index;
 	  ef->hw_if_index = xd->hw_if_index;
@@ -408,6 +411,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd/*所�
 	     can send pacets to ip4-input-no-checksum node */
 	  if (xd->flags & DPDK_DEVICE_FLAG_RX_IP4_CKSUM &&
 	      (or_flags & PKT_RX_IP_CKSUM_BAD) == 0)
+	      //已开启ipv4 checksum校验，故为frame加上标记
 	    f->flags |= ETH_INPUT_FRAME_F_IP4_CKSUM_OK;
 	  vlib_frame_no_append (f);
 	}

@@ -308,7 +308,7 @@ vlib_frame_scalar_args (vlib_frame_t * f)
   return vlib_frame_vector_args (f) - f->scalar_size;
 }
 
-//取出n节点下next_index对应的next_frame结构
+//取出n节点下要送给next_node_index对应的next_frame结构
 always_inline vlib_next_frame_t *
 vlib_node_runtime_get_next_frame (vlib_main_t * vm,
 				  vlib_node_runtime_t * n, u32 next_index)
@@ -323,8 +323,11 @@ vlib_node_runtime_get_next_frame (vlib_main_t * vm,
   if (CLIB_DEBUG > 0)
     {
       vlib_node_t *node, *next;
+      //指明的node
       node = vec_elt (nm->nodes, n->node_index);
+      //取此node对应的下一级node
       next = vec_elt (nm->nodes, node->next_nodes[next_index]);
+      //nf指出的node_index一定等于next的index
       ASSERT (nf->node_runtime_index == next->runtime_index);
     }
 
@@ -509,14 +512,19 @@ vlib_process_free_event_type (vlib_process_t * p, uword t,
       clib_bitmap_andnoti (p->one_time_event_type_bitmap, t);
 }
 
+//如果t指出的event是单次event,则归还event type占用的空间
 always_inline void
 vlib_process_maybe_free_event_type (vlib_process_t * p, uword t)
 {
+    //t event类型一定不为空
   ASSERT (!pool_is_free_index (p->event_type_pool, t));
+  //如果t指出的event是单次event,则归还event type占用的空间
   if (clib_bitmap_get (p->one_time_event_type_bitmap, t))
     vlib_process_free_event_type (p, t, /* is_one_time_event */ 1);
 }
 
+//提取当前process收到的一个事件（return_event_type_opaque标记）及其相关的event data
+//如果未收到事件，返回0
 always_inline void *
 vlib_process_get_event_data (vlib_main_t * vm,
 			     uword * return_event_type_opaque)
@@ -527,24 +535,26 @@ vlib_process_get_event_data (vlib_main_t * vm,
   uword t;
   void *event_data_vector;
 
+  //取当前正在运行的process
   p = vec_elt (nm->processes, nm->current_process_index);
 
   /* Find first type with events ready.
      Return invalid type when there's nothing there. */
-  //提取首个被bit设置的位编号
+  //提取首个被bit设置的位编号(即此process发生的首个事件）
   t = clib_bitmap_first_set (p->non_empty_event_type_bitmap);
   if (t == ~0)
     return 0;
 
-  //将t　bit位置为０
+  //将t　bit位置为０（事件已提取）
   p->non_empty_event_type_bitmap =
     clib_bitmap_andnoti (p->non_empty_event_type_bitmap, t);
 
   //取t号事件对应的data
   ASSERT (_vec_len (p->pending_event_data_by_type_index[t]) > 0);
   event_data_vector = p->pending_event_data_by_type_index[t];
-  p->pending_event_data_by_type_index[t] = 0;
+  p->pending_event_data_by_type_index[t] = 0;//标明此事件数据已提取
 
+  //返回事件类型
   et = pool_elt_at_index (p->event_type_pool, t);
 
   /* Return user's opaque value and possibly index. */
@@ -552,6 +562,7 @@ vlib_process_get_event_data (vlib_main_t * vm,
 
   vlib_process_maybe_free_event_type (p, t);
 
+  //event对应的data
   return event_data_vector;
 }
 
@@ -573,6 +584,8 @@ vlib_process_put_event_data (vlib_main_t * vm, void *event_data)
     or ~0 to indicate a timeout.
 */
 
+//如果没有任何事件发生，返回~0
+//如果有event发生，返回event对应的event type,通过data_vector返回event对应的event data
 always_inline uword
 vlib_process_get_events (vlib_main_t * vm, uword ** data_vector)
 {
@@ -587,40 +600,48 @@ vlib_process_get_events (vlib_main_t * vm, uword ** data_vector)
      Return invalid type when there's nothing there. */
   t = clib_bitmap_first_set (p->non_empty_event_type_bitmap);
   if (t == ~0)
-    return t;
+    return t;//没有任何事件，返回～0
 
+  //移除首个event
   p->non_empty_event_type_bitmap =
     clib_bitmap_andnoti (p->non_empty_event_type_bitmap, t);
 
+  //取出首个event 对应的event data
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
   _vec_len (p->pending_event_data_by_type_index[t]) = 0;
 
+  //获得event type
   et = pool_elt_at_index (p->event_type_pool, t);
 
   /* Return user's opaque value. */
   r = et->opaque;
 
+  //归还t占用的空间
   vlib_process_maybe_free_event_type (p, t);
 
   return r;
 }
 
+//获得t号event对应的event data,返回event data对应的长度
 always_inline uword
 vlib_process_get_events_helper (vlib_process_t * p, uword t,
 				uword ** data_vector)
 {
   uword l;
 
+  //清掉t号event
   p->non_empty_event_type_bitmap =
     clib_bitmap_andnoti (p->non_empty_event_type_bitmap, t);
 
+  //取出t号event对应的data
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
   _vec_len (p->pending_event_data_by_type_index[t]) = 0;
 
+  //如有必要归还t号event对应的type
   vlib_process_maybe_free_event_type (p, t);
 
   return l;
@@ -628,6 +649,7 @@ vlib_process_get_events_helper (vlib_process_t * p, uword t,
 
 /* As above but query as specified type of event.  Returns number of
    events found. */
+//通过event type查找event index,并依据event index取出 event data,返回event data对应的length
 always_inline uword
 vlib_process_get_events_with_type (vlib_main_t * vm, uword ** data_vector,
 				   uword with_type_opaque)
@@ -636,6 +658,7 @@ vlib_process_get_events_with_type (vlib_main_t * vm, uword ** data_vector,
   vlib_process_t *p;
   uword t, *h;
 
+  //通过event type查找event index,并依据event index取出 event data,返回event data对应的length
   p = vec_elt (nm->processes, nm->current_process_index);
   h = hash_get (p->event_type_index_by_type_opaque, with_type_opaque);
   if (!h)
@@ -647,9 +670,11 @@ vlib_process_get_events_with_type (vlib_main_t * vm, uword ** data_vector,
   if (!clib_bitmap_get (p->non_empty_event_type_bitmap, t))
     return 0;
 
+  //取t号event对应的event data,返回event对应的长度
   return vlib_process_get_events_helper (p, t, data_vector);
 }
 
+//等待一个event发生,如果有event发生，则立即返回，否则suspend process
 always_inline uword *
 vlib_process_wait_for_event (vlib_main_t * vm)
 {
@@ -660,7 +685,7 @@ vlib_process_wait_for_event (vlib_main_t * vm)
   p = vec_elt (nm->processes, nm->current_process_index);
   if (clib_bitmap_is_zero (p->non_empty_event_type_bitmap))
     {
-      //当bitmap为空时，跳到p->return_longjmp保存的位置运行。
+      //当bitmap为空时，说明没有事件发生，故直接跳至suspend位置，执行挂起
       p->flags |= VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT;
       r =
 	clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
@@ -669,9 +694,12 @@ vlib_process_wait_for_event (vlib_main_t * vm)
 		      VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
     }
 
+  //否则有事件发生，返回发生的事件bitmap
   return p->non_empty_event_type_bitmap;
 }
 
+//指定event id 获取发生的event,如果未有event发生，则执行process suspend，
+//否则已发生的event data的长度及event data
 always_inline uword
 vlib_process_wait_for_one_time_event (vlib_main_t * vm,
 				      uword ** data_vector,
@@ -685,6 +713,7 @@ vlib_process_wait_for_one_time_event (vlib_main_t * vm,
   ASSERT (!pool_is_free_index (p->event_type_pool, with_type_index));
   while (!clib_bitmap_get (p->non_empty_event_type_bitmap, with_type_index))
     {
+      //指定索引的bitmap没有被发现，执行suspend
       p->flags |= VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT;
       r =
 	clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
@@ -696,6 +725,8 @@ vlib_process_wait_for_one_time_event (vlib_main_t * vm,
   return vlib_process_get_events_helper (p, with_type_index, data_vector);
 }
 
+//使当前process指定evnet type查找一个已发生的event,如果未有event发生，则执行process suspend
+//否则返回event data及event data length
 always_inline uword
 vlib_process_wait_for_event_with_type (vlib_main_t * vm,
 				       uword ** data_vector,
@@ -709,11 +740,11 @@ vlib_process_wait_for_event_with_type (vlib_main_t * vm,
   h = hash_get (p->event_type_index_by_type_opaque, with_type_opaque);
   while (!h || !clib_bitmap_get (p->non_empty_event_type_bitmap, h[0]))
     {
+      //等待的事件没有发生，保存恢复点，执行suspend
       p->flags |= VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT;
       r =
 	clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
       if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
-          //有代码回到恢复点，但要求继续挂起，则前往return_longjmp,并挂起
 	clib_longjmp (&p->return_longjmp,
 		      VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
 
@@ -731,7 +762,8 @@ vlib_process_wait_for_event_with_type (vlib_main_t * vm,
     @param dt - timeout, in seconds.
     @returns the remaining time interval
 */
-//使当前process等待一个event或者clock,等待dt时间
+//使当前process等待一个event或者clock,等待dt时间,如果有event发生，则返回dt
+//否则执行process suspend
 always_inline f64
 vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
 {
@@ -750,11 +782,11 @@ vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
   wakeup_time = vlib_time_now (vm) + dt;
 
   /* Suspend waiting for both clock and event to occur. */
-  //指明进程收到event或者clock到期，则可以唤醒
+  //指明进程收到event或者clock到期时，则可以唤醒
   p->flags |= (VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT
 	       | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK);
 
-  //记录process的恢复点
+  //记录process的恢复点，并suspend
   r = clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
   if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
     {
@@ -812,12 +844,13 @@ vlib_process_delete_one_time_event (vlib_main_t * vm, uword node_index,
   vlib_process_free_event_type (p, t, /* is_one_time_event */ 1);
 }
 
+//生成一个event,返回event data的起始地址（用于填充event data)
 always_inline void *
 vlib_process_signal_event_helper (vlib_node_main_t * nm,
 				  vlib_node_t * n,
 				  vlib_process_t * p,
-				  uword t,
-				  uword n_data_elts, uword n_data_elt_bytes)
+				  uword t/*event id*/,
+				  uword n_data_elts/*event data数目*/, uword n_data_elt_bytes/*每个event data占用的字节数*/)
 {
   uword p_flags, add_to_pending, delete_from_wheel;
   void *data_to_be_written_by_caller;
@@ -825,7 +858,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
   //必须为process
   ASSERT (n->type == VLIB_NODE_TYPE_PROCESS);
 
-  //指定位置的event一定存在
+  //指定位置的event type一定存在
   ASSERT (!pool_is_free_index (p->event_type_pool, t));
 
   vec_validate (p->pending_event_data_by_type_index, t);
@@ -835,6 +868,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
     void *data_vec = p->pending_event_data_by_type_index[t];
     uword l;
 
+    //event data空间不存在，尝试复用
     if (!data_vec && vec_len (nm->recycled_event_data_vectors))
       {
 	data_vec = vec_pop (nm->recycled_event_data_vectors);
@@ -849,6 +883,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 			    (l + n_data_elts) * n_data_elt_bytes,
 			    /* header_bytes */ 0, /* data_align */ 0);
 
+    //存入event data
     p->pending_event_data_by_type_index[t] = data_vec;
     data_to_be_written_by_caller = data_vec + l * n_data_elt_bytes;
   }
@@ -863,12 +898,15 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
   add_to_pending = (p_flags & VLIB_PROCESS_RESUME_PENDING) == 0;
 
   /* Process will resume when suspend time elapses? */
+  //准备唤醒process
   delete_from_wheel = 0;
   if (p_flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
     {
       /* Waiting for both event and clock? */
       if (p_flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT)
 	{
+          //process即等待clock，又等待event,则检查p->stop_timer_handle是否已启动
+          //如已启动，则需要delete
 	  if (!TW (tw_timer_handle_is_free)
 	      ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 	       p->stop_timer_handle))
@@ -892,6 +930,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
       u32 x = vlib_timing_wheel_data_set_suspended_process (n->runtime_index);
       p->flags = p_flags | VLIB_PROCESS_RESUME_PENDING;
       vec_add1 (nm->data_from_advancing_timing_wheel, x);
+      //停止对应的定时器
       if (delete_from_wheel)
 	TW (tw_timer_stop) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 			    p->stop_timer_handle);
@@ -900,6 +939,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
   return data_to_be_written_by_caller;
 }
 
+//为node_index生成一个event,要求event-type,指出了event-data的长度
 always_inline void *
 vlib_process_signal_event_data (vlib_main_t * vm,
 				uword node_index,
@@ -914,6 +954,7 @@ vlib_process_signal_event_data (vlib_main_t * vm,
   /* Must be in main thread */
   ASSERT (vlib_get_thread_index () == 0);
 
+  //如果无type_opaque对应的event type,则加入
   h = hash_get (p->event_type_index_by_type_opaque, type_opaque);
   if (!h)
     {
@@ -925,14 +966,16 @@ vlib_process_signal_event_data (vlib_main_t * vm,
   else
     t = h[0];
 
+  //产生一个event，并获得其对应的event data指针
   return vlib_process_signal_event_helper (nm, n, p, t, n_data_elts,
 					   n_data_elt_bytes);
 }
 
+//在dt事件之后，设置一个event(如果dt过短，则直接设置event,否则先启定时器，再设置event)
 always_inline void *
 vlib_process_signal_event_at_time (vlib_main_t * vm,
 				   f64 dt,
-				   uword node_index,
+				   uword node_index/*针对哪个node生成事件*/,
 				   uword type_opaque,
 				   uword n_data_elts, uword n_data_elt_bytes)
 {
@@ -945,7 +988,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
   h = hash_get (p->event_type_index_by_type_opaque, type_opaque);
   if (!h)
     {
-      //不存在type_opaque对应的event,创建它
+      //不存在指定的event type,则创建它
       vlib_process_event_type_t *et =
 	vlib_process_new_event_type (p, type_opaque);
       t = et - p->event_type_pool;
@@ -954,6 +997,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
   else
     t = h[0];
 
+  //dt过小，则直接为节点n生成一个event,指定event type为t
   if (vlib_process_suspend_time_is_zero (dt))
     return vlib_process_signal_event_helper (nm, n, p, t, n_data_elts,
 					     n_data_elt_bytes);
@@ -976,7 +1020,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
       te->process_node_index = n->runtime_index;
       te->event_type_index = t;
 
-      //启动定时器
+      //启动定时器来生成这个event
       p->stop_timer_handle =
 	TW (tw_timer_start) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
 			     vlib_timing_wheel_data_set_timed_event
@@ -998,6 +1042,7 @@ vlib_process_signal_event_at_time (vlib_main_t * vm,
     }
 }
 
+//触发单次的event
 always_inline void *
 vlib_process_signal_one_time_event_data (vlib_main_t * vm,
 					 uword node_index,

@@ -529,17 +529,19 @@ vlib_put_next_frame (vlib_main_t * vm,
   ASSERT (n_vectors_left <= VLIB_FRAME_SIZE);
   n_vectors_in_frame = VLIB_FRAME_SIZE - n_vectors_left;
 
+  //指出frame中元素数
   f->n_vectors = n_vectors_in_frame;
 
   /* If vectors were added to frame, add to pending vector. */
   if (PREDICT_TRUE (n_vectors_in_frame > 0))
     {
-      //之前已有元素加入，则将新的报文附在其后面
+      //当前frame中已有元素加入，则将新的报文附在其后面
       vlib_pending_frame_t *p;
       u32 v0, v1;
 
       r->cached_next_index = next_index;
 
+      //frame中的报文还未加入到frame penging中
       if (!(f->frame_flags & VLIB_FRAME_PENDING))
 	{
 	  __attribute__ ((unused)) vlib_node_t *node;
@@ -553,7 +555,7 @@ vlib_put_next_frame (vlib_main_t * vm,
 	  next_node = vlib_get_next_node (vm, r->node_index, next_index);
 	  next_runtime = vlib_node_get_runtime (vm, next_node->index);
 
-	  //获取pending_frame节点，并填充它
+	  //获取pending_frame节点，并填充它，将报文添加到pending_frames中
 	  vec_add2 (nm->pending_frames, p, 1);
 
 	  //指明pending_frame的索引号
@@ -1635,7 +1637,7 @@ dispatch_process (vlib_main_t * vm,
   //指明node处于running状态
   p->flags |= VLIB_PROCESS_IS_RUNNING;
 
-  //????
+  //调度前elog生成
   t = last_time_stamp;
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t,
 			     f ? f->n_vectors : 0, /* is_after */ 0);
@@ -1658,6 +1660,9 @@ dispatch_process (vlib_main_t * vm,
   is_suspend = n_vectors == VLIB_PROCESS_RETURN_LONGJMP_SUSPEND;
   if (is_suspend)
   {
+      //进入本分支，表示process经过function处理（或者正在function处理时）认为需要等待
+      //event或者clock，而返回suspend，本分支需要将function加入suspend_process中依
+      //靠定时器及报文触发processn恢复
       vlib_pending_frame_t *pf;
 
       n_vectors = 0;
@@ -1671,7 +1676,7 @@ dispatch_process (vlib_main_t * vm,
       p->n_suspends += 1;
       p->suspended_process_frame_index = pf - nm->suspended_process_frames;
 
-      //process被suspend时需要待待clock
+      //如果process被suspend是为了等待clock,则新建并启动定时器
       if (p->flags & VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK)
 	  {
           //启动定时器，等待p->resume_clock_interval
@@ -1687,12 +1692,13 @@ dispatch_process (vlib_main_t * vm,
   }
   else
   {
+    //非suspend process,则取除掉其对应的running标记
     p->flags &= ~VLIB_PROCESS_IS_RUNNING;
   }
 
   t = clib_cpu_time_now ();
 
-  //????
+  //调度后elog生成
   vlib_elog_main_loop_event (vm, node_runtime->node_index, t, is_suspend,
 			     /* is_after */ 1);
 
@@ -1866,13 +1872,19 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
   vm->numa_node = clib_get_current_numa_node ();
 
   /* Start all processes. */
-  //如果为主线程，则启动所有其它process
+  //如果为主线程，则启动所有process
   if (is_main)
   {
       uword i;
       nm->current_process_index = ~0;
 
-      //node注册时，已完成process生成，这里顺序开始运行
+      //node注册时，已完成process生成，这里顺序开始运行.
+      //vpp的进程是合作式process,即process与调度器相互配合作成task的切换工作
+      //当前vpp支持以下几种切换：
+      //1.通过等待事件在process->function内将自已挂起
+      //2.通过timer在process->function内将自已挂起
+      //3.process->function执行完成后，通过返回值将自已挂起
+      //3.process->function执行完成，不挂起
       for (i = 0; i < vec_len (nm->processes); i++)
       {
 	      cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
@@ -1908,11 +1920,11 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 		  vm->check_frame_queues = 0;
 		}
 
-    	      //遍历所有handoff队列,处理所有frame_queue发送给vm线程的报文
+    	  //遍历所有handoff队列,处理所有frame_queue发送给vm线程的报文
 	      vec_foreach (fqm, tm->frame_queue_mains)
-    	  	      //将frame_queue中的元素出队，并将其交给pending_frames
-    	  	      //（后续pending_frame节点所属的Node会处理它）
-		processed += vlib_frame_queue_dequeue (vm, fqm);
+    	     //将frame_queue中的元素出队，并将其交给pending_frames
+    	     //（后续pending_frame节点所属的Node会处理它）
+		      processed += vlib_frame_queue_dequeue (vm, fqm);
 
 	      /* No handoff queue work found? */
 	      if (processed)
@@ -1920,13 +1932,15 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 	      else
 		frame_queue_check_counter--;
 	    }
+
+	  //执行thead_main_loop_callback
 	  if (PREDICT_FALSE (vm->worker_thread_main_loop_callback != 0))
 	    ((void (*)(vlib_main_t *)) vm->worker_thread_main_loop_callback)
 	      (vm);
 	}
 
       /* Process pre-input nodes. */
-      //处理pre-input类型的节点
+      //处理pre-input类型的节点，必须处于polling状态的
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT])
       {
     	  	  cpu_time_now = dispatch_node (vm, n,
@@ -1937,7 +1951,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       }
 
       /* Next process input nodes. */
-      //input的nodes处理
+      //input的nodes处理，必须处于polling状态
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_INPUT])
       {
     	  	  cpu_time_now = dispatch_node (vm, n,
@@ -2053,7 +2067,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 					  _vec_len (nm->data_from_advancing_timing_wheel);
 		  }
 
-		  //如果存在过期了的定时器，触发这些定时器
+		  //如果存在过期了的定时器，触发这些定时器函数
 		  if (PREDICT_FALSE
 				  (_vec_len (nm->data_from_advancing_timing_wheel) > 0))
 		  {
@@ -2068,7 +2082,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 
 				  if (vlib_timing_wheel_data_is_timed_event (d))
 				  {
-				      //事件触发类timer
+				      //事件触发类timer，这类timer是process要求在interval后触发事件，这里为node生成event
+
 				      //通过索引查找到相应的te
 					  vlib_signal_timed_event_data_t *te =
 							  pool_elt_at_index (nm->signal_timed_event_data_pool,
@@ -2077,12 +2092,15 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 							  vlib_get_node (vm, te->process_node_index);
 					  vlib_process_t *p =
 							  vec_elt (nm->processes, n->runtime_index);
+					  //生成event,获得event data指针，准备填充它
 					  void *data;
 					  data =
 							  vlib_process_signal_event_helper (nm, n, p,
+							          /*知会process发生的事件编号*/
 									  te->event_type_index,
 									  te->n_data_elts,
 									  te->n_data_elt_bytes);
+					  //写入event data
 					  if (te->n_data_bytes < sizeof (te->inline_event_data))
 					  {
 						  clib_memcpy_fast (data, te->inline_event_data,
@@ -2094,6 +2112,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
 								  te->n_data_bytes);
 						  vec_free (te->event_data_as_vector);
 					  }
+
+					  //归还te
 					  pool_put (nm->signal_timed_event_data_pool, te);
 				  }
 				  else

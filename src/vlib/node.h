@@ -422,9 +422,11 @@ typedef struct vlib_frame_t
 typedef struct
 {
   /* Frame index. */
-  u32 frame_index;//对应的frame index
+  //对应的frame index
+  u32 frame_index;
 
   /* Node runtime for this next. */
+  //指向此报文是送给哪个node的
   u32 node_runtime_index;
 
   /* Next frame flags. */
@@ -435,6 +437,7 @@ typedef struct
   VLIB_NODE_FLAG_FRAME_NO_FREE_AFTER_DISPATCH
 
   /* Don't append this frame */
+  //标记此frame不支持附加frame index
 #define VLIB_FRAME_NO_APPEND (1 << 14)
 
   /* This next frame owns enqueue to node
@@ -446,7 +449,7 @@ typedef struct
 #define VLIB_FRAME_IS_ALLOCATED	VLIB_NODE_FLAG_IS_OUTPUT
 
   /* Set when frame has been added to pending vector. */
-  //标记报文被加入到pending中
+  //标记报文已被加入到pending vector中
 #define VLIB_FRAME_PENDING VLIB_NODE_FLAG_IS_DROP
 
   /* Set when frame is to be freed after dispatch. */
@@ -609,25 +612,30 @@ typedef struct
   /* Size of process stack. */
   u16 log2_n_stack_bytes;//process栈空间大小
 
-  u32 suspended_process_frame_index;//此process被挂起时对应的frame索引
+  u32 suspended_process_frame_index;//此process被挂起时对应的pending frame索引
 
   /* Number of times this process was suspended. */
   u32 n_suspends;//此process被挂起的次数
 
   /* Vectors of pending event data indexed by event type index. */
+  //指出event id对应的event data
   void **pending_event_data_by_type_index;
 
   /* Bitmap of event type-indices with non-empty vectors. */
+  //标记event id的bitmap(通过此字段拿到event对应的id,再取event data,event type)
   uword *non_empty_event_type_bitmap;
 
   /* Bitmap of event type-indices which are one time events. */
+  //指出event id对应的event是否为单次event
   uword *one_time_event_type_bitmap;
 
   /* Type is opaque pointer -- typically a pointer to an event handler
      function.  Hash table to map opaque to a type index. */
+  //通过event type映射event id的hashtable
   uword *event_type_index_by_type_opaque;
 
   /* Pool of currently valid event types. */
+  //指出event id对应的user给出的event type
   vlib_process_event_type_t *event_type_pool;
 
   /*
@@ -758,6 +766,7 @@ typedef struct
   u32 interrupt_threshold_vector_length;
 
   /* Vector of next frames. */
+  //用于记录要送给自当前node,要送给下一级node的frame
   vlib_next_frame_t *next_frames;
 
   /* Vector of internal node's frames waiting to be called. */
@@ -788,6 +797,7 @@ typedef struct
   vlib_pending_frame_t *suspended_process_frames;
 
   /* Vector of event data vectors pending recycle. */
+  //提取可复用的event data vector
   void **recycled_event_data_vectors;
 
   /* Current counts of nodes in each state. */

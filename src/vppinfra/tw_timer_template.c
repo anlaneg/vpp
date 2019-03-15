@@ -416,6 +416,7 @@ void TW (tw_timer_stop) (TWT (tw_timer_wheel) * tw, u32 handle)
   pool_put_index (tw->timers, handle);
 }
 
+//检查所给定时器是否未被占用
 int TW (tw_timer_handle_is_free) (TWT (tw_timer_wheel) * tw, u32 handle)
 {
   return pool_is_free_index (tw->timers, handle);

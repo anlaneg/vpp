@@ -449,6 +449,7 @@ alloc_http_process (http_server_args * args)
   save_args = vlib_node_get_runtime_data (vm, n->index);
   *save_args = args;
 
+  //启动此进程
   vlib_start_process (vm, n->runtime_index);
 }
 

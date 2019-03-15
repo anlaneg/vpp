@@ -174,6 +174,7 @@ typedef struct
   /*需要帮助计算内层udp,tcp　checksum的假头部checksum*/\
   _(10, INTEL_PHDR_CKSUM, "intel-phdr-cksum") \
   _(11, RX_FLOW_OFFLOAD, "rx-flow-offload") \
+  /*此接口开启了rx ipv4 checksum校验*/\
   _(12, RX_IP4_CKSUM, "rx-ip4-cksum")
 
 enum

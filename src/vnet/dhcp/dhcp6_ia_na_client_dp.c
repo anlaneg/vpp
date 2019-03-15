@@ -503,6 +503,7 @@ dhcp6_reply_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
     {
       vlib_process_wait_for_event (vm);
       uword event_type = DHCP6_DP_REPLY_REPORT;
+      //提取process收到的event(如果没有事件，则返回0)
       void *event_data = vlib_process_get_event_data (vm, &event_type);
 
       int i;
