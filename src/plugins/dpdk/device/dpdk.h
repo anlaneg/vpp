@@ -161,10 +161,12 @@ typedef struct
   _( 0, ADMIN_UP, "admin-up") \
   /*接口是否开启了混杂模式*/\
   _( 1, PROMISC, "promisc") \
+  /*标明接口属于PMD设备*/\
   _( 2, PMD, "pmd") \
   _( 3, PMD_INIT_FAIL, "pmd-init-fail") \
   _( 4, MAYBE_MULTISEG, "maybe-multiseg") \
   _( 5, HAVE_SUBIF, "subif") \
+  /*标明此接口启用了hqos功能*/\
   _( 6, HQOS, "hqos") \
   _( 7, BOND_SLAVE, "bond-slave") \
   _( 8, BOND_SLAVE_UP, "bond-slave-up") \
@@ -198,38 +200,39 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  //当设备使用的数量小于线程数时，启用锁，每个线程一个空间，标记是否加锁
   volatile u32 **lockp;
 
   /* Instance ID to access internal device array. */
-  dpdk_portid_t device_index;//内部数组索引（用于找出设备）
+  dpdk_portid_t device_index;//接口编号（vpp内部，用于找出设备）
 
   /* DPDK device port number */
   dpdk_portid_t port_id;//接口在dpdk中的编号
 
-  u32 hw_if_index;
-  u32 sw_if_index;
+  u32 hw_if_index;//接口的hardware interface index
+  u32 sw_if_index;//接口的software interface index
 
   /* next node index if we decide to steal the rx graph arc */
   u32 per_interface_next_index;//指明此接口的进来的报文对应的下一级node
 
   dpdk_pmd_t pmd:8;
-  i8 cpu_socket;
+  i8 cpu_socket;//设备所属的numa node
 
   u16 flags;
 
-  u16 nb_tx_desc;
+  u16 nb_tx_desc;/*发方向描述符数量*/
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
 
-  u8 *name;
+  u8 *name;//设备名称
   u8 *interface_name_suffix;
 
   /* number of sub-interfaces */
   u16 num_subifs;
 
   /* PMD related */
-  u16 tx_q_used;
-  u16 rx_q_used;
-  u16 nb_rx_desc;
+  u16 tx_q_used;//发方向队列数量
+  u16 rx_q_used;//收方向队列数量
+  u16 nb_rx_desc;//收方向描述符数量
   u16 *cpu_socket_id_by_queue;
   u8 *buffer_pool_for_queue;
   struct rte_eth_conf port_conf;
@@ -255,7 +258,8 @@ typedef struct
      only valid if DPDK_DEVICE_FLAG_BOND_SLAVE bit is set */
   dpdk_portid_t bond_port;
 
-  struct rte_eth_link link;//接口的链路状态
+  //接口的链路状态
+  struct rte_eth_link link;
   f64 time_last_link_update;
 
   struct rte_eth_stats stats;
@@ -264,7 +268,7 @@ typedef struct
   struct rte_eth_xstat *xstats;
   struct rte_eth_xstat *last_cleared_xstats;
   f64 time_last_stats_update;
-  dpdk_port_type_t port_type;
+  dpdk_port_type_t port_type;/*接口速率类型*/
 
   /* mac address */
   u8 *default_mac_address;
@@ -413,7 +417,8 @@ typedef struct
 {
 
   /* Devices */
-  dpdk_device_t *devices;//保存所有dpdk设备
+  //保存所有dpdk设备，一般代码中通过dev_instance获得dpdk_device（常称为xd)
+  dpdk_device_t *devices;
   dpdk_device_and_queue_t **devices_by_hqos_cpu;
   dpdk_per_thread_data_t *per_thread_data;
 
@@ -431,7 +436,9 @@ typedef struct
   int hqos_cpu_count;
 
   /* control interval of dpdk link state and stat polling */
+  //link状态的poll间隔
   f64 link_state_poll_interval;
+  //统计poll间隔
   f64 stat_poll_interval;
 
   /* convenience */

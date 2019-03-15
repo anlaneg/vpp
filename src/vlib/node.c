@@ -275,6 +275,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
 }
 
 /* Add named next node to given node in given slot. */
+//添加或者获得一个指定名称的next_node,并返回此next_node对应的slot
 uword
 vlib_node_add_named_next_with_slot (vlib_main_t * vm,
 				    uword node, char *name, uword slot)
@@ -290,6 +291,8 @@ vlib_node_add_named_next_with_slot (vlib_main_t * vm,
   n_next = vlib_get_node_by_name (vm, (u8 *) name);
   if (!n_next)
     {
+      //如果没有查找此名称的node,则为其创建名称为name的next_node
+      //并返回此next_node的slot
       if (nm->flags & VLIB_NODE_MAIN_RUNTIME_STARTED)
 	return ~0;
 

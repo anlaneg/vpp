@@ -54,6 +54,7 @@
   _fe(u16, dst_port) \
   _fe(u16, vni)
 
+//定义不同的action
 #define foreach_flow_action \
   _(0, COUNT, "count") \
   _(1, MARK, "mark") \

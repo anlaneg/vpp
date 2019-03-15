@@ -75,6 +75,7 @@ format_flow_error (u8 * s, va_list * args)
   return format (s, "unknown error (%d)", error);
 }
 
+//将actions标记转换为字符串形式
 u8 *
 format_flow_actions (u8 * s, va_list * args)
 {
@@ -82,7 +83,9 @@ format_flow_actions (u8 * s, va_list * args)
   u8 *t = 0;
 
 #define _(a, b, c) if (actions & (1 << a)) \
+    /*如果t有值，则添加空格隔开，并输出c*/\
   t = format (t, "%s%s", t ? " ":"", c);
+  //将actions转换为字符串形式
   foreach_flow_action
 #undef _
     s = format (s, "%v", t);

@@ -1081,6 +1081,7 @@ unformat_init_string (unformat_input_t * input, char *string, int string_len)
     vec_add (input->buffer, string, string_len);
 }
 
+//利用s构造input
 void
 unformat_init_vector (unformat_input_t * input, u8 * vector_string)
 {

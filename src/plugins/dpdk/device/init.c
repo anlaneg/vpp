@@ -144,6 +144,7 @@ dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
   return old;
 }
 
+//设备锁初始化（用于多线程对单队列情况）
 static void
 dpdk_device_lock_init (dpdk_device_t * xd)
 {
@@ -163,6 +164,7 @@ dpdk_port_crc_strip_enabled (dpdk_device_t * xd)
   return !(xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC);
 }
 
+//配置并启动相应的port,并针对每个port创建input node,output node(internal类型）,tx node（internal类型）
 static clib_error_t *
 dpdk_lib_init (dpdk_main_t * dm)
 {
@@ -207,6 +209,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 
   if (nports < 1)
     {
+      //没有发现有效的接口，告警
       dpdk_log_notice ("DPDK drivers found no ports...");
     }
 
@@ -239,7 +242,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       struct rte_pci_device *pci_dev;
       struct rte_eth_link l;
       dpdk_device_config_t *devconf = 0;
-      vlib_pci_addr_t pci_addr;
+      vlib_pci_addr_t pci_addr;/*记录设备对应的pci地址*/
       uword *p = 0;
 
       //跳过无效port
@@ -267,6 +270,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  pci_addr.bus = pci_dev->addr.bus;
 	  pci_addr.slot = pci_dev->addr.devid;
 	  pci_addr.function = pci_dev->addr.function;
+	  //通过pci地址拿到针对此设备的配置
 	  p = hash_get (dm->conf->device_config_index_by_pci_addr,
 			pci_addr.as_u32);
 	}
@@ -280,12 +284,12 @@ dpdk_lib_init (dpdk_main_t * dm)
 
       if (p)
 	{
-    	  //如果有port对应的配置，则使用设备配置
+      //如果有port对应的配置，则使用设备配置
 	  devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
 	  xd->name = devconf->name;
 	}
       else
-    	  //使用默认的设备配置
+    //使用默认的设备配置
 	devconf = &dm->conf->default_devconf;
 
       /* Handle interface naming for devices with multiple ports sharing same PCI ID */
@@ -293,7 +297,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	{
 	  struct rte_eth_dev_info di = { 0 };
 	  struct rte_pci_device *next_pci_dev;
-	  rte_eth_dev_info_get (i + 1, &di);
+	  rte_eth_dev_info_get (i + 1, &di);//取下一个设备信息
 	  next_pci_dev = di.device ? RTE_DEV_TO_PCI (di.device) : 0;
 	  if (pci_dev && next_pci_dev &&
 	      pci_addr.as_u32 != last_pci_addr.as_u32 &&
@@ -326,6 +330,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  xd->flags |= DPDK_DEVICE_FLAG_RX_IP4_CKSUM;
 	}
 
+      //巨大帧标记处理
       if (dm->conf->no_multi_seg)
 	{
 	  xd->port_conf.txmode.offloads &= ~DEV_TX_OFFLOAD_MULTI_SEGS;
@@ -340,6 +345,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  xd->flags |= DPDK_DEVICE_FLAG_MAYBE_MULTISEG;
 	}
 
+      //发送队列数目
       xd->tx_q_used = clib_min (dev_info.max_tx_queues, tm->n_vlib_mains);
 
       if (devconf->num_tx_queues > 0
@@ -369,9 +375,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    dev_info.flow_type_rss_offloads;
 	}
       else
-    	  //否则仅使用1个rx队列
+    //否则仅使用1个rx队列
 	xd->rx_q_used = 1;
 
+      //标记设备属于pmd设备
       xd->flags |= DPDK_DEVICE_FLAG_PMD;
 
       /* workaround for drivers not setting driver_name */
@@ -389,6 +396,7 @@ dpdk_lib_init (dpdk_main_t * dm)
                  xd->pmd = VNET_DPDK_PMD_##f;
 	  if (0)
 	    ;
+	  //按驱动名称设置pmd类型
 	  foreach_dpdk_pmd
 #undef _
 	    else
@@ -526,7 +534,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       //生成或者获取接口对应的mac地址
       if (xd->pmd == VNET_DPDK_PMD_AF_PACKET)
 	{
-    	  //生成随机的mac地址
+      //生成随机的mac地址
 	  f64 now = vlib_time_now (vm);
 	  u32 rnd;
 	  rnd = (u32) (now * 1e6);
@@ -538,6 +546,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       else
 	rte_eth_macaddr_get (i, (struct ether_addr *) addr);
 
+      //使用的队列数量小于vlib_main数量时，需要为此接口启用锁
       if (xd->tx_q_used < tm->n_vlib_mains)
 	dpdk_device_lock_init (xd);
 
@@ -550,6 +559,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 
       if (devconf->hqos_enabled)
 	{
+      //标明设备启用HQOS
 	  xd->flags |= DPDK_DEVICE_FLAG_HQOS;
 
 	  int cpu;
@@ -582,10 +592,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	}
 
 
-      //注册以太网接口
+     //为vpp注册以太网接口
       error = ethernet_register_interface
 	(dm->vnet_main, dpdk_device_class.index, xd->device_index,
-	 /* ethernet address */ addr,
+	 /* ethernet address */ addr/*接口mac地址*/,
 	 &xd->hw_if_index, dpdk_flag_change);
       if (error)
 	return error;
@@ -663,8 +673,9 @@ dpdk_lib_init (dpdk_main_t * dm)
 	}
 
       /*Set port rxmode config */
-      xd->port_conf.rxmode.max_rx_pkt_len = max_rx_frame;
+      xd->port_conf.rxmode.max_rx_pkt_len = max_rx_frame;//设置报文的最大接收长度
 
+      //设置software interface index
       sw = vnet_get_hw_sw_interface (dm->vnet_main, xd->hw_if_index);
       xd->sw_if_index = sw->sw_if_index;
       vnet_hw_interface_set_input_node (dm->vnet_main, xd->hw_if_index,
@@ -674,6 +685,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	{
 	  int i;
 	  q = 0;
+	  //遍历worker对应的bitmap,设置rx thread
 	  clib_bitmap_foreach (i, devconf->workers, ({
 	    vnet_hw_interface_assign_rx_thread (dm->vnet_main, xd->hw_if_index, q++,
 					     vdm->first_worker_thread_index + i);
@@ -687,6 +699,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  }
 
       /*Get vnet hardware interface */
+      //取hardware interface
       hi = vnet_get_hw_interface (dm->vnet_main, xd->hw_if_index);
 
       /*Override default max_packet_bytes and max_supported_bytes set in
@@ -709,6 +722,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 		      format_dpdk_device_name, i,
 		      format_dpdk_device_errors, xd);
 
+      //初始化hqos
       if (devconf->hqos_enabled)
 	{
 	  clib_error_t *rv;
@@ -733,7 +747,7 @@ dpdk_lib_init (dpdk_main_t * dm)
       else if (devconf->vlan_strip_offload == DPDK_DEVICE_VLAN_STRIP_ON)
 	vlan_strip = 1;
 
-      //处理vlan strip
+      //如果需要处理vlan strip，设置相应标记，设置硬件vlan offload
       if (vlan_strip)
 	{
 	  int vlan_off;
@@ -961,6 +975,7 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
   /* *INDENT-ON* */
 }
 
+//dpdk设备配置
 static clib_error_t *
 dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
 		    unformat_input_t * input, u8 is_default)
@@ -1002,8 +1017,10 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
   unformat_skip_white_space (input);
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
+      //rx队列数目
       if (unformat (input, "num-rx-queues %u", &devconf->num_rx_queues))
 	;
+      //tx队列数目
       else if (unformat (input, "num-tx-queues %u", &devconf->num_tx_queues))
 	;
       else if (unformat (input, "num-rx-desc %u", &devconf->num_rx_desc))
@@ -1065,6 +1082,7 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
   return error;
 }
 
+//接收dpdk日志，生成vlib自已的日志
 static clib_error_t *
 dpdk_log_read_ready (clib_file_t * uf)
 {
@@ -1085,10 +1103,13 @@ dpdk_log_read_ready (clib_file_t * uf)
       _vec_len (s) = len + (n < 0 ? 0 : n);
     }
 
+  //构造input
   unformat_init_vector (&input, s);
 
+  //按行解析input,获得日志line
   while (unformat_user (&input, unformat_line, &line))
     {
+      //产生vlib日志
       dpdk_log_notice ("%v", line);
       vec_free (line);
     }
@@ -1097,7 +1118,7 @@ dpdk_log_read_ready (clib_file_t * uf)
   return 0;
 }
 
-//dpdk配置入口
+//dpdk配置入口，完成dpdk初始化
 static clib_error_t *
 dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -1148,6 +1169,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "dev default %U", unformat_vlib_cli_sub_input,
 			 &sub_input))
 	{
+      //完成设备的配置解析
 	  error =
 	    dpdk_device_config (conf, (vlib_pci_addr_t) (u32) ~ 1, &sub_input,
 				1);
@@ -1427,6 +1449,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 		      (char **) conf->eal_init_args);
 
   /* lazy umount hugepages */
+  //延迟umount大页
   umount2 ((char *) huge_dir_path, MNT_DETACH);
   rmdir ((char *) huge_dir_path);
   vec_free (huge_dir_path);
@@ -1443,23 +1466,25 @@ done:
   return error;
 }
 
-//注册dpdk的配置函数
+//注册dpdk的配置函数（收集配置，完成dpdk初始化）
 VLIB_CONFIG_FUNCTION (dpdk_config, "dpdk");
 
 void
 dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 {
   vnet_main_t *vnm = vnet_get_main ();
-  struct rte_eth_link prev_link = xd->link;
+  struct rte_eth_link prev_link = xd->link;//旧的link状态
   u32 hw_flags = 0;
   u8 hw_flags_chg = 0;
 
   /* only update link state for PMD interfaces */
+  //仅处理pmd类型设备
   if ((xd->flags & DPDK_DEVICE_FLAG_PMD) == 0)
     return;
 
   xd->time_last_link_update = now ? now : xd->time_last_link_update;
   clib_memset (&xd->link, 0, sizeof (xd->link));
+  //获取接口的link情况，定为新的link状态
   rte_eth_link_get_nowait (xd->port_id, &xd->link);
 
   if (LINK_STATE_ELOGS)
@@ -1478,6 +1503,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	u8 old_link_state;
 	u8 new_link_state;
       } *ed;
+      //构造elog
       ed = ELOG_DATA (&vm->elog_main, e);
       ed->sw_if_index = xd->sw_if_index;
       ed->admin_up = (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) != 0;
@@ -1486,6 +1512,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
       ed->new_link_state = (u8) xd->link.link_status;
     }
 
+  //link与之前link状态不同，则更新
   if ((xd->flags & (DPDK_DEVICE_FLAG_ADMIN_UP | DPDK_DEVICE_FLAG_BOND_SLAVE))
       && ((xd->link.link_status != 0) ^
 	  vnet_hw_interface_is_link_up (vnm, xd->hw_if_index)))
@@ -1494,6 +1521,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
       hw_flags |= (xd->link.link_status ? VNET_HW_INTERFACE_FLAG_LINK_UP : 0);
     }
 
+  //双工模式不同时，更新flags
   if (hw_flags_chg || (xd->link.link_duplex != prev_link.link_duplex))
     {
       hw_flags_chg = 1;
@@ -1509,6 +1537,8 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	  break;
 	}
     }
+
+  //speed不同时，更新speed对应的flags
   if (xd->link.link_speed != prev_link.link_speed)
     vnet_hw_interface_set_link_speed (vnm, xd->hw_if_index,
 				      xd->link.link_speed * 1000);
@@ -1534,11 +1564,12 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	  ed->sw_if_index = xd->sw_if_index;
 	  ed->flags = hw_flags;
 	}
+      //设置新的link标记
       vnet_hw_interface_set_flags (vnm, xd->hw_if_index, hw_flags);
     }
 }
 
-//dpdk process node函数处理
+//dpdk process node函数处理(完成接口配置，处理接口link状态，更统计更新，会主动挂起）
 static uword
 dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 {
@@ -1551,7 +1582,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   int i;
   int j;
 
-  //dpdk库初始化
+  //dpdk已识别设备配置，针对每个接口创建动态的node
   error = dpdk_lib_init (dm);
 
   if (error)
@@ -1579,9 +1610,10 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
     if (nports > 0)
       {
 	/* *INDENT-OFF* */
+    //遍历每个dev
 	RTE_ETH_FOREACH_DEV(i)
 	  {
-		//查找port_id为i的devices
+		//获得编号为i的dpdk_device
 	    xd = NULL;
 	    for (j = 0; j < nports; j++)
 	      {
@@ -1595,6 +1627,7 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	    if (xd != NULL && xd->pmd == VNET_DPDK_PMD_BOND)
 	      {
 		u8 addr[6];
+		//获得i设备的所有成员port,记录在slink中
 		dpdk_portid_t slink[16];
 		int nlink = rte_eth_bond_slaves_get (i, slink, 16);
 		if (nlink > 0)
@@ -1684,12 +1717,14 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
       f64 min_wait = dm->link_state_poll_interval < dm->stat_poll_interval ?
 	dm->link_state_poll_interval : dm->stat_poll_interval;
 
+      //使自已等待min_wait时间
       vlib_process_wait_for_event_or_clock (vm, min_wait);
 
       if (dm->admin_up_down_in_progress)
 	/* skip the poll if an admin up down is in progress (on any interface) */
 	continue;
 
+      //遍历所有device，在指定间隔内执行update
       vec_foreach (xd, dm->devices)
       {
 	f64 now = vlib_time_now (vm);

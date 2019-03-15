@@ -354,12 +354,14 @@ format_dpdk_flow (u8 * s, va_list * args)
   u32 dev_instance = va_arg (*args, u32);
   u32 flow_index = va_arg (*args, u32);
   uword private_data = va_arg (*args, uword);
+
   dpdk_main_t *dm = &dpdk_main;
   dpdk_device_t *xd = vec_elt_at_index (dm->devices, dev_instance);
   dpdk_flow_entry_t *fe;
 
   if (flow_index == ~0)
     {
+      //列出支持的actions
       s = format (s, "%-25s: %U\n", "supported flow actions",
 		  format_flow_actions, xd->supported_flow_actions);
       s = format (s, "%-25s: %d\n", "last DPDK error type",

@@ -57,10 +57,10 @@ typedef struct
 
 typedef struct
 {
-  u32 hw_if_index;
+  u32 hw_if_index;//所属的hardware interface index
   u32 dev_instance;//所属的设备id
   u16 queue_id;//所属的queue id
-  vnet_hw_interface_rx_mode mode;
+  vnet_hw_interface_rx_mode mode;//报文收取方式
   u32 interrupt_pending;
 } vnet_device_and_queue_t;
 
@@ -75,6 +75,7 @@ extern vlib_node_registration_t device_input_node;
 extern const u32 device_input_next_node_advance[];
 extern const u32 device_input_next_node_flags[];
 
+//设置hardware interface 对应的input node index
 static inline void
 vnet_hw_interface_set_input_node (vnet_main_t * vnm, u32 hw_if_index,
 				  u32 node_index)

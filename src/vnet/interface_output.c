@@ -466,6 +466,7 @@ drop_one_buffer_and_count (vlib_main_t * vm, vnet_main_t * vnm,
 			   node->node_index, drop_error_code);
 }
 
+//软件做gso,并使报文走tx
 static_always_inline uword
 vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 				       vlib_node_runtime_t * node,
@@ -561,7 +562,8 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 	  vlib_prefetch_buffer_with_index (vm, from[6], LOAD);
 	  vlib_prefetch_buffer_with_index (vm, from[7], LOAD);
 
-	  bi0 = from[0];//提取报文buffer
+	  //获取buffer index
+	  bi0 = from[0];
 	  bi1 = from[1];
 	  bi2 = from[2];
 	  bi3 = from[3];
@@ -576,14 +578,14 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 	      n_left_to_tx -= 4;
 	    }
 
-	  //提取buffer
+	  //通过buffer index获得buffer
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b1 = vlib_get_buffer (vm, bi1);
 	  b2 = vlib_get_buffer (vm, bi2);
 	  b3 = vlib_get_buffer (vm, bi3);
 
 	  if (do_segmentation)
-	    {
+	  {
 	      or_flags = b0->flags | b1->flags | b2->flags | b3->flags;
 
 	      /* go to single loop if we need TSO segmentation */
@@ -592,7 +594,7 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 	      from += 4;
 	      to_tx += 4;
 	      n_left_to_tx -= 4;
-	    }
+	  }
 
 	  /* Be grumpy about zero length buffers for benefit of
 	     driver tx function. */
@@ -817,6 +819,7 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 }
 #endif /* CLIB_MARCH_VARIANT */
 
+//完成tx方向的capture包文处理
 static_always_inline void vnet_interface_pcap_tx_trace
   (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame,
    int sw_if_index_from_buffer)
@@ -824,6 +827,7 @@ static_always_inline void vnet_interface_pcap_tx_trace
   u32 n_left_from, *from;
   u32 sw_if_index;
 
+  //TX发向没有开启pcap_enable,退出
   if (PREDICT_TRUE (vm->pcap[VLIB_TX].pcap_enable == 0))
     return;
 
@@ -885,6 +889,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 						  /* do_segmentation */ 1);
 }
 
+//针对接口的output节点(处理gso相关业务，并最终将报文引向tx节点）
 uword
 vnet_interface_output_node (vlib_main_t * vm, vlib_node_runtime_t * node,
 			    vlib_frame_t * frame)
@@ -892,8 +897,11 @@ vnet_interface_output_node (vlib_main_t * vm, vlib_node_runtime_t * node,
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hi;
   vnet_interface_output_runtime_t *rt = (void *) node->runtime_data;
+
+  //取此节点对应的software interface
   hi = vnet_get_sup_hw_interface (vnm, rt->sw_if_index);
 
+  //发方向capture报文处理
   vnet_interface_pcap_tx_trace (vm, node, frame,
 				0 /* sw_if_index_from_buffer */ );
 

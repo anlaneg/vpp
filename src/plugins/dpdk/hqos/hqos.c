@@ -242,7 +242,7 @@ dpdk_device_config_hqos_default (dpdk_device_config_hqos_t * hqos)
  * HQoS init
  *
  ***/
-
+//启动dpdk hqos
 clib_error_t *
 dpdk_port_setup_hqos (dpdk_device_t * xd, dpdk_device_config_hqos_t * hqos)
 {

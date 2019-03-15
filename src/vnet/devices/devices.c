@@ -101,6 +101,7 @@ VNET_FEATURE_INIT (ethernet_input, static) = {
 };
 /* *INDENT-ON* */
 
+//队列排序
 static int
 vnet_device_queue_sort (void *a1, void *a2)
 {
@@ -137,14 +138,14 @@ vnet_device_queue_update (vnet_main_t * vnm, vnet_device_input_runtime_t * rt)
 
 void
 vnet_hw_interface_assign_rx_thread (vnet_main_t * vnm, u32 hw_if_index,
-				    u16 queue_id, uword thread_index)
+				    u16 queue_id, uword thread_index/*要assign的线程编号*/)
 {
   vnet_device_main_t *vdm = &vnet_device_main;
   vlib_main_t *vm, *vm0;
   vnet_device_input_runtime_t *rt;
   vnet_device_and_queue_t *dq;
 
-  //通过index获取硬件接口
+  //通过index获取hardware interface
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
 
   ASSERT (hw->input_node_index > 0);
@@ -166,13 +167,15 @@ vnet_hw_interface_assign_rx_thread (vnet_main_t * vnm, u32 hw_if_index,
 
   vlib_worker_thread_barrier_sync (vm0);
 
+  //取hardware interface对应的input node
   rt = vlib_node_get_runtime_data (vm, hw->input_node_index);
 
+  //构造device queue
   vec_add2 (rt->devices_and_queues, dq, 1);
   dq->hw_if_index = hw_if_index;
   dq->dev_instance = hw->dev_instance;
   dq->queue_id = queue_id;
-  dq->mode = VNET_HW_INTERFACE_RX_MODE_POLLING;
+  dq->mode = VNET_HW_INTERFACE_RX_MODE_POLLING;//poll方式
   rt->enabled_node_state = VLIB_NODE_STATE_POLLING;
 
   vnet_device_queue_update (vnm, rt);
@@ -183,6 +186,7 @@ vnet_hw_interface_assign_rx_thread (vnet_main_t * vnm, u32 hw_if_index,
 
   vlib_worker_thread_barrier_release (vm0);
 
+  //更新node状态为polling
   vlib_node_set_state (vm, hw->input_node_index, rt->enabled_node_state);
 }
 

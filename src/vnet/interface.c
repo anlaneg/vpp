@@ -736,7 +736,7 @@ setup_output_node (vlib_main_t * vm,
 }
 
 /* Register an interface instance. */
-//接口注册
+//接口注册，为此接口设置output节点做为此接口的输出node,并在node后添加tx完成真正的输出
 u32
 vnet_register_interface (vnet_main_t * vnm,
 			 u32 dev_class_index,
@@ -745,17 +745,22 @@ vnet_register_interface (vnet_main_t * vnm,
 {
   vnet_interface_main_t *im = &vnm->interface_main;
   vnet_hw_interface_t *hw;
+
   //取设备类型
   vnet_device_class_t *dev_class =
     vnet_get_device_class (vnm, dev_class_index);
+
+  //取l2层设备类型
   vnet_hw_interface_class_t *hw_class =
     vnet_get_hw_interface_class (vnm, hw_class_index);
+
   vlib_main_t *vm = vnm->vlib_main;
   vnet_feature_config_main_t *fcm;
   vnet_config_main_t *cm;
   u32 hw_index, i;
   char *tx_node_name = NULL, *output_node_name = NULL;
 
+  //分配一个hardware接口
   pool_get (im->hw_interfaces, hw);
   clib_memset (hw, 0, sizeof (*hw));
 
@@ -763,19 +768,24 @@ vnet_register_interface (vnet_main_t * vnm,
   hw->hw_if_index = hw_index;
   hw->default_rx_mode = VNET_HW_INTERFACE_RX_MODE_POLLING;
 
+  //如果dev定义了名称format函数，则调用初始化hardware的名称
+  //如果hw有format函数，则使用hw的
   if (dev_class->format_device_name)
     hw->name = format (0, "%U", dev_class->format_device_name, dev_instance);
   else if (hw_class->format_interface_name)
     hw->name = format (0, "%U", hw_class->format_interface_name,
 		       dev_instance);
   else
+    //否则采用hw_class名称做前缀进行命名
     hw->name = format (0, "%s%x", hw_class->name, dev_instance);
 
+  //如果未初始化hashtable，则初始化
   if (!im->hw_interface_by_name)
     im->hw_interface_by_name = hash_create_vec ( /* size */ 0,
 						sizeof (hw->name[0]),
 						sizeof (uword));
 
+  //将本hardware interface加入
   hash_set_mem (im->hw_interface_by_name, hw->name, hw_index);
 
   /* Make hardware interface point to software interface. */
@@ -800,10 +810,12 @@ vnet_register_interface (vnet_main_t * vnm,
   if (dev_class->tx_function == 0)
     goto no_output_nodes;	/* No output/tx nodes to create */
 
+  //发包node
   tx_node_name = (char *) format (0, "%v-tx", hw->name);
   output_node_name = (char *) format (0, "%v-output", hw->name);
 
   /* If we have previously deleted interface nodes, re-use them. */
+  //如果有之前缓存的interface node,这里重用它们
   if (vec_len (im->deleted_hw_interface_nodes) > 0)
     {
       vnet_hw_interface_nodes_t *hn;
@@ -863,7 +875,7 @@ vnet_register_interface (vnet_main_t * vnm,
     }
   else
     {
-	  //构造并注册node
+	  //自动，构造并注册internal类型的node,完成向此设备的发包
       vlib_node_registration_t r;
       vnet_interface_output_runtime_t rt = {
 	.hw_if_index = hw_index,
@@ -880,15 +892,17 @@ vnet_register_interface (vnet_main_t * vnm,
       r.vector_size = sizeof (u32);
 
       r.flags = VLIB_NODE_FLAG_IS_OUTPUT;
-      r.name = tx_node_name;
-      r.function = dev_class->tx_function;
+      r.name = tx_node_name;//节点名称
+      r.function = dev_class->tx_function;//节点处理函数（针对此设备输出)
 
       hw->tx_node_index = vlib_register_node (vm, &r);
 
+      //添加"error-drop“做为r的next-node
       vlib_node_add_named_next_with_slot (vm, hw->tx_node_index,
 					  "error-drop",
 					  VNET_INTERFACE_TX_NEXT_DROP);
 
+      //定义output节点，output节点将执行gso,并将报文送向tx节点
       r.flags = 0;
       r.name = output_node_name;
       r.function = vnet_interface_output_node;
@@ -906,6 +920,7 @@ vnet_register_interface (vnet_main_t * vnm,
       }
       hw->output_node_index = vlib_register_node (vm, &r);
 
+      //为output节点指明两个后继，一个是error-drop,一个是tx节点
       vlib_node_add_named_next_with_slot (vm, hw->output_node_index,
 					  "error-drop",
 					  VNET_INTERFACE_OUTPUT_NEXT_DROP);

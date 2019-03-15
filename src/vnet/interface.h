@@ -52,8 +52,8 @@ struct ip46_address_t;
 typedef enum
 {
   VNET_HW_INTERFACE_RX_MODE_UNKNOWN,
-  VNET_HW_INTERFACE_RX_MODE_POLLING,
-  VNET_HW_INTERFACE_RX_MODE_INTERRUPT,
+  VNET_HW_INTERFACE_RX_MODE_POLLING/*接口收方向采用polling方式*/,
+  VNET_HW_INTERFACE_RX_MODE_INTERRUPT/*接口收方向采用中断方式*/,
   VNET_HW_INTERFACE_RX_MODE_ADAPTIVE,
   VNET_HW_INTERFACE_RX_MODE_DEFAULT,
   VNET_HW_INTERFACE_NUM_RX_MODES,
@@ -496,6 +496,8 @@ typedef enum vnet_hw_interface_flags_t_
 typedef struct vnet_hw_interface_t
 {
   /* Interface name. */
+  //接口名称（如果dev有format函数，则使用dev的，否则使用hw的format函数进行命名）
+  //否则hw有name，则使用其做前缀进行命名
   u8 *name;
 
   /* flags */
@@ -511,21 +513,22 @@ typedef struct vnet_hw_interface_t
 
   /* Interface is up as far as software is concerned. */
   /* NAME.{output,tx} nodes for this interface. */
-  u32 output_node_index, tx_node_index;
+  //此接口output_node将被首先调起，由它转给tx_node_index完成包文的发送
+  u32 output_node_index/*针对此接口的output node*/, tx_node_index/*针对此接口的发包node*/;
 
   /* (dev_class, dev_instance) uniquely identifies hw interface. */
-  u32 dev_class_index;
+  u32 dev_class_index;//设备类别索引
   u32 dev_instance;
 
   /* (hw_class, hw_instance) uniquely identifies hw interface. */
-  u32 hw_class_index;
+  u32 hw_class_index;//hardware interface类型索引
   u32 hw_instance;
 
   /* Hardware index for this hardware interface. */
-  u32 hw_if_index;
+  u32 hw_if_index;//hardware接口索引
 
   /* Software index for this hardware interface. */
-  u32 sw_if_index;
+  u32 sw_if_index;//software interface索引
 
   /* Next index in interface-output node for this interface
      used by node function vnet_per_buffer_interface_output() */
@@ -561,16 +564,19 @@ typedef struct vnet_hw_interface_t
 #define VNET_HW_INTERFACE_BOND_INFO_SLAVE ((uword *) ~0)
 
   /* Input node */
-  u32 input_node_index;
+  u32 input_node_index;//接口对应的input node index
 
   /* input node cpu index by queue */
+  //通过queue_id索引thread_index
   u32 *input_node_thread_index_by_queue;
 
   /* vnet_hw_interface_rx_mode by queue */
+  //按queue id 索引rx mode
   u8 *rx_mode_by_queue;
-  vnet_hw_interface_rx_mode default_rx_mode;
+  vnet_hw_interface_rx_mode default_rx_mode;/*接口收包方式，例如polling*/
 
   /* device input device_and_queue runtime index */
+  //按queue_id索引device_queue
   uword *dq_runtime_index_by_queue;
 
 } vnet_hw_interface_t;
@@ -809,11 +815,12 @@ typedef struct
   vnet_hw_interface_t *hw_interfaces;//硬件接口表
 
   /* Hash table mapping HW interface name to index. */
+  //hash表，通过interface名称索引
   uword *hw_interface_by_name;
 
   /* Vectors if hardware interface classes and device classes. */
   vnet_hw_interface_class_t *hw_interface_classes;
-  vnet_device_class_t *device_classes;//注册设备可发送报文类型
+  vnet_device_class_t *device_classes;//设备类型ops
 
   /* Hash table mapping name to hw interface/device class. */
   uword *hw_interface_class_by_name;
@@ -831,6 +838,7 @@ typedef struct
   vlib_simple_counter_main_t *sw_if_counters;
   vlib_combined_counter_main_t *combined_sw_if_counters;
 
+  //缓存被删除的interface node
   vnet_hw_interface_nodes_t *deleted_hw_interface_nodes;
 
   /* pcap drop tracing */

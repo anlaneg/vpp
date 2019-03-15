@@ -90,7 +90,7 @@ dpdk_device_setup (dpdk_device_t * xd)
       xd->port_conf.rxmode.offloads ^= bitmap;
     }
 
-  //配置设备
+  //dpdk设备配置
   rv = rte_eth_dev_configure (xd->port_id, xd->rx_q_used,
 			      xd->tx_q_used, &xd->port_conf);
 

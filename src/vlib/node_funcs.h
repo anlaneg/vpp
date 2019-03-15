@@ -731,7 +731,7 @@ vlib_process_wait_for_event_with_type (vlib_main_t * vm,
     @param dt - timeout, in seconds.
     @returns the remaining time interval
 */
-
+//使当前process等待一个event或者clock,等待dt时间
 always_inline f64
 vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
 {
@@ -746,21 +746,26 @@ vlib_process_wait_for_event_or_clock (vlib_main_t * vm, f64 dt)
       || !clib_bitmap_is_zero (p->non_empty_event_type_bitmap))
     return dt;
 
+  //计算wakeup的时间
   wakeup_time = vlib_time_now (vm) + dt;
 
   /* Suspend waiting for both clock and event to occur. */
+  //指明进程收到event或者clock到期，则可以唤醒
   p->flags |= (VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_EVENT
 	       | VLIB_PROCESS_IS_SUSPENDED_WAITING_FOR_CLOCK);
 
+  //记录process的恢复点
   r = clib_setjmp (&p->resume_longjmp, VLIB_PROCESS_RESUME_LONGJMP_SUSPEND);
   if (r == VLIB_PROCESS_RESUME_LONGJMP_SUSPEND)
     {
       p->resume_clock_interval = dt * 1e5;
+      //执行挂起
       clib_longjmp (&p->return_longjmp, VLIB_PROCESS_RETURN_LONGJMP_SUSPEND);
     }
 
   /* Return amount of time still left to sleep.
      If <= 0 then we've been waken up by the clock (and not an event). */
+  //此时此process收到了event或者clock到期，计算是否满足sleep要求，返回>0不满足，否则满足
   return wakeup_time - vlib_time_now (vm);
 }
 

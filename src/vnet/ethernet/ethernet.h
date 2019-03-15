@@ -269,7 +269,7 @@ typedef struct
   u32 redirect_l3_next;
 
   /* Pool of ethernet interface instances. */
-  ethernet_interface_t *interfaces;
+  ethernet_interface_t *interfaces;//以太网接口结构体pool
 
   ethernet_type_info_t *type_infos;
 

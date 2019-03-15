@@ -634,6 +634,7 @@ typedef struct
    * When suspending saves clock time (10us ticks) when process
    * is to be resumed.
    */
+  //指明需要suspend的时间大小
   u64 resume_clock_interval;
 
   /* Handle from timer code, to cancel an unexpired timer */

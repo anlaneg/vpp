@@ -274,12 +274,13 @@ unformat_ethernet_interface (unformat_input_t * input, va_list * args)
   return 0;
 }
 
+//生成针对此interface的output node
 clib_error_t *
 ethernet_register_interface (vnet_main_t * vnm,
 			     u32 dev_class_index,
-			     u32 dev_instance,
-			     u8 * address,
-			     u32 * hw_if_index_return,
+			     u32 dev_instance/*接口在vpp中的编号,用于获得xd*/,
+			     u8 * address/*接口mac地址*/,
+			     u32 * hw_if_index_return/*出参，硬件的hardware interfasce index*/,
 			     ethernet_flag_change_function_t flag_change)
 {
   ethernet_main_t *em = &ethernet_main;
@@ -292,13 +293,14 @@ ethernet_register_interface (vnet_main_t * vnm,
   pool_get (em->interfaces, ei);
   ei->flag_change = flag_change;
 
-  //注册interface
+  //注册interface相关的输出node，返回对应的hardware interface index
   hw_if_index = vnet_register_interface
     (vnm,
      dev_class_index, dev_instance,
      ethernet_hw_interface_class.index, ei - em->interfaces);
   *hw_if_index_return = hw_if_index;
 
+  //获取对应的hardware interface
   hi = vnet_get_hw_interface (vnm, hw_if_index);
 
   ethernet_setup_node (vnm->vlib_main, hi->output_node_index);
@@ -309,6 +311,7 @@ ethernet_register_interface (vnet_main_t * vnm,
     ETHERNET_MAX_PACKET_BYTES;
 
   /* Standard default ethernet MTU. */
+  //配置默认mtu (以太设备默认mtu)
   vnet_sw_interface_set_mtu (vnm, hi->sw_if_index, 9000);
 
   clib_memcpy (ei->address, address, sizeof (ei->address));
