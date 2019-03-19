@@ -328,6 +328,7 @@ vlib_next_frame_change_ownership (vlib_main_t * vm,
 
   next_frame =
     vlib_node_runtime_get_next_frame (vm, node_runtime, next_index);
+  //取下一个node
   next_node = vec_elt (nm->nodes, node->next_nodes[next_index]);
 
   if (next_node->owner_node_index != VLIB_INVALID_NODE_INDEX)
@@ -391,7 +392,7 @@ validate_frame_magic (vlib_main_t * vm,
   ASSERT (VLIB_FRAME_MAGIC == magic[0]);
 }
 
-//申请或者取出node->next_nodes[next_index]可使用的frame
+//申请或者取出node->next_nodes[next_index]可使用的frame（如果需要就申请空的nf)
 vlib_frame_t *
 vlib_get_next_frame_internal (vlib_main_t * vm,
 			      vlib_node_runtime_t * node,
@@ -411,7 +412,7 @@ vlib_get_next_frame_internal (vlib_main_t * vm,
   /* ??? Don't need valid flag: can use frame_index == ~0 */
   if (PREDICT_FALSE (!(nf->flags & VLIB_FRAME_IS_ALLOCATED)))
     {
-      //没有申请空间，初始化空间
+      //没有申请空间，则申请空间，并打上已申请空间标记
       nf->frame_index = vlib_frame_alloc (vm, node, next_index);
       nf->flags |= VLIB_FRAME_IS_ALLOCATED;
     }
@@ -435,17 +436,19 @@ vlib_get_next_frame_internal (vlib_main_t * vm,
   if (n_used >= VLIB_FRAME_SIZE || (allocate_new_next_frame && n_used > 0) ||
       (f->frame_flags & VLIB_FRAME_NO_APPEND))
     {
-      //可以申请新的next_frame或者对应的frame已被使用尽，或者???，则申请新的frame
+      //可以申请新的next_frame或者对应的frame已被使用尽，
+      //或者frame不容许append新frame，则申请新的frame
       /* Old frame may need to be freed after dispatch, since we'll have
          two redundant frames from node -> next node. */
       if (!(nf->flags & VLIB_FRAME_NO_FREE_AFTER_DISPATCH))
 	{
+      //nf没有被标记为dispatch后不需要释放，故需要将frame标记为dispatch后需要释放
 	  vlib_frame_t *f_old = vlib_get_frame (vm, nf->frame_index);
 	  f_old->frame_flags |= VLIB_FRAME_FREE_AFTER_DISPATCH;
 	}
 
       /* Allocate new frame to replace full one. */
-      //申请可使用的frame
+      //申请可使用的frame(这种情况下旧的frame没有引用是否可以释放？）
       nf->frame_index = vlib_frame_alloc (vm, node, next_index);
       f = vlib_get_frame (vm, nf->frame_index);
       n_used = f->n_vectors;
@@ -499,6 +502,7 @@ vlib_put_next_frame_validate (vlib_main_t * vm,
     }
 }
 
+//如果freame中已有元素，则将frame中的报文添加至pending_freams中
 void
 vlib_put_next_frame (vlib_main_t * vm,
 		     vlib_node_runtime_t * r,
@@ -525,23 +529,25 @@ vlib_put_next_frame (vlib_main_t * vm,
     }
 
   /* Convert # of vectors left -> number of vectors there. */
-  //强制设置f->n_vectors,使空出n_vectors_left个空间
+  //n_vectors_left表示f中剩余空间数，n_vectors_in_frame则表示f中当前已用空间数
   ASSERT (n_vectors_left <= VLIB_FRAME_SIZE);
   n_vectors_in_frame = VLIB_FRAME_SIZE - n_vectors_left;
 
-  //指出frame中元素数
+  //设置frame中已用元素数
   f->n_vectors = n_vectors_in_frame;
 
   /* If vectors were added to frame, add to pending vector. */
+  //如果frame中已有元素，则构造pending_frame，并将其添加到pending_queue中
   if (PREDICT_TRUE (n_vectors_in_frame > 0))
     {
-      //当前frame中已有元素加入，则将新的报文附在其后面
       vlib_pending_frame_t *p;
       u32 v0, v1;
 
+      //记录被pending的index
       r->cached_next_index = next_index;
 
-      //frame中的报文还未加入到frame penging中
+      //frame中的报文还未加入到frame penging中，
+      //则将报文加入到pending_queue中
       if (!(f->frame_flags & VLIB_FRAME_PENDING))
 	{
 	  __attribute__ ((unused)) vlib_node_t *node;
@@ -561,6 +567,7 @@ vlib_put_next_frame (vlib_main_t * vm,
 	  //指明pending_frame的索引号
 	  p->frame_index = nf->frame_index;
 	  p->node_runtime_index = nf->node_runtime_index;
+	  //此报文已被pending到队列，指出pending其的nf索引
 	  p->next_frame_index = nf - nm->next_frames;
 	  nf->flags |= VLIB_FRAME_PENDING;
 	  f->frame_flags |= VLIB_FRAME_PENDING;
@@ -584,11 +591,13 @@ vlib_put_next_frame (vlib_main_t * vm,
 	(nf->flags & VLIB_NODE_FLAG_TRACE) | (r->
 					      flags & VLIB_NODE_FLAG_TRACE);
 
+      //增加overflow
       v0 = nf->vectors_since_last_overflow;
       v1 = v0 + n_vectors_in_frame;
       nf->vectors_since_last_overflow = v1;
       if (PREDICT_FALSE (v1 < v0))
 	{
+      //出现绕圈事件
 	  vlib_node_t *node = vlib_get_node (vm, r->node_index);
 	  vec_elt (node->n_vectors_by_next_node, next_index) += v0;
 	}
@@ -1408,6 +1417,7 @@ dispatch_node (vlib_main_t * vm,
   return t;
 }
 
+//处理pending_frame链上指定索引的元素，使对应的node处理它
 static u64
 dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index/*pending_frame索引*/,
 		       u64 last_time_stamp)
@@ -1453,6 +1463,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index/*pending_fram
   }
 
   /* Frame must be pending. */
+  //这个frame一定处于pending状态，且包含报文
   ASSERT (f->frame_flags & VLIB_FRAME_PENDING);
   ASSERT (f->n_vectors > 0);
 
@@ -1469,6 +1480,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index/*pending_fram
 				   VLIB_NODE_STATE_POLLING,
 				   f, last_time_stamp);
 
+  //清除此frame的已pending标记，并容许其append
   f->frame_flags &= ~(VLIB_FRAME_PENDING | VLIB_FRAME_NO_APPEND);
 
   /* Frame is ready to be used again, so restore it. */
@@ -1998,7 +2010,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
     	  		  {
     	  			  n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INPUT],
 				      last_node_runtime_indices[i]);
-    	  			  //调度这些状态的input节点
+    	  			  //调度处理中断状态的input节点
     	  			  cpu_time_now =
     	  					  dispatch_node (vm, n, VLIB_NODE_TYPE_INPUT,
     	  							  VLIB_NODE_STATE_INTERRUPT,
@@ -2011,10 +2023,11 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main/*是否为主线程*/)
       /* Input nodes may have added work to the pending vector.
          Process pending vector until there is nothing left.
          All pending vectors will be processed from input -> output. */
-      //上面我们将frame_queue中的报文存入到了pending_frames中，现在遍历这些pending_frames
-      //使其相应的node处理它们
+      //上面我们将frame_queue中的报文存入到了pending_frames中，中间其它internal也会将报文添加至pending_frames上
+      //现在遍历这些pending_frames,使相应的node处理它们,直到所有的节点均完成报文处理
       for (i = 0; i < _vec_len (nm->pending_frames); i++)
       {
+          //对internal node完成调度
     	  	  cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
       }
       /* Reset pending vector for next iteration. */

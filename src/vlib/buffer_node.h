@@ -67,23 +67,31 @@
  @return @c n_left_to_next -- number of slots left in speculative frame
 */
 
-#define vlib_validate_buffer_enqueue_x2(vm,node,next_index,to_next,n_left_to_next,bi0,bi1,next0,next1) \
+#define vlib_validate_buffer_enqueue_x2(vm,node/*本次处理的node*/,next_index/*指出to_next是送给next_index的报文*/,\
+to_next/*可填充frame index的数组*/,n_left_to_next/*frame index数组长度*/,\
+bi0/*报文index*/,bi1/*报文index*/,next0/*报文bi0的next node索引*/,next1/*报文bi1的next node索引*/) \
 do {									\
+  /*通过enqueue_code计算两个报文next node索引与next_index的匹配情况*/\
   int enqueue_code = (next0 != next_index) + 2*(next1 != next_index);	\
 									\
   if (PREDICT_FALSE (enqueue_code != 0))				\
     {									\
+      /*当前情况，存在一个或两个报文的next node索引与next_index相同*/\
       switch (enqueue_code)						\
 	{								\
 	case 1:								\
+	/*next0与next_index不相等*/\
 	  /* A B A */							\
+      /*当前to_next已预填充，且已跳过，故-2使其回到'B'位置，将B位置更正为A,接下来就需要完成bi0的填充*/\
 	  to_next[-2] = bi1;						\
-	  to_next -= 1;							\
-	  n_left_to_next += 1;						\
+	  to_next -= 1;/*由于bi0不相等，故仅能跳转１格，这里退格*/	\
+	  n_left_to_next += 1;/*同样的，我们没有to_next中添充，故n_left_to_next还原１位*/		\
+	  /*由于next_index不是bi0适用的vector,故需要重新为next0申请vector并填充，触发添加至pending_frame队列上*/\
 	  vlib_set_next_frame_buffer (vm, node, next0, bi0);		\
 	  break;							\
 									\
 	case 2:								\
+      /*next0与next_index相等，与0情况处理逻辑大致相同*/\
 	  /* A A B */							\
 	  to_next -= 1;							\
 	  n_left_to_next += 1;						\
@@ -92,12 +100,14 @@ do {									\
 									\
 	case 3:								\
 	  /* A B B or A B C */						\
+      /*next0,next1均与next_index不相等，需要考虑next0与next1是否相等的情况*/\
 	  to_next -= 2;							\
 	  n_left_to_next += 2;						\
 	  vlib_set_next_frame_buffer (vm, node, next0, bi0);		\
 	  vlib_set_next_frame_buffer (vm, node, next1, bi1);		\
 	  if (next0 == next1)						\
 	    {								\
+	      /*将next_index对应的next_frame推至pending_frame队列上*/\
 	      vlib_put_next_frame (vm, node, next_index,		\
 				   n_left_to_next);			\
 	      next_index = next1;					\
@@ -215,14 +225,18 @@ do {                                                                    \
  @return @c to_next -- speculative frame to be used for future packets
  @return @c n_left_to_next -- number of slots left in speculative frame
 */
-#define vlib_validate_buffer_enqueue_x1(vm,node,next_index,to_next,n_left_to_next,bi0,next0) \
+#define vlib_validate_buffer_enqueue_x1(vm,node,next_index/*预测的next node索引，可能不准确*/,to_next,n_left_to_next/*to_next的剩余空间*/,bi0,next0/*指出next node*/) \
 do {									\
   if (PREDICT_FALSE (next0 != next_index))				\
     {									\
+      /*如果next_index已有报文，则触发其入队到pending_frame队列*/\
       vlib_put_next_frame (vm, node, next_index, n_left_to_next + 1);	\
+      /*更新为实际的next_index，这里为什么没有对to_next执行减一操作？（上式已设置n_vectors，下次还调用vlib_get_next_frame获取，故不影响）*/\
       next_index = next0;						\
+      /*重新考虑next_index对应的to_next,n_left_to_next,并执行填充*/\
       vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next); \
 									\
+	  /*添加frame index*/\
       to_next[0] = bi0;							\
       to_next += 1;							\
       n_left_to_next -= 1;						\

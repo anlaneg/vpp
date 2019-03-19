@@ -422,7 +422,7 @@ typedef struct vlib_frame_t
 typedef struct
 {
   /* Frame index. */
-  //对应的frame index
+  //指向可填充的frame index
   u32 frame_index;
 
   /* Node runtime for this next. */
@@ -433,6 +433,7 @@ typedef struct
   u32 flags;
 
   /* Reflects node frame-used flag for this next. */
+  //表示next仍可使用此frame
 #define VLIB_FRAME_NO_FREE_AFTER_DISPATCH \
   VLIB_NODE_FLAG_FRAME_NO_FREE_AFTER_DISPATCH
 
@@ -445,7 +446,7 @@ typedef struct
 #define VLIB_FRAME_OWNER (1 << 15)
 
   /* Set when frame has been allocated for this next. */
-  //标明frame_index字段有效
+  //标明frame_index字段有效（空间已被申请标记）
 #define VLIB_FRAME_IS_ALLOCATED	VLIB_NODE_FLAG_IS_OUTPUT
 
   /* Set when frame has been added to pending vector. */
@@ -453,6 +454,7 @@ typedef struct
 #define VLIB_FRAME_PENDING VLIB_NODE_FLAG_IS_DROP
 
   /* Set when frame is to be freed after dispatch. */
+  //标记frame在dispatch后需要释放
 #define VLIB_FRAME_FREE_AFTER_DISPATCH VLIB_NODE_FLAG_IS_PUNT
 
   /* Set when frame has traced packets. */
@@ -480,7 +482,7 @@ typedef struct
   u32 frame_index;//对应的frame buffer index
 
   /* Start of next frames for this node. */
-  u32 next_frame_index;//下一个frame index
+  u32 next_frame_index;//指出此frame　来源的next-frame结构的索引
 
   /* Special value for next_frame_index when there is no next frame. */
 #define VLIB_PENDING_FRAME_NO_NEXT_FRAME ((u32) ~0)
@@ -521,6 +523,7 @@ typedef struct vlib_node_runtime_t
   u32 next_frame_index;			/**< Start of next frames for this
 					  node. */
 
+  //节点索引
   u32 node_index;			/**< Node index. */
 
   u32 input_main_loops_per_call;	/**< For input nodes: decremented
@@ -766,7 +769,7 @@ typedef struct
   u32 interrupt_threshold_vector_length;
 
   /* Vector of next frames. */
-  //用于记录要送给自当前node,要送给下一级node的frame
+  //用于记录自当前node,要送给下一级node的vlib_next_frame_t
   vlib_next_frame_t *next_frames;
 
   /* Vector of internal node's frames waiting to be called. */

@@ -52,6 +52,7 @@ typedef struct dhcp_client_detect_trace_t_
   u8 extracted;
 } dhcp_client_detect_trace_t;
 
+//dhcp客户端监测node函数
 VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
 					vlib_node_runtime_t * node,
 					vlib_frame_t * frame)
@@ -65,13 +66,17 @@ VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
     clib_net_to_host_u16 (UDP_DST_PORT_dhcp_to_client);
   next_index = 0;
   extractions = 0;
+
+  //共计划要放入的frame
   n_left_from = frame->n_vectors;
+  //报文索引
   from = vlib_frame_vector_args (frame);
 
   while (n_left_from > 0)
     {
       u32 n_left_to_next;
 
+      //取出next_frame,准备将当前报文append到to_next中（n_left_to_next是最多可append的报文数目）
       vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
 
       /*
@@ -87,6 +92,7 @@ VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
 	  u32 next0, next1, next2, next3;
 	  u32 bi0, bi1, bi2, bi3;
 
+	  //将buffer index存入
 	  next0 = next1 = next2 = next3 = ~0;
 	  bi0 = to_next[0] = from[0];
 	  bi1 = to_next[1] = from[1];
@@ -122,10 +128,13 @@ VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
 	  n_left_from -= 4;
 	  n_left_to_next -= 4;
 
+	  //利用buffer index取buffer
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b1 = vlib_get_buffer (vm, bi1);
 	  b2 = vlib_get_buffer (vm, bi2);
 	  b3 = vlib_get_buffer (vm, bi3);
+
+	  //利用buffer取ip header
 	  ip0 = vlib_buffer_get_current (b0);
 	  ip1 = vlib_buffer_get_current (b1);
 	  ip2 = vlib_buffer_get_current (b2);
@@ -136,6 +145,7 @@ VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
 	  vnet_feature_next (&next2, b2);
 	  vnet_feature_next (&next3, b3);
 
+	  //检查ipheader如果上层协议为udp,且目的port为68时，指定next
 	  if (ip0->protocol == IP_PROTOCOL_UDP)
 	    {
 	      udp0 = (udp_header_t *) (ip0 + 1);
@@ -263,6 +273,7 @@ VLIB_NODE_FN (dhcp_client_detect_node) (vlib_main_t * vm,
 					   bi0, next0);
 	}
 
+      //将frame中不够放的，全存入到pending_frames队列中
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
 
@@ -287,6 +298,7 @@ format_dhcp_client_detect_trace (u8 * s, va_list * args)
 }
 
 /* *INDENT-OFF* */
+//dhcp客户端监测node
 VLIB_REGISTER_NODE (dhcp_client_detect_node) = {
   .name = "ip4-dhcp-client-detect",
   .vector_size = sizeof (u32),
