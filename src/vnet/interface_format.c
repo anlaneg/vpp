@@ -619,6 +619,8 @@ unformat_vnet_sw_interface (unformat_input_t * input, va_list * args)
   uword *p, error = 0;
 
   id = ~0;
+
+  //提取接口名称
   if (unformat (input, "%_%v.%d%_", &if_name, &id)
       && ((p = hash_get (vnm->interface_main.hw_interface_by_name, if_name))))
     {

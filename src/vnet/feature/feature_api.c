@@ -53,6 +53,7 @@ vl_api_feature_enable_disable_t_handler (vl_api_feature_enable_disable_t * mp)
   u8 *arc_name = format (0, "%s%c", mp->arc_name, 0);
   u8 *feature_name = format (0, "%s%c", mp->feature_name, 0);
 
+  //使arc_name,feature_name字符串成为'\0'终止
   vec_terminate_c_string (arc_name);
   vec_terminate_c_string (feature_name);
 
