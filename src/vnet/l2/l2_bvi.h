@@ -34,54 +34,60 @@
  * Return an error if the packet isn't what we expect.
  */
 
+//执行2层上3层情况处理
 static_always_inline u32
 l2_to_bvi (vlib_main_t * vlib_main,
 	   vnet_main_t * vnet_main,
-	   vlib_buffer_t * b0,
-	   u32 bvi_sw_if_index, next_by_ethertype_t * l3_next, u16 * next0)
+	   vlib_buffer_t * b0/*报文*/,
+	   u32 bvi_sw_if_index/*bvi接口编号*/, next_by_ethertype_t * l3_next/*指定3层以太帧next查询表*/, u16 * next0/*出参，指定next*/)
 {
   /* Perform L3 my-mac filter */
   ethernet_header_t *e0 = vlib_buffer_get_current (b0);
   if (!ethernet_address_cast (e0->dst_address))
     {
+      //收到的是单播mac,则检查是否与bvi接口地址相同，如果不相同，则报文不必送bvi
       vnet_hw_interface_t *hi =
 	vnet_get_sup_hw_interface (vnet_main, bvi_sw_if_index);
       if (!ethernet_mac_address_equal (e0->dst_address, hi->hw_address))
-	return TO_BVI_ERR_BAD_MAC;
+	return TO_BVI_ERR_BAD_MAC;//不能送bvi
     }
 
   /* Save L2 header position which may be changed due to packet replication */
   vnet_buffer (b0)->l2_hdr_offset = b0->current_data;
 
-  /* Strip L2 header */
+  /* Strip L2 header */ //剥掉l2层头
   u8 l2_len = vnet_buffer (b0)->l2.l2_len;
   vlib_buffer_advance (b0, l2_len);
 
+  //取3层头及3层协议号
   u8 *l3h = vlib_buffer_get_current (b0);
   u16 ethertype = clib_net_to_host_u16 (*(u16 *) (l3h - 2));
 
   /* Set the input interface to be the BVI interface */
+  //更换报文入接口为bvi接口
   vnet_buffer (b0)->sw_if_index[VLIB_RX] = bvi_sw_if_index;
   vnet_buffer (b0)->sw_if_index[VLIB_TX] = ~0;
 
   /* Go to appropriate L3 input node */
+  //按以太帧类型选择走不同的next
   if (ethertype == ETHERNET_TYPE_IP4)
     {
-      *next0 = l3_next->input_next_ip4;
+      *next0 = l3_next->input_next_ip4;//下一步走ipv4 input
     }
   else if (ethertype == ETHERNET_TYPE_IP6)
     {
-      *next0 = l3_next->input_next_ip6;
+      *next0 = l3_next->input_next_ip6;//下一步走ipv6 input
     }
   else
     {
       /* uncommon ethertype, check table */
+      //通过以太帧类型查找next
       u32 i0 = sparse_vec_index (l3_next->input_next_by_type, ethertype);
       *next0 = vec_elt (l3_next->input_next_by_type, i0);
 
       if (i0 == SPARSE_VEC_INVALID_INDEX)
 	{
-	  return TO_BVI_ERR_ETHERTYPE;
+	  return TO_BVI_ERR_ETHERTYPE;//收到不能处理的帧
 	}
     }
 
@@ -91,7 +97,7 @@ l2_to_bvi (vlib_main_t * vlib_main,
      + VNET_INTERFACE_COUNTER_RX,
      vlib_main->thread_index, bvi_sw_if_index,
      1, vlib_buffer_length_in_chain (vlib_main, b0));
-  return TO_BVI_ERR_OK;
+  return TO_BVI_ERR_OK;//可以送bvi
 }
 
 void

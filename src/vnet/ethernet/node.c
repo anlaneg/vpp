@@ -2016,6 +2016,7 @@ next_by_ethertype_register (next_by_ethertype_t * l3_next,
     }
 
   /* Setup ethernet type -> next index sparse vector mapping. */
+  //指明以太类型ethertype由node节点next_index处理
   n = sparse_vec_validate (l3_next->input_next_by_type, ethertype);
   n[0] = next_index;
 
@@ -2028,6 +2029,7 @@ next_by_ethertype_register (next_by_ethertype_t * l3_next,
 
   // do not allow the cached next index's to be updated if L3
   // redirect is enabled, as it will have overwritten them
+  //注册常见以太类型
   if (!em->redirect_l3)
     {
       // Cache common ethertypes directly

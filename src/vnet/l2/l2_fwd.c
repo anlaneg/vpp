@@ -190,9 +190,11 @@ l2fwd_process (vlib_main_t * vm,
 	  *next0 = L2FWD_NEXT_DROP;
 	}
       /* perform BVI check */
+      //此查询结果标记了表项属于bvi接口注入，故进行bvi检查
       else if (PREDICT_FALSE (l2fib_entry_result_is_set_BVI (result0)))
 	{
 	  u32 rc;
+	  //执行报文由l2上送bvi的检查
 	  rc = l2_to_bvi (vm,
 			  msm->vnet_main,
 			  b0,
@@ -203,11 +205,13 @@ l2fwd_process (vlib_main_t * vm,
 	    {
 	      if (rc == TO_BVI_ERR_BAD_MAC)
 		{
+	      //报文不送bvi
 		  b0->error = node->errors[L2FWD_ERROR_BVI_BAD_MAC];
 		  *next0 = L2FWD_NEXT_DROP;
 		}
 	      else if (rc == TO_BVI_ERR_ETHERTYPE)
 		{
+	      //报文要送bvi，但没有next节点可以处理此以太类型
 		  b0->error = node->errors[L2FWD_ERROR_BVI_ETHERTYPE];
 		  *next0 = L2FWD_NEXT_DROP;
 		}
@@ -316,6 +320,7 @@ l2fwd_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
                       &result1,
                       &result2,
                       &result3);
+      //执行报文按fdb转发
       /* *INDENT-ON* */
       l2fwd_process (vm, node, msm, em, b[0], sw_if_index0, &result0, next);
       l2fwd_process (vm, node, msm, em, b[1], sw_if_index1, &result1,
@@ -483,8 +488,10 @@ l2fwd_register_input_type (vlib_main_t * vm,
   l2fwd_main_t *mp = &l2fwd_main;
   u32 next_index;
 
+  //为l2fwd节点添加next node
   next_index = vlib_node_add_next (vm, l2fwd_node.index, node_index);
 
+  //为l3注册可处理的以太帧协议
   next_by_ethertype_register (&mp->l3_next, type, next_index);
 }
 

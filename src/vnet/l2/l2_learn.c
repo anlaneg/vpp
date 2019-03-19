@@ -128,7 +128,8 @@ l2learn_process (vlib_node_runtime_t * node,
   if (PREDICT_TRUE (result0->fields.sw_if_index == sw_if_index0))
     {
       /* Entry in L2FIB with matching sw_if_index matched - normal fast path */
-      u32 dtime = timestamp - result0->fields.timestamp;
+      //此表项已学习，检查是否需要执行过期时间更新
+      u32 dtime = timestamp - result0->fields.timestamp;//此表项的距今的过期时间
       u32 dsn = result0->fields.sn.as_u16 - vnet_buffer (b0)->l2.l2fib_sn;
       u32 check = (dtime && vnet_buffer (b0)->l2.bd_age) || dsn;
 
@@ -151,10 +152,12 @@ l2learn_process (vlib_node_runtime_t * node,
   else if (result0->raw == ~0)
     {
       /* Entry not in L2FIB - add it  */
+      //表项未学习，添加它
       counter_base[L2LEARN_ERROR_MISS] += 1;
 
       if (msm->global_learn_count >= msm->global_learn_limit)
 	{
+          //超过学习上限，直接返回
 	  /*
 	   * Global limit reached. Do not learn the mac but forward the packet.
 	   * In the future, limits could also be per-interface or bridge-domain.
@@ -171,6 +174,7 @@ l2learn_process (vlib_node_runtime_t * node,
 
       /* It is ok to learn */
       msm->global_learn_count++;
+      //写入result准备插入
       result0->raw = 0;		/* clear all fields */
       result0->fields.sw_if_index = sw_if_index0;
       if (msm->client_pid != 0)
@@ -181,8 +185,10 @@ l2learn_process (vlib_node_runtime_t * node,
   else
     {
       /* Entry in L2FIB with different sw_if_index - mac move or filter */
+      //之前学习过此fdb表项，但学习到的出接口与当前不同，需要更新
       if (l2fib_entry_result_is_set_FILTER (result0))
 	{
+      //表项有filter标记，但当前上来的报文入接口与fdb不同，将当前报文丢掉
 	  ASSERT (result0->fields.sw_if_index == ~0);
 	  /* drop packet because lookup matched a filter mac entry */
 	  b0->error = node->errors[L2LEARN_ERROR_FILTER_DROP];
@@ -192,6 +198,7 @@ l2learn_process (vlib_node_runtime_t * node,
 
       if (l2fib_entry_result_is_set_STATIC (result0))
 	{
+          //表项有static标记，不容许被修改，上来报文丢弃
 	  /*
 	   * Don't overwrite a static mac
 	   * TODO: Check violation policy. For now drop the packet
@@ -205,7 +212,7 @@ l2learn_process (vlib_node_runtime_t * node,
        * TODO: may want to rate limit mac moves
        * TODO: check global/bridge domain/interface learn limits
        */
-      result0->fields.sw_if_index = sw_if_index0;
+      result0->fields.sw_if_index = sw_if_index0;//更新出接口
       if (l2fib_entry_result_is_set_AGE_NOT (result0))
 	{
 	  /* The mac was provisioned */
@@ -223,10 +230,12 @@ l2learn_process (vlib_node_runtime_t * node,
       counter_base[L2LEARN_ERROR_MAC_MOVE] += 1;
     }
 
+  //进行表项超时时间更新
   /* Update the entry */
   result0->fields.timestamp = timestamp;
   result0->fields.sn.as_u16 = vnet_buffer (b0)->l2.l2fib_sn;
 
+  //完成表项插入
   BVT (clib_bihash_kv) kv;
   kv.key = key0->raw;
   kv.value = result0->raw;
@@ -236,13 +245,14 @@ l2learn_process (vlib_node_runtime_t * node,
   cached_key->raw = ~0;
 }
 
-
+//执行fdb查询
 static_always_inline uword
 l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		     vlib_frame_t * frame, int do_trace)
 {
   u32 n_left, *from;
   l2learn_main_t *msm = &l2learn_main;
+  //取learn_node
   vlib_node_t *n = vlib_get_node (vm, l2learn_node.index);
   u32 node_counter_base_index = n->error_heap_index;
   vlib_error_main_t *em = &vm->error_main;
@@ -255,6 +265,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   from = vlib_frame_vector_args (frame);
   n_left = frame->n_vectors;	/* number of packets to process */
+  //将from中所有frame_index转换为frame
   vlib_get_buffers (vm, from, bufs, n_left);
   next = nexts;
   b = bufs;
@@ -285,7 +296,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	CLIB_PREFETCH (b[7]->data, CLIB_CACHE_LINE_BYTES, LOAD);
       }
 
-      /* RX interface handles */
+      /* RX interface handles */ //取入接口
       sw_if_index0 = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
       sw_if_index1 = vnet_buffer (b[1])->sw_if_index[VLIB_RX];
       sw_if_index2 = vnet_buffer (b[2])->sw_if_index[VLIB_RX];
@@ -293,6 +304,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       /* Process 4 x pkts */
 
+      //取报文头部
       h0 = vlib_buffer_get_current (b[0]);
       h1 = vlib_buffer_get_current (b[1]);
       h2 = vlib_buffer_get_current (b[2]);
@@ -339,9 +351,11 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	}
 
       /* process 4 pkts */
+      //增加learn计数
       vlib_node_increment_counter (vm, l2learn_node.index,
 				   L2LEARN_ERROR_L2LEARN, 4);
 
+      //对４个报文执行l2fib查询
       l2fib_lookup_4 (msm->mac_table, &cached_key, &cached_result,
 		      h0->src_address,
 		      h1->src_address,
@@ -354,6 +368,7 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		      &key0, &key1, &key2, &key3,
 		      &result0, &result1, &result2, &result3);
 
+      //完成表项的学习更新
       l2learn_process (node, msm, &em->counters[node_counter_base_index],
 		       b[0], sw_if_index0, &key0, &cached_key,
 		       &count, &result0, next, timestamp);
@@ -413,11 +428,13 @@ l2learn_node_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       n_left -= 1;
     }
 
+  //如有必要将报文送给pending_frame队列
   vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
 
   return frame->n_vectors;
 }
 
+//学习节点回调
 VLIB_NODE_FN (l2learn_node) (vlib_main_t * vm,
 			     vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
@@ -530,7 +547,7 @@ VLIB_CLI_COMMAND (int_learn_cli, static) = {
 };
 /* *INDENT-ON* */
 
-
+//解析limit配置
 static clib_error_t *
 l2learn_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -538,6 +555,7 @@ l2learn_config (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
+      //解析limit配置
       if (unformat (input, "limit %d", &mp->global_learn_limit))
 	;
 

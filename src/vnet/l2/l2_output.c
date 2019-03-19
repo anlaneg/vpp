@@ -311,6 +311,7 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
   cdo = cur_data_offsets;
 
   /* extract data from buffer metadata */
+  //取报文对应的出接口，报文头部
   while (n_left >= 8)
     {
       /* Prefetch the buffer header for the N+2 loop iteration */
@@ -319,6 +320,7 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
       vlib_prefetch_buffer_header (b[6], LOAD);
       vlib_prefetch_buffer_header (b[7], LOAD);
 
+      //取报文的出接口，报文头部
       sw_if_index[0] = vnet_buffer (b[0])->sw_if_index[VLIB_TX];
       cdo[0] = b[0]->current_data;
       sw_if_index[1] = vnet_buffer (b[1])->sw_if_index[VLIB_TX];
@@ -346,6 +348,7 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
       cdo += 1;
     }
 
+  //取出frame需要转发的报文数
   n_left = frame->n_vectors;
   while (n_left)
     {
@@ -361,6 +364,7 @@ VLIB_NODE_FN (l2output_node) (vlib_main_t * vm,
 	  vlib_prefetch_buffer_header (b[3], LOAD);
 	}
 
+      //取报文入接口，报文头指针，报文对应的待填充的next
       sw_if_index = sw_if_indices + off;
       cdo = cur_data_offsets + off;
       next = nexts + off;
@@ -495,7 +499,7 @@ typedef enum
  * sending packets to the error-drop node to drop the packet. Then, stale L2FIB
  * entries for deleted tunnels won't cause possible packet or memory corruption.
  */
-
+//将报文送给next_index=0的vector
 VLIB_NODE_FN (l2output_bad_intf_node) (vlib_main_t * vm,
 				       vlib_node_runtime_t * node,
 				       vlib_frame_t * frame)
@@ -506,13 +510,16 @@ VLIB_NODE_FN (l2output_bad_intf_node) (vlib_main_t * vm,
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;	/* number of packets to process */
 
+  //有n_left_from个报文需要转发
   while (n_left_from > 0)
     {
       u32 n_left_to_next;
 
       /* get space to enqueue frame to graph node "next_index" */
+      //获取可填充to_next
       vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next);
 
+      //先预填充（多于２个）
       while (n_left_from >= 4 && n_left_to_next >= 2)
 	{
 	  u32 bi0, bi1;
@@ -530,6 +537,7 @@ VLIB_NODE_FN (l2output_bad_intf_node) (vlib_main_t * vm,
 	  b1->error = node->errors[L2OUTPUT_BAD_INTF_ERROR_DROP];
 	}
 
+      //预填充（小于２个）
       while (n_left_from > 0 && n_left_to_next > 0)
 	{
 	  u32 bi0;
@@ -545,6 +553,7 @@ VLIB_NODE_FN (l2output_bad_intf_node) (vlib_main_t * vm,
 	  b0->error = node->errors[L2OUTPUT_BAD_INTF_ERROR_DROP];
 	}
 
+      //推给pending_queues
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
 

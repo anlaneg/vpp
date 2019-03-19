@@ -97,6 +97,7 @@ sparse_vec_new (uword elt_bytes, uword sparse_index_bits)
   return v;
 }
 
+//稀疏vector查询
 always_inline uword
 sparse_vec_index_internal (void *v,
 			   uword sparse_index,

@@ -1286,13 +1286,17 @@ format_function_t format_vlib_time;
 /* Parse node name -> node index. */
 unformat_function_t unformat_vlib_node;
 
+//为指定node的counter_index指定统计计数增加increment
 always_inline void
 vlib_node_increment_counter (vlib_main_t * vm, u32 node_index,
 			     u32 counter_index, u64 increment)
 {
+    //取要统计的node
   vlib_node_t *n = vlib_get_node (vm, node_index);
   vlib_error_main_t *em = &vm->error_main;
+  //取此node针对em->counters的偏移量
   u32 node_counter_base_index = n->error_heap_index;
+  //为计算上counter_index后偏移量增加increment
   em->counters[node_counter_base_index + counter_index] += increment;
 }
 

@@ -63,6 +63,7 @@ typedef struct
 #define ETHERNET_ADDRESS_MULTICAST 1
 
 /* I/G bit: individual (unicast)/group (broadcast/multicast). */
+//检查所给的mac地址是否为组播或者广播mac
 always_inline uword
 ethernet_address_cast (u8 * a)
 {

@@ -340,7 +340,7 @@ typedef struct vlib_node_t
 
   /* Handle/index in error heap for this node. */
   u32 error_heap_handle;
-  u32 error_heap_index;
+  u32 error_heap_index;//其在vlib_error_main_t结构体成员中的索引
 
   /* Error strings indexed by error code for this node. */
   char **error_strings;//node对应的错误号字符串

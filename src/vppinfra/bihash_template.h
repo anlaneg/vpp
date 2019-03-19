@@ -80,7 +80,7 @@ typedef struct
   {
     struct
     {
-      u64 offset:BIHASH_BUCKET_OFFSET_BITS;
+      u64 offset:BIHASH_BUCKET_OFFSET_BITS;/*通过此值可检查桶是否为空*/
       u64 lock:1;
       u64 linear_search:1;
       u64 log2_pages:8;
@@ -202,16 +202,18 @@ static inline void BV (clib_bihash_unlock_bucket)
   b->lock = 0;
 }
 
+//给定桶，取桶内值
 static inline void *BV (clib_bihash_get_value) (BVT (clib_bihash) * h,
 						uword offset)
 {
+  //为arena加上offset,即可得到value指针
   u8 *hp = (u8 *) (uword) alloc_arena (h);
   u8 *vp = hp + offset;
 
   return (void *) vp;
 }
 
-//如果其没有值，则offset为0
+//检查给定的hash桶是否为空(如果其没有值，则offset为0)
 static inline int BV (clib_bihash_bucket_is_empty)
   (BVT (clib_bihash_bucket) * b)
 {
@@ -264,6 +266,7 @@ format_function_t BV (format_bihash);
 format_function_t BV (format_bihash_kvp);
 format_function_t BV (format_bihash_lru);
 
+//按hashcode做相应的查询
 static inline int BV (clib_bihash_search_inline_with_hash)
   (BVT (clib_bihash) * h, u64 hash/*hash值*/, BVT (clib_bihash_kv) * key_result/*入参及出参，获得输出的结果*/)
 {
@@ -301,6 +304,7 @@ static inline int BV (clib_bihash_search_inline_with_hash)
   //遍历v->kvp,检查是否key相等，如果key相等，将返顺v->kvp[i]
   for (i = 0; i < limit; i++)
     {
+      //如果key相等，则采用key_result记录v
       if (BV (clib_bihash_key_compare) (v->kvp[i].key, key_result->key))
 	{
 	  *key_result = v->kvp[i];
@@ -309,6 +313,8 @@ static inline int BV (clib_bihash_search_inline_with_hash)
     }
   return -1;
 }
+
+//执行bihash查询
 static inline int BV (clib_bihash_search_inline)
   (BVT (clib_bihash) * h, BVT (clib_bihash_kv) * key_result)
 {
