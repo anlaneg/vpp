@@ -38,12 +38,14 @@ extern "C" {
 
 struct vapi_ctx_s;
 
+//提供msg头部定义（类型1）
 typedef struct __attribute__ ((__packed__))
 {
   u16 _vl_msg_id;
   u32 context;
 } vapi_type_msg_header1_t;
 
+//提供msg头部定义（类型2）
 typedef struct __attribute__ ((__packed__))
 {
   u16 _vl_msg_id;
@@ -51,6 +53,7 @@ typedef struct __attribute__ ((__packed__))
   u32 context;
 } vapi_type_msg_header2_t;
 
+//针对头部，生成网络序转换函数
 static inline void
 vapi_type_msg_header1_t_hton (vapi_type_msg_header1_t * h)
 {
@@ -85,16 +88,17 @@ typedef void (*generic_swap_fn_t) (void *payload);
 
 typedef struct
 {
-  const char *name;
-  size_t name_len;
-  const char *name_with_crc;
-  size_t name_with_crc_len;
-  bool has_context;
-  unsigned int context_offset;
-  unsigned int payload_offset;
-  size_t size;
-  generic_swap_fn_t swap_to_be;
-  generic_swap_fn_t swap_to_host;
+  const char *name;//消息名称
+  size_t name_len;//消息名称长度
+  const char *name_with_crc;//消息名称+crc
+  size_t name_with_crc_len;//消息名称+crc 名称长度
+  bool has_context;//此类型消息是否有上下文
+  unsigned int context_offset;//到context的偏移
+  unsigned int payload_offset;//到payload的偏移
+  size_t size;//结构体大小
+  generic_swap_fn_t swap_to_be;//将payload转换为大端
+  generic_swap_fn_t swap_to_host;//将paylod转换为主机序
+  //消息id号，动态进行分配
   vapi_msg_id_t id;		/* assigned at run-time */
 } vapi_message_desc_t;
 

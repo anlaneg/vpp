@@ -48,10 +48,10 @@ typedef struct
   u64 time;
 
   /* Node which generated this trace. */
-  u32 node_index;
+  u32 node_index;//哪个node产生的trace
 
   /* Number of data words in this trace. */
-  u32 n_data;
+  u32 n_data;//指明trace的数据长度
 
   /* Trace data follows. */
   u8 data[0];

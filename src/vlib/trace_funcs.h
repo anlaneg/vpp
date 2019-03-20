@@ -55,7 +55,7 @@ vlib_validate_trace (vlib_trace_main_t * tm, vlib_buffer_t * b)
 
 always_inline void *
 vlib_add_trace (vlib_main_t * vm,
-		vlib_node_runtime_t * r, vlib_buffer_t * b, u32 n_data_bytes)
+		vlib_node_runtime_t * r, vlib_buffer_t * b, u32 n_data_bytes/*要trace的数据长度*/)
 {
   vlib_trace_main_t *tm = &vm->trace_main;
   vlib_trace_header_t *h;
@@ -63,6 +63,7 @@ vlib_add_trace (vlib_main_t * vm,
 
   ASSERT (vnet_trace_dummy);
 
+  //如果trace没有开启，则返回一个dummy空间给上层填充
   if (PREDICT_FALSE (tm->trace_enable == 0))
     {
       ASSERT (vec_len (vnet_trace_dummy) >= n_data_bytes + sizeof (*h));
@@ -73,12 +74,13 @@ vlib_add_trace (vlib_main_t * vm,
 
   n_data_bytes = round_pow2 (n_data_bytes, sizeof (h[0]));
   n_data_words = n_data_bytes / sizeof (h[0]);
+  //在增加1＋n_data_words空间，在b->trace_index位置，由h返回新增的空间
   vec_add2_aligned (tm->trace_buffer_pool[b->trace_index], h,
 		    1 + n_data_words, sizeof (h[0]));
 
   h->time = vm->cpu_time_last_node_dispatch;
-  h->n_data = n_data_words;
-  h->node_index = r->node_index;
+  h->n_data = n_data_words;//空间大小
+  h->node_index = r->node_index;//哪个node产生的trace
 
   return h->data;
 }

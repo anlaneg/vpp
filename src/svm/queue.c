@@ -128,6 +128,7 @@ svm_queue_send_signal (svm_queue_t * q, u8 is_prod)
     }
 }
 
+//等待队列大小发生变化
 static inline void
 svm_queue_wait_inline (svm_queue_t * q)
 {
@@ -263,6 +264,7 @@ svm_queue_add (svm_queue_t * q, u8 * elem, int nowait)
 	svm_queue_wait_inline (q);
     }
 
+  //将要存入的元素加入进elem中
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
   clib_memcpy_fast (tailp, elem, q->elsize);
 
@@ -291,6 +293,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
   i8 *tailp;
   int need_broadcast = 0;
 
+  //加锁
   if (nowait)
     {
       /* zero on success */
@@ -302,6 +305,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
   else
     pthread_mutex_lock (&q->mutex);
 
+  //检查是否已达到队列最大值
   if (PREDICT_FALSE (q->cursize + 1 == q->maxsize))
     {
       if (nowait)
@@ -309,10 +313,12 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
 	  pthread_mutex_unlock (&q->mutex);
 	  return (-2);
 	}
+      //如果容许等待，则等待队列不为空
       while (q->cursize + 1 == q->maxsize)
 	svm_queue_wait_inline (q);
     }
 
+  //将元素存入队列
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
   clib_memcpy_fast (tailp, elem, q->elsize);
 
@@ -322,6 +328,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
   if (q->tail == q->maxsize)
     q->tail = 0;
 
+  //数目为0时需要知会消费者
   need_broadcast = (q->cursize == 1);
 
   tailp = (i8 *) (&q->data[0] + q->elsize * q->tail);
@@ -333,6 +340,7 @@ svm_queue_add2 (svm_queue_t * q, u8 * elem, u8 * elem2, int nowait)
   if (q->tail == q->maxsize)
     q->tail = 0;
 
+  //执行消费者通知
   if (need_broadcast)
     svm_queue_send_signal (q, 1);
 

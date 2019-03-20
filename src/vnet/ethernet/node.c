@@ -937,10 +937,11 @@ eth_input_process_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_buffer_enqueue_to_next (vm, node, buffer_indices, nexts, n_packets);
 }
 
+//整组报文均由单一的interface来
 static_always_inline void
 eth_input_single_int (vlib_main_t * vm, vlib_node_runtime_t * node,
-		      vnet_hw_interface_t * hi, u32 * from, u32 n_pkts,
-		      int ip4_cksum_ok)
+		      vnet_hw_interface_t * hi/*入接口*/, u32 * from, u32 n_pkts,
+		      int ip4_cksum_ok/*checksum是否已校验*/)
 {
   ethernet_main_t *em = &ethernet_main;
   ethernet_interface_t *ei;
@@ -953,6 +954,7 @@ eth_input_single_int (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (main_is_l3)
     {
+      //3层接口
       /* main interface is L3, we dont expect tagged packets and interface
          is not in promisc node, so we dont't need to check DMAC */
       int is_l3 = 1;
@@ -993,6 +995,7 @@ ethernet_input_trace (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  if (b0->flags & VLIB_BUFFER_IS_TRACED)
 	    {
+	      //申请trace空间并复制trace数据
 	      t0 = vlib_add_trace (vm, node, b0,
 				   sizeof (ethernet_input_trace_t));
 	      clib_memcpy_fast (t0->packet_data, b0->data + b0->current_data,
@@ -1008,6 +1011,7 @@ ethernet_input_trace (vlib_main_t * vm, vlib_node_runtime_t * node,
     }
 
   /* rx pcap capture if enabled */
+  //检查收方向是否开启了capture功能
   if (PREDICT_FALSE (vm->pcap[VLIB_RX].pcap_enable))
     {
       u32 bi0;
@@ -1514,8 +1518,11 @@ VLIB_NODE_FN (ethernet_input_node) (vlib_main_t * vm,
 
   if (frame->flags & ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX)
     {
+      //这个frame中均包含单一的software interface index
       ethernet_input_frame_t *ef = vlib_frame_scalar_args (frame);
+      //ipv4 checksum是否均已校验
       int ip4_cksum_ok = (frame->flags & ETH_INPUT_FRAME_F_IP4_CKSUM_OK) != 0;
+      //取出这组报文对应的入接口
       vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, ef->hw_if_index);
       eth_input_single_int (vm, node, hi, from, n_packets, ip4_cksum_ok);
     }

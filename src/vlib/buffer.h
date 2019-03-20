@@ -71,6 +71,7 @@
  * Buffer Flags
  */
 #define foreach_vlib_buffer_flag \
+    /*标记报文是否被跟踪*/\
   _( 0, IS_TRACED, 0)					\
   /*标记是否有next是否有效*/\
   _( 1, NEXT_PRESENT, 0)				\

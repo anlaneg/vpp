@@ -597,7 +597,7 @@ do {										\
     @param A alignment (may be zero)
     @return V and P (value-result macro parameters)
 */
-
+//添加N个元素至vector V的尾部，新添加的空间将由P返回
 #define vec_add2_aligned(V,P,N,A) vec_add2_ha(V,P,N,0,A)
 
 /** \brief Add N elements to end of vector V (general version)

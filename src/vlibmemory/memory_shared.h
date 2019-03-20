@@ -81,7 +81,7 @@ typedef struct vl_shmem_hdr_
   volatile int vl_pid;
 
   /* Client sends VLIB msgs here. */
-  svm_queue_t *vl_input_queue;
+  svm_queue_t *vl_input_queue;//发送给对端的内容
 
   /* Vector of rings; one for each size. */
 

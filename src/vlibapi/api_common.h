@@ -301,7 +301,7 @@ typedef struct
   u64 api_pvt_heap_size;
 
   /** Peer input queue pointer */
-  svm_queue_t *vl_input_queue;
+  svm_queue_t *vl_input_queue;//自队端收取到的信息
 
   /**
    * All VLIB-side message handlers use my_client_index to identify

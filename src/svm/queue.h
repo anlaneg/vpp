@@ -28,8 +28,8 @@ typedef struct _svm_queue
   pthread_cond_t condvar;	/* 8 bytes */
   int head;
   int tail;
-  volatile int cursize;
-  int maxsize;
+  volatile int cursize;//当前大小
+  int maxsize;//最大长度
   int elsize;
   int consumer_pid;
   int producer_evtfd;

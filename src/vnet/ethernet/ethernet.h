@@ -140,7 +140,9 @@ typedef struct ethernet_interface
   u32 flags;
 
   /* Accept all packets (promiscuous mode). */
+  //是否接受所有报文
 #define ETHERNET_INTERFACE_FLAG_ACCEPT_ALL (1 << 0)
+  //是否开启混杂模式
 #define ETHERNET_INTERFACE_FLAG_CONFIG_PROMISC(flags) \
   (((flags) & ~ETHERNET_INTERFACE_FLAG_ACCEPT_ALL) == 0)
 

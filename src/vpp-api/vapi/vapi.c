@@ -46,42 +46,46 @@ struct
 {
   size_t count;
   vapi_message_desc_t **msgs;
-  size_t max_len_name_with_crc;
+  size_t max_len_name_with_crc;//name_with_crc最大长度
 } __vapi_metadata;
 
 typedef struct
 {
-  u32 context;
-  vapi_cb_t callback;
-  void *callback_ctx;
-  bool is_dump;
+  u32 context;//请求对应的seq
+  vapi_cb_t callback;//消息回调
+  void *callback_ctx;//消息回调上下文
+  bool is_dump;//是否dump相关（需要单次请求，多次响应类的消息）
 } vapi_req_t;
 
 static const u32 context_counter_mask = (1 << 31);
 
 typedef struct
 {
+  //有payload情况下回调
   vapi_error_e (*cb) (vapi_ctx_t ctx, void *callback_ctx, vapi_msg_id_t id,
 		      void *payload);
-  void *ctx;
+  void *ctx;//用户提供的回调参数
 } vapi_generic_cb_with_ctx;
 
 typedef struct
 {
+  //无payload情况下回调
   vapi_error_e (*cb) (vapi_ctx_t ctx, void *callback_ctx, void *payload);
-  void *ctx;
+  void *ctx;//用户提供的回调参数
 } vapi_event_cb_with_ctx;
 
 struct vapi_ctx_s
 {
-  vapi_mode_e mode;
+  vapi_mode_e mode;//阻塞方式非阻塞方式
+  //请求数组总数
   int requests_size;		/* size of the requests array (circular queue) */
   int requests_start;		/* index of first request */
+  //已有的请求数目
   int requests_count;		/* number of used slots */
-  vapi_req_t *requests;
-  u32 context_counter;
-  vapi_generic_cb_with_ctx generic_cb;
-  vapi_event_cb_with_ctx *event_cbs;
+  vapi_req_t *requests;//记录按请求维护的响应回调
+  u32 context_counter;//维护上下文计数
+  vapi_generic_cb_with_ctx generic_cb;//事件回调（无seq相关，处理所有消息）
+  vapi_event_cb_with_ctx *event_cbs;//事件回调（无seq相关，针对每个id有一个回调）
   u16 *vapi_msg_id_t_to_vl_msg_id;
   u16 vl_msg_id_max;
   vapi_msg_id_t *vl_msg_id_to_vapi_msg_t;
@@ -90,6 +94,7 @@ struct vapi_ctx_s
   pthread_mutex_t requests_mutex;
 };
 
+//生成请求seq
 u32
 vapi_gen_req_context (vapi_ctx_t ctx)
 {
@@ -126,12 +131,14 @@ void
 vapi_store_request (vapi_ctx_t ctx, u32 context, bool is_dump,
 		    vapi_cb_t callback, void *callback_ctx)
 {
+  //队列一定不为满，锁一定加不成功（因为已加锁）
   assert (!vapi_requests_full (ctx));
   /* if the mutex is not held, bad things will happen */
   assert (0 != pthread_mutex_trylock (&ctx->requests_mutex));
+  //记录requests_end对应的callback
   const int requests_end = vapi_requests_end (ctx);
   vapi_req_t *slot = &ctx->requests[requests_end];
-  slot->is_dump = is_dump;
+  slot->is_dump = is_dump;//是否为stream方式
   slot->context = context;
   slot->callback = callback;
   slot->callback_ctx = callback_ctx;
@@ -437,6 +444,7 @@ vapi_get_fd (vapi_ctx_t ctx, int *fd)
   return VAPI_ENOTSUP;
 }
 
+//执行单个消息发送
 vapi_error_e
 vapi_send (vapi_ctx_t ctx, void *msg)
 {
@@ -468,6 +476,7 @@ vapi_send (vapi_ctx_t ctx, void *msg)
       VAPI_DBG ("send msg@%p:%u[UNKNOWN]", msg, msgid);
     }
 #endif
+  //将msg置于队列中
   tmp = svm_queue_add (q, (u8 *) & msg,
 		       VAPI_MODE_BLOCKING == ctx->mode ? 0 : 1);
   if (tmp < 0)
@@ -479,15 +488,18 @@ out:
   return rv;
 }
 
+//将两个元素同时添加进queue中(同时发送两个msg,可用于支持show session相关的api)
 vapi_error_e
 vapi_send2 (vapi_ctx_t ctx, void *msg1, void *msg2)
 {
   vapi_error_e rv = VAPI_OK;
+  //参数检查
   if (!ctx || !msg1 || !msg2 || !ctx->connected)
     {
       rv = VAPI_EINVAL;
       goto out;
     }
+  //取输入队列
   svm_queue_t *q = api_main.shmem_hdr->vl_input_queue;
 #if VAPI_DEBUG
   unsigned msgid1 = be16toh (*(u16 *) msg1);
@@ -512,6 +524,7 @@ vapi_send2 (vapi_ctx_t ctx, void *msg1, void *msg2)
     }
   VAPI_DBG ("send two: %u[%s], %u[%s]", msgid1, name1, msgid2, name2);
 #endif
+  //将消息添加进队列（如果mode为阻塞，则容许等待）
   int tmp = svm_queue_add2 (q, (u8 *) & msg1, (u8 *) & msg2,
 			    VAPI_MODE_BLOCKING == ctx->mode ? 0 : 1);
   if (tmp < 0)
@@ -540,6 +553,7 @@ vapi_recv (vapi_ctx_t ctx, void **msg, size_t * msg_size,
       return VAPI_EINVAL;
     }
 
+  //获取消息来源队列
   svm_queue_t *q = am->vl_input_queue;
 again:
   VAPI_DBG ("doing shm queue sub");
@@ -582,6 +596,7 @@ again:
 #endif
       if (ctx->handle_keepalives)
 	{
+          //执行keepalives消息发送
 	  unsigned msgid = be16toh (*(u16 *) * msg);
 	  if (msgid ==
 	      vapi_lookup_vl_msg_id (ctx, vapi_msg_id_memclnt_keepalive))
@@ -630,6 +645,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
     }
   int tmp = ctx->requests_start;
   const int requests_end = vapi_requests_end (ctx);
+  //遍历请求，查找对应的响应
   while (ctx->requests[tmp].context != context && tmp != requests_end)
     {
       ++tmp;
@@ -644,10 +660,12 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
   vapi_error_e rv = VAPI_OK;
   if (ctx->requests[tmp].context == context)
     {
+      //找到了对应的请求，向ctx->requests_start开始至tmp的所有序列消息触发“未收到响应回调”
       while (ctx->requests_start != tmp)
 	{
 	  VAPI_ERR ("No response to req with context=%u",
 		    (unsigned) ctx->requests[tmp].context);
+	  //触发“未收到响应回调"
 	  ctx->requests[ctx->requests_start].callback (ctx, ctx->requests
 						       [ctx->
 							requests_start].callback_ctx,
@@ -662,6 +680,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
 	      ctx->requests_start = 0;
 	    }
 	}
+      //现在执行tmp对应的回调
       // now ctx->requests_start == tmp
       int payload_offset = vapi_get_payload_offset (id);
       void *payload = ((u8 *) msg) + payload_offset;
@@ -679,6 +698,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
 	}
       if (payload_offset != -1)
 	{
+          //执行有payload型回调
 	  rv =
 	    ctx->requests[tmp].callback (ctx, ctx->requests[tmp].callback_ctx,
 					 VAPI_OK, is_last, payload);
@@ -687,6 +707,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
 	{
 	  /* this is a message without payload, so bend the callback a little
 	   */
+          //执行无payload型回调
 	  rv =
 	    ((vapi_error_e (*)(vapi_ctx_t, void *, vapi_error_e, bool))
 	     ctx->requests[tmp].callback) (ctx,
@@ -695,6 +716,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
 	}
       if (is_last)
 	{
+          //如果非stream,则移除请求
 	  clib_memset (&ctx->requests[ctx->requests_start], 0,
 		       sizeof (ctx->requests[ctx->requests_start]));
 	  ++ctx->requests_start;
@@ -707,6 +729,8 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
       VAPI_DBG ("after dispatch, req start = %d, end = %d, count = %d",
 		ctx->requests_start, requests_end, ctx->requests_count);
     }
+
+  //解锁退出
   if (0 != (mrv = pthread_mutex_unlock (&ctx->requests_mutex)))
     {
       VAPI_DBG ("pthread_mutex_unlock() failed, rv=%d:%s", mrv,
@@ -716,6 +740,7 @@ vapi_dispatch_response (vapi_ctx_t ctx, vapi_msg_id_t id,
   return rv;
 }
 
+//触发非context相关的回调
 static vapi_error_e
 vapi_dispatch_event (vapi_ctx_t ctx, vapi_msg_id_t id, void *msg)
 {
@@ -736,6 +761,7 @@ vapi_dispatch_event (vapi_ctx_t ctx, vapi_msg_id_t id, void *msg)
   return VAPI_OK;
 }
 
+//检查消息是否要求上下文
 bool
 vapi_msg_is_with_context (vapi_msg_id_t id)
 {
@@ -749,12 +775,15 @@ vapi_dispatch_one (vapi_ctx_t ctx)
   VAPI_DBG ("vapi_dispatch_one()");
   void *msg;
   size_t size;
+  //收取响应消息
   vapi_error_e rv = vapi_recv (ctx, &msg, &size, SVM_Q_WAIT, 0);
   if (VAPI_OK != rv)
     {
       VAPI_DBG ("vapi_recv failed with rv=%d", rv);
       return rv;
     }
+
+  //vppid校验（实际是msg id)
   u16 vpp_id = be16toh (*(u16 *) msg);
   if (vpp_id > ctx->vl_msg_id_max)
     {
@@ -763,6 +792,8 @@ vapi_dispatch_one (vapi_ctx_t ctx)
       vapi_msg_free (ctx, msg);
       return VAPI_EINVAL;
     }
+
+  //未找到对应的msg_id
   if (VAPI_INVALID_MSG_ID == (unsigned) ctx->vl_msg_id_to_vapi_msg_t[vpp_id])
     {
       VAPI_ERR ("Unknown msg ID received, id `%u' marked as not supported",
@@ -770,29 +801,39 @@ vapi_dispatch_one (vapi_ctx_t ctx)
       vapi_msg_free (ctx, msg);
       return VAPI_EINVAL;
     }
+
+  //获得msg_id(防止未对此连接注册此消息）
   const vapi_msg_id_t id = ctx->vl_msg_id_to_vapi_msg_t[vpp_id];
+  //获得消息大小
   const size_t expect_size = vapi_get_message_size (id);
   if (size < expect_size)
     {
+      //收取到的消息与期待的消息不一致，报错
       VAPI_ERR
 	("Invalid msg received, unexpected size `%zu' < expected min `%zu'",
 	 size, expect_size);
       vapi_msg_free (ctx, msg);
       return VAPI_EINVAL;
     }
+
+  //将msg转换为主机序
   u32 context;
   vapi_get_swap_to_host_func (id) (msg);
   if (vapi_msg_is_with_context (id))
     {
+      //消息要求支持上下文，提取context
       context = *(u32 *) (((u8 *) msg) + vapi_get_context_offset (id));
       /* is this a message originating from VAPI? */
       VAPI_DBG ("dispatch, context is %x", context);
       if (context & context_counter_mask)
 	{
+         //按context查找对应的请求（对此context之前的请求，触发超时回调）
 	  rv = vapi_dispatch_response (ctx, id, context, msg);
 	  goto done;
 	}
     }
+
+  //无上下文相关的请求，
   rv = vapi_dispatch_event (ctx, id, msg);
 
 done:
@@ -800,6 +841,7 @@ done:
   return rv;
 }
 
+//阻塞情况下等待api响应并触发回调
 vapi_error_e
 vapi_dispatch (vapi_ctx_t ctx)
 {
@@ -815,11 +857,13 @@ vapi_dispatch (vapi_ctx_t ctx)
   return rv;
 }
 
+//设置event型回调
 void
 vapi_set_event_cb (vapi_ctx_t ctx, vapi_msg_id_t id,
 		   vapi_event_cb callback, void *callback_ctx)
 {
   vapi_event_cb_with_ctx *c = &ctx->event_cbs[id];
+  //设置回调函数，及回调函数对应的用户自定义参数
   c->cb = callback;
   c->ctx = callback_ctx;
 }
@@ -852,6 +896,7 @@ vapi_lookup_vl_msg_id (vapi_ctx_t ctx, vapi_msg_id_t id)
   return ctx->vapi_msg_id_t_to_vl_msg_id[id];
 }
 
+//获得客户端索引
 int
 vapi_get_client_index (vapi_ctx_t ctx)
 {
@@ -903,10 +948,13 @@ vapi_get_context_offset (vapi_msg_id_t id)
   return __vapi_metadata.msgs[id]->context_offset;
 }
 
+//消息metadata注册
 vapi_msg_id_t
 vapi_register_msg (vapi_message_desc_t * msg)
 {
   int i = 0;
+
+  //如果已注册，则直接返回消息id
   for (i = 0; i < __vapi_metadata.count; ++i)
     {
       if (!strcmp
@@ -919,12 +967,18 @@ vapi_register_msg (vapi_message_desc_t * msg)
 	  return msg->id;
 	}
     }
+
+  //消息类型未注册，分配消息id号
   vapi_msg_id_t id = __vapi_metadata.count;
-  ++__vapi_metadata.count;
+  ++__vapi_metadata.count;//消息count增加
+
+  //完成此消息注册
   __vapi_metadata.msgs =
     realloc (__vapi_metadata.msgs,
 	     sizeof (*__vapi_metadata.msgs) * __vapi_metadata.count);
   __vapi_metadata.msgs[id] = msg;
+
+  //更新最大name长度
   size_t s = strlen (msg->name_with_crc);
   if (s > __vapi_metadata.max_len_name_with_crc)
     {
@@ -934,6 +988,7 @@ vapi_register_msg (vapi_message_desc_t * msg)
   return id;
 }
 
+//添加请求锁（用于消息生产）
 vapi_error_e
 vapi_producer_lock (vapi_ctx_t ctx)
 {
@@ -947,6 +1002,7 @@ vapi_producer_lock (vapi_ctx_t ctx)
   return VAPI_OK;
 }
 
+//释放请求锁
 vapi_error_e
 vapi_producer_unlock (vapi_ctx_t ctx)
 {
@@ -961,12 +1017,14 @@ vapi_producer_unlock (vapi_ctx_t ctx)
   return VAPI_OK;
 }
 
+//已注册消息类型count
 size_t
 vapi_get_message_count ()
 {
   return __vapi_metadata.count;
 }
 
+//通过消息id,返回message名称
 const char *
 vapi_get_msg_name (vapi_msg_id_t id)
 {

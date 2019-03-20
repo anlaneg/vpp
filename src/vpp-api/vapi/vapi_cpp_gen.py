@@ -250,6 +250,7 @@ if __name__ == '__main__':
                            help='remove path from filename')
     args = argparser.parse_args()
 
+    #指定cpp对应的jsonparser
     jsonparser = JsonParser(logger, args.files,
                             simple_type_class=CppSimpleType,
                             struct_type_class=CppStructType,
