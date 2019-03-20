@@ -42,6 +42,7 @@ clib_bihash_is_free_24_8 (const clib_bihash_kv_24_8_t * v)
   return 0;
 }
 
+//生成hashcode
 static inline u64
 clib_bihash_hash_24_8 (const clib_bihash_kv_24_8_t * v)
 {
@@ -63,6 +64,7 @@ format_bihash_kvp_24_8 (u8 * s, va_list * args)
   return s;
 }
 
+//对key值进行比对
 static inline int
 clib_bihash_key_compare_24_8 (u64 * a, u64 * b)
 {

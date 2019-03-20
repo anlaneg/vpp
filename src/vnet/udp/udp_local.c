@@ -73,6 +73,7 @@ udp46_local_inline (vlib_main_t * vm,
   word n_no_listener = 0;
   u8 punt_unknown = is_ip4 ? um->punt_unknown4 : um->punt_unknown6;
 
+  //取出报文index列表
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
 
@@ -107,6 +108,7 @@ udp46_local_inline (vlib_main_t * vm,
 	    CLIB_PREFETCH (p3->data, sizeof (h1[0]), LOAD);
 	  }
 
+	  //完成报文索引的填充，完成to_next的移动
 	  bi0 = from[0];
 	  bi1 = from[1];
 	  to_next[0] = bi0;
@@ -131,6 +133,7 @@ udp46_local_inline (vlib_main_t * vm,
 	      advance1 = sizeof (ip6_header_t);
 	    }
 
+	  //长度有误的，直接丢弃
 	  if (PREDICT_FALSE (b0->current_length < advance0 + sizeof (*h0)))
 	    {
 	      error0 = UDP_ERROR_LENGTH_ERROR;
@@ -138,9 +141,12 @@ udp46_local_inline (vlib_main_t * vm,
 	    }
 	  else
 	    {
+	      //跳过ip头部
 	      vlib_buffer_advance (b0, advance0);
 	      h0 = vlib_buffer_get_current (b0);
 	      error0 = next0 = 0;
+
+	      //udp头部有误，丢弃
 	      if (PREDICT_FALSE (clib_net_to_host_u16 (h0->length) >
 				 vlib_buffer_length_in_chain (vm, b0)))
 		{
@@ -149,6 +155,7 @@ udp46_local_inline (vlib_main_t * vm,
 		}
 	    }
 
+	  //对本批次中的第二个报文进行处理
 	  if (PREDICT_FALSE (b1->current_length < advance1 + sizeof (*h1)))
 	    {
 	      error1 = UDP_ERROR_LENGTH_ERROR;
@@ -170,6 +177,7 @@ udp46_local_inline (vlib_main_t * vm,
 	  /* Index sparse array with network byte order. */
 	  dst_port0 = (error0 == 0) ? h0->dst_port : 0;
 	  dst_port1 = (error1 == 0) ? h1->dst_port : 0;
+	  //通过目的端口号查找下一步处理的node index
 	  sparse_vec_index2 (is_ip4 ? um->next_by_dst_port4 :
 			     um->next_by_dst_port6,
 			     dst_port0, dst_port1, &i0, &i1);
@@ -180,8 +188,10 @@ udp46_local_inline (vlib_main_t * vm,
 	    vec_elt (is_ip4 ? um->next_by_dst_port4 : um->next_by_dst_port6,
 		     i1) : next1;
 
+	  //同批次第一个包的端口校验
 	  if (PREDICT_FALSE (i0 == SPARSE_VEC_INVALID_INDEX))
 	    {
+	      //发送icmp 端口不可达
 	      // move the pointer back so icmp-error can find the
 	      // ip packet header
 	      vlib_buffer_advance (b0, -(word) advance0);
@@ -214,9 +224,11 @@ udp46_local_inline (vlib_main_t * vm,
 	    {
 	      b0->error = node->errors[UDP_ERROR_NONE];
 	      // advance to the payload
+	      //跳过udp头部
 	      vlib_buffer_advance (b0, sizeof (*h0));
 	    }
 
+	  //同批次第二个包的端口校验
 	  if (PREDICT_FALSE (i1 == SPARSE_VEC_INVALID_INDEX))
 	    {
 	      // move the pointer back so icmp-error can find the
@@ -279,9 +291,11 @@ udp46_local_inline (vlib_main_t * vm,
 		}
 	    }
 
-	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
-					   to_next, n_left_to_next,
-					   bi0, bi1, next0, next1);
+	  //将报文加入对应的next_frame中，如有必要触发pending_frame队列添加
+	  vlib_validate_buffer_enqueue_x2 (vm, node/*本次处理的node*/, next_index,
+					   to_next/*本次填充的frame index数组*/, n_left_to_next/*to_next数组长度*/,
+					   bi0/*报文index*/, bi1/*报文index*/,
+					   next0/*下一跳node索引*/, next1/*下一跳node索引*/);
 	}
 
       while (n_left_from > 0 && n_left_to_next > 0)
@@ -383,15 +397,19 @@ udp46_local_inline (vlib_main_t * vm,
 		}
 	    }
 
+	  //将报文入队到vectors中
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 					   to_next, n_left_to_next,
 					   bi0, next0);
 	}
 
+      //如果next_index中有报文，则将其加入pending_frame中以便调度
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
   vlib_error_count (vm, node->node_index, UDP_ERROR_NO_LISTENER,
 		    n_no_listener);
+
+  //返回处理的报文数
   return from_frame->n_vectors;
 }
 
@@ -416,6 +434,7 @@ VLIB_NODE_FN (udp6_local_node) (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
+//udp ipv4报文到本机处理
 VLIB_REGISTER_NODE (udp4_local_node) = {
   .name = "ip4-udp-lookup",
   /* Takes a vector of packets. */

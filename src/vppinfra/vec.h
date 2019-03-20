@@ -1044,6 +1044,7 @@ do {								\
     @return BOOLEAN indicating if the vector c-string is null terminated.
 */
 #define vec_c_string_is_terminated(V)                   \
+    /*检查v是否是'\0'终止的*/\
   (((V) != 0) && (vec_len (V) != 0) && ((V)[vec_len ((V)) - 1] == 0))
 
 /** \brief (If necessary) NULL terminate a vector containing a c-string.
@@ -1056,6 +1057,7 @@ do {								\
     u32 vl = vec_len ((V));                     \
     if (!vec_c_string_is_terminated(V))         \
       {                                         \
+        /*如果v中没有'\0'终止，则为其添加'\0'*/\
         vec_validate ((V), vl);                 \
         (V)[vl] = 0;                            \
       }                                         \

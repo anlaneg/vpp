@@ -414,6 +414,7 @@ unformat_input (unformat_input_t * i, va_list * args)
 }
 
 /* Parse a line ending with \n and return it. */
+//自i中提取每个字符，直到遇到'\n'字符，并将提取的字符存储在line中
 uword
 unformat_line (unformat_input_t * i, va_list * va)
 {
@@ -435,8 +436,11 @@ unformat_line_input (unformat_input_t * i, va_list * va)
 {
   unformat_input_t *result = va_arg (*va, unformat_input_t *);
   u8 *line;
+  //自i中提取出一行数据，存储入line中
   if (!unformat_user (i, unformat_line, &line))
     return 0;
+
+  //采用line构造input
   unformat_init_vector (result, line);
   return 1;
 }

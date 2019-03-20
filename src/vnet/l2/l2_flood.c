@@ -144,6 +144,7 @@ VLIB_NODE_FN (l2flood_node) (vlib_main_t * vm,
   l2flood_main_t *msm = &l2flood_main;
   u32 thread_index = vm->thread_index;
 
+  //取frame中的vector表
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
   next_index = node->cached_next_index;
@@ -174,6 +175,7 @@ VLIB_NODE_FN (l2flood_node) (vlib_main_t * vm,
 	  b0 = vlib_get_buffer (vm, bi0);
 
 	  /* Get config for the bridge domain interface */
+	  //取桥配置
 	  bd_config = vec_elt_at_index (l2input_main.bd_configs,
 					vnet_buffer (b0)->l2.bd_index);
 	  in_shg = vnet_buffer (b0)->l2.shg;
@@ -363,6 +365,7 @@ VLIB_NODE_FN (l2flood_node) (vlib_main_t * vm,
 
 
 /* *INDENT-OFF* */
+//定义flood节点
 VLIB_REGISTER_NODE (l2flood_node) = {
   .name = "l2-flood",
   .vector_size = sizeof (u32),

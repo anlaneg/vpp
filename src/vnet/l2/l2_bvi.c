@@ -27,7 +27,9 @@ void
 l2bvi_register_input_type (vlib_main_t * vm,
 			   ethernet_type_t type, u32 node_index)
 {
+  //为l2fwd注册可处理的next node
   l2fwd_register_input_type (vm, type, node_index);
+  //为l2flood注册可处理的next node
   l2flood_register_input_type (vm, type, node_index);
 }
 

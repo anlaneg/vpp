@@ -112,10 +112,10 @@ typedef struct
  *   -MAC learned is a MAC move
  */
 #define foreach_l2fib_entry_result_attr       \
-  _(STATIC,  0, "static")                     \
+  _(STATIC,  0, "static") /*标明是静态表项*/                    \
   _(AGE_NOT, 1, "age-not")                    \
-  _(BVI,     2, "bvi")                        \
-  _(FILTER,  3, "filter")                     \
+  _(BVI,     2, "bvi")      /*此fdb表项是bvi接口的mac*/         \
+  _(FILTER,  3, "filter")  /*当入接口与此表项不同时，报文丢弃*/     \
   _(LRN_EVT, 4, "learn-event")                \
   _(LRN_MOV, 5, "learn-move")
 
@@ -140,10 +140,10 @@ typedef struct l2fib_entry_result_t_
   {
     struct
     {
-      u32 sw_if_index;		/* output sw_if_index (L3 intf if bvi==1) */
+      u32 sw_if_index;	/*定义出接口*/	/* output sw_if_index (L3 intf if bvi==1) */
       l2fib_entry_result_flags_t flags;
 
-      u8 timestamp;		/* timestamp for aging */
+      u8 timestamp;		/*过期时间*//* timestamp for aging */
       l2fib_seq_num_t sn;	/* bd/int seq num */
     } fields;
     u64 raw;
@@ -152,6 +152,7 @@ typedef struct l2fib_entry_result_t_
 
 STATIC_ASSERT_SIZEOF (l2fib_entry_result_t, 8);
 
+//定义l2fib 测试flags标记是否已打上
 #define _(a,v,s)                                                        \
   always_inline int                                                     \
   l2fib_entry_result_is_set_##a (const l2fib_entry_result_t *r) {       \
@@ -159,13 +160,18 @@ STATIC_ASSERT_SIZEOF (l2fib_entry_result_t, 8);
   }
 foreach_l2fib_entry_result_attr
 #undef _
+
+//定义l2fib 设置flags标记函数
 #define _(a,v,s)                                                        \
   always_inline void                                                    \
   l2fib_entry_result_set_##a (l2fib_entry_result_t *r) {       \
+    /*为fib打上对应的flag标记*/\
     r->fields.flags |= L2FIB_ENTRY_RESULT_FLAG_##a;             \
   }
   foreach_l2fib_entry_result_attr
 #undef _
+
+//定义l2fib清楚指定flags标记函数
 #define _(a,v,s)                                                        \
   always_inline void                                                    \
   l2fib_entry_result_clear_##a (l2fib_entry_result_t *r) {       \
@@ -359,15 +365,16 @@ l2fib_lookup_2 (BVT (clib_bihash) * mac_table,
     }
 }
 
+//针对4个报文针对源执行fdb查询
 static_always_inline void
 l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
 		l2fib_entry_key_t * cached_key,
 		l2fib_entry_result_t * cached_result,
-		const u8 * mac0,
+		const u8 * mac0,//报文0的源mac
 		const u8 * mac1,
 		const u8 * mac2,
 		const u8 * mac3,
-		u16 bd_index0,
+		u16 bd_index0,//桥索引
 		u16 bd_index1,
 		u16 bd_index2,
 		u16 bd_index3,
@@ -389,6 +396,7 @@ l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
   if ((key0->raw == cached_key->raw) && (key1->raw == cached_key->raw) &&
       (key2->raw == cached_key->raw) && (key3->raw == cached_key->raw))
     {
+      //如果key与cached_key一致，则直接使用cached_result
       /* Both hit in the one-entry cache */
       result0->raw = cached_result->raw;
       result1->raw = cached_result->raw;
@@ -412,17 +420,20 @@ l2fib_lookup_4 (BVT (clib_bihash) * mac_table,
       kv2.value = ~0ULL;
       kv3.value = ~0ULL;
 
+      //在mac_table中执行查询
       BV (clib_bihash_search_inline) (mac_table, &kv0);
       BV (clib_bihash_search_inline) (mac_table, &kv1);
       BV (clib_bihash_search_inline) (mac_table, &kv2);
       BV (clib_bihash_search_inline) (mac_table, &kv3);
 
+      //填充查询结果
       result0->raw = kv0.value;
       result1->raw = kv1.value;
       result2->raw = kv2.value;
       result3->raw = kv3.value;
 
       /* Update one-entry cache */
+      //选择key1做为cached_key
       cached_key->raw = key1->raw;
       cached_result->raw = result1->raw;
     }

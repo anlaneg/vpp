@@ -139,9 +139,9 @@ _(tcp)
 typedef struct
 {
   u32 sw_if_index[VLIB_N_RX_TX];//报文的入出接口
-  i16 l2_hdr_offset;
+  i16 l2_hdr_offset;//到l2头的offset
   i16 l3_hdr_offset;//到l3头的offset
-  i16 l4_hdr_offset;
+  i16 l4_hdr_offset;//到l4头的offset
   u8 feature_arc_index;
   u8 dont_waste_me;
 

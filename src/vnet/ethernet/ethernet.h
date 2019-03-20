@@ -247,7 +247,7 @@ typedef struct
 {
   /* Sparse vector mapping ethernet type in network byte order
      to next index. */
-  u16 *input_next_by_type;
+  u16 *input_next_by_type;//按以太类型映射不同的input next
   u32 *sparse_index_by_input_next_index;
 
   /* cached next indexes for common ethertypes */

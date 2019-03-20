@@ -234,7 +234,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
       return p[0];
     }
 
-  //没有查找到，使用最后一个位置
+  //没有查找到，且slot==~0,则使用最后一个位置
   if (slot == ~0)
     slot = vec_len (node->next_nodes);
 

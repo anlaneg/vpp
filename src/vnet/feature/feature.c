@@ -173,6 +173,7 @@ vnet_feature_init (vlib_main_t * vm)
 
 VLIB_INIT_FUNCTION (vnet_feature_init);
 
+//通过s查询registration
 u8
 vnet_get_feature_arc_index (const char *s)
 {
@@ -463,6 +464,7 @@ set_interface_features_command_fn (vlib_main_t * vm,
   u8 enable = 1;
 
   /* Get a line of input. */
+  //自input中提取数据，将其中的一行，存储在line_input中
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 

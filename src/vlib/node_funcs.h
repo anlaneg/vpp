@@ -317,6 +317,7 @@ vlib_node_runtime_get_next_frame (vlib_main_t * vm,
   vlib_next_frame_t *nf;
 
   ASSERT (next_index < n->n_next_nodes);
+
   //取出n节点对应的next_frame,再取出next_index（即下级node的索引）获得下级node对应的next_frame
   nf = vec_elt_at_index (nm->next_frames, n->next_frame_index + next_index);
 
@@ -368,13 +369,15 @@ vlib_frame_t *vlib_get_next_frame_internal (vlib_main_t * vm,
 //申请或者获得next_index可用的frame,获得此frame可使用的vector指针及可存放的大小
 #define vlib_get_next_frame_macro(vm,node,next_index,vectors,n_vectors_left,alloc_new_frame) \
 do {									\
-    /*取出或者申请next_index可用的frame*/\
+  /*取出或者申请next_index可用的frame*/\
   vlib_frame_t * _f							\
     = vlib_get_next_frame_internal ((vm), (node), (next_index),		\
-				    (alloc_new_frame));			\
+				    (alloc_new_frame)/*如果必要就申请new_frame*/);			\
+  /*取出frame中已用空间大小*/\
   u32 _n = _f->n_vectors;						\
-  /*获得此frame可使用的vector指针及可存放的大小*/\
+  /*获得此frame可使用的vector指针*/\
   (vectors) = vlib_frame_vector_args (_f) + _n * sizeof ((vectors)[0]); \
+  /*指出此frame中可存放的大小*/\
   (n_vectors_left) = VLIB_FRAME_SIZE - _n;				\
 } while (0)
 
@@ -391,8 +394,8 @@ do {									\
  @return @c vectors -- pointer to next available vector slot
  @return @c n_vectors_left -- number of vector slots available
 */
-//获得可供next_index使用的vectors及可存放的报文数
-#define vlib_get_next_frame(vm,node,next_index,vectors,n_vectors_left)	\
+//获得可供next_index用来存放报文的vectors及vector可存放的报文数(不容许申请新的next frame)
+#define vlib_get_next_frame(vm,node,next_index,vectors/*出参，返回可填充的指针*/,n_vectors_left/*出参，有多少空间可填充*/)	\
   vlib_get_next_frame_macro (vm, node, next_index,			\
 			     vectors, n_vectors_left,			\
 			     /* alloc new frame */ 0)
@@ -401,7 +404,6 @@ do {									\
   vlib_get_next_frame_macro (vm, node, next_index,			\
 			     vectors, n_vectors_left,			\
 			     /* alloc new frame */ 1)
-
 /** \brief Release pointer to next frame vector data.
  Standard single/dual loop boilerplate element.
  @param vm vlib_main_t pointer, varies by thread
@@ -418,18 +420,23 @@ vlib_put_next_frame (vlib_main_t * vm,
 #define vlib_set_next_frame(vm,node,next_index,v)			\
 ({									\
   uword _n_left;							\
+  /*取出可供next_index使用的vector及可使用的大小*/\
   vlib_get_next_frame ((vm), (node), (next_index), (v), _n_left);	\
   ASSERT (_n_left > 0);							\
+  /*如果vector中已有元素，则将其加入到pending_frame队列*/\
   vlib_put_next_frame ((vm), (node), (next_index), _n_left - 1);	\
+  /*返回可填充的vector*/\
   (v);									\
 })
 
+//获取vector,并将报文加入（如果之前已有报文，则将vector加入到pending_frame队列上）
 always_inline void
 vlib_set_next_frame_buffer (vlib_main_t * vm,
 			    vlib_node_runtime_t * node,
 			    u32 next_index, u32 buffer_index)
 {
   u32 *p;
+  //获取node的next_index使用的next_frame,并为其append报文buffer_index
   p = vlib_set_next_frame (vm, node, next_index, p);
   p[0] = buffer_index;
 }
@@ -1279,13 +1286,17 @@ format_function_t format_vlib_time;
 /* Parse node name -> node index. */
 unformat_function_t unformat_vlib_node;
 
+//为指定node的counter_index指定统计计数增加increment
 always_inline void
 vlib_node_increment_counter (vlib_main_t * vm, u32 node_index,
 			     u32 counter_index, u64 increment)
 {
+    //取要统计的node
   vlib_node_t *n = vlib_get_node (vm, node_index);
   vlib_error_main_t *em = &vm->error_main;
+  //取此node针对em->counters的偏移量
   u32 node_counter_base_index = n->error_heap_index;
+  //为计算上counter_index后偏移量增加increment
   em->counters[node_counter_base_index + counter_index] += increment;
 }
 

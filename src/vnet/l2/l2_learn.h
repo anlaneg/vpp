@@ -26,10 +26,10 @@ typedef struct
 {
 
   /* Hash table */
-  BVT (clib_bihash) * mac_table;
+  BVT (clib_bihash) * mac_table;//fdb学习表
 
   /* number of dynamically learned mac entries */
-  u32 global_learn_count;
+  u32 global_learn_count;//记录当前学习到的fdb数量
 
   /* maximum number of dynamically learned mac entries */
   u32 global_learn_limit;
