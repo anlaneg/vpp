@@ -448,7 +448,7 @@ typedef struct
   dpdk_config_main_t *conf;//配置
 
   /* API message ID base */
-  u16 msg_id_base;
+  u16 msg_id_base;//api msg_id基准地址
 
   /* logging */
   vlib_log_class_t log_default;

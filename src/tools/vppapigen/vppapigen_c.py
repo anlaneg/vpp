@@ -286,6 +286,7 @@ def version_tuple(s, module):
 # Plugin entry point
 #
 def run(input_filename, s, file_crc):
+    #vppapi C插件入口
     basename = os.path.basename(input_filename)
     filename, file_extension = os.path.splitext(basename)
     output = top_boilerplate.format(datestring=datestring,

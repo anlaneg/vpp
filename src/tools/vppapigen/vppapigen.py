@@ -41,6 +41,7 @@ class VPPAPILexer(object):
     def __init__(self, filename):
         self.filename = filename
 
+    #各关键字对应的token
     reserved = {
         'service': 'SERVICE',
         'rpc': 'RPC',
@@ -79,12 +80,14 @@ class VPPAPILexer(object):
 
     t_ignore_LINE_COMMENT = '//.*'
 
+    #将t转换为数字，支持10进制，16进制两种
     def t_NUM(self, t):
         r'0[xX][0-9a-fA-F]+|\d+'
         base = 16 if t.value.startswith('0x') else 10
         t.value = int(t.value, base)
         return t
 
+    #定义id,首先在reserved集合中查找id,如果未找到，返回'ID'类别
     def t_ID(self, t):
         r'[a-zA-Z_][a-zA-Z_0-9]*'
         # Check for reserved words
@@ -98,11 +101,13 @@ class VPPAPILexer(object):
         return t
 
     # C or C++ comment (ignore)
+    #支持C的行注释及块注释
     def t_comment(self, t):
         r'(/\*(.|\n)*?\*/)|(//.*)'
         t.lexer.lineno += t.value.count('\n')
 
     # Error handling rule
+    #执行lex报错
     def t_error(self, t):
         raise ParseError("Illegal character '{}' ({})"
                          "in {}: line {}".format(t.value[0],
@@ -116,6 +121,7 @@ class VPPAPILexer(object):
         r'\n+'
         t.lexer.lineno += len(t.value)
 
+    #定义token分隔符号
     literals = ":{}[];=.,"
 
     # A string containing ignored characters (spaces and tabs)
@@ -177,7 +183,7 @@ class Using():
     def __repr__(self):
         return self.name + str(self.alias)
 
-
+#记录union块
 class Union():
     def __init__(self, name, block):
         self.type = 'Union'
@@ -245,6 +251,7 @@ class Enum():
         return self.name + str(self.block)
 
 
+#import对象会触发一个新的yacc执行新的文件分析
 class Import():
     def __init__(self, filename):
         self.filename = filename
@@ -334,7 +341,10 @@ class ParseError(Exception):
 #
 # Grammar rules
 #
+#语法规则这块，底层的实现原理应是查询__doc__获得语法规则，然后依据语法规则生成
+#规约表，并使之规约，从而产生针对定义的函数调用（猜测的，没有去验证）
 class VPPAPIParser(object):
+    #接受lex传来的token
     tokens = VPPAPILexer.tokens
 
     def __init__(self, filename, logger):
@@ -365,6 +375,7 @@ class VPPAPIParser(object):
         column = (p.lexpos(token_idx) - (last_cr))
         return self._coord(p.lineno(token_idx), column)
 
+    #语句列由单个语句，或者slist+stmt组成
     def p_slist(self, p):
         '''slist : stmt
                  | slist stmt'''
@@ -373,6 +384,7 @@ class VPPAPIParser(object):
         else:
             p[0] = p[1] + [p[2]]
 
+    #语句由define,typedef等语句组成
     def p_stmt(self, p):
         '''stmt : define
                 | typedef
@@ -383,10 +395,12 @@ class VPPAPIParser(object):
                 | service'''
         p[0] = p[1]
 
+    #定义import语句
     def p_import(self, p):
         '''import : IMPORT STRING_LITERAL ';' '''
         p[0] = Import(p[2])
 
+    #定义service语句
     def p_service(self, p):
         '''service : SERVICE '{' service_statements '}' ';' '''
         p[0] = p[3]
@@ -446,11 +460,13 @@ class VPPAPIParser(object):
                       | U32 '''
         p[0] = p[1]
 
+    #第一种define形式
     def p_define(self, p):
         '''define : DEFINE ID '{' block_statements_opt '}' ';' '''
         self.fields = []
         p[0] = Define(p[2], [], p[4])
 
+    #第二种define形式
     def p_define_flist(self, p):
         '''define : flist DEFINE ID '{' block_statements_opt '}' ';' '''
         # Legacy typedef
@@ -523,6 +539,7 @@ class VPPAPIParser(object):
         if len(p) != 4:
             self._parse_error('ERROR')
         self.fields.append(p[2])
+        #生成field块
         p[0] = Field(p[1], p[2])
 
     def p_declaration_array(self, p):
@@ -545,6 +562,7 @@ class VPPAPIParser(object):
             self._parse_error('Missing length field: {} {}[{}];'
                               .format(p[1], p[2], p[4]),
                               self._token_coord(p, 1))
+        #生成Array块
         p[0] = Array(p[1], p[2], p[4])
 
     def p_option(self, p):
@@ -580,6 +598,7 @@ class VPPAPIParser(object):
                               self._token_coord(p, 1))
         p[0] = p[1]
 
+    #定义union语句，生成Union块
     def p_union(self, p):
         '''union : UNION ID '{' block_statements_opt '}' ';' '''
         p[0] = Union(p[2], p[4])
@@ -602,10 +621,12 @@ class VPPAPI(object):
                                 write_tables=False, debug=debug)
         self.logger = logger
 
+    #执行语法分析
     def parse_string(self, code, debug=0, lineno=1):
         self.lexer.lineno = lineno
         return self.parser.parse(code, lexer=self.lexer, debug=debug)
 
+    #自fd中读取数据，并执行string解析
     def parse_file(self, fd, debug=0):
         data = fd.read()
         return self.parse_string(data, debug=debug)
@@ -615,6 +636,7 @@ class VPPAPI(object):
                  Field('i32', 'retval')]
         return Define(name + '_reply', [], block)
 
+    #处理收集到的enum,types,message等
     def process(self, objs):
         s = {}
         s['Option'] = {}
@@ -626,8 +648,10 @@ class VPPAPI(object):
         for o in objs:
             tname = o.__class__.__name__
             if isinstance(o, Define):
+                #Define对象处理
                 s[tname].append(o)
                 if o.autoreply:
+                    #针对autoreplay这种，返回retval
                     s[tname].append(self.autoreply_block(o.name))
             elif isinstance(o, Option):
                 s[tname][o[1]] = o[2]
@@ -711,10 +735,12 @@ class VPPAPI(object):
                     '{} missing reply message ({}) or service definition'
                     .format(d, d+'_reply'))
 
+        #返回汇总结果
         return s
 
     def process_imports(self, objs, in_import, result):
         imported_objs = []
+        #遍历语法树，如果in_import为False,则处理Import对象，其它对象添加到O中
         for o in objs:
             # Only allow the following object types from imported file
             if in_import and not (isinstance(o, Enum) or
@@ -724,6 +750,7 @@ class VPPAPI(object):
                                   isinstance(o, Using)):
                 continue
             if isinstance(o, Import):
+                #处理import对象，记录Import对像下的result
                 self.process_imports(o.result, True, result)
             else:
                 result.append(o)
@@ -795,11 +822,14 @@ def main():
     log = logging.getLogger('vppapigen')
 
     parser = VPPAPI(debug=args.debug, filename=filename, logger=log)
+    #使语法分析驱动词法分析执行文件解析（完成yacc中块信息的收集），最终返回生成的语法树
     parsed_objects = parser.parse_file(args.input, log)
 
     # Build a list of objects. Hash of lists.
     result = []
+    #传入获得的语法树，执行import,收集import进来的对象
     parser.process_imports(parsed_objects, False, result)
+    #result记录了目前读取到的所有enum,struct,message等，分析综合它们
     s = parser.process(result)
 
     # Add msg_id field
@@ -823,6 +853,7 @@ def main():
     from importlib.machinery import SourceFileLoader
 
     # Default path
+    #载入相应的apigen插件
     pluginpath = ''
     if not args.pluginpath:
         cand = []
@@ -849,6 +880,7 @@ def main():
         raise Exception('Error importing output plugin: {}, {}'
                         .format(module_path, err))
 
+    #将结果传给plugin，由其生成相应的结果（例如将S结果生成为json串）
     result = plugin.run(filename, s, file_crc)
     if result:
         print(result, file=args.output)

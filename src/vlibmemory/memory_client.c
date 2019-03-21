@@ -215,6 +215,7 @@ vl_client_connect (const char *name, int ctx_quota, int input_queue_size)
   mp->input_queue = (uword) vl_input_queue;
   strncpy ((char *) mp->name, name, sizeof (mp->name) - 1);
 
+  //发送请求
   vl_msg_api_send_shmem (shmem_hdr->vl_input_queue, (u8 *) & mp);
 
   while (1)
@@ -226,6 +227,7 @@ vl_client_connect (const char *name, int ctx_quota, int input_queue_size)
       /* Wait up to 10 seconds */
       for (i = 0; i < 1000; i++)
 	{
+      //获取响应
 	  qstatus = svm_queue_sub (vl_input_queue, (u8 *) & rp,
 				   SVM_Q_NOWAIT, 0);
 	  if (qstatus == 0)

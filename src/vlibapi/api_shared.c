@@ -422,6 +422,7 @@ msg_handler_internal (api_main_t * am,
 	      vl_msg_api_barrier_trace_context (am->msg_names[id]);
 	      vl_msg_api_barrier_sync ();
 	    }
+	  //触发消息回调
 	  (*am->msg_handlers[id]) (the_msg);
 	  if (!am->is_mp_safe[id])
 	    vl_msg_api_barrier_release ();
@@ -585,6 +586,7 @@ vl_msg_api_trace_only (void *the_msg)
 			0 /* do_it */ , 0 /* free_it */ );
 }
 
+//执行消息的cleanup回调（没有调起）
 void
 vl_msg_api_cleanup_handler (void *the_msg)
 {
@@ -605,6 +607,7 @@ vl_msg_api_cleanup_handler (void *the_msg)
 /*
  * vl_msg_api_replay_handler
  */
+//执行消息响应回调
 void
 vl_msg_api_replay_handler (void *the_msg)
 {
@@ -653,6 +656,7 @@ _(api_trace_cfg)				\
 _(message_bounce)				\
 _(is_mp_safe)
 
+//实现api消息配置（完成msg注册）
 void
 vl_msg_api_config (vl_msg_api_msg_config_t * c)
 {
@@ -686,6 +690,7 @@ vl_msg_api_config (vl_msg_api_msg_config_t * c)
        c->name, am->msg_handlers[c->id], c->handler);
 
   am->msg_names[c->id] = c->name;
+  //注册指定消息的处理回调
   am->msg_handlers[c->id] = c->handler;
   am->msg_cleanup_handlers[c->id] = c->cleanup;
   am->msg_endian_handlers[c->id] = c->endian;
@@ -706,6 +711,7 @@ void
 vl_msg_api_set_handlers (int id, char *name, void *handler, void *cleanup,
 			 void *endian, void *print, int size, int traced)
 {
+  //完成msg api的回调设置，并将其注册到系统
   vl_msg_api_msg_config_t cfg;
   vl_msg_api_msg_config_t *c = &cfg;
 
@@ -862,6 +868,7 @@ vl_msg_api_set_first_available_msg_id (u16 first_avail)
   am->first_available_msg_id = first_avail;
 }
 
+//为指定名称的api分配n个可使用的msg_ids
 u16
 vl_msg_api_get_msg_ids (const char *name, int n)
 {
@@ -876,6 +883,7 @@ vl_msg_api_get_msg_ids (const char *name, int n)
 
   name_copy = format (0, "%s%c", name, 0);
 
+  //防止指定名称重复注册
   p = hash_get_mem (am->msg_range_by_name, name_copy);
   if (p)
     {
@@ -885,6 +893,7 @@ vl_msg_api_get_msg_ids (const char *name, int n)
       return ((u16) ~ 0);
     }
 
+  //静态注册时，n必须在0-1024以内
   if (n < 0 || n > 1024)
     {
       clib_warning
@@ -896,11 +905,13 @@ vl_msg_api_get_msg_ids (const char *name, int n)
 
   vec_add2 (am->msg_ranges, rp, 1);
 
+  //占用msg_id(占用n个）
   rv = rp->first_msg_id = am->first_available_msg_id;
   am->first_available_msg_id += n;
   rp->last_msg_id = am->first_available_msg_id - 1;
   rp->name = name_copy;
 
+  //记录名称与范围之间的映射关系
   hash_set_mem (am->msg_range_by_name, name_copy, rp - am->msg_ranges);
 
   return rv;

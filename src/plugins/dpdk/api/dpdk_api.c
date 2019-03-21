@@ -248,6 +248,7 @@ _(SW_INTERFACE_SET_DPDK_HQOS_SUBPORT, sw_interface_set_dpdk_hqos_subport) \
 _(SW_INTERFACE_SET_DPDK_HQOS_TCTBL, sw_interface_set_dpdk_hqos_tctbl)
 
 /* Set up the API message handling tables */
+//添加api消息的hook
 static clib_error_t *
 dpdk_plugin_api_hookup (vlib_main_t * vm)
 {
@@ -255,10 +256,10 @@ dpdk_plugin_api_hookup (vlib_main_t * vm)
 #define _(N,n)                                                  \
     vl_msg_api_set_handlers((VL_API_##N + dm->msg_id_base),     \
                            #n,          \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
+                           vl_api_##n##_t_handler,/*构造消息处理回调*/  \
+                           vl_noop_handler, /*设置消息cleanup回调，目前没用到*/   \
                            vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
+                           vl_api_##n##_t_print,/*消息转字符串*/                \
                            sizeof(vl_api_##n##_t), 1);
   foreach_dpdk_plugin_api_msg;
 #undef _
@@ -301,14 +302,17 @@ dpdk_api_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, dpdk_init)))
     return error;
 
+  //api版本号
   u8 *name;
   name = format (0, "dpdk_%08x%c", api_version, 0);
 
   /* Ask for a correctly-sized block of API message decode slots */
+  //获取对应数量的msg_id数目
   dm->msg_id_base = vl_msg_api_get_msg_ids
     ((char *) name, VL_MSG_FIRST_AVAILABLE);
   vec_free (name);
 
+  //完成api回调用注册
   error = dpdk_plugin_api_hookup (vm);
 
   /* Add our API messages to the global name_crc hash table */
@@ -320,6 +324,7 @@ dpdk_api_init (vlib_main_t * vm)
   return error;
 }
 
+//初始化api
 VLIB_INIT_FUNCTION (dpdk_api_init);
 
 

@@ -108,8 +108,10 @@ typedef enum
 #define VL_API_BIG_ENDIAN 0x01
 
 /** Message range (belonging to a plugin) */
+//记录对应插件有效的msg_id范围
 typedef struct
 {
+  //插件名称及api版本号
   u8 *name;			/**< name of the plugin  */
   u16 first_msg_id;		/**< first assigned message ID */
   u16 last_msg_id;		/**< last assigned message ID */
@@ -118,8 +120,8 @@ typedef struct
 /** Message configuration definition */
 typedef struct
 {
-  int id;			/**< the message ID */
-  char *name;			/**< the message name */
+  int id;			/**< the message ID msg_id用于标识消息类别*/
+  char *name;			/**< the message name 用于标识消息名称*/
   u32 crc;			/**< message definition CRC  */
   void *handler;		/**< the message handler  */
   void *cleanup;		/**< non-default message cleanup handler */
@@ -127,7 +129,7 @@ typedef struct
   void *print;			/**< message print function  */
   int size;			/**< message size  */
   int traced;			/**< is this message to be traced?  */
-  int replay;			/**< is this message to be replayed?  */
+  int replay;			/**< is this message to be replayed? 是否会响应*/
   int message_bounce;		/**< do not free message after processing */
   int is_mp_safe;		/**< worker thread barrier required?  */
 } vl_msg_api_msg_config_t;
@@ -202,7 +204,7 @@ typedef struct
 typedef struct
 {
   /** Message handler vector  */
-  void (**msg_handlers) (void *);
+  void (**msg_handlers) (void *);//消息id与消息回调映射
   /** Plaform-dependent (aka hardware) message handler vector */
   int (**pd_msg_handlers) (void *, int);
 
@@ -216,7 +218,7 @@ typedef struct
   void (**msg_print_handlers) (void *, void *);
 
   /** Message name vector */
-  const char **msg_names;
+  const char **msg_names;//消息id与消息名称映射
 
   /** Don't automatically free message buffer vetor */
   u8 *message_bounce;
@@ -271,10 +273,10 @@ typedef struct
   u8 *serialized_message_table_in_shmem;
 
   /** First available message ID, for theplugin msg allocator */
-  u16 first_available_msg_id;//设置首个有效的消息id
+  u16 first_available_msg_id;//设置首个有效的消息id(用于分配msg_id)
 
   /** Message range by name hash */
-  uword *msg_range_by_name;
+  uword *msg_range_by_name;//通过名称查询对应插件的msg_id范围
 
   /** vector of message ranges */
   vl_api_msg_range_t *msg_ranges;
