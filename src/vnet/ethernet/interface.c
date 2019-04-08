@@ -279,7 +279,7 @@ clib_error_t *
 ethernet_register_interface (vnet_main_t * vnm,
 			     u32 dev_class_index,
 			     u32 dev_instance/*接口在vpp中的编号,用于获得xd*/,
-			     u8 * address/*接口mac地址*/,
+			     const u8 * address/*接口mac地址*/,
 			     u32 * hw_if_index_return/*出参，硬件的hardware interfasce index*/,
 			     ethernet_flag_change_function_t flag_change)
 {

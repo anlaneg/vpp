@@ -16,7 +16,7 @@
  */
 
 #include <vlib/vlib.h>
-#include <vnet/pg/pg.h>
+
 #include <vnet/vxlan-gbp/vxlan_gbp.h>
 
 typedef struct
@@ -309,7 +309,13 @@ vxlan_gbp_input (vlib_main_t * vm,
 	      else
 		{
 		  error0 = VXLAN_GBP_ERROR_NO_SUCH_TUNNEL;
-		  next0 = VXLAN_GBP_INPUT_NEXT_NO_TUNNEL;
+		  next0 = VXLAN_GBP_INPUT_NEXT_PUNT;
+		  if (is_ip4)
+		    b0->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP4];
+		  else
+		    b0->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP6];
 		}
 	      b0->error = node->errors[error0];
 	    }
@@ -324,7 +330,8 @@ vxlan_gbp_input (vlib_main_t * vm,
 	      pkts_decapsulated++;
 	    }
 
-	  vnet_buffer2 (b0)->gbp.flags = vxlan_gbp_get_gpflags (vxlan_gbp0);
+	  vnet_buffer2 (b0)->gbp.flags = (vxlan_gbp_get_gpflags (vxlan_gbp0) |
+					  VXLAN_GBP_GPFLAGS_R);
 	  vnet_buffer2 (b0)->gbp.sclass = vxlan_gbp_get_sclass (vxlan_gbp0);
 
 
@@ -342,7 +349,13 @@ vxlan_gbp_input (vlib_main_t * vm,
 	      else
 		{
 		  error1 = VXLAN_GBP_ERROR_NO_SUCH_TUNNEL;
-		  next1 = VXLAN_GBP_INPUT_NEXT_NO_TUNNEL;
+		  next1 = VXLAN_GBP_INPUT_NEXT_PUNT;
+		  if (is_ip4)
+		    b1->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP4];
+		  else
+		    b1->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP6];
 		}
 	      b1->error = node->errors[error1];
 	    }
@@ -358,7 +371,9 @@ vxlan_gbp_input (vlib_main_t * vm,
 		(rx_counter, thread_index, t1->sw_if_index, 1, len1);
 	    }
 
-	  vnet_buffer2 (b1)->gbp.flags = vxlan_gbp_get_gpflags (vxlan_gbp1);
+	  vnet_buffer2 (b1)->gbp.flags = (vxlan_gbp_get_gpflags (vxlan_gbp1) |
+					  VXLAN_GBP_GPFLAGS_R);
+
 	  vnet_buffer2 (b1)->gbp.sclass = vxlan_gbp_get_sclass (vxlan_gbp1);
 
 	  vnet_update_l2_len (b0);
@@ -444,7 +459,13 @@ vxlan_gbp_input (vlib_main_t * vm,
 	      else
 		{
 		  error0 = VXLAN_GBP_ERROR_NO_SUCH_TUNNEL;
-		  next0 = VXLAN_GBP_INPUT_NEXT_NO_TUNNEL;
+		  next0 = VXLAN_GBP_INPUT_NEXT_PUNT;
+		  if (is_ip4)
+		    b0->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP4];
+		  else
+		    b0->punt_reason =
+		      vxm->punt_no_such_tunnel[FIB_PROTOCOL_IP6];
 		}
 	      b0->error = node->errors[error0];
 	    }
@@ -458,7 +479,9 @@ vxlan_gbp_input (vlib_main_t * vm,
 	      vlib_increment_combined_counter
 		(rx_counter, thread_index, t0->sw_if_index, 1, len0);
 	    }
-	  vnet_buffer2 (b0)->gbp.flags = vxlan_gbp_get_gpflags (vxlan_gbp0);
+	  vnet_buffer2 (b0)->gbp.flags = (vxlan_gbp_get_gpflags (vxlan_gbp0) |
+					  VXLAN_GBP_GPFLAGS_R);
+
 	  vnet_buffer2 (b0)->gbp.sclass = vxlan_gbp_get_sclass (vxlan_gbp0);
 
 	  /* Required to make the l2 tag push / pop code work on l2 subifs */
@@ -549,7 +572,7 @@ typedef enum
   IP_VXLAN_GBP_BYPASS_NEXT_DROP,
   IP_VXLAN_GBP_BYPASS_NEXT_VXLAN_GBP,
   IP_VXLAN_GBP_BYPASS_N_NEXT,
-} ip_vxan_gbp_bypass_next_t;
+} ip_vxlan_gbp_bypass_next_t;
 
 always_inline uword
 ip_vxlan_gbp_bypass_inline (vlib_main_t * vm,

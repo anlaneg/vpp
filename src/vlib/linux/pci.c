@@ -1254,6 +1254,7 @@ vlib_pci_device_open (vlib_main_t * vm, vlib_pci_addr_t * addr,
   p->handle = p - lpm->linux_pci_devices;
   p->addr.as_u32 = di->addr.as_u32;
   p->intx_irq.fd = -1;
+  p->intx_irq.clib_file_index = -1;
   p->numa_node = di->numa_node;
   /*
    * pci io bar read/write fd
@@ -1300,7 +1301,8 @@ vlib_pci_device_close (vlib_main_t * vm, vlib_pci_dev_handle_t h)
   if (p->type == LINUX_PCI_DEVICE_TYPE_UIO)
     {
       irq = &p->intx_irq;
-      clib_file_del_by_index (&file_main, irq->clib_file_index);
+      if (irq->clib_file_index != -1)
+	clib_file_del_by_index (&file_main, irq->clib_file_index);
       close (p->config_fd);
       if (p->io_fd != -1)
 	close (p->io_fd);
@@ -1314,7 +1316,8 @@ vlib_pci_device_close (vlib_main_t * vm, vlib_pci_dev_handle_t h)
 	  err = vfio_set_irqs (vm, p, VFIO_PCI_INTX_IRQ_INDEX, 0, 0,
 			       VFIO_IRQ_SET_ACTION_TRIGGER, 0);
 	  clib_error_free (err);
-	  clib_file_del_by_index (&file_main, irq->clib_file_index);
+	  if (irq->clib_file_index != -1)
+	    clib_file_del_by_index (&file_main, irq->clib_file_index);
 	  close (irq->fd);
 	}
 

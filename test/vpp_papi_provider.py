@@ -9,25 +9,10 @@ import os
 import time
 from collections import deque
 
-import deprecation
 from six import moves, iteritems
 from vpp_papi import VPP, mac_pton
-
 from hook import Hook
-from vpp_l2 import L2_PORT_TYPE
 from vpp_ip_route import MPLS_IETF_MAX_LABEL, MPLS_LABEL_INVALID
-
-
-class L2_VTR_OP:
-    L2_DISABLED = 0
-    L2_PUSH_1 = 1
-    L2_PUSH_2 = 2
-    L2_POP_1 = 3
-    L2_POP_2 = 4
-    L2_TRANSLATE_1_1 = 5
-    L2_TRANSLATE_1_2 = 6
-    L2_TRANSLATE_2_1 = 7
-    L2_TRANSLATE_2_2 = 8
 
 
 class QOS_SOURCE:
@@ -113,6 +98,8 @@ defaultmapping = {
     'ipsec_tunnel_if_add_del': {'is_add': 1, 'anti_replay': 1, },
     'l2_emulation': {'enable': 1, },
     'l2fib_add_del': {'is_add': 1, },
+    'lb_conf': {'sticky_buckets_per_core': 4294967295,
+                'flow_timeout': 4294967295},
     'lisp_add_del_adjacency': {'is_add': 1, },
     'lisp_add_del_local_eid': {'is_add': 1, },
     'lisp_add_del_locator': {'priority': 1, 'weight': 1, 'is_add': 1, },
@@ -389,9 +376,6 @@ class VppPapiProvider(object):
         self.hook.after_api(api_fn.__name__, api_args)
         return reply
 
-    @deprecation.deprecated(
-        deprecated_in="19.04", removed_in="19.07",
-        details="Use the Corresponding API function instead.")
     def cli(self, cli):
         """ Execute a CLI, calling the before/after hooks appropriately.
 
@@ -635,7 +619,7 @@ class VppPapiProvider(object):
         :param outer_fib_id:  (Default value = 0)
         :param tunnel_type:  (Default value = 0)
         :param instance:  (Default value = 0xFFFFFFFF)
-        :param session_id: (Defalt value = 0)
+        :param session_id: (Default value = 0)
         :param is_add:  (Default value = 1)
         :param is_ipv6:  (Default value = 0)
         """
@@ -893,7 +877,7 @@ class VppPapiProvider(object):
         :param first_ip_address: First IP address
         :param last_ip_address: Last IP address
         :param vrf_id: VRF id for the address range
-        :param twice_nat: twice NAT address for extenal hosts
+        :param twice_nat: twice NAT address for extenral hosts
         :param is_add: 1 if add, 0 if delete (Default value = 1)
         """
         return self.api(
@@ -912,7 +896,7 @@ class VppPapiProvider(object):
         """Add/del NAT44 address from interface
 
         :param sw_if_index: Software index of the interface
-        :param twice_nat: twice NAT address for extenal hosts
+        :param twice_nat: twice NAT address for external hosts
         :param is_add: 1 if add, 0 if delete (Default value = 1)
         """
         return self.api(
@@ -967,7 +951,7 @@ class VppPapiProvider(object):
             is_add=1):
         """Add/delete NAT44 load-balancing static mapping rule backend
 
-        :param external_addr: external IPv4 address of the servic
+        :param external_addr: external IPv4 address of the service
         :param external_port: external L4 port number of the service
         :param local_addr: IPv4 address of the internal node
         :param local_port: L4 port number of the internal node
@@ -1003,7 +987,7 @@ class VppPapiProvider(object):
         :param por: port number
         :param protocol: IP protocol number
         :param vrf_id: VRF ID
-        :param is_in: 1 if inside network addres and port pari, 0 if outside
+        :param is_in: 1 if inside network address and port pair, 0 if outside
         :param ext_host_address: external host IPv4 address
         :param ext_host_port: external host port
         """
@@ -1196,7 +1180,7 @@ class VppPapiProvider(object):
         """Dump NAT64 session table
 
         :param protocol: IP protocol (Default value = 255, all STs)
-        :returns: Dictionary of NAT64 sesstion table entries
+        :returns: Dictionary of NAT64 session table entries
         """
         return self.api(self.papi.nat64_st_dump, {'proto': protocol})
 
@@ -1305,7 +1289,7 @@ class VppPapiProvider(object):
         """Set HA failover (remote settings)
 
         :param addr: failover IP4 address
-        :param port: failvoer UDP port number
+        :param port: failover UDP port number
         :param refresh: number of seconds after which to send session refresh
         """
         return self.api(self.papi.nat_ha_set_failover,
@@ -1840,6 +1824,7 @@ class VppPapiProvider(object):
             is_ipv6=0,
             encap_table_id=0,
             vni=0,
+            mode=1,
             instance=0xFFFFFFFF):
         """
 
@@ -1862,7 +1847,8 @@ class VppPapiProvider(object):
                              'mcast_sw_if_index': mcast_sw_if_index,
                              'encap_table_id': encap_table_id,
                              'vni': vni,
-                             'instance': instance}})
+                             'instance': instance,
+                             "mode": mode}})
 
     def vxlan_gbp_tunnel_dump(self, sw_if_index=0xffffffff):
         return self.api(self.papi.vxlan_gbp_tunnel_dump,
@@ -2490,20 +2476,40 @@ class VppPapiProvider(object):
                                 anti_replay=1, renumber=0, show_instance=0):
         return self.api(
             self.papi.ipsec_tunnel_if_add_del,
-            {'local_ip': local_ip, 'remote_ip': remote_ip,
-             'local_spi': local_spi, 'remote_spi': remote_spi,
-             'crypto_alg': crypto_alg,
-             'local_crypto_key_len': len(local_crypto_key),
-             'local_crypto_key': local_crypto_key,
-             'remote_crypto_key_len': len(remote_crypto_key),
-             'remote_crypto_key': remote_crypto_key, 'integ_alg': integ_alg,
-             'local_integ_key_len': len(local_integ_key),
-             'local_integ_key': local_integ_key,
-             'remote_integ_key_len': len(remote_integ_key),
-             'remote_integ_key': remote_integ_key, 'is_add': is_add,
-             'esn': esn, 'anti_replay': anti_replay, 'renumber': renumber,
-             'show_instance': show_instance
-             })
+            {
+                'local_ip': local_ip,
+                'remote_ip': remote_ip,
+                'local_spi': local_spi,
+                'remote_spi': remote_spi,
+                'crypto_alg': crypto_alg,
+                'local_crypto_key_len': len(local_crypto_key),
+                'local_crypto_key': local_crypto_key,
+                'remote_crypto_key_len': len(remote_crypto_key),
+                'remote_crypto_key': remote_crypto_key,
+                'integ_alg': integ_alg,
+                'local_integ_key_len': len(local_integ_key),
+                'local_integ_key': local_integ_key,
+                'remote_integ_key_len': len(remote_integ_key),
+                'remote_integ_key': remote_integ_key,
+                'is_add': is_add,
+                'esn': esn,
+                'anti_replay': anti_replay,
+                'renumber': renumber,
+                'show_instance': show_instance
+            })
+
+    def ipsec_gre_tunnel_add_del(self, local_ip, remote_ip,
+                                 sa_out, sa_in, is_add=1):
+        return self.api(self.papi.ipsec_gre_tunnel_add_del,
+                        {
+                            'is_add': is_add,
+                            'tunnel': {
+                                'src': local_ip,
+                                'dst': remote_ip,
+                                'local_sa_id': sa_out,
+                                'remote_sa_id': sa_in
+                            }
+                        })
 
     def ipsec_select_backend(self, protocol, index):
         return self.api(self.papi.ipsec_select_backend,

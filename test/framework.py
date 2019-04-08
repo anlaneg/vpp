@@ -25,6 +25,7 @@ from hook import StepHook, PollHook, VppDiedError
 from vpp_pg_interface import VppPGInterface
 from vpp_sub_interface import VppSubInterface
 from vpp_lo_interface import VppLoInterface
+from vpp_bvi_interface import VppBviInterface
 from vpp_papi_provider import VppPapiProvider
 from vpp_papi.vpp_stats import VPPStats
 from log import RED, GREEN, YELLOW, double_line_delim, single_line_delim, \
@@ -690,6 +691,20 @@ class VppTestCase(unittest.TestCase):
         cls.lo_interfaces = result
         return result
 
+    @classmethod
+    def create_bvi_interfaces(cls, count):
+        """
+        Create BVI interfaces.
+
+        :param count: number of interfaces created.
+        :returns: List of created interfaces.
+        """
+        result = [VppBviInterface(cls) for i in range(count)]
+        for intf in result:
+            setattr(cls, intf.name, intf)
+        cls.bvi_interfaces = result
+        return result
+
     @staticmethod
     def extend_packet(packet, size, padding=' '):
         """
@@ -1002,9 +1017,11 @@ class VppTestCase(unittest.TestCase):
             i.assert_nothing_captured(remark=remark)
             timeout = 0.1
 
-    def send_and_expect(self, intf, pkts, output):
+    def send_and_expect(self, intf, pkts, output, n_rx=None):
+        if not n_rx:
+            n_rx = len(pkts)
         self.pg_send(intf, pkts)
-        rx = output.get_capture(len(pkts))
+        rx = output.get_capture(n_rx)
         return rx
 
     def send_and_expect_only(self, intf, pkts, output, timeout=None):

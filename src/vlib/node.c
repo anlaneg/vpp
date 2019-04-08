@@ -48,7 +48,7 @@ vlib_get_node_by_name (vlib_main_t * vm, u8 * name)
   vlib_node_main_t *nm = &vm->node_main;
   uword *p;
   u8 *key = name;
-  if (!clib_mem_is_heap_object (key))
+  if (!clib_mem_is_heap_object (vec_header (key, 0)))
     key = format (0, "%s", key);
   //采用key名称查找node
   p = hash_get (nm->node_by_name, key);

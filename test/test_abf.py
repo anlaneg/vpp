@@ -88,9 +88,6 @@ class VppAbfPolicy(VppObject):
     def query_vpp_config(self):
         return find_abf_policy(self._test, self.policy_id)
 
-    def __str__(self):
-        return self.object_id()
-
     def object_id(self):
         return ("abf-policy-%d" % self.policy_id)
 
@@ -131,9 +128,6 @@ class VppAbfAttach(VppObject):
                                    self.policy_id,
                                    self.sw_if_index)
 
-    def __str__(self):
-        return self.object_id()
-
     def object_id(self):
         return ("abf-attach-%d-%d" % (self.policy_id, self.sw_if_index))
 
@@ -171,7 +165,7 @@ class TestAbf(VppTestCase):
         # the application of ACLs to a forwarding path to achieve
         # ABF
         # So we construct just a few ACLs to ensure the ABF policies
-        # are correclty constructed and used. And a few path types
+        # are correctly constructed and used. And a few path types
         # to test the API path decoding.
         #
 

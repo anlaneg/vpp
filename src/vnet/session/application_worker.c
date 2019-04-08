@@ -330,6 +330,14 @@ app_worker_close_notify (app_worker_t * app_wrk, session_t * s)
 }
 
 int
+app_worker_reset_notify (app_worker_t * app_wrk, session_t * s)
+{
+  application_t *app = application_get (app_wrk->app_index);
+  app->cb_fns.session_reset_callback (s);
+  return 0;
+}
+
+int
 app_worker_builtin_rx (app_worker_t * app_wrk, session_t * s)
 {
   application_t *app = application_get (app_wrk->app_index);
@@ -545,18 +553,10 @@ app_send_io_evt_rx (app_worker_t * app_wrk, session_t * s, u8 lock)
 
   if (PREDICT_FALSE (s->session_state != SESSION_STATE_READY
 		     && s->session_state != SESSION_STATE_LISTENING))
-    {
-      /* Session is closed so app will never clean up. Flush rx fifo */
-      if (s->session_state == SESSION_STATE_CLOSED)
-	svm_fifo_dequeue_drop_all (s->rx_fifo);
-      return 0;
-    }
+    return 0;
 
   if (app_worker_application_is_builtin (app_wrk))
-    {
-      application_t *app = application_get (app_wrk->app_index);
-      return app->cb_fns.builtin_app_rx_callback (s);
-    }
+    return app_worker_builtin_rx (app_wrk, s);
 
   if (svm_fifo_has_event (s->rx_fifo))
     return 0;

@@ -2348,6 +2348,19 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vec_validate (vm->processing_rpc_requests, 0);
   _vec_len (vm->processing_rpc_requests) = 0;
 
+  //调用所有其它非早期配置函数
+  if ((error = vlib_call_all_config_functions (vm, input/*所有模块配置参数*/, 0 /* is_early */ )))
+    goto done;
+
+  /* Call all main loop enter functions. */
+  {
+    clib_error_t *sub_error;
+    //触发main loop进入前钩子函数
+    sub_error = vlib_call_all_main_loop_enter_functions (vm);
+    if (sub_error)
+      clib_error_report (sub_error);
+  }
+
   //记录退出点
   switch (clib_setjmp (&vm->main_loop_exit, VLIB_MAIN_LOOP_EXIT_NONE))
   {
@@ -2361,23 +2374,6 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
     default:
       error = vm->main_loop_error;
       goto done;
-  }
-
-  //调用所有其它非早期配置函数
-  if ((error = vlib_call_all_config_functions (vm, input/*所有模块配置参数*/, 0 /* is_early */ )))
-  {
-	  goto done;
-  }
-
-  /* Call all main loop enter functions. */
-  {
-    //触发main loop进入前钩子函数
-    clib_error_t *sub_error;
-    sub_error = vlib_call_all_main_loop_enter_functions (vm);
-    if (sub_error)
-    {
-      clib_error_report (sub_error);
-    }
   }
 
   //执行main loop函数

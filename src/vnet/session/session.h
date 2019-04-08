@@ -47,7 +47,6 @@ typedef struct session_tx_context_
   session_t *s;
   transport_proto_vft_t *transport_vft;//传输层virtual函数表
   transport_connection_t *tc;
-  vlib_buffer_t *b;
   u32 max_dequeue;
   u32 snd_space;
   u32 left_to_snd;
@@ -336,6 +335,8 @@ int session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 					  session_evt_type_t evt_type);
 void session_send_rpc_evt_to_thread (u32 thread_index, void *fp,
 				     void *rpc_args);
+void session_send_rpc_evt_to_thread_force (u32 thread_index, void *fp,
+					   void *rpc_args);
 transport_connection_t *session_get_transport (session_t * s);
 
 
@@ -385,6 +386,13 @@ transport_max_tx_dequeue (transport_connection_t * tc)
 {
   session_t *s = session_get (tc->s_index, tc->thread_index);
   return svm_fifo_max_dequeue (s->tx_fifo);
+}
+
+always_inline u32
+transport_max_rx_dequeue (transport_connection_t * tc)
+{
+  session_t *s = session_get (tc->s_index, tc->thread_index);
+  return svm_fifo_max_dequeue (s->rx_fifo);
 }
 
 always_inline u32

@@ -200,6 +200,8 @@ tcp_connection_cleanup (tcp_connection_t * tc)
 {
   tcp_main_t *tm = &tcp_main;
 
+  TCP_EVT_DBG (TCP_EVT_DELETE, tc);
+
   /* Cleanup local endpoint if this was an active connect */
   transport_endpoint_cleanup (TRANSPORT_PROTO_TCP, &tc->c_lcl_ip,
 			      tc->c_lcl_port);
@@ -243,7 +245,6 @@ tcp_connection_cleanup (tcp_connection_t * tc)
 void
 tcp_connection_del (tcp_connection_t * tc)
 {
-  TCP_EVT_DBG (TCP_EVT_DELETE, tc);
   session_transport_delete_notify (&tc->connection);
   tcp_connection_cleanup (tc);
 }
@@ -265,9 +266,14 @@ void
 tcp_connection_free (tcp_connection_t * tc)
 {
   tcp_main_t *tm = &tcp_main;
+  if (CLIB_DEBUG)
+    {
+      u8 thread_index = tc->c_thread_index;
+      clib_memset (tc, 0xFA, sizeof (*tc));
+      pool_put (tm->connections[thread_index], tc);
+      return;
+    }
   pool_put (tm->connections[tc->c_thread_index], tc);
-  if (CLIB_DEBUG > 0)
-    clib_memset (tc, 0xFA, sizeof (*tc));
 }
 
 /** Notify session that connection has been reset.
@@ -350,6 +356,15 @@ tcp_connection_close (tcp_connection_t * tc)
       tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_ESTABLISHED:
+      /* If closing with unread data, reset the connection */
+      if (transport_max_rx_dequeue (&tc->connection))
+	{
+	  tcp_send_reset (tc);
+	  tcp_connection_timers_reset (tc);
+	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
+	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
+	  break;
+	}
       if (!transport_max_tx_dequeue (&tc->connection))
 	tcp_send_fin (tc);
       else
@@ -545,6 +560,7 @@ tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
   vec_validate (tm->cc_algos, type);
 
   tm->cc_algos[type] = *vft;
+  hash_set_mem (tm->cc_algo_by_name, vft->name, type);
 }
 
 tcp_cc_algorithm_t *
@@ -841,9 +857,10 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tcp_flight_size (tc), tcp_available_output_snd_space (tc),
 	      tcp_rcv_wnd_available (tc));
   s = format (s, " tsval_recent %u\n", tc->tsval_recent);
-  s = format (s, " tsecr %u tsecr_last_ack %u tsval_recent_age %u\n",
+  s = format (s, " tsecr %u tsecr_last_ack %u tsval_recent_age %u",
 	      tc->rcv_opts.tsecr, tc->tsecr_last_ack,
 	      tcp_time_now () - tc->tsval_recent_age);
+  s = format (s, " snd_mss %u\n", tc->snd_mss);
   s = format (s, " rto %u rto_boff %u srtt %u us %.3f rttvar %u rtt_ts %.4f",
 	      tc->rto, tc->rto_boff, tc->srtt, tc->mrtt_us * 1000, tc->rttvar,
 	      tc->rtt_ts);
@@ -1164,7 +1181,7 @@ tcp_session_flush_data (transport_connection_t * tconn)
   if (tc->flags & TCP_CONN_PSH_PENDING)
     return;
   tc->flags |= TCP_CONN_PSH_PENDING;
-  tc->psh_seq = tc->snd_una_max + transport_max_tx_dequeue (tconn) - 1;
+  tc->psh_seq = tc->snd_una + transport_max_tx_dequeue (tconn) - 1;
 }
 
 /* *INDENT-OFF* */
@@ -1243,10 +1260,10 @@ tcp_timer_establish_handler (u32 conn_index)
   ASSERT (tc->state == TCP_STATE_SYN_RCVD);
   tc->timers[TCP_TIMER_ESTABLISH] = TCP_TIMER_HANDLE_INVALID;
   tcp_connection_set_state (tc, TCP_STATE_CLOSED);
-  /* Start cleanup. App wasn't notified yet so use delete notify as
-   * opposed to delete to cleanup session layer state. */
   tcp_connection_timers_reset (tc);
-  session_transport_delete_notify (&tc->connection);
+  /* Start cleanup. Do NOT delete the session until we do the connection
+   * cleanup. Otherwise, we end up with a dangling session index in the
+   * tcp connection. */
   tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
 }
 
@@ -1271,7 +1288,7 @@ tcp_timer_establish_ao_handler (u32 conn_index)
 static void
 tcp_timer_waitclose_handler (u32 conn_index)
 {
-  u32 thread_index = vlib_get_thread_index (), rto;
+  u32 thread_index = vlib_get_thread_index ();
   tcp_connection_t *tc;
 
   tc = tcp_connection_get (conn_index, thread_index);
@@ -1296,7 +1313,7 @@ tcp_timer_waitclose_handler (u32 conn_index)
        * and switch to LAST_ACK. */
       tcp_cong_recovery_off (tc);
       /* Make sure we don't try to send unsent data */
-      tc->snd_una_max = tc->snd_nxt = tc->snd_una;
+      tc->snd_nxt = tc->snd_una;
       tcp_send_fin (tc);
       tcp_connection_set_state (tc, TCP_STATE_LAST_ACK);
 
@@ -1309,15 +1326,12 @@ tcp_timer_waitclose_handler (u32 conn_index)
       tcp_connection_timers_reset (tc);
       if (tc->flags & TCP_CONN_FINPNDG)
 	{
-	  /* If FIN pending send it before closing and wait as long as
-	   * the rto timeout would wait. Notify session layer that transport
-	   * is closed. We haven't sent everything but we did try. */
-	  tcp_cong_recovery_off (tc);
-	  tcp_send_fin (tc);
-	  rto = clib_max ((tc->rto >> tc->rto_boff) * TCP_TO_TIMER_TICK, 1);
-	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE,
-			 clib_min (rto, TCP_2MSL_TIME));
+	  /* If FIN pending, we haven't sent everything, but we did try.
+	   * Notify session layer that transport is closed. */
+	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
 	  session_transport_closed_notify (&tc->connection);
+	  tcp_send_reset (tc);
+	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
 	}
       else
 	{
@@ -1533,8 +1547,10 @@ tcp_init (vlib_main_t * vm)
 			       FIB_PROTOCOL_IP6, tcp6_output_node.index);
 
   tcp_api_reference ();
+  tm->cc_algo_by_name = hash_create_string (0, sizeof (uword));
   tm->tx_pacing = 1;
   tm->cc_algo = TCP_CC_NEWRENO;
+  tm->default_mtu = 1460;
   return 0;
 }
 
@@ -1545,15 +1561,20 @@ uword
 unformat_tcp_cc_algo (unformat_input_t * input, va_list * va)
 {
   uword *result = va_arg (*va, uword *);
+  tcp_main_t *tm = &tcp_main;
+  char *cc_algo_name;
+  u8 found = 0;
+  uword *p;
 
-  if (unformat (input, "newreno"))
-    *result = TCP_CC_NEWRENO;
-  else if (unformat (input, "cubic"))
-    *result = TCP_CC_CUBIC;
-  else
-    return 0;
+  if (unformat (input, "%s", &cc_algo_name)
+      && ((p = hash_get_mem (tm->cc_algo_by_name, cc_algo_name))))
+    {
+      *result = *p;
+      found = 1;
+    }
 
-  return 1;
+  vec_free (cc_algo_name);
+  return found;
 }
 
 uword
@@ -1597,6 +1618,8 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	;
       else if (unformat (input, "max-rx-fifo %U", unformat_memory_size,
 			 &tm->max_rx_fifo))
+	;
+      else if (unformat (input, "mtu %d", &tm->default_mtu))
 	;
       else if (unformat (input, "no-tx-pacing"))
 	tm->tx_pacing = 0;

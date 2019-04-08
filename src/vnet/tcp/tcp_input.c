@@ -405,11 +405,27 @@ error:
 }
 
 always_inline int
-tcp_rcv_ack_is_acceptable (tcp_connection_t * tc0, vlib_buffer_t * tb0)
+tcp_rcv_ack_no_cc (tcp_connection_t * tc, vlib_buffer_t * b, u32 * error)
 {
   /* SND.UNA =< SEG.ACK =< SND.NXT */
-  return (seq_leq (tc0->snd_una, vnet_buffer (tb0)->tcp.ack_number)
-	  && seq_leq (vnet_buffer (tb0)->tcp.ack_number, tc0->snd_nxt));
+  if (!(seq_leq (tc->snd_una, vnet_buffer (b)->tcp.ack_number)
+	&& seq_leq (vnet_buffer (b)->tcp.ack_number, tc->snd_nxt)))
+    {
+      if (seq_leq (vnet_buffer (b)->tcp.ack_number, tc->snd_una_max)
+	  && seq_gt (vnet_buffer (b)->tcp.ack_number, tc->snd_una))
+	{
+	  tc->snd_nxt = vnet_buffer (b)->tcp.ack_number;
+	  goto acceptable;
+	}
+      *error = TCP_ERROR_ACK_INVALID;
+      return -1;
+    }
+
+acceptable:
+  tc->bytes_acked = vnet_buffer (b)->tcp.ack_number - tc->snd_una;
+  tc->snd_una = vnet_buffer (b)->tcp.ack_number;
+  *error = TCP_ERROR_ACK_OK;
+  return 0;
 }
 
 /**
@@ -604,7 +620,7 @@ tcp_ack_is_dupack (tcp_connection_t * tc, vlib_buffer_t * b, u32 prev_snd_wnd,
 		   u32 prev_snd_una)
 {
   return ((vnet_buffer (b)->tcp.ack_number == prev_snd_una)
-	  && seq_gt (tc->snd_una_max, tc->snd_una)
+	  && seq_gt (tc->snd_nxt, tc->snd_una)
 	  && (vnet_buffer (b)->tcp.seq_end == vnet_buffer (b)->tcp.seq_number)
 	  && (prev_snd_wnd == tc->snd_wnd));
 }
@@ -913,7 +929,7 @@ tcp_scoreboard_is_sane_post_recovery (tcp_connection_t * tc)
   sack_scoreboard_hole_t *hole;
   hole = scoreboard_first_hole (&tc->sack_sb);
   return (!hole || (seq_geq (hole->start, tc->snd_una)
-		    && seq_lt (hole->end, tc->snd_una_max)));
+		    && seq_lt (hole->end, tc->snd_nxt)));
 }
 
 #ifndef CLIB_MARCH_VARIANT
@@ -943,8 +959,8 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
       if (seq_lt (blk->start, blk->end)
 	  && seq_gt (blk->start, tc->snd_una)
 	  && seq_gt (blk->start, ack)
-	  && seq_lt (blk->start, tc->snd_una_max)
-	  && seq_leq (blk->end, tc->snd_una_max))
+	  && seq_lt (blk->start, tc->snd_nxt)
+	  && seq_leq (blk->end, tc->snd_nxt))
 	{
 	  blk++;
 	  continue;
@@ -979,7 +995,7 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
     {
       /* If no holes, insert the first that covers all outstanding bytes */
       last_hole = scoreboard_insert_hole (sb, TCP_INVALID_SACK_HOLE_INDEX,
-					  tc->snd_una, tc->snd_una_max);
+					  tc->snd_una, tc->snd_nxt);
       sb->tail = scoreboard_hole_index (sb, last_hole);
       tmp = tc->rcv_opts.sacks[vec_len (tc->rcv_opts.sacks) - 1];
       sb->high_sacked = tmp.end;
@@ -990,17 +1006,17 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
        * last hole end */
       tmp = tc->rcv_opts.sacks[vec_len (tc->rcv_opts.sacks) - 1];
       last_hole = scoreboard_last_hole (sb);
-      if (seq_gt (tc->snd_una_max, last_hole->end))
+      if (seq_gt (tc->snd_nxt, last_hole->end))
 	{
 	  if (seq_geq (last_hole->start, sb->high_sacked))
 	    {
-	      last_hole->end = tc->snd_una_max;
+	      last_hole->end = tc->snd_nxt;
 	    }
 	  /* New hole after high sacked block */
-	  else if (seq_lt (sb->high_sacked, tc->snd_una_max))
+	  else if (seq_lt (sb->high_sacked, tc->snd_nxt))
 	    {
 	      scoreboard_insert_hole (sb, sb->tail, sb->high_sacked,
-				      tc->snd_una_max);
+				      tc->snd_nxt);
 	    }
 	}
       /* Keep track of max byte sacked for when the last hole
@@ -1078,8 +1094,7 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
   if (pool_elts (sb->holes) == 1)
     {
       hole = scoreboard_first_hole (sb);
-      if (hole->start == ack + sb->snd_una_adv
-	  && hole->end == tc->snd_una_max)
+      if (hole->start == ack + sb->snd_una_adv && hole->end == tc->snd_nxt)
 	scoreboard_remove_hole (sb, hole);
     }
 
@@ -1088,8 +1103,8 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
     - (old_sacked_bytes - sb->last_bytes_delivered);
   ASSERT (sb->last_sacked_bytes <= sb->sacked_bytes || tcp_in_recovery (tc));
   ASSERT (sb->sacked_bytes == 0 || tcp_in_recovery (tc)
-	  || sb->sacked_bytes < tc->snd_una_max - seq_max (tc->snd_una, ack));
-  ASSERT (sb->last_sacked_bytes + sb->lost_bytes <= tc->snd_una_max
+	  || sb->sacked_bytes < tc->snd_nxt - seq_max (tc->snd_una, ack));
+  ASSERT (sb->last_sacked_bytes + sb->lost_bytes <= tc->snd_nxt
 	  - seq_max (tc->snd_una, ack) || tcp_in_recovery (tc));
   ASSERT (sb->head == TCP_INVALID_SACK_HOLE_INDEX || tcp_in_recovery (tc)
 	  || sb->holes[sb->head].start == ack + sb->snd_una_adv);
@@ -1146,7 +1161,7 @@ void
 tcp_cc_init_congestion (tcp_connection_t * tc)
 {
   tcp_fastrecovery_on (tc);
-  tc->snd_congestion = tc->snd_una_max;
+  tc->snd_congestion = tc->snd_nxt;
   tc->cwnd_acc_bytes = 0;
   tc->snd_rxt_bytes = 0;
   tc->prev_ssthresh = tc->ssthresh;
@@ -1162,7 +1177,6 @@ tcp_cc_recovery_exit (tcp_connection_t * tc)
   tc->rto_boff = 0;
   tcp_update_rto (tc);
   tc->snd_rxt_ts = 0;
-  tc->snd_nxt = tc->snd_una_max;
   tc->rtt_ts = 0;
   tcp_recovery_off (tc);
   TCP_EVT_DBG (TCP_EVT_CC_EVT, tc, 3);
@@ -1175,7 +1189,6 @@ tcp_cc_fastrecovery_exit (tcp_connection_t * tc)
   tc->cc_algo->recovered (tc);
   tc->snd_rxt_bytes = 0;
   tc->rcv_dupacks = 0;
-  tc->snd_nxt = tc->snd_una_max;
   tc->snd_rxt_bytes = 0;
   tc->rtt_ts = 0;
 
@@ -1191,12 +1204,16 @@ tcp_cc_congestion_undo (tcp_connection_t * tc)
 {
   tc->cwnd = tc->prev_cwnd;
   tc->ssthresh = tc->prev_ssthresh;
-  tc->snd_nxt = tc->snd_una_max;
   tc->rcv_dupacks = 0;
   if (tcp_in_recovery (tc))
-    tcp_cc_recovery_exit (tc);
+    {
+      tcp_cc_recovery_exit (tc);
+      tc->snd_nxt = seq_max (tc->snd_nxt, tc->snd_congestion);
+    }
   else if (tcp_in_fastrecovery (tc))
-    tcp_cc_fastrecovery_exit (tc);
+    {
+      tcp_cc_fastrecovery_exit (tc);
+    }
   ASSERT (tc->rto_boff == 0);
   TCP_EVT_DBG (TCP_EVT_CC_EVT, tc, 5);
 }
@@ -1374,8 +1391,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
   else if (is_dack && !tcp_in_recovery (tc))
     {
       TCP_EVT_DBG (TCP_EVT_DUPACK_RCVD, tc, 1);
-      ASSERT (tc->snd_una != tc->snd_una_max
-	      || tc->sack_sb.last_sacked_bytes);
+      ASSERT (tc->snd_una != tc->snd_nxt || tc->sack_sb.last_sacked_bytes);
 
       tc->rcv_dupacks++;
 
@@ -1482,8 +1498,6 @@ partial_ack:
 	  return;
 	}
 
-      tc->snd_nxt = tc->snd_una_max;
-
       /* Treat as congestion avoidance ack */
       tcp_cc_rcv_ack (tc);
       return;
@@ -1565,38 +1579,19 @@ tcp_rcv_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
   /* If the ACK acks something not yet sent (SEG.ACK > SND.NXT) */
   if (PREDICT_FALSE (seq_gt (vnet_buffer (b)->tcp.ack_number, tc->snd_nxt)))
     {
-      /* When we entered cong recovery, we reset snd_nxt to snd_una. Seems
-       * peer still has the data so accept the ack */
-      if (tcp_in_cong_recovery (tc)
-	  && seq_leq (vnet_buffer (b)->tcp.ack_number,
-		      tc->snd_una + tc->snd_wnd))
+      /* We've probably entered recovery and the peer still has some
+       * of the data we've sent. Update snd_nxt and accept the ack */
+      if (seq_leq (vnet_buffer (b)->tcp.ack_number, tc->snd_una_max)
+	  && seq_gt (vnet_buffer (b)->tcp.ack_number, tc->snd_una))
 	{
 	  tc->snd_nxt = vnet_buffer (b)->tcp.ack_number;
-	  if (seq_gt (tc->snd_nxt, tc->snd_una_max))
-	    tc->snd_una_max = tc->snd_nxt;
 	  goto process_ack;
 	}
 
-      /* If we have outstanding data and this is within the window, accept it,
-       * probably retransmit has timed out. Otherwise ACK segment and then
-       * drop it */
-      if (seq_gt (vnet_buffer (b)->tcp.ack_number, tc->snd_una_max))
-	{
-	  tcp_program_ack (wrk, tc);
-	  *error = TCP_ERROR_ACK_FUTURE;
-	  TCP_EVT_DBG (TCP_EVT_ACK_RCV_ERR, tc, 0,
-		       vnet_buffer (b)->tcp.ack_number);
-	  return -1;
-	}
-
-      TCP_EVT_DBG (TCP_EVT_ACK_RCV_ERR, tc, 2,
+      *error = TCP_ERROR_ACK_FUTURE;
+      TCP_EVT_DBG (TCP_EVT_ACK_RCV_ERR, tc, 0,
 		   vnet_buffer (b)->tcp.ack_number);
-
-      tc->snd_nxt = vnet_buffer (b)->tcp.ack_number;
-      if (seq_gt (tc->snd_nxt, tc->snd_una_max))
-	tc->snd_una_max = tc->snd_nxt;
-
-      goto process_ack;
+      return -1;
     }
 
   /* If old ACK, probably it's an old dupack */
@@ -1611,10 +1606,11 @@ tcp_rcv_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
       return 0;
     }
 
+process_ack:
+
   /*
    * Looks okay, process feedback
    */
-process_ack:
   if (tcp_opts_sack_permitted (&tc->rcv_opts))
     tcp_rcv_sacks (tc, vnet_buffer (b)->tcp.ack_number);
 
@@ -1767,13 +1763,7 @@ tcp_update_sack_list (tcp_connection_t * tc, u32 start, u32 end)
 
       /* Save to new SACK list if we have space. */
       if (vec_len (new_list) < TCP_MAX_SACK_BLOCKS)
-	{
-	  vec_add1 (new_list, tc->snd_sacks[i]);
-	}
-      else
-	{
-	  clib_warning ("sack discarded");
-	}
+	vec_add1 (new_list, tc->snd_sacks[i]);
     }
 
   ASSERT (vec_len (new_list) <= TCP_MAX_SACK_BLOCKS);
@@ -1903,8 +1893,8 @@ tcp_can_delack (tcp_connection_t * tc)
 {
   /* Send ack if ... */
   if (TCP_ALWAYS_ACK
-      /* just sent a rcv wnd 0 */
-      || (tc->flags & TCP_CONN_SENT_RCV_WND0) != 0
+      /* just sent a rcv wnd 0
+         || (tc->flags & TCP_CONN_SENT_RCV_WND0) != 0 */
       /* constrained to send ack */
       || (tc->flags & TCP_CONN_SNDACK) != 0
       /* we're almost out of tx wnd */
@@ -2730,24 +2720,24 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       switch (tc0->state)
 	{
 	case TCP_STATE_SYN_RCVD:
+
+	  /* Make sure the segment is exactly right */
+	  if (tc0->rcv_nxt != vnet_buffer (b0)->tcp.seq_number || is_fin0)
+	    {
+	      tcp_connection_reset (tc0);
+	      error0 = TCP_ERROR_SEGMENT_INVALID;
+	      goto drop;
+	    }
+
 	  /*
 	   * If the segment acknowledgment is not acceptable, form a
 	   * reset segment,
 	   *  <SEQ=SEG.ACK><CTL=RST>
 	   * and send it.
 	   */
-	  if (!tcp_rcv_ack_is_acceptable (tc0, b0))
+	  if (tcp_rcv_ack_no_cc (tc0, b0, &error0))
 	    {
 	      tcp_connection_reset (tc0);
-	      error0 = TCP_ERROR_ACK_INVALID;
-	      goto drop;
-	    }
-
-	  /* Make sure the ack is exactly right */
-	  if (tc0->rcv_nxt != vnet_buffer (b0)->tcp.seq_number || is_fin0)
-	    {
-	      tcp_connection_reset (tc0);
-	      error0 = TCP_ERROR_SEGMENT_INVALID;
 	      goto drop;
 	    }
 
@@ -2797,16 +2787,30 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      max_dequeue = transport_max_tx_dequeue (&tc0->connection);
 	      if (max_dequeue <= tc0->burst_acked)
 		tcp_send_fin (tc0);
+	      /* If a fin was received and data was acked extend wait */
+	      else if ((tc0->flags & TCP_CONN_FINRCVD) && tc0->bytes_acked)
+		tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE,
+				  TCP_CLOSEWAIT_TIME);
 	    }
 	  /* If FIN is ACKed */
-	  else if (tc0->snd_una == tc0->snd_una_max)
+	  else if (tc0->snd_una == tc0->snd_nxt)
 	    {
-	      tcp_connection_set_state (tc0, TCP_STATE_FIN_WAIT_2);
-
 	      /* Stop all retransmit timers because we have nothing more
-	       * to send. Enable waitclose though because we're willing to
-	       * wait for peer's FIN but not indefinitely. */
+	       * to send. */
 	      tcp_connection_timers_reset (tc0);
+
+	      /* We already have a FIN but didn't transition to CLOSING
+	       * because of outstanding tx data. Close the connection. */
+	      if (tc0->flags & TCP_CONN_FINRCVD)
+		{
+		  tcp_connection_set_state (tc0, TCP_STATE_CLOSED);
+		  tcp_timer_set (tc0, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+		  goto drop;
+		}
+
+	      tcp_connection_set_state (tc0, TCP_STATE_FIN_WAIT_2);
+	      /* Enable waitclose because we're willing to wait for peer's
+	       * FIN but not indefinitely. */
 	      tcp_timer_set (tc0, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
 
 	      /* Don't try to deq the FIN acked */
@@ -2820,7 +2824,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  /* In addition to the processing for the ESTABLISHED state, if
 	   * the retransmission queue is empty, the user's CLOSE can be
 	   * acknowledged ("ok") but do not delete the TCB. */
-	  if (tcp_rcv_ack (wrk, tc0, b0, tcp0, &error0))
+	  if (tcp_rcv_ack_no_cc (tc0, b0, &error0))
 	    goto drop;
 	  tc0->burst_acked = 0;
 	  break;
@@ -2829,23 +2833,26 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  if (tcp_rcv_ack (wrk, tc0, b0, tcp0, &error0))
 	    goto drop;
 
-	  if (tc0->flags & TCP_CONN_FINPNDG)
-	    {
-	      /* TX fifo finally drained */
-	      if (!transport_max_tx_dequeue (&tc0->connection))
-		{
-		  tcp_send_fin (tc0);
-		  tcp_connection_timers_reset (tc0);
-		  tcp_connection_set_state (tc0, TCP_STATE_LAST_ACK);
-		  tcp_timer_set (tc0, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
-		}
-	    }
+	  if (!(tc0->flags & TCP_CONN_FINPNDG))
+	    break;
+
+	  /* Still have outstanding tx data */
+	  if (transport_max_tx_dequeue (&tc0->connection))
+	    break;
+
+	  tcp_send_fin (tc0);
+	  tcp_connection_timers_reset (tc0);
+	  tcp_connection_set_state (tc0, TCP_STATE_LAST_ACK);
+	  tcp_timer_set (tc0, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
 	  break;
 	case TCP_STATE_CLOSING:
 	  /* In addition to the processing for the ESTABLISHED state, if
 	   * the ACK acknowledges our FIN then enter the TIME-WAIT state,
 	   * otherwise ignore the segment. */
-	  if (tcp_rcv_ack (wrk, tc0, b0, tcp0, &error0))
+	  if (tcp_rcv_ack_no_cc (tc0, b0, &error0))
+	    goto drop;
+
+	  if (tc0->snd_una != tc0->snd_nxt)
 	    goto drop;
 
 	  tcp_connection_timers_reset (tc0);
@@ -2859,15 +2866,11 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	   * acknowledgment of our FIN. If our FIN is now acknowledged,
 	   * delete the TCB, enter the CLOSED state, and return. */
 
-	  if (!tcp_rcv_ack_is_acceptable (tc0, b0))
-	    {
-	      error0 = TCP_ERROR_ACK_INVALID;
-	      goto drop;
-	    }
-	  error0 = TCP_ERROR_ACK_OK;
-	  tc0->snd_una = vnet_buffer (b0)->tcp.ack_number;
+	  if (tcp_rcv_ack_no_cc (tc0, b0, &error0))
+	    goto drop;
+
 	  /* Apparently our ACK for the peer's FIN was lost */
-	  if (is_fin0 && tc0->snd_una != tc0->snd_una_max)
+	  if (is_fin0 && tc0->snd_una != tc0->snd_nxt)
 	    {
 	      tcp_send_fin (tc0);
 	      goto drop;
@@ -2889,7 +2892,7 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	   * retransmission of the remote FIN. Acknowledge it, and restart
 	   * the 2 MSL timeout. */
 
-	  if (tcp_rcv_ack (wrk, tc0, b0, tcp0, &error0))
+	  if (tcp_rcv_ack_no_cc (tc0, b0, &error0))
 	    goto drop;
 
 	  if (!is_fin0)
@@ -2957,28 +2960,22 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  break;
 	case TCP_STATE_FIN_WAIT_1:
 	  tc0->rcv_nxt += 1;
-	  tcp_connection_set_state (tc0, TCP_STATE_CLOSING);
+
 	  if (tc0->flags & TCP_CONN_FINPNDG)
 	    {
-	      /* Drop all outstanding tx data. */
-	      session_tx_fifo_dequeue_drop (&tc0->connection,
-					    transport_max_tx_dequeue
-					    (&tc0->connection));
-	      /* Make it look as if we've recovered, if needed */
-	      if (tcp_in_cong_recovery (tc0))
-		{
-		  scoreboard_clear (&tc0->sack_sb);
-		  tcp_fastrecovery_off (tc0);
-		  tcp_recovery_off (tc0);
-		  tcp_connection_timers_reset (tc0);
-		  tc0->snd_nxt = tc0->snd_una_max = tc0->snd_una;
-		}
-	      tcp_send_fin (tc0);
+	      /* If data is outstanding, stay in FIN_WAIT_1 and try to finish
+	       * sending it. Since we already received a fin, do not wait
+	       * for too long. */
+	      tc0->flags |= TCP_CONN_FINRCVD;
+	      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
 	    }
 	  else
-	    tcp_program_ack (wrk, tc0);
-	  /* Wait for ACK for our FIN but not forever */
-	  tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
+	    {
+	      tcp_connection_set_state (tc0, TCP_STATE_CLOSING);
+	      tcp_program_ack (wrk, tc0);
+	      /* Wait for ACK for our FIN but not forever */
+	      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
+	    }
 	  break;
 	case TCP_STATE_FIN_WAIT_2:
 	  /* Got FIN, send ACK! Be more aggressive with resource cleanup */
@@ -3188,7 +3185,6 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       tcp_connection_init_vars (child0);
       child0->rto = TCP_RTO_MIN;
-      TCP_EVT_DBG (TCP_EVT_SYN_RCVD, child0, 1);
 
       if (session_stream_accept (&child0->connection, lc0->c_s_index,
 				 0 /* notify */ ))
@@ -3198,6 +3194,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  goto drop;
 	}
 
+      TCP_EVT_DBG (TCP_EVT_SYN_RCVD, child0, 1);
       child0->tx_fifo_size = transport_tx_fifo_size (&child0->connection);
       tcp_send_synack (child0);
       tcp_timer_set (child0, TCP_TIMER_ESTABLISH, TCP_SYN_RCVD_TIME);

@@ -117,7 +117,6 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 #define foreach_tcp_connection_flag             \
   _(SNDACK, "Send ACK")                         \
   _(FINSNT, "FIN sent")				\
-  _(SENT_RCV_WND0, "Sent 0 rcv_wnd")     	\
   _(RECOVERY, "Recovery")                    	\
   _(FAST_RECOVERY, "Fast Recovery")		\
   _(DCNT_PENDING, "Disconnect pending")		\
@@ -127,6 +126,7 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
   _(FRXT_FIRST, "Fast-retransmit first again")	\
   _(DEQ_PENDING, "Pending dequeue acked")	\
   _(PSH_PENDING, "PSH pending")			\
+  _(FINRCVD, "FIN received")			\
 
 typedef enum _tcp_connection_flag_bits
 {
@@ -143,26 +143,6 @@ typedef enum _tcp_connection_flag
 #undef _
   TCP_CONN_N_FLAGS
 } tcp_connection_flags_e;
-
-/** TCP buffer flags */
-#define foreach_tcp_buf_flag                            \
-  _ (ACK)       /**< Sending ACK. */                    \
-  _ (DUPACK)    /**< Sending DUPACK. */                 \
-
-enum
-{
-#define _(f) TCP_BUF_BIT_##f,
-  foreach_tcp_buf_flag
-#undef _
-    TCP_N_BUF_BITS,
-};
-
-enum
-{
-#define _(f) TCP_BUF_FLAG_##f = 1 << TCP_BUF_BIT_##f,
-  foreach_tcp_buf_flag
-#undef _
-};
 
 #define TCP_SCOREBOARD_TRACE (0)
 #define TCP_MAX_SACK_BLOCKS 256	/**< Max number of SACK blocks stored */
@@ -475,6 +455,9 @@ typedef struct _tcp_main
   /* Seed used to generate random iss */
   tcp_iss_seed_t iss_seed;
 
+  /** Hash table of cc algorithms by name */
+  uword *cc_algo_by_name;
+
   /*
    * Configuration
    */
@@ -485,6 +468,9 @@ typedef struct _tcp_main
   /** Max rx fifo size for a session. It is used in to compute the
    *  rfc 7323 window scaling factor */
   u32 max_rx_fifo;
+
+  /** Default MTU to be used when establishing connections */
+  u16 default_mtu;
 
   /** Number of preallocated connections */
   u32 preallocated_connections;
@@ -680,7 +666,7 @@ tcp_flight_size (const tcp_connection_t * tc)
 {
   int flight_size;
 
-  flight_size = (int) (tc->snd_una_max - tc->snd_una) - tcp_bytes_out (tc)
+  flight_size = (int) (tc->snd_nxt - tc->snd_una) - tcp_bytes_out (tc)
     + tc->snd_rxt_bytes;
 
   if (flight_size < 0)
@@ -924,7 +910,7 @@ tcp_persist_timer_reset (tcp_connection_t * tc)
 always_inline void
 tcp_retransmit_timer_update (tcp_connection_t * tc)
 {
-  if (tc->snd_una == tc->snd_una_max)
+  if (tc->snd_una == tc->snd_nxt)
     {
       tcp_retransmit_timer_reset (tc);
       if (tc->snd_wnd < tc->snd_mss)

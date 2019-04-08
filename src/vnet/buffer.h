@@ -279,7 +279,6 @@ typedef struct
     /* interface output features */
     struct
     {
-      u32 flags;
       u32 sad_index;
     } ipsec;
 

@@ -40,9 +40,11 @@ class VppCFLOW(VppObject):
 
     def add_vpp_config(self):
         self.enable_exporter()
-        self._test.vapi.ppcli("flowprobe params record %s active %s "
-                              "passive %s" % (self._collect, self._active,
-                                              self._passive))
+        self._test.vapi.flowprobe_params(
+            record_l2=1 if 'l2' in self._collect.lower() else 0,
+            record_l3=1 if 'l3' in self._collect.lower() else 0,
+            record_l4=1 if 'l4' in self._collect.lower() else 0,
+            active_timer=self._active, passive_timer=self._passive)
         self.enable_flowprobe_feature()
         self._test.vapi.cli("ipfix flush")
         self._configured = True
@@ -232,7 +234,7 @@ class MethodHolder(VppTestCase):
                 ip_layer = capture[0][IPv6]
             if data_set is not None:
                 for record in data:
-                    # skip flow if in/out gress interface is 0
+                    # skip flow if ingress/egress interface is 0
                     if int(binascii.hexlify(record[10]), 16) == 0:
                         continue
                     if int(binascii.hexlify(record[14]), 16) == 0:
@@ -879,7 +881,7 @@ class DisableIPFIX(MethodHolder):
         self.wait_for_cflow_packet(self.collector, templates[1])
         self.collector.get_capture(4)
 
-        # disble IPFIX
+        # disable IPFIX
         ipfix.disable_exporter()
         self.pg_enable_capture([self.collector])
 
@@ -996,7 +998,7 @@ class DisableFP(MethodHolder):
         self.wait_for_cflow_packet(self.collector, templates[1])
         self.collector.get_capture(4)
 
-        # disble IPFIX
+        # disable IPFIX
         ipfix.disable_flowprobe_feature()
         self.pg_enable_capture([self.collector])
 
@@ -1047,7 +1049,7 @@ class ReenableFP(MethodHolder):
         self.wait_for_cflow_packet(self.collector, templates[1], 5)
         self.collector.get_capture(4)
 
-        # disble FPP feature
+        # disable FPP feature
         ipfix.disable_flowprobe_feature()
         self.pg_enable_capture([self.collector])
 

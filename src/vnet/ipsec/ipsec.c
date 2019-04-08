@@ -26,24 +26,6 @@
 #include <vnet/ipsec/ah.h>
 
 ipsec_main_t ipsec_main;
-ipsec_proto_main_t ipsec_proto_main;
-
-static void
-ipsec_rand_seed (void)
-{
-  struct
-  {
-    time_t time;
-    pid_t pid;
-    void *p;
-  } seed_data;
-
-  seed_data.time = time (NULL);
-  seed_data.pid = getpid ();
-  seed_data.p = (void *) &seed_data;
-
-  RAND_seed ((const void *) &seed_data, sizeof (seed_data));
-}
 
 static clib_error_t *
 ipsec_check_ah_support (ipsec_sa_t * sa)
@@ -240,10 +222,7 @@ ipsec_init (vlib_main_t * vm)
 {
   clib_error_t *error;
   ipsec_main_t *im = &ipsec_main;
-
-  ipsec_rand_seed ();
-
-  clib_memset (im, 0, sizeof (im[0]));
+  ipsec_main_crypto_alg_t *a;
 
   im->vnet_main = vnet_get_main ();
   im->vlib_main = vm;
@@ -287,7 +266,57 @@ ipsec_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, ipsec_tunnel_if_init)))
     return error;
 
-  ipsec_proto_init ();
+  vec_validate (im->crypto_algs, IPSEC_CRYPTO_N_ALG - 1);
+
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_DES_CBC;
+  a->enc_op_id = VNET_CRYPTO_OP_DES_CBC_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_DES_CBC_DEC;
+  a->iv_size = a->block_size = 8;
+
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_3DES_CBC;
+  a->enc_op_id = VNET_CRYPTO_OP_3DES_CBC_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_3DES_CBC_DEC;
+  a->iv_size = a->block_size = 8;
+
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_AES_CBC_128;
+  a->enc_op_id = VNET_CRYPTO_OP_AES_128_CBC_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_AES_128_CBC_DEC;
+  a->iv_size = a->block_size = 16;
+
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_AES_CBC_192;
+  a->enc_op_id = VNET_CRYPTO_OP_AES_192_CBC_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_AES_192_CBC_DEC;
+  a->iv_size = a->block_size = 16;
+
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_AES_CBC_256;
+  a->enc_op_id = VNET_CRYPTO_OP_AES_256_CBC_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_AES_256_CBC_DEC;
+  a->iv_size = a->block_size = 16;
+
+  vec_validate (im->integ_algs, IPSEC_INTEG_N_ALG - 1);
+  ipsec_main_integ_alg_t *i;
+
+  i = &im->integ_algs[IPSEC_INTEG_ALG_SHA1_96];
+  i->op_id = VNET_CRYPTO_OP_SHA1_HMAC;
+  i->icv_size = 12;
+
+  i = &im->integ_algs[IPSEC_INTEG_ALG_SHA_256_96];
+  i->op_id = VNET_CRYPTO_OP_SHA1_HMAC;
+  i->icv_size = 12;
+
+  i = &im->integ_algs[IPSEC_INTEG_ALG_SHA_256_128];
+  i->op_id = VNET_CRYPTO_OP_SHA256_HMAC;
+  i->icv_size = 16;
+
+  i = &im->integ_algs[IPSEC_INTEG_ALG_SHA_384_192];
+  i->op_id = VNET_CRYPTO_OP_SHA384_HMAC;
+  i->icv_size = 24;
+
+  i = &im->integ_algs[IPSEC_INTEG_ALG_SHA_512_256];
+  i->op_id = VNET_CRYPTO_OP_SHA512_HMAC;
+  i->icv_size = 32;
+
+  vec_validate_aligned (im->ptd, vlib_num_workers (), CLIB_CACHE_LINE_BYTES);
 
   return 0;
 }

@@ -2,9 +2,9 @@
 import unittest
 
 from framework import VppTestCase, VppTestRunner
-from vpp_sub_interface import VppDot1QSubint
 from vpp_ip_route import VppIpRoute, VppRoutePath
-from vpp_papi_provider import L2_VTR_OP, L2_PORT_TYPE
+from vpp_l2 import L2_PORT_TYPE
+from vpp_sub_interface import L2_VTR_OP, VppDot1QSubint
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, Dot1Q
@@ -308,7 +308,7 @@ class TestDVR(VppTestCase):
             push_dot1q=93)
 
         #
-        # Disable UU flooding, learning and ARP terminaation. makes this test
+        # Disable UU flooding, learning and ARP termination. makes this test
         # easier as unicast packets are dropped if not extracted.
         #
         self.vapi.bridge_flags(bd_id=1, is_set=0,

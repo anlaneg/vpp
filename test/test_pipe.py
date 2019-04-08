@@ -38,9 +38,6 @@ class VppPipe(VppInterface):
         self._test.vapi.pipe_delete(
             self.result.sw_if_index)
 
-    def __str__(self):
-        return self.object_id()
-
     def object_id(self):
         return "pipe-%d" % (self._sw_if_index)
 
@@ -100,7 +97,7 @@ class TestPipe(VppTestCase):
                                                self.pg1.sw_if_index,
                                                enable=1)
 
-        # test bi-drectional L2 flow pg0<->pg1
+        # test bi-directional L2 flow pg0<->pg1
         p = (Ether(src=self.pg0.remote_mac,
                    dst=self.pg1.remote_mac) /
              IP(src="1.1.1.1",

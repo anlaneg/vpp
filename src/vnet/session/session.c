@@ -106,11 +106,18 @@ session_send_ctrl_evt_to_thread (session_t * s, session_evt_type_t evt_type)
 }
 
 void
+session_send_rpc_evt_to_thread_force (u32 thread_index, void *fp,
+				      void *rpc_args)
+{
+  session_send_evt_to_thread (fp, rpc_args, thread_index,
+			      SESSION_CTRL_EVT_RPC);
+}
+
+void
 session_send_rpc_evt_to_thread (u32 thread_index, void *fp, void *rpc_args)
 {
   if (thread_index != vlib_get_thread_index ())
-    session_send_evt_to_thread (fp, rpc_args, thread_index,
-				SESSION_CTRL_EVT_RPC);
+    session_send_rpc_evt_to_thread_force (thread_index, fp, rpc_args);
   else
     {
       void (*fnp) (void *) = fp;
@@ -169,9 +176,15 @@ session_alloc (u32 thread_index)
 void
 session_free (session_t * s)
 {
-  pool_put (session_main.wrk[s->thread_index].sessions, s);
   if (CLIB_DEBUG)
-    clib_memset (s, 0xFA, sizeof (*s));
+    {
+      u8 thread_index = s->thread_index;
+      clib_memset (s, 0xFA, sizeof (*s));
+      pool_put (session_main.wrk[thread_index].sessions, s);
+      return;
+    }
+  SESSION_EVT_DBG (SESSION_EVT_FREE, s);
+  pool_put (session_main.wrk[s->thread_index].sessions, s);
 }
 
 void
@@ -820,17 +833,16 @@ session_transport_closed_notify (transport_connection_t * tc)
 void
 session_transport_reset_notify (transport_connection_t * tc)
 {
-  session_t *s;
   app_worker_t *app_wrk;
-  application_t *app;
+  session_t *s;
+
   s = session_get (tc->s_index, tc->thread_index);
   svm_fifo_dequeue_drop_all (s->tx_fifo);
   if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     return;
   s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
   app_wrk = app_worker_get (s->app_wrk_index);
-  app = application_get (app_wrk->app_index);
-  app->cb_fns.session_reset_callback (s);
+  app_worker_reset_notify (app_wrk, s);
 }
 
 int
@@ -882,6 +894,7 @@ session_open_cl (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
   transport_connection_t *tc;
   transport_endpoint_cfg_t *tep;
   app_worker_t *app_wrk;
+  session_handle_t sh;
   session_t *s;
   int rv;
 
@@ -905,6 +918,9 @@ session_open_cl (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
       session_free (s);
       return -1;
     }
+
+  sh = session_handle (s);
+  session_lookup_add_connection (tc, sh);
 
   return app_worker_connect_notify (app_wrk, s, opaque);
 }

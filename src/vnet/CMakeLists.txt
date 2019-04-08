@@ -161,6 +161,7 @@ list(APPEND VNET_SOURCES
   l2/l2_api.c
   l2/l2_bd.c
   l2/l2_bvi.c
+  l2/l2_bvi_node.c
   l2/l2_input_classify.c
   l2/l2_output_classify.c
   l2/l2_efp_filter.c
@@ -181,6 +182,7 @@ list(APPEND VNET_SOURCES
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
+  l2/l2_bvi_node.c
   l2/l2_fwd.c
   l2/l2_learn.c
   l2/l2_output.c
@@ -531,6 +533,20 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_API_FILES bfd/bfd.api)
 
 ##############################################################################
+# Crypto
+##############################################################################
+
+list(APPEND VNET_SOURCES
+  crypto/cli.c
+  crypto/crypto.c
+  crypto/format.c
+)
+
+list(APPEND VNET_HEADERS
+  crypto/crypto.h
+)
+
+##############################################################################
 # Layer 3 protocol: IPSec
 ##############################################################################
 list(APPEND VNET_SOURCES
@@ -540,6 +556,7 @@ list(APPEND VNET_SOURCES
   ipsec/ipsec_input.c
   ipsec/ipsec_if.c
   ipsec/ipsec_if_in.c
+  ipsec/ipsec_punt.c
   ipsec/ipsec_sa.c
   ipsec/ipsec_spd.c
   ipsec/ipsec_spd_policy.c
@@ -1355,6 +1372,7 @@ list(APPEND VNET_SOURCES
   adj/adj_nbr.c
   adj/adj_glean.c
   adj/adj_midchain.c
+  adj/adj_midchain_delegate.c
   adj/adj_mcast.c
   adj/adj_l2.c
   adj/adj_nsh.c
@@ -1567,6 +1585,12 @@ option(VPP_BUILD_SESSION_ECHO_APPS "Build session echo apps." ON)
 if(VPP_BUILD_SESSION_ECHO_APPS)
   add_vpp_executable(tcp_echo
     SOURCES ../tests/vnet/session/tcp_echo.c
+    LINK_LIBRARIES vlibmemoryclient svm vppinfra pthread m rt
+    DEPENDS api_headers
+    NO_INSTALL
+    )
+  add_vpp_executable(quic_echo
+    SOURCES ../tests/vnet/session/quic_echo.c
     LINK_LIBRARIES vlibmemoryclient svm vppinfra pthread m rt
     DEPENDS api_headers
     NO_INSTALL
